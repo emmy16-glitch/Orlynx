@@ -1,12 +1,21 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState } from './ui/primitives';
-import { AgentApprovalCard, AgentErrorCard, CloudStatus, CloudWorkspaceButton, DiffSummary } from './ui/product';
+import { AgentApprovalCard, AgentErrorCard, AttachmentChip, CloudStatus, CloudWorkspaceButton, DiffSummary } from './ui/product';
 import { AgentWorkStream, CloudTransition, LiveActivityPill } from './ui/workstream';
 import { Lab } from './ui/lab';
 
 type Tab = 'agent' | 'files' | 'changes' | 'preview' | 'more';
+
+const LS_SESSION = 'orlynx:lastSession';
+const seqKey = (sid: string) => `orlynx:seq:${sid}`;
+const draftKey = (sid: string) => `orlynx:draft:${sid}`;
+const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+function loadSeq(sid: string): number {
+  try { return Number(localStorage.getItem(seqKey(sid)) || 0); } catch { return 0; }
+}
 
 export default function App() {
   const [session, setSession] = useState<any>(null);
@@ -17,55 +26,175 @@ export default function App() {
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<any[]>([]);
   const [changes, setChanges] = useState<any[]>([]);
+  const [attachments, setAttachments] = useState<any[]>([]);
   const [cloud, setCloud] = useState<any>(null);
   const [termOut, setTermOut] = useState('');
   const [cmd, setCmd] = useState('echo hello-orlynx && ls');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+  const [streamState, setStreamState] = useState<'live' | 'reconnecting' | 'offline'>('live');
+  const [uploads, setUploads] = useState<{ id: string; name: string; state: string }[]>([]);
+  const [busyChange, setBusyChange] = useState<string | null>(null);
+  const [showLatest, setShowLatest] = useState(false);
+
   const lastSeq = useRef(0);
+  const seenIds = useRef(new Set<string>());
   const esRef = useRef<EventSource | null>(null);
+  const retryRef = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const nearBottom = useRef(true);
 
-  async function boot(p = project) {
-    const s = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: p, branch: 'main' }) }));
-    setSession(s);
-    await refresh(s.id);
-    connect(s.id);
-  }
+  if (typeof window !== 'undefined' && window.location.search.includes('lab=1')) return <Lab />;
 
-  async function refresh(sid: string) {
-    const [m, f, c, det] = await Promise.all([
+  const ingest = useCallback((sid: string, raw: any) => {
+    // Deterministic reconciliation: dedup by eventId, order by sequence.
+    const list = Array.isArray(raw) ? raw : [raw];
+    setEvents((prev) => {
+      const known = seenIds.current;
+      const fresh = list.filter((e) => e && e.eventId && !known.has(e.eventId));
+      if (!fresh.length) return prev;
+      fresh.forEach((e) => known.add(e.eventId));
+      const merged = [...prev, ...fresh].sort((a, b) => a.sequence - b.sequence);
+      const capped = merged.slice(-300);
+      const maxSeq = capped.reduce((m, e) => Math.max(m, e.sequence || 0), lastSeq.current);
+      lastSeq.current = maxSeq;
+      try { localStorage.setItem(seqKey(sid), String(maxSeq)); } catch {}
+      return capped;
+    });
+    for (const evt of list) {
+      if (!evt) continue;
+      if (['changes.updated', 'receipt.created', 'run.completed', 'run.failed'].includes(evt.type)) {
+        fetch(`/v1/sessions/${sid}/changes`).then((r) => r.json()).then(setChanges).catch(() => {});
+        fetch(`/v1/sessions/${sid}/messages`).then((r) => r.json()).then(setMsgs).catch(() => {});
+        fetch(`/v1/sessions/${sid}/runs`).then((r) => r.json()).then((runs) => setLastRun(runs.slice(-1)[0] || null)).catch(() => {});
+      }
+      if (evt.type?.startsWith('workspace.')) {
+        fetch(`/v1/sessions/${sid}`).then((r) => r.json()).then((d) => setCloud(d.workspace)).catch(() => {});
+      }
+    }
+    // If user scrolled up, surface "new activity" instead of yanking scroll.
+    if (!nearBottom.current) setShowLatest(true);
+  }, []);
+
+  const [lastRun, setLastRun] = useState<any>(null);
+
+  const connect = useCallback((sid: string) => {
+    esRef.current?.close();
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    const attempt = () => {
+      if (!navigator.onLine) { setStreamState('offline'); retryTimer.current = setTimeout(attempt, 3000); return; }
+      setStreamState(retryRef.current > 0 ? 'reconnecting' : 'live');
+      const es = new EventSource(`/v1/sessions/${sid}/events?after=${lastSeq.current}`);
+      esRef.current = es;
+      es.onmessage = (e) => {
+        retryRef.current = 0;
+        setStreamState('live');
+        try { ingest(sid, JSON.parse(e.data)); } catch {}
+      };
+      es.onerror = () => {
+        es.close();
+        setStreamState('reconnecting');
+        retryRef.current += 1;
+        const backoff = Math.min(1000 * 2 ** Math.min(retryRef.current, 3), 8000);
+        retryTimer.current = setTimeout(attempt, backoff);
+      };
+    };
+    attempt();
+  }, [ingest]);
+
+  const refresh = useCallback(async (sid: string) => {
+    const [m, f, c, det, runs, atts] = await Promise.all([
       j<any[]>(await fetch(`/v1/sessions/${sid}/messages`)),
       j<any>(await fetch(`/v1/sessions/${sid}/files`)),
       j<any[]>(await fetch(`/v1/sessions/${sid}/changes`)),
       j<any>(await fetch(`/v1/sessions/${sid}`)),
+      j<any[]>(await fetch(`/v1/sessions/${sid}/runs`).catch(() => ({ json: async () => [] } as any))).catch(() => []),
+      j<any[]>(await fetch(`/v1/sessions/${sid}/attachments`)),
     ]);
     setMsgs(m); setFiles(f.files || []); setChanges(c); setCloud(det.workspace);
-  }
+    setLastRun((runs || []).slice(-1)[0] || null);
+    setAttachments(atts || []);
+  }, []);
 
-  function connect(sid: string) {
-    esRef.current?.close();
-    const es = new EventSource(`/v1/sessions/${sid}/events?after=${lastSeq.current}`);
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data);
-        lastSeq.current = Math.max(lastSeq.current, evt.sequence);
-        setEvents((p) => [...p.slice(-200), evt]);
-        if (['changes.updated', 'receipt.created', 'run.completed'].includes(evt.type)) {
-          fetch(`/v1/sessions/${sid}/changes`).then((r) => r.json()).then(setChanges).catch(() => {});
-          fetch(`/v1/sessions/${sid}/messages`).then((r) => r.json()).then(setMsgs).catch(() => {});
-        }
-        if (evt.type?.startsWith('workspace.')) {
-          fetch(`/v1/sessions/${sid}`).then((r) => r.json()).then((d) => setCloud(d.workspace)).catch(() => {});
-        }
-      } catch {}
+  const openSession = useCallback(async (s: any) => {
+    lastSeq.current = loadSeq(s.id);
+    seenIds.current = new Set();
+    setEvents([]);
+    setSession(s);
+    try { localStorage.setItem(LS_SESSION, JSON.stringify({ id: s.id, project: s.project })); } catch {}
+    try {
+      const d = localStorage.getItem(draftKey(s.id));
+      if (d) setInput(d);
+    } catch {}
+    await refresh(s.id);
+    connect(s.id);
+  }, [connect, refresh]);
+
+  const boot = useCallback(async (p = project) => {
+    // Restore last session instead of forging a fresh one (continuity).
+    try {
+      const saved = localStorage.getItem(LS_SESSION);
+      if (saved && p === project) {
+        const { id } = JSON.parse(saved);
+        const existing = await j<any>(await fetch(`/v1/sessions/${id}`));
+        if (existing?.id) { setProject(existing.project); await openSession(existing); return; }
+      }
+    } catch {}
+    const s = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: p, branch: 'main' }) }));
+    await openSession(s);
+  }, [openSession, project]);
+
+  useEffect(() => {
+    boot();
+    const onOnline = () => { setOnline(true); if (session) connect(session.id); };
+    const onOffline = () => { setOnline(false); setStreamState('offline'); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => { esRef.current?.close(); if (retryTimer.current) clearTimeout(retryTimer.current); window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Scroll tracking on window (chat scrolls with page).
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement;
+      const dist = doc.scrollHeight - window.innerHeight - window.scrollY;
+      nearBottom.current = dist < 140;
+      if (nearBottom.current) setShowLatest(false);
     };
-    esRef.current = es;
-  }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
-  useEffect(() => { boot(); return () => esRef.current?.close(); }, []);
+  const jumpToLatest = () => {
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+    setShowLatest(false);
+  };
 
   async function send() {
-    if (!session || !input.trim()) return;
-    const text = input; setInput('');
-    await j(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }));
+    if (!session || !input.trim() || sending) return;
+    if (!online) { setSendError('You are offline. Draft saved — send when reconnected.'); return; }
+    const text = input;
+    const clientId = uid();
+    setSending(true); setSendError('');
+    try {
+      // Idempotent send: same clientId never creates a duplicate run.
+      const r = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId }) }));
+      setInput('');
+      try { localStorage.removeItem(draftKey(session.id)); } catch {}
+      if (r.run) setLastRun(r.run);
+      await refresh(session.id);
+      requestAnimationFrame(() => { if (nearBottom.current) jumpToLatest(); });
+    } catch (e: any) {
+      setSendError(e.message || 'Send failed. Draft preserved.');
+    } finally { setSending(false); }
+  }
+
+  async function cancelRun() {
+    if (!session || !lastRun) return;
+    await fetch(`/v1/agent-runs/${lastRun.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) }).catch(() => {});
     await refresh(session.id);
   }
 
@@ -77,25 +206,44 @@ export default function App() {
 
   async function runCmd() {
     if (!session) return;
-    const r = await j<any>(await fetch(`/v1/sessions/${session.id}/exec`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) }));
-    setTermOut(r.out || JSON.stringify(r));
+    try {
+      const r = await j<any>(await fetch(`/v1/sessions/${session.id}/exec`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) }));
+      setTermOut(r.out || JSON.stringify(r));
+    } catch (e: any) { setTermOut(`Denied: ${e.message}`); }
   }
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!session || !e.target.files?.[0]) return;
-    const fd = new FormData(); fd.append('file', e.target.files[0]);
-    await fetch(`/v1/sessions/${session.id}/attachments`, { method: 'POST', body: fd });
-    alert('Uploaded — agent can now materialize it to cloud workspace');
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!session || !file) return;
+    const id = uid();
+    setUploads((u) => [...u, { id, name: file.name, state: 'uploading' }]);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      await j(await fetch(`/v1/sessions/${session.id}/attachments`, { method: 'POST', body: fd }));
+      setUploads((u) => u.map((x) => x.id === id ? { ...x, state: cloud?.state === 'ready' ? 'ready for agent' : 'available' } : x));
+      const atts = await j<any[]>(await fetch(`/v1/sessions/${session.id}/attachments`));
+      setAttachments(atts);
+    } catch {
+      setUploads((u) => u.map((x) => x.id === id ? { ...x, state: 'failed' } : x));
+    }
   }
 
-  const liveActivity = [...events].reverse().find((e) => e.type?.startsWith('activity.'));
-  const runState = [...events].reverse().find((e) => e.type?.startsWith('run.'))?.type === 'run.started' ? 'running'
-    : [...events].reverse().find((e) => e.type === 'run.failed') ? 'failed'
-    : [...events].reverse().find((e) => e.type === 'run.completed') ? 'completed' : 'idle';
-  const isWorking = events.length > 0 && runState === 'running';
-  const cloudFailed = [...events].reverse().find((e) => e.type === 'workspace.reconnecting' || e.type === 'run.failed');
+  const runState: string = useMemo(() => {
+    if (lastRun?.state === 'running' || lastRun?.state === 'queued') return lastRun.state;
+    const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+    const last = ordered.reverse().find((e) => e.type === 'run.started' || e.type === 'run.completed' || e.type === 'run.failed');
+    if (!last) return lastRun?.state || 'idle';
+    if (last.type === 'run.started') {
+      const done = ordered.find((e) => (e.type === 'run.completed' || e.type === 'run.failed') && (e.sequence > last.sequence) && e.runId === last.runId);
+      return done ? (done.type === 'run.completed' ? 'completed' : 'failed') : 'running';
+    }
+    return last.type === 'run.completed' ? 'completed' : 'failed';
+  }, [events, lastRun]);
 
-  if (typeof window !== 'undefined' && window.location.search.includes('lab=1')) return <Lab />;
+  const liveActivity = useMemo(() => [...events].reverse().find((e) => e.type?.startsWith('activity.')), [events]);
+  const isWorking = runState === 'running' || runState === 'queued';
+  const showCloudError = cloud?.state === 'failed' || streamState === 'reconnecting';
 
   return (
     <>
@@ -103,26 +251,35 @@ export default function App() {
         <b>Orlynx</b>
         <Badge>{session?.project || project}</Badge>
         <Badge>{session?.branch || 'main'}</Badge>
-        <CloudStatus state={cloud?.state} />
+        {streamState === 'reconnecting' ? <Badge tone="wait">Reconnecting</Badge>
+          : streamState === 'offline' ? <Badge tone="fail">Offline</Badge>
+          : <CloudStatus state={cloud?.state} />}
         <Badge tone={changes.filter((c: any) => c.reviewState === 'pending').length ? 'wait' : 'neutral'}>{changes.filter((c: any) => c.reviewState === 'pending').length} pending</Badge>
       </header>
-      <LiveActivityPill active={isWorking} label={String(liveActivity?.payload?.text || 'Agent working')} onOpen={() => setTab('agent')} />
-      <main>
+      <LiveActivityPill active={isWorking} label={String((liveActivity as any)?.payload?.text || 'Agent working')} onOpen={() => setTab('agent')} onStop={cancelRun} />
+      <main ref={scrollRef as any}>
         {tab === 'agent' && (
           <>
             <div className="card small">Choose project → Ask → {cloud?.state === 'ready' ? 'Agent works on cloud' : 'Work on cloud only when needed'} → Review → Commit. Infrastructure stays invisible.</div>
-            {cloud?.state === 'preparing' && <CloudTransition state="preparing" />}
+            {(cloud?.state === 'preparing') && <CloudTransition state="preparing" />}
+            {showCloudError && streamState === 'reconnecting' && (
+              <AgentErrorCard title="Connection interrupted. Reconnecting…" hint="Your conversation and changes are safe." onRetry={() => session && connect(session.id)} />
+            )}
             {msgs.map((m) => (<div key={m.id} className="card"><div className="small">{m.role}</div><div>{m.text}</div></div>))}
             <AgentWorkStream events={events} />
-            {cloudFailed && runState === 'failed' && (
-              <AgentErrorCard title="Work could not finish." hint="The workspace or run hit a problem." onReconnect={workOnCloud} onRetry={() => refresh(session.id)} />
+            {runState === 'failed' && (
+              <AgentErrorCard title="Work could not finish." hint="The workspace or run hit a problem." onReconnect={workOnCloud} onRetry={() => session && refresh(session.id)} />
             )}
-            {!cloud && <div className="row"><CloudWorkspaceButton state={cloud?.state} onStart={workOnCloud} /><span className="small">Attaches compute to this same conversation</span></div>}
+            {!cloud && !isWorking && <div className="row"><CloudWorkspaceButton state={cloud?.state} onStart={workOnCloud} /><span className="small">Attaches compute to this same conversation</span></div>}
+            {!!attachments.length && (
+              <div className="card"><div className="ox-row">{attachments.map((a: any) => <AttachmentChip key={a.id} name={a.filename} state={cloud?.state === 'ready' ? 'agent' : 'attached'} />)}</div></div>
+            )}
           </>
         )}
         {tab === 'files' && (
           <div className="card">
-            <div className="row"><input value={project} onChange={(e) => setProject(e.target.value)} /><button className="gho" onClick={() => boot(project)}>Open</button></div>
+            <div className="row"><input value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project name" /><button className="gho" onClick={() => boot(project)}>Open</button></div>
+            {files.length === 0 && <div className="small">Empty repository.</div>}
             {files.map((f: any) => (<div key={f.name} className="row">📁 {f.name}{f.dir ? '/' : ''}</div>))}
           </div>
         )}
@@ -133,34 +290,51 @@ export default function App() {
               <div key={c.id} className="card">
                 <div className="row"><b>{c.id}</b><Badge tone={c.reviewState === 'committed' ? 'ok' : c.reviewState === 'pending' ? 'wait' : 'neutral'}>{c.reviewState}</Badge><span className="small">base {c.baseSha?.slice(0, 7)}</span></div>
                 <DiffSummary files={(c.files || []).map((f: any) => ({ path: f.path, action: f.action }))} />
-                {c.files?.map((f: any, i: number) => (<pre key={i}>{f.path}\n{(f.after || '').slice(0, 2000)}</pre>))}
+                {c.files?.map((f: any, i: number) => (<pre key={i}>{f.path}{'\n'}{(f.after || '').slice(0, 2000)}</pre>))}
                 <div className="row">
                   {c.reviewState === 'pending' && (
-                    <AgentApprovalCard title={`Push ${c.files?.length || 0} changed file${(c.files?.length || 0) === 1 ? '' : 's'}?`} detail="Review the diff above. Nothing commits without approval." onApprove={async () => { await j(await fetch(`/v1/changes/${c.id}/approve`, { method: 'POST' })); await refresh(session.id); }} onCancel={() => {}} />
+                    <AgentApprovalCard busy={busyChange === c.id} title={`Push ${c.files?.length || 0} changed file${(c.files?.length || 0) === 1 ? '' : 's'}?`} detail="Review the diff above. Nothing commits without approval." onApprove={async () => { setBusyChange(c.id); try { await j(await fetch(`/v1/changes/${c.id}/approve`, { method: 'POST' })); await refresh(session.id); } finally { setBusyChange(null); } }} onCancel={() => {}} />
                   )}
-                  {c.reviewState === 'approved' && <Button onClick={async () => { await j(await fetch(`/v1/changes/${c.id}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Orlynx update' }) })); await refresh(session.id); }}>Commit & push</Button>}
+                  {c.reviewState === 'approved' && <Button disabled={busyChange === c.id} onClick={async () => { setBusyChange(c.id); try { await j(await fetch(`/v1/changes/${c.id}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Orlynx update' }) })); await refresh(session.id); } catch (e: any) { setSendError(e.message); } finally { setBusyChange(null); } }}>{busyChange === c.id ? 'Working…' : 'Commit & push'}</Button>}
                   {c.reviewState === 'committed' && <span className="small">✔ {c.commitSha?.slice(0, 7)}</span>}
+                  {c.reviewState === 'stale' && <AgentErrorCard title="Repository changed since this work started." hint="Refresh and review before committing." onRetry={() => refresh(session.id)} />}
                 </div>
               </div>
             ))}
           </>
         )}
-        {tab === 'preview' && (<div className="card"><p>Open preview</p><p className="small">Private by default. Start a dev server via terminal, then preview appears here without port mechanics.</p><input placeholder="preview URL (e.g. /)" id="pv" /><button className="gho" onClick={() => { const v = (document.getElementById('pv') as HTMLInputElement).value; if (v) window.open(v, '_blank'); }}>Open preview</button></div>)}
+        {tab === 'preview' && (<div className="card"><p>Open preview</p><p className="small">Private by default. Start a dev server via terminal, then preview appears here without port mechanics.</p><input placeholder="preview URL (e.g. /)" id="pv" aria-label="Preview URL" /><button className="gho" onClick={() => { const v = (document.getElementById('pv') as HTMLInputElement).value; if (v) window.open(v, '_blank'); }}>Open preview</button></div>)}
         {tab === 'more' && (
           <>
-            <div className="card"><h4>Terminal (expert)</h4><div className="row"><input value={cmd} onChange={(e) => setCmd(e.target.value)} /><button className="gho" onClick={runCmd}>Run</button></div><pre>{termOut || 'no output yet'}</pre></div>
-            <div className="card"><h4>Attach</h4><input type="file" onChange={upload} /><div className="small">Files / Photos / Camera via picker. Bytes reach cloud only when required.</div></div>
-            <div className="card"><div className="row"><button className="gho" onClick={async () => { await fetch(`/v1/sessions/${session.id}/cloud/stop`, { method: 'POST' }); await refresh(session.id); }}>Stop cloud</button></div></div>
+            <div className="card"><h4>Terminal (expert)</h4><div className="row"><input value={cmd} onChange={(e) => setCmd(e.target.value)} aria-label="Command" /><button className="gho" onClick={runCmd}>Run</button></div><pre>{termOut || 'no output yet'}</pre><div className="ox-row" style={{ marginTop: 8 }}>{['Ctrl', 'Tab', 'Esc', '↑', '↓', '←', '→'].map((k) => <Badge key={k}>{k}</Badge>)}</div></div>
+            <div className="card"><h4>Attach</h4><input type="file" onChange={upload} aria-label="Upload file" /><div className="small">Files / Photos / Camera via picker. Bytes reach cloud only when required.</div>
+              {uploads.map((u) => <div key={u.id} className="small">{u.name} · {u.state}</div>)}
+            </div>
+            <div className="card"><div className="row"><button className="gho" onClick={async () => { await fetch(`/v1/sessions/${session.id}/cloud/stop`, { method: 'POST' }); await refresh(session.id); }}>Stop cloud</button><span className="small">Conversation and changes are kept.</span></div></div>
           </>
         )}
       </main>
-      {tab === 'agent' && (
-        <div className="composer">
-          <label className="gho" style={{ padding: '10px' }}>+<input type="file" hidden onChange={upload} /></label>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Describe the work…" onKeyDown={(e) => e.key === 'Enter' && send()} />
-          <button className="pri" onClick={send}>Send</button>
+      {showLatest && tab === 'agent' && (
+        <div style={{ position: 'fixed', bottom: 150, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 15 }}>
+          <Button tone="ghost" onClick={jumpToLatest}>↓ New activity</Button>
         </div>
       )}
+      {tab === 'agent' && (
+        <div className="composer">
+          <label className="gho" style={{ padding: '10px' }} aria-label="Attach file">+<input type="file" hidden onChange={upload} /></label>
+          <input
+            value={input}
+            onChange={(e) => { setInput(e.target.value); try { session && localStorage.setItem(draftKey(session.id), e.target.value); } catch {} }}
+            placeholder={online ? 'Describe the work…' : 'Offline — draft will be kept…'}
+            aria-label="Message the agent"
+            onKeyDown={(e) => e.key === 'Enter' && send()}
+          />
+          {isWorking
+            ? <button className="gho" onClick={cancelRun} aria-label="Stop agent">Stop</button>
+            : <button className="pri" onClick={send} disabled={sending} aria-label="Send message">{sending ? '…' : 'Send'}</button>}
+        </div>
+      )}
+      {sendError && <div role="alert" className="small" style={{ textAlign: 'center', padding: 4 }}>{sendError}</div>}
       <div className="tabs" role="tablist" aria-label="Primary">
         {(['agent', 'files', 'changes', 'preview', 'more'] as Tab[]).map((t) => (<button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>))}
       </div>

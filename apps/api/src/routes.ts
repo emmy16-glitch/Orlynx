@@ -30,16 +30,27 @@ router.get('/sessions/:id', (req, res) => {
   res.json({ ...s, head: headSha(s.project), workspace: getWorkspace(s.id) || null });
 });
 
-// POST /v1/sessions/{id}/messages — send user task
+// POST /v1/sessions/{id}/messages — send user task (idempotent via clientId)
 router.post('/sessions/:id/messages', async (req, res) => {
   const s = store.db.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const { text = '', engine = 'native' } = req.body || {};
-  const msg = { id: uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
+  const { text = '', engine = 'native', clientId = '' } = req.body || {};
+  if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
+  if (clientId) {
+    const dup = (store.db.messages[s.id] || []).find((m: { id: string }) => m.id === clientId);
+    if (dup) {
+      const run = (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
+      console.info(`[orlynx] sid=${s.id} duplicate message ignored clientId=${clientId}`);
+      return res.json({ message: dup, run, deduplicated: true });
+    }
+  }
+  const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
   store.save();
+  console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   const run = await startRun(s.id, s.project, text, engine);
+  console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
 });
 
@@ -81,8 +92,9 @@ router.post('/sessions/:id/cloud', (req, res) => {
   const ws = ensureWorkspace(s.id, s.project, s.branch);
   s.mode = 'cloud'; s.workspaceId = ws.id; s.updatedAt = new Date().toISOString();
   store.save();
+  console.info(`[orlynx] sid=${s.id} ws=${ws.id} cloud preparing`);
   emit(s.id, 'workspace.preparing', { workspaceId: ws.id });
-  setTimeout(() => emit(s.id, 'workspace.ready', { workspaceId: ws.id }), 900);
+  setTimeout(() => { emit(s.id, 'workspace.ready', { workspaceId: ws.id }); console.info(`[orlynx] sid=${s.id} ws=${ws.id} cloud ready`); }, 900);
   materializeForRuntime(s.id, s.project);
   res.json(ws);
 });
@@ -118,7 +130,13 @@ router.post('/sessions/:id/agent-runs', async (req, res) => {
 });
 router.post('/agent-runs/:runId/cancel', (req, res) => {
   const { sessionId } = req.body || {};
+  console.info(`[orlynx] sid=${sessionId} cancel run=${req.params.runId}`);
   res.json(cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
+});
+
+// runs — snapshot for session restore ("agent still working" / receipts)
+router.get('/sessions/:id/runs', (req, res) => {
+  res.json(store.db.runs[req.params.id] || []);
 });
 
 // files

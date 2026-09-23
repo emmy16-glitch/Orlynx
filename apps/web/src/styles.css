@@ -2,12 +2,14 @@
 @import "./ui/components.css";
 /* Legacy aliases — kept so existing markup keeps working; new code uses .ox-* directly. */
 * { box-sizing: border-box; }
+html, body { overflow-x: clip; }
 body { margin:0; background:var(--background); color:var(--foreground); font-family: var(--font-sans); font-size: var(--text-body); }
 header { position:sticky; top:0; z-index:5; background:color-mix(in srgb, var(--background) 93%, transparent); backdrop-filter: blur(8px); border-bottom:1px solid var(--border); padding:10px 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+header > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28vw; }
 .pill { font-size:var(--text-meta); border:1px solid var(--border); border-radius:var(--radius-pill); padding:3px 10px; color:var(--foreground-muted); }
 .pill.ok { color:var(--success); border-color:#1f4d38; }
 main { max-width:920px; margin:0 auto; padding:14px 14px 92px; }
-.tabs { position:fixed; bottom:0; left:0; right:0; display:flex; background:color-mix(in srgb, var(--background) 96%, transparent); border-top:1px solid var(--border); }
+.tabs { position:fixed; bottom:0; left:0; right:0; display:flex; background:color-mix(in srgb, var(--background) 96%, transparent); border-top:1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
 .tabs button, .ox-tab { flex:1; padding:12px 4px; min-height:var(--touch-min); background:none; border:0; color:var(--foreground-muted); font-size:var(--text-small); }
 .tabs button.on { color:var(--foreground); font-weight:700; }
 .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:var(--sp-3); margin:10px 0; }
@@ -17,6 +19,6 @@ button.pri { background:var(--primary); border:0; color:var(--primary-foreground
 button.gho { background:transparent; border:1px solid var(--border); color:var(--foreground); border-radius:var(--radius-md); padding:9px 12px; min-height:var(--touch-min); }
 pre { white-space:pre-wrap; word-break:break-word; background:var(--background-elevated); padding:10px; border-radius:var(--radius-md); border:1px solid var(--border); max-height:320px; overflow:auto; font-family:var(--font-mono); font-size:var(--text-code); }
 .diff-add { color:var(--git-added); } .diff-del { color:var(--git-deleted); }
-.composer { position:fixed; bottom:52px; left:0; right:0; max-width:920px; margin:0 auto; padding:8px 14px; display:flex; gap:8px; background:linear-gradient(transparent, var(--background) 30%); }
+.composer { position:fixed; bottom:calc(52px + env(safe-area-inset-bottom)); left:0; right:0; max-width:920px; margin:0 auto; padding:8px 14px; display:flex; gap:8px; background:linear-gradient(transparent, var(--background) 30%); }
 .small { font-size:var(--text-meta); color:var(--foreground-muted); }
 @media (min-width: 1024px) { main { max-width: 1100px; } }
