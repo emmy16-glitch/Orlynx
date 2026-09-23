@@ -1,0 +1,23 @@
+{
+  "name": "orlynx",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Orlynx — GitHub-native AI development workspace (phone-first PWA, control plane + replaceable compute plane)",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "packages/shared",
+    "bridge"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@orlynx/api & npm run dev --workspace=@orlynx/web",
+    "dev:api": "npm run dev --workspace=@orlynx/api",
+    "dev:web": "npm run dev --workspace=@orlynx/web",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspace=@orlynx/api",
+    "e2e": "npm run e2e --workspace=@orlynx/api"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

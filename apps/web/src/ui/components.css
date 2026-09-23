@@ -1,0 +1,49 @@
+/* Orlynx motion + component styles. Calm, state-communicating, reduced-motion safe. */
+@import "./tokens.css";
+
+.ox-btn { min-height: var(--touch-min); border-radius: var(--radius-md); padding: 10px 14px; font-weight: 700; font-size: var(--text-body); border: 1px solid transparent; cursor: pointer; transition: background var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease); }
+.ox-btn:active { transform: translateY(1px); }
+.ox-btn-primary { background: var(--primary); color: var(--primary-foreground); }
+.ox-btn-primary:hover { background: var(--primary-hover); }
+.ox-btn-ghost { background: transparent; border-color: var(--border); color: var(--foreground); }
+.ox-btn-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+.ox-btn:focus-visible, .ox-iconbtn:focus-visible, .ox-tab:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+.ox-iconbtn { width: var(--touch-min); height: var(--touch-min); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-md); border: 1px solid var(--border); background: transparent; color: var(--foreground); }
+
+.ox-badge { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-meta); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px 10px; color: var(--foreground-muted); }
+.ox-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--foreground-subtle); }
+.ox-badge[data-tone="ok"] { color: var(--success); border-color: #1f4d38; } .ox-badge[data-tone="ok"] .dot { background: var(--agent-success); }
+.ox-badge[data-tone="work"] { color: var(--agent-working); } .ox-badge[data-tone="work"] .dot { background: var(--agent-working); animation: ox-pulse 1.6s ease-in-out infinite; }
+.ox-badge[data-tone="wait"] { color: var(--agent-waiting); } .ox-badge[data-tone="wait"] .dot { background: var(--agent-waiting); }
+.ox-badge[data-tone="fail"] { color: var(--agent-failed); } .ox-badge[data-tone="fail"] .dot { background: var(--agent-failed); }
+
+@keyframes ox-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.ox-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-3); margin: 10px 0; box-shadow: var(--shadow-1); }
+.ox-row { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.ox-input { width: 100%; background: var(--background-elevated); border: 1px solid var(--border); color: var(--foreground); border-radius: var(--radius-md); padding: 10px; font-size: var(--text-body); min-height: var(--touch-min); }
+
+.ox-activity { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border: 0; }
+.ox-activity .mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; border: 1px solid var(--border); flex: none; }
+.ox-activity[data-state="done"] .mark { color: var(--agent-success); border-color: #1f4d38; }
+.ox-activity[data-state="active"] .mark { color: var(--agent-working); border-color: var(--agent-working); animation: ox-pulse 1.6s infinite; }
+.ox-activity[data-state="todo"] .mark { color: var(--foreground-subtle); }
+.ox-activity[data-state="fail"] .mark { color: var(--agent-failed); border-color: var(--agent-failed); }
+
+.ox-stream { transition: opacity var(--motion-normal) var(--motion-ease); }
+.ox-fadein { animation: ox-in var(--motion-normal) var(--motion-ease); }
+@keyframes ox-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.ox-pill-float { position: fixed; bottom: calc(52px + 64px); left: 50%; transform: translateX(-50%); z-index: 20; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-pill); padding: 8px 14px; display: flex; gap: 10px; align-items: center; box-shadow: var(--shadow-2); font-size: var(--text-small); }
+.ox-pill-float button { min-height: 36px; }
+
+.ox-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--primary); animation: ox-spin 0.9s linear infinite; display: inline-block; }
+@keyframes ox-spin { to { transform: rotate(360deg); } }
+
+.ox-skel { border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--surface-hover), var(--surface-active), var(--surface-hover)); background-size: 200% 100%; animation: ox-shimmer 1.4s infinite; min-height: 14px; }
+@keyframes ox-shimmer { to { background-position: -200% 0; } }
+
+@media (min-width: 1024px) {
+  .ox-desktop { display: grid; grid-template-columns: 280px 1fr 360px; gap: var(--sp-3); align-items: start; }
+}

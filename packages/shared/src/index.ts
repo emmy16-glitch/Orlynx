@@ -1,0 +1,113 @@
+// @orlynx/shared — canonical types per Architecture Spec v1.1 §§13-14
+export type SessionMode = 'repository' | 'cloud';
+export type WorkspaceState = 'none' | 'preparing' | 'ready' | 'reconnecting' | 'stopped' | 'failed';
+export type RunState = 'queued' | 'running' | 'waiting_input' | 'waiting_approval' | 'paused' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
+export type ReviewState = 'pending' | 'approved' | 'committed' | 'stale' | 'discarded';
+
+export interface ProjectSession {
+  id: string;
+  project: string;
+  owner?: string;
+  repo?: string;
+  branch: string;
+  mode: SessionMode;
+  workspaceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  checkpoint?: SessionCheckpoint;
+}
+
+export interface SessionCheckpoint {
+  goal?: string;
+  decisions: string[];
+  branch: string;
+  filesTouched: string[];
+  pendingIssues: string[];
+  lastVerified?: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  createdAt: string;
+}
+
+export interface AttachmentMeta {
+  id: string;
+  sessionId: string;
+  filename: string;
+  safeName: string;
+  mime: string;
+  size: number;
+  hash?: string;
+  createdAt: string;
+}
+
+export interface ChangeSet {
+  id: string;
+  sessionId: string;
+  runId?: string;
+  baseSha: string;
+  currentHead?: string;
+  files: ChangedFile[];
+  reviewState: ReviewState;
+  commitSha?: string;
+  createdAt: string;
+}
+
+export interface ChangedFile {
+  path: string;
+  action: 'create' | 'modify' | 'delete';
+  before?: string;
+  after?: string;
+  diff?: string;
+}
+
+export interface AgentRun {
+  id: string;
+  sessionId: string;
+  engine: 'native' | 'opencode' | 'cline';
+  model?: string;
+  state: RunState;
+  activity?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+// §§14.2-14.3 event envelope + taxonomy
+export type EventType =
+  | 'run.started' | 'run.completed' | 'run.failed'
+  | 'step.started' | 'step.finished'
+  | 'message.start' | 'message.delta' | 'message.end'
+  | 'tool.requested' | 'tool.started' | 'tool.output' | 'tool.completed' | 'tool.failed'
+  | 'workspace.preparing' | 'workspace.ready' | 'workspace.reconnecting' | 'workspace.stopped'
+  | 'state.snapshot' | 'state.delta' | 'changes.updated' | 'branch.changed'
+  | 'activity.started' | 'activity.progress' | 'activity.completed'
+  | 'approval.required' | 'approval.resolved'
+  | 'receipt.created';
+
+export interface OrlynxEvent {
+  eventId: string;
+  sessionId: string;
+  runId?: string;
+  sequence: number;
+  type: EventType;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
+export const APPROVAL_ACTIONS = [
+  'port.expose.public',
+  'git.force-push',
+  'fs.delete-many',
+  'secrets.modify',
+  'infra.billing',
+  'exec.outside-root',
+] as const;
+
+export function safeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'file';
+}

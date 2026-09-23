@@ -1,0 +1,160 @@
+import { Router } from 'express';
+import multer from 'multer';
+import { v4 as uuid } from 'uuid';
+import { store } from './store.js';
+import { emit, history, subscribe } from './events.js';
+import { githubListRepos, headSha, listFiles, readFile, repoRoot, status } from './github.js';
+import { approve, commit, createChangeSet, currentChanges } from './changes.js';
+import { materializeForRuntime, saveAttachment } from './attachments.js';
+import { ensureWorkspace, execInWorkspace, getWorkspace, stopWorkspace } from './workspaces.js';
+import { cancelRun, startRun } from './agents.js';
+
+export const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
+// POST /v1/sessions — create/resume project session (§14.1)
+router.post('/sessions', (req, res) => {
+  const { project = 'demo', branch = 'main', owner = 'local' } = req.body || {};
+  const id = `ses_${uuid().slice(0, 8)}`;
+  const now = new Date().toISOString();
+  repoRoot(project);
+  store.db.sessions[id] = { id, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
+  store.save();
+  emit(id, 'state.snapshot', { project, branch, mode: 'repository' });
+  res.json(store.db.sessions[id]);
+});
+
+router.get('/sessions/:id', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  res.json({ ...s, head: headSha(s.project), workspace: getWorkspace(s.id) || null });
+});
+
+// POST /v1/sessions/{id}/messages — send user task
+router.post('/sessions/:id/messages', async (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const { text = '', engine = 'native' } = req.body || {};
+  const msg = { id: uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
+  (store.db.messages[s.id] ||= []).push(msg);
+  s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
+  store.save();
+  const run = await startRun(s.id, s.project, text, engine);
+  res.json({ message: msg, run });
+});
+
+router.get('/sessions/:id/messages', (req, res) => {
+  res.json(store.db.messages[req.params.id] || []);
+});
+
+// GET /v1/sessions/{id}/events — SSE stream with ?after=seq (§14.2 reconnect)
+router.get('/sessions/:id/events', (req, res) => {
+  const id = req.params.id;
+  const after = Number(req.query.after || 0);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  // replay missed events first
+  for (const e of history(id, after)) res.write(`id: ${e.sequence}\ndata: ${JSON.stringify(e)}\n\n`);
+  const off = subscribe(id, res);
+  req.on('close', off);
+});
+
+// attachments
+router.post('/sessions/:id/attachments', upload.single('file'), (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  if (!req.file) return res.status(400).json({ error: 'no file' });
+  const { meta } = saveAttachment(s.id, req.file.originalname, req.file.mimetype, req.file.buffer);
+  emit(s.id, 'state.delta', { attachment: meta.id });
+  res.json(meta);
+});
+
+router.get('/sessions/:id/attachments', (req, res) => {
+  res.json(store.db.attachments[req.params.id] || []);
+});
+
+// cloud lifecycle
+router.post('/sessions/:id/cloud', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const ws = ensureWorkspace(s.id, s.project, s.branch);
+  s.mode = 'cloud'; s.workspaceId = ws.id; s.updatedAt = new Date().toISOString();
+  store.save();
+  emit(s.id, 'workspace.preparing', { workspaceId: ws.id });
+  setTimeout(() => emit(s.id, 'workspace.ready', { workspaceId: ws.id }), 900);
+  materializeForRuntime(s.id, s.project);
+  res.json(ws);
+});
+
+router.post('/sessions/:id/cloud/stop', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const ws = stopWorkspace(s.id);
+  s.mode = 'repository'; s.updatedAt = new Date().toISOString(); store.save();
+  if (ws) emit(s.id, 'workspace.stopped', { workspaceId: ws.id });
+  res.json(ws || { state: 'none' });
+});
+
+router.post('/sessions/:id/exec', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const { cmd = 'echo ok' } = req.body || {};
+  try {
+    const r = execInWorkspace(s.project, String(cmd));
+    emit(s.id, 'receipt.created', { cmd: String(cmd).slice(0, 200), code: r.code });
+    res.json(r);
+  } catch (e: unknown) {
+    res.status(403).json({ error: (e as Error).message });
+  }
+});
+
+// agent runs
+router.post('/sessions/:id/agent-runs', async (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), req.body?.engine || 'native');
+  res.json(run);
+});
+router.post('/agent-runs/:runId/cancel', (req, res) => {
+  const { sessionId } = req.body || {};
+  res.json(cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
+});
+
+// files
+router.get('/sessions/:id/files', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  res.json({ files: listFiles(s.project, String(req.query.path || '')), head: headSha(s.project), status: status(s.project) });
+});
+router.get('/sessions/:id/file', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  try { res.json({ path: req.query.path, content: readFile(s.project, String(req.query.path || 'README.md')) }); }
+  catch (e: unknown) { res.status(400).json({ error: (e as Error).message }); }
+});
+
+// changes
+router.get('/sessions/:id/changes', (req, res) => res.json(currentChanges(req.params.id)));
+router.post('/changes/:changeId/approve', (req, res) => {
+  const c = approve(req.params.changeId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  emit(c.sessionId, 'approval.resolved', { changeId: c.id, approved: true });
+  res.json(c);
+});
+router.post('/changes/:changeId/commit', (req, res) => {
+  // locate session via changeset
+  let sid = '';
+  for (const [k, v] of Object.entries(store.db.changes)) if (v.some((c) => c.id === req.params.changeId)) sid = k;
+  const s = store.db.sessions[sid];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  try {
+    const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));
+    res.json(c);
+  } catch (e: unknown) { res.status(409).json({ error: (e as Error).message }); }
+});
+
+// repos
+router.get('/repos', async (_req, res) => {
+  res.json({ github: await githubListRepos(), localNote: 'local demo repos auto-created under api/data/repos' });
+});

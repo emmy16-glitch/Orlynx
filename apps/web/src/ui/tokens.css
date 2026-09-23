@@ -1,0 +1,99 @@
+/* Orlynx Design Tokens — ONE visual identity. Semantic only; no component hex.
+   Dark-first (established direction). Light theme override ready. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --background: #0b0f17;
+  --background-elevated: #0d1320;
+  --surface: #131a26;
+  --surface-hover: #182134;
+  --surface-active: #1e2a42;
+
+  /* borders */
+  --border: #233047;
+  --border-subtle: #1a2438;
+  --border-strong: #31435f;
+
+  /* text */
+  --foreground: #e8eef7;
+  --foreground-muted: #93a1b8;
+  --foreground-subtle: #64748f;
+
+  /* brand */
+  --primary: #4da3ff;
+  --primary-hover: #6db4ff;
+  --primary-foreground: #04101f;
+
+  /* status */
+  --success: #3ecf8e;
+  --warning: #ffb020;
+  --danger: #ff7a7a;
+  --info: #4da3ff;
+
+  /* agent states */
+  --agent-working: #4da3ff;
+  --agent-success: #3ecf8e;
+  --agent-failed: #ff7a7a;
+  --agent-waiting: #ffb020;
+  --agent-paused: #93a1b8;
+
+  /* git */
+  --git-added: #3ecf8e;
+  --git-modified: #4da3ff;
+  --git-deleted: #ff7a7a;
+
+  /* type */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-display: 24px;
+  --text-h1: 20px;
+  --text-h2: 17px;
+  --text-body: 15px;
+  --text-small: 13px;
+  --text-meta: 12px;
+  --text-code: 13px;
+
+  /* spacing (4pt base, deliberate small scale) */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+
+  /* radii */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* elevation (subtle, no glass abuse) */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 0.35);
+
+  /* motion */
+  --motion-fast: 120ms;
+  --motion-normal: 200ms;
+  --motion-slow: 320ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* touch */
+  --touch-min: 44px;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #f6f8fc;
+  --background-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #eef3fa;
+  --surface-active: #e3ecf7;
+  --border: #d6e0ef;
+  --border-subtle: #e6edf7;
+  --border-strong: #b9c9e0;
+  --foreground: #0e1726;
+  --foreground-muted: #4b5b74;
+  --foreground-subtle: #7b8aa1;
+  --primary-foreground: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-normal: 0ms; --motion-slow: 0ms; }
+  *, *::before, *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; }
+}
