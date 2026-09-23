@@ -11,13 +11,17 @@ engine) → `GET changes/files/messages/runs` refresh + SSE live events.
 
 ## Ownership
 - Session/task/Git truth: API (`apps/api/src/store.ts` JSON file; Git via shell in `github.ts`).
-- Workspace truth: `workspaces.ts` (local provider; Codespaces via REST only with `GITHUB_TOKEN`).
+- Workspace truth: `workspaces.ts` (local provider simulation; Codespaces helper exists but provisioning is not wired).
 - UI truth: React state per session; `localStorage` holds only last-session pointer,
   per-session event sequence, and composer draft — never message content authority.
 - Activity truth for presentation: canonical `OrlynxEvent` envelopes are reconciled
   by stable ID/sequence, then projected by `apps/web/src/ui/mapping.ts` into shared
   `ActivityEvent` rows. Summaries/evidence/raw receipts are three views of the same
   stream, not a second activity subsystem.
+- Repository access: `/v1/github/status`, `/v1/repos`, branches, and import use
+  server-configured GitHub credentials. Imported repositories clone to local runtime
+  data. Commit is local; GitHub push is a distinct explicit-confirmation endpoint
+  and only works for an imported repository whose remote matches the project.
 
 ## Activity presentation boundary
 
@@ -29,7 +33,8 @@ Run lifecycle transitions update stable rows. The scroll contract is documented 
 `docs/agent-activity-presentation.md`.
 
 ## What is NOT yet real
-GitHub OAuth/App install, OpenCode/Cline process control (engine string only),
-PTY terminal (command exec only), multi-device sync (localStorage is per-device),
-durable object-backed raw receipts, and provider-supplied structured test/file
-metadata. The current native agent remains a local simulation.
+End-user GitHub OAuth/App-install handoff, OpenCode/Cline process control (engine
+string only), real Codespaces lifecycle, PTY terminal (command execution only),
+multi-device sync (localStorage is per-device), durable object-backed raw receipts,
+and provider-supplied structured test/file metadata. The current native agent and
+cloud workspace readiness remain local simulations.

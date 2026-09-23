@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import type { ChangeSet, ChangedFile } from '@orlynx/shared';
 import { store } from './store.js';
 import { headSha, repoRoot } from './github.js';
+import { pushGitHubRepository } from './github.js';
 import { emit } from './events.js';
 
 export function createChangeSet(sessionId: string, project: string, files: ChangedFile[], runId?: string): ChangeSet {
@@ -56,5 +57,17 @@ export function commit(sessionId: string, project: string, changeId: string, mes
   cs.reviewState = 'committed'; cs.commitSha = sha; cs.currentHead = sha;
   store.save();
   emit(sessionId, 'receipt.created', { changeId, commitSha: sha, message });
+  return cs;
+}
+
+export function push(sessionId: string, project: string, branch: string, changeId: string): ChangeSet {
+  const cs = (store.db.changes[sessionId] || []).find((change) => change.id === changeId);
+  if (!cs) throw new Error('changeset not found');
+  if (cs.reviewState !== 'committed') throw new Error('commit and approve this changeset before pushing');
+  if (cs.pushedAt) return cs;
+  pushGitHubRepository(project, branch);
+  cs.pushedAt = new Date().toISOString();
+  store.save();
+  emit(sessionId, 'receipt.created', { changeId, pushedAt: cs.pushedAt, branch });
   return cs;
 }

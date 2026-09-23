@@ -1,17 +1,30 @@
 # Cloud Workspace Lifecycle
 
-States: `none → preparing → ready`, `ready → stopped`, any → `failed`
-(`reconnecting` surfaces in the header when the event stream — the health signal —
-drops; a dead bridge can never display "Cloud ready").
+The UI keeps optional compute inside the same project conversation. States are
+`none → preparing → ready`, `ready → stopped`, and provider failure → `failed`.
+SSE connection state is separate from workspace state.
 
-## Seamless transition
-`[Work on cloud]` → same conversation stays mounted → `CloudTransition`
-(Work on cloud → Preparing → Connecting → Ready) → `Cloud ready` badge.
-Attachments materialize server-side (`materializeForRuntime`); the user never
-transfers files manually. Stop keeps conversation + changes; the button copy says
-"Conversation and changes are kept."
+## Current implementation boundary
 
-## Failure
-Cloud `failed` / stream `reconnecting` / run `failed` → `AgentErrorCard`:
-what failed, what is safe ("changes are preserved"), `[Reconnect workspace]`
-`[View logs]`. No VS Code, no redirect, no SKU/port vocabulary.
+The route calls `ensureWorkspace`, emits `workspace.preparing`, and the local
+adapter simulates a ready transition. `WorkspaceInfo.provider` deliberately stays
+`local`; a configured GitHub credential alone does not mean a Codespace exists.
+The existing `createCodespaceViaGitHub` helper is not wired into provisioning or
+polling. The UI describes this as a local simulation and does not display guessed
+machine size, uptime, or cloud-provider readiness.
+
+## User flow
+
+`Work on cloud` retains the session and conversation, shows a restrained preparing
+transition, and returns to the same Chat tab. Cloud detail offers current status,
+provider type, refresh, stop, and a route back to the conversation. Stop keeps
+conversation, messages, and changes. Start errors keep the chat visible and
+explain that saved changes are preserved.
+
+## Future provider contract
+
+A real Codespaces provider must create, poll, reconnect, stop, and report workspace
+identity, branch, and readiness from the remote API. Until then, do not say
+“GitHub Codespaces”, show fabricated compute specs/uptime, or use the local timer as
+evidence of remote readiness. See [system-integration.md](system-integration.md)
+and [orlynx-screen-inventory.md](orlynx-screen-inventory.md).

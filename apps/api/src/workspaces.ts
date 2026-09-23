@@ -1,7 +1,9 @@
 // Workspace Gateway — PDF §6. Generic provider interface.
 // LocalProvider runs instantly (localhost demo). CodespacesProvider calls GitHub REST when token present.
 import { execSync, spawn } from 'node:child_process';
+import path from 'node:path';
 import type { WorkspaceState } from '@orlynx/shared';
+import { repoRoot } from './github.js';
 
 export interface WorkspaceInfo {
   id: string; sessionId: string; project: string; branch: string;
@@ -17,7 +19,9 @@ export function ensureWorkspace(sessionId: string, project: string, branch: stri
   if (existing && existing.state === 'ready') return existing;
   const ws: WorkspaceInfo = {
     id: `ws_${sessionId.slice(0, 6)}`, sessionId, project, branch,
-    provider: process.env.GITHUB_TOKEN ? 'codespaces' : 'local',
+    // Codespaces creation is not yet wired into this lifecycle; never label a local
+    // simulated workspace as Codespaces merely because a token is configured.
+    provider: 'local',
     state: 'preparing', updatedAt: new Date().toISOString(),
   };
   workspaces.set(ws.id, ws);
@@ -41,7 +45,10 @@ export function execInWorkspace(project: string, cmd: string, cwd = '', timeoutM
   const denied = [/rm\s+-rf\s+\//, /mkfs/, /:KATEX_INLINE_OPEN\(\):KATEX_CLOSE/];
   if (denied.some((r) => r.test(cmd))) throw new Error('command denied by policy (needs approval)');
   try {
-    const out = execSync(cmd, { cwd: undefined, timeout: timeoutMs, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const root = repoRoot(project);
+    const target = path.resolve(root, cwd || '.');
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('workspace path escape denied');
+    const out = execSync(cmd, { cwd: target, timeout: timeoutMs, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return { code: 0, out: String(out).slice(0, 50_000) };
   } catch (e: unknown) {
     const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };

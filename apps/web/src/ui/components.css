@@ -13,7 +13,7 @@
 
 .ox-badge { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-meta); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px 10px; color: var(--foreground-muted); }
 .ox-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--foreground-subtle); }
-.ox-badge[data-tone="ok"] { color: var(--success); border-color: #1f4d38; } .ox-badge[data-tone="ok"] .dot { background: var(--agent-success); }
+.ox-badge[data-tone="ok"] { color: var(--success); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); } .ox-badge[data-tone="ok"] .dot { background: var(--agent-success); }
 .ox-badge[data-tone="work"] { color: var(--agent-working); } .ox-badge[data-tone="work"] .dot { background: var(--agent-working); animation: ox-pulse 1.6s ease-in-out infinite; }
 .ox-badge[data-tone="wait"] { color: var(--agent-waiting); } .ox-badge[data-tone="wait"] .dot { background: var(--agent-waiting); }
 .ox-badge[data-tone="fail"] { color: var(--agent-failed); } .ox-badge[data-tone="fail"] .dot { background: var(--agent-failed); }
@@ -26,7 +26,7 @@
 
 .ox-activity { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border: 0; }
 .ox-activity .mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; border: 1px solid var(--border); flex: none; }
-.ox-activity[data-state="done"] .mark { color: var(--agent-success); border-color: #1f4d38; }
+.ox-activity[data-state="done"] .mark { color: var(--agent-success); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); }
 .ox-activity[data-state="active"] .mark { color: var(--agent-working); border-color: var(--agent-working); animation: ox-pulse 1.6s infinite; }
 .ox-activity[data-state="todo"] .mark { color: var(--foreground-subtle); }
 .ox-activity[data-state="fail"] .mark { color: var(--agent-failed); border-color: var(--agent-failed); }

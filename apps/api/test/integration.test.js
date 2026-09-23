@@ -64,4 +64,25 @@ describe('orlynx integration (requires api on :4000)', async () => {
     const r = await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '   ' }) });
     assert.equal(r.status, 400, 'empty message not rejected');
   });
+
+  it('GitHub status reports server configuration without exposing credential values', async () => {
+    const response = await fetch(`${BASE}/v1/github/status`);
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(typeof status.connected, 'boolean');
+    assert.ok(['server-configured', 'not-configured', 'expired', 'unavailable'].includes(status.auth));
+    assert.equal(Object.hasOwn(status, 'token'), false);
+  });
+
+  it('local-only projects cannot claim a remote push succeeded', async () => {
+    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-local-push', branch: 'main' }) })).json();
+    await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Update README docs' }) });
+    const [change] = await (await fetch(`${BASE}/v1/sessions/${s.id}/changes`)).json();
+    await fetch(`${BASE}/v1/changes/${change.id}/approve`, { method: 'POST' });
+    const committed = await fetch(`${BASE}/v1/changes/${change.id}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'test local commit' }) });
+    assert.equal(committed.status, 200);
+    const pushed = await fetch(`${BASE}/v1/changes/${change.id}/push`, { method: 'POST' });
+    assert.equal(pushed.status, 409);
+    assert.match((await pushed.json()).error, /local-only project/i);
+  });
 });

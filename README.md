@@ -16,8 +16,9 @@ npm run dev
 
 Open **http://localhost:5173/**. The Vite development server proxies `/v1` and
 `/health` requests to the API on **http://localhost:4000/**. The local provider is
-the default and does not require credentials. To use optional GitHub-backed
-workspace behavior, copy `.env.example` to `.env` and configure `GITHUB_TOKEN`.
+the default and does not require credentials. GitHub repository access requires a
+server-managed `GITHUB_TOKEN` in the API process environment; `.env.example`
+documents the variable, but the current dev script does not auto-load `.env`.
 
 Useful commands:
 
@@ -42,12 +43,33 @@ packages/shared Canonical session/run/event and normalized activity types
 bridge         Outbound WebSocket bridge prototype
 ```
 
-The web client restores the last session, streams ordered events over SSE, and
-reconciles reconnect/replay with stable event IDs and per-session sequences. The
-current execution engine is a local/native demonstration adapter; OpenCode, Cline,
-real Codespaces, and GitHub authentication are integration seams rather than live
-providers in this build. Cloud, preview, and Git operations are therefore not all
-production-backed yet.
+The web client restores sessions, streams ordered events over SSE, and reconciles
+replay by stable IDs/sequences. If the API server is configured with authorized
+GitHub credentials, the repository picker can list, branch-select, clone/import,
+commit, and explicitly push the imported project. There is no end-user OAuth/App
+installation screen yet; credentials remain server-side. Configure `GITHUB_TOKEN`
+on the API process for local GitHub access (the dev runner does not load `.env`
+automatically). The native agent is a
+local demonstration adapter, cloud readiness is locally simulated, preview URLs
+are user-entered, and the terminal is a local shell adapter. OpenCode/Cline
+process control and real Codespaces provisioning are not enabled.
+
+## Interface system
+
+The warm cream/brown/blue reference theme is systematized in
+`apps/web/src/ui/tokens.css`; one sans family, one Orlynx outline icon set, semantic
+status colors, shared spacing/radius/elevation, and mobile-safe surfaces are used
+across the entry, project, repository, cloud, task, and settings screens. The
+registry in `apps/web/src/ui/registry-data.json` indexes approved foundations,
+activity patterns, and screen compositions.
+
+See [`docs/orlynx-design-system.md`](docs/orlynx-design-system.md),
+[`docs/orlynx-ui-architecture.md`](docs/orlynx-ui-architecture.md),
+[`docs/orlynx-screen-inventory.md`](docs/orlynx-screen-inventory.md),
+[`docs/orlynx-component-registry.md`](docs/orlynx-component-registry.md), and
+[`docs/orlynx-responsive-behavior.md`](docs/orlynx-responsive-behavior.md) for the
+full design language, feature boundaries, navigation, component reuse rules, and
+responsive behavior.
 
 ## Agent activity presentation
 
@@ -82,6 +104,9 @@ performance limits.
 - [System integration](docs/system-integration.md) — ownership and request paths.
 - [Agent UI guidelines](docs/agent-ui-guidelines.md) — design and implementation
   constraints.
+- [Design system](docs/orlynx-design-system.md), [UI architecture](docs/orlynx-ui-architecture.md),
+  [screen inventory](docs/orlynx-screen-inventory.md), [component registry](docs/orlynx-component-registry.md),
+  and [responsive behavior](docs/orlynx-responsive-behavior.md).
 - [UI intelligence layer](docs/ui-intelligence-layer.md) and
   [component sources](docs/ui-component-sources.md) — UI architecture and source
   provenance.

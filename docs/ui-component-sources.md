@@ -1,6 +1,8 @@
 # UI Component Sources
 
-No external component files are vendored in V1. All components in `apps/web/src/ui/` are Orlynx-owned.
+No external component files are vendored. Components in `apps/web/src/ui/` are
+Orlynx-owned and use the visual contract in `docs/orlynx-design-system.md`. The
+icon system is a single internal SVG family rather than a mix of third-party sets.
 
 | Source | Used | How | License note |
 |---|---|---|---|
@@ -9,6 +11,7 @@ No external component files are vendored in V1. All components in `apps/web/src/
 | 21st.dev | Discovery stub only | `TwentyFirstProvider` in `registry.tsx` returns [] — wire CLI/MCP as dev tool only; candidates must pass quality gate + copy-and-own | Respect per-component licenses at copy time; record here before merging. |
 | beUI | Interaction inspiration | Pill float, drawers, toast stacking behavior | No code copied. |
 | Transitions.dev | Motion inspiration | spinner→check, collapsed→expanded, cloud step transitions; CSS-only, reduced-motion safe | No code copied. |
+| Lucide / Heroicons / Material | Not installed | Orlynx's small internal outline family keeps one stroke/size and avoids three overlapping icon libraries | No source code copied. |
 
 ## Quality gate (before any future copy)
 1. Improves the user task? 2. No existing Orlynx component? 3. Accessible? 4. Mobile-friendly? 5. Weight justified? 6. Convertible to tokens? 7. License acceptable + recorded? 8. Reduced-motion safe? 9. Themeable? 10. No visual inconsistency? 11. Performant? 12. Simpler than a primitive?

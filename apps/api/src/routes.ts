@@ -3,8 +3,8 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { emit, history, subscribe } from './events.js';
-import { githubListRepos, headSha, listFiles, readFile, repoRoot, status } from './github.js';
-import { approve, commit, createChangeSet, currentChanges } from './changes.js';
+import { githubBranches, githubConnectionStatus, githubListRepos, headSha, importGitHubRepository, listFiles, readFile, repoRoot, status } from './github.js';
+import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { materializeForRuntime, saveAttachment } from './attachments.js';
 import { ensureWorkspace, execInWorkspace, getWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, startRun } from './agents.js';
@@ -172,7 +172,29 @@ router.post('/changes/:changeId/commit', (req, res) => {
   } catch (e: unknown) { res.status(409).json({ error: (e as Error).message }); }
 });
 
+router.post('/changes/:changeId/push', (req, res) => {
+  let sid = '';
+  for (const [k, list] of Object.entries(store.db.changes)) if (list.some((change) => change.id === req.params.changeId)) sid = k;
+  const session = store.db.sessions[sid];
+  if (!session) return res.status(404).json({ error: 'changeset not found' });
+  try { res.json(push(sid, session.project, session.branch, req.params.changeId)); }
+  catch (error) { res.status(409).json({ error: (error as Error).message }); }
+});
+
 // repos
+router.get('/github/status', async (_req, res) => res.json(await githubConnectionStatus()));
 router.get('/repos', async (_req, res) => {
-  res.json({ github: await githubListRepos(), localNote: 'local demo repos auto-created under api/data/repos' });
+  const connection = await githubConnectionStatus();
+  const github = connection.connected ? await githubListRepos() : [];
+  res.json({ github, connection, localNote: 'Local-only projects are created in the ignored runtime data directory.' });
+});
+router.get('/repos/:owner/:name/branches', async (req, res) => {
+  const branches = await githubBranches(`${req.params.owner}/${req.params.name}`);
+  if (!branches.length && !(await githubConnectionStatus()).connected) return res.status(503).json({ error: 'GitHub access is not configured.' });
+  res.json({ branches });
+});
+router.post('/repos/import', async (req, res) => {
+  const { repository = '', branch = 'main' } = req.body || {};
+  try { res.json({ project: await importGitHubRepository(String(repository), String(branch)), branch }); }
+  catch (error) { res.status(400).json({ error: (error as Error).message }); }
 });

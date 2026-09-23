@@ -55,6 +55,7 @@ export interface ChangeSet {
   files: ChangedFile[];
   reviewState: ReviewState;
   commitSha?: string;
+  pushedAt?: string;
   createdAt: string;
 }
 

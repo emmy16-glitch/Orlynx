@@ -79,3 +79,25 @@ without adding another event subsystem:
 - Automated tests exercise normalization, replay/grouping, TAP counts, failures,
   timeouts, and long sessions. Refer to `docs/agent-activity-presentation.md` for
   the complete design contract and known retention/device-testing limitations.
+
+## 11. Reference-led complete product shell (2026-09-23)
+
+The attached desktop/phone image is now the product visual authority. The default
+theme moved from the earlier dark-first prototype to warm ivory/sand surfaces,
+espresso text/actions, brown selection, restrained blue technical activity, and
+semantic green/red/amber/pending colors. The previous high-level architecture
+still applies; the shell now includes first-run Welcome, Home/Projects, GitHub
+access/repository import, project tabs, global search, Agents, Cloud, Tasks, and
+Settings. Details are maintained in the five `docs/orlynx-*.md` design documents.
+
+One internal SVG outline set is used rather than shipping multiple icon families.
+The responsive shell hides the desktop rail/context column on narrow screens and
+uses project-specific bottom navigation. App screens are composed in the existing
+React state shell; no routing library was introduced.
+
+The GitHub API now reports server-side auth status, lists accessible repository
+metadata/branches, clones a selected branch, and allows explicit pushes after a
+local approved commit. No PAT input is exposed. OAuth/App-install UI still does not
+exist. The Codespaces helper is not connected to provisioning, so local workspace
+state is labeled local rather than claiming remote readiness. The screen inventory
+and verification docs list service and device gaps explicitly.
