@@ -26,6 +26,7 @@ describe('orlynx integration (requires api on :4000)', async () => {
     assert.equal(r2.deduplicated, true, 'second send not flagged deduplicated');
     const msgs = await (await fetch(`${BASE}/v1/sessions/${s.id}/messages`)).json();
     assert.equal(msgs.filter((m) => m.id === 'test-client-1').length, 1);
+    assert.ok(msgs.some((m) => m.role === 'assistant' && m.text), 'assistant response was not persisted');
   });
 
   it('runs snapshot endpoint restores task state', async () => {

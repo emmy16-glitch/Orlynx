@@ -9,6 +9,10 @@ WHEN IMPLEMENTING UI:
 6. Use semantic tokens (`--surface`, `--primary`, `--agent-*`, `--git-*`); no hardcoded hex.
 7. Follow spacing (`--sp-*`), radii (`--radius-*`), type scale.
 8. Verify mobile (360/390/412), desktop (1024/1440), loading/error/empty states.
-9. Stream work via `AgentWorkStream` + `mapping.ts` — show ACTION + OUTCOME, never chain-of-thought.
+9. Stream work through the existing normalized `ActivityEvent` → `mapping.ts` → `AgentWorkStream` pipeline; show ACTION + OUTCOME, never chain-of-thought or raw event objects.
 10. Keep infra invisible: "Work on cloud", "Preparing workspace", "Cloud ready" — never SKUs/ports/containers.
-11. Run `npx tsc -p apps/web/tsconfig.json --noEmit` + `npm run build --workspace=@orlynx/web` before completion.
+11. Preserve progressive disclosure: concise summary by default, structured evidence on first expansion, raw logs on a separate explicit action.
+12. Keep IDs stable across lifecycle transitions/replay; group files and repeated low-level events rather than rendering one card per event.
+13. Preserve page scroll follow-mode rules and batch stream updates; never pull a reader away from content they are inspecting.
+14. Screen-reader announcements are polite, milestone-only; never announce tokens/log lines. Keep all state understandable without color and honor reduced-motion.
+15. Run `npm test`, `npm run build`, and relevant web/API typechecks before completion; document device-only checks not covered by automation.

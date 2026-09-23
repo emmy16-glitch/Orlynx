@@ -43,7 +43,7 @@ describe('event → presentation contract', () => {
   });
   it('mapping collapses file spam (progressive disclosure rule)', () => {
     const src = fs.readFileSync(path.join(webUi, 'mapping.ts'), 'utf8');
-    assert.ok(src.includes('Inspected repository'), 'collapse summary missing');
+    assert.ok(src.includes('Updated files') && src.includes('paths.length'), 'file operation grouping missing');
     assert.ok(src.includes('aria-live') || true, 'live region handled in workstream.tsx');
   });
 });

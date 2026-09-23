@@ -1,7 +1,7 @@
 // Level 2 — Orlynx product components. Composed from primitives + tokens only.
 import React from 'react';
 import { Badge, Button, Card, Icon } from './primitives';
-import { runTone } from './mapping';
+import { runTone, toState, type ActivityItem } from './mapping';
 
 export function AgentStatusPill({ state, elapsed }: { state: string; elapsed?: string }) {
   const { tone, label } = runTone(state);
@@ -17,11 +17,34 @@ export function CloudStatus({ state }: { state?: string }) {
   return <Badge tone="fail">Cloud {state}</Badge>;
 }
 
-export function TaskActivityRow({ label, detail, state }: { label: string; detail?: string; state: 'done' | 'active' | 'todo' | 'fail' }) {
+export function TaskActivityRow({ item }: { item: ActivityItem }) {
+  const [showEvidence, setShowEvidence] = React.useState(false);
+  const [showRaw, setShowRaw] = React.useState(false);
+  const { title, summary, evidence, rawOutput, category, state } = item;
+  const uiState = toState(state);
+  const files = Array.isArray(evidence?.files) ? evidence.files as { path: string; action?: string }[] : [];
+  const failures = Array.isArray(evidence?.failures) ? evidence.failures as string[] : [];
+  const command = typeof evidence?.command === 'string' ? evidence.command : '';
+  const hasEvidence = Boolean(evidence && Object.keys(evidence).length);
   return (
-    <div className="ox-activity" data-state={state}>
-      <span className="mark" aria-hidden>{state === 'done' ? <Icon name="check" /> : state === 'fail' ? <Icon name="x" /> : state === 'active' ? <Icon name="dot" /> : <Icon name="ring" />}</span>
-      <div><div>{label}</div>{detail && <div className="small">{detail}</div>}</div>
+    <div className="ox-activity" data-state={uiState}>
+      <span className="mark" aria-hidden>{uiState === 'done' ? <Icon name="check" /> : uiState === 'fail' ? <Icon name="x" /> : uiState === 'active' ? <Icon name="dot" /> : <Icon name="ring" />}</span>
+      <div className="ox-activity-content">
+        <div>{title}</div>
+        {summary && <div className="small">{summary}</div>}
+        {(hasEvidence || rawOutput) && <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showEvidence} onClick={() => setShowEvidence((v) => !v)}>{showEvidence ? 'Hide details' : category === 'file' ? 'View files' : category === 'test' ? 'View results' : category === 'approval' ? 'Review request' : 'View details'}</Button>}
+        {showEvidence && <div className="ox-evidence">
+          {command && <div><span className="small">Command</span><code className="ox-command">{command}</code></div>}
+          {typeof evidence?.exitCode === 'number' && <div className="small">Exit code {evidence.exitCode}</div>}
+          {typeof evidence?.passed === 'number' && <div className="small">{evidence.passed} passed{typeof evidence.failed === 'number' ? ` · ${evidence.failed} failed` : ''}{typeof evidence.skipped === 'number' ? ` · ${evidence.skipped} skipped` : ''}</div>}
+          {files.length > 0 && <ul className="ox-file-list">{files.map((f) => <li key={f.path}><span aria-hidden>{f.action === 'delete' ? '−' : f.action === 'create' ? '+' : '~'}</span> {f.path}</li>)}</ul>}
+          {failures.length > 0 && <ul className="ox-failure-list">{failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>}
+          {rawOutput && <div className="ox-raw">
+            <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((v) => !v)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>
+            {showRaw && <pre aria-label="Raw command output">{rawOutput}</pre>}
+          </div>}
+        </div>}
+      </div>
     </div>
   );
 }

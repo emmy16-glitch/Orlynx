@@ -58,3 +58,24 @@ All UI code is Orlynx-internal (no copied files → no license obligations). If 
 - `TwentyFirstProvider` stub ready to shell to 21st.dev MCP/CLI as **dev-time discovery only**.
 - Registry statuses: `candidate → approved → deprecated`.
 - Light theme via `[data-theme="light"]` (tokens ready; toggle not yet exposed in Settings).
+
+## 10. Activity stream normalization (2026-09-23)
+
+The initial implementation left the backend protocol unchanged and rendered a
+compact activity mapper. The additive premium-stream pass formalizes the boundary
+without adding another event subsystem:
+
+- `packages/shared/src/index.ts` defines the normalized `ActivityEvent` projection.
+- Existing SSE `OrlynxEvent`s flow through `apps/web/src/ui/mapping.ts` into stable
+  run/tool/file/test/cloud/approval summaries. Lifecycle updates reconcile in
+  place, event IDs deduplicate replay, and files/test receipts group into evidence.
+- `TaskActivityRow` implements summary → evidence → raw output as separate actions;
+  raw command text is not shown in a summary by default.
+- `LiveActivityPill` now includes idle/waiting/paused/completed/failed as well as
+  active run status. Stream state batches per animation frame and the page follows
+  only while the reader is near its latest content.
+- Shared type declarations now have a workspace build script; the API wire format
+  and event persistence remain unchanged.
+- Automated tests exercise normalization, replay/grouping, TAP counts, failures,
+  timeouts, and long sessions. Refer to `docs/agent-activity-presentation.md` for
+  the complete design contract and known retention/device-testing limitations.

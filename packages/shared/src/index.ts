@@ -99,6 +99,26 @@ export interface OrlynxEvent {
   payload: Record<string, unknown>;
 }
 
+// UI-facing projection of runtime events. Provider-specific payloads are normalized
+// before they reach the primary work stream; rawRef points back to the source event.
+export type ActivityCategory = 'agent' | 'search' | 'file' | 'command' | 'test' | 'build' | 'git' | 'cloud' | 'preview' | 'approval' | 'error';
+export type ActivityLifecycle = 'queued' | 'running' | 'success' | 'failed' | 'waiting' | 'cancelled';
+export interface ActivityEvent {
+  id: string;
+  runId?: string;
+  taskId?: string;
+  sequence: number;
+  timestamp: string;
+  category: ActivityCategory;
+  state: ActivityLifecycle;
+  title: string;
+  summary?: string;
+  evidence?: Record<string, unknown>;
+  rawRef?: string;
+  rawOutput?: string;
+  collapsible?: boolean;
+}
+
 export const APPROVAL_ACTIONS = [
   'port.expose.public',
   'git.force-push',

@@ -4,6 +4,7 @@ import { j } from './api';
 import { Badge, Button, EmptyState } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, CloudStatus, CloudWorkspaceButton, DiffSummary } from './ui/product';
 import { AgentWorkStream, CloudTransition, LiveActivityPill } from './ui/workstream';
+import { toActivities } from './ui/mapping';
 import { Lab } from './ui/lab';
 
 type Tab = 'agent' | 'files' | 'changes' | 'preview' | 'more';
@@ -12,6 +13,7 @@ const LS_SESSION = 'orlynx:lastSession';
 const seqKey = (sid: string) => `orlynx:seq:${sid}`;
 const draftKey = (sid: string) => `orlynx:draft:${sid}`;
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+type LiveReply = { id: string; text: string; complete: boolean };
 
 function loadSeq(sid: string): number {
   try { return Number(localStorage.getItem(seqKey(sid)) || 0); } catch { return 0; }
@@ -22,6 +24,7 @@ export default function App() {
   const [project, setProject] = useState('demo');
   const [tab, setTab] = useState<Tab>('agent');
   const [msgs, setMsgs] = useState<any[]>([]);
+  const [liveReplies, setLiveReplies] = useState<Record<string, LiveReply>>({});
   const [events, setEvents] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<any[]>([]);
@@ -45,25 +48,41 @@ export default function App() {
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
   const nearBottom = useRef(true);
+  const pendingEvents = useRef<any[]>([]);
+  const eventFrame = useRef<number | null>(null);
+  const scrollFrame = useRef<number | null>(null);
 
   if (typeof window !== 'undefined' && window.location.search.includes('lab=1')) return <Lab />;
 
   const ingest = useCallback((sid: string, raw: any) => {
-    // Deterministic reconciliation: dedup by eventId, order by sequence.
+    // Reconcile stable ids immediately, then batch React updates to one paint frame.
     const list = Array.isArray(raw) ? raw : [raw];
-    setEvents((prev) => {
-      const known = seenIds.current;
-      const fresh = list.filter((e) => e && e.eventId && !known.has(e.eventId));
-      if (!fresh.length) return prev;
-      fresh.forEach((e) => known.add(e.eventId));
-      const merged = [...prev, ...fresh].sort((a, b) => a.sequence - b.sequence);
-      const capped = merged.slice(-300);
-      const maxSeq = capped.reduce((m, e) => Math.max(m, e.sequence || 0), lastSeq.current);
-      lastSeq.current = maxSeq;
-      try { localStorage.setItem(seqKey(sid), String(maxSeq)); } catch {}
-      return capped;
+    const fresh = list.filter((e) => e && e.eventId && !seenIds.current.has(e.eventId));
+    if (!fresh.length) return;
+    fresh.forEach((e) => { seenIds.current.add(e.eventId); pendingEvents.current.push(e); });
+    const maxSeq = fresh.reduce((m, e) => Math.max(m, e.sequence || 0), lastSeq.current);
+    lastSeq.current = maxSeq;
+    if (eventFrame.current === null) eventFrame.current = requestAnimationFrame(() => {
+      eventFrame.current = null;
+      const batch = pendingEvents.current.splice(0);
+      // Persist the replay cursor only after the corresponding batch is handed to UI state.
+      try { localStorage.setItem(seqKey(sid), String(lastSeq.current)); } catch {}
+      setEvents((prev) => [...prev, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-300));
+      const replyEvents = batch.filter((e) => e.type === 'message.start' || e.type === 'message.delta' || e.type === 'message.end');
+      if (replyEvents.length) setLiveReplies((prev) => {
+        const next = { ...prev };
+        for (const evt of replyEvents) {
+          const key = String(evt.runId || 'current');
+          const current = next[key] || { id: `msg_${key}`, text: '', complete: false };
+          if (evt.type === 'message.start') next[key] = { ...current, text: '', complete: false };
+          else if (evt.type === 'message.delta' && typeof evt.payload?.delta === 'string') next[key] = { ...current, text: current.text + evt.payload.delta };
+          else if (evt.type === 'message.end') next[key] = { ...current, complete: true };
+        }
+        return next;
+      });
+      if (!nearBottom.current) setShowLatest(true);
     });
-    for (const evt of list) {
+    for (const evt of fresh) {
       if (!evt) continue;
       if (['changes.updated', 'receipt.created', 'run.completed', 'run.failed'].includes(evt.type)) {
         fetch(`/v1/sessions/${sid}/changes`).then((r) => r.json()).then(setChanges).catch(() => {});
@@ -74,9 +93,15 @@ export default function App() {
         fetch(`/v1/sessions/${sid}`).then((r) => r.json()).then((d) => setCloud(d.workspace)).catch(() => {});
       }
     }
-    // If user scrolled up, surface "new activity" instead of yanking scroll.
-    if (!nearBottom.current) setShowLatest(true);
   }, []);
+
+  useEffect(() => {
+    const persisted = new Set(msgs.map((m) => m.id));
+    setLiveReplies((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([, reply]) => !persisted.has(reply.id)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [msgs]);
 
   const [lastRun, setLastRun] = useState<any>(null);
 
@@ -119,6 +144,9 @@ export default function App() {
   }, []);
 
   const openSession = useCallback(async (s: any) => {
+    if (eventFrame.current !== null) cancelAnimationFrame(eventFrame.current);
+    eventFrame.current = null;
+    pendingEvents.current = [];
     lastSeq.current = loadSeq(s.id);
     seenIds.current = new Set();
     setEvents([]);
@@ -152,9 +180,20 @@ export default function App() {
     const onOffline = () => { setOnline(false); setStreamState('offline'); };
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
-    return () => { esRef.current?.close(); if (retryTimer.current) clearTimeout(retryTimer.current); window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
+    return () => { esRef.current?.close(); if (retryTimer.current) clearTimeout(retryTimer.current); if (eventFrame.current !== null) cancelAnimationFrame(eventFrame.current); if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current); window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Follow only while the reader was already at the latest content. Never pull a
+  // reader back down after they have moved upward; resize/keyboard changes stay native.
+  useEffect(() => {
+    if (!nearBottom.current || tab !== 'agent') return;
+    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      if (nearBottom.current) window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+    });
+  }, [events, msgs, tab]);
 
   // Scroll tracking on window (chat scrolls with page).
   useEffect(() => {
@@ -241,7 +280,7 @@ export default function App() {
     return last.type === 'run.completed' ? 'completed' : 'failed';
   }, [events, lastRun]);
 
-  const liveActivity = useMemo(() => [...events].reverse().find((e) => e.type?.startsWith('activity.')), [events]);
+  const liveActivity = useMemo(() => [...toActivities(events)].reverse().find((e) => e.state === 'running' || e.state === 'waiting'), [events]);
   const isWorking = runState === 'running' || runState === 'queued';
   const showCloudError = cloud?.state === 'failed' || streamState === 'reconnecting';
 
@@ -255,8 +294,8 @@ export default function App() {
           : streamState === 'offline' ? <Badge tone="fail">Offline</Badge>
           : <CloudStatus state={cloud?.state} />}
         <Badge tone={changes.filter((c: any) => c.reviewState === 'pending').length ? 'wait' : 'neutral'}>{changes.filter((c: any) => c.reviewState === 'pending').length} pending</Badge>
+        <LiveActivityPill active={isWorking && streamState === 'live'} status={streamState === 'reconnecting' || streamState === 'offline' ? 'interrupted' : runState} label={streamState === 'reconnecting' || streamState === 'offline' ? 'Reconnecting to Orlynx' : liveActivity?.title || (runState === 'completed' ? 'Ready for review' : runState === 'failed' ? 'Needs attention' : 'Ready when you are')} onOpen={() => setTab('agent')} onStop={cancelRun} />
       </header>
-      <LiveActivityPill active={isWorking} label={String((liveActivity as any)?.payload?.text || 'Agent working')} onOpen={() => setTab('agent')} onStop={cancelRun} />
       <main ref={scrollRef as any}>
         {tab === 'agent' && (
           <>
@@ -266,6 +305,7 @@ export default function App() {
               <AgentErrorCard title="Connection interrupted. Reconnecting…" hint="Your conversation and changes are safe." onRetry={() => session && connect(session.id)} />
             )}
             {msgs.map((m) => (<div key={m.id} className="card"><div className="small">{m.role}</div><div>{m.text}</div></div>))}
+            {Object.values(liveReplies).filter((reply) => reply.text && !msgs.some((m) => m.id === reply.id)).map((reply) => <div key={reply.id} className="card" aria-label={reply.complete ? 'Assistant response' : 'Assistant response streaming'}><div className="small">assistant</div><div>{reply.text}</div></div>)}
             <AgentWorkStream events={events} />
             {runState === 'failed' && (
               <AgentErrorCard title="Work could not finish." hint="The workspace or run hit a problem." onReconnect={workOnCloud} onRetry={() => session && refresh(session.id)} />

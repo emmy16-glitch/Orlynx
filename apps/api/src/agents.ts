@@ -31,6 +31,10 @@ export async function startRun(sessionId: string, project: string, userText: str
 
   emit(sessionId, 'message.start', { engine }, run.id);
   for (const d of deltas) emit(sessionId, 'message.delta', { delta: d }, run.id);
+  const assistantText = deltas.join('');
+  (store.db.messages[sessionId] ||= []).push({
+    id: `msg_${run.id}`, sessionId, role: 'assistant', text: assistantText, createdAt: new Date().toISOString(),
+  });
   emit(sessionId, 'message.end', {}, run.id);
 
   // Produce a concrete repository patch when the intent looks like an edit

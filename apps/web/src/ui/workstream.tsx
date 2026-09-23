@@ -1,47 +1,47 @@
 // Level 3 — Experience: AgentWorkStream + LiveActivityPill (live, reconnect-safe).
 import React, { useMemo, useState } from 'react';
-import { toActivities } from './mapping';
+import { runTone, toActivities } from './mapping';
 import { TaskActivityRow } from './product';
 import { Badge, Button, Card, Icon } from './primitives';
 
-export function AgentWorkStream({ events }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number }[] }) {
+export function AgentWorkStream({ events }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number; runId?: string; timestamp?: string }[] }) {
   const [expanded, setExpanded] = useState(false);
   const items = useMemo(() => toActivities(events), [events]);
   if (!items.length) return <div className="small" role="status">No agent activity yet.</div>;
-  const visible = expanded ? items : items.slice(-5);
+  const currentIndex = items.reduce((current, item, index) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
+  const startAt = expanded ? 0 : Math.max(0, Math.min(items.length - 5, currentIndex >= 0 ? currentIndex - 2 : items.length - 5));
+  const visible = expanded ? items : items.slice(startAt, Math.max(startAt + 5, currentIndex + 1));
   const hidden = items.length - visible.length;
+  const last = items[items.length - 1];
+  const announcement = last.state === 'failed' ? `${last.title}${last.summary ? `. ${last.summary}` : ''}`
+    : last.state === 'success' && ['test', 'build', 'agent', 'error'].includes(last.category) ? `${last.title}${last.summary ? `. ${last.summary}` : ''}`
+      : '';
   return (
     <Card>
-      {/* aria-live polite: announces progress without chattering on every token */}
-      <div aria-live="polite" className="ox-stream">
-        {visible.map((it, i) => <TaskActivityRow key={`${it.key}-${i}`} label={it.label} detail={it.detail} state={it.state} />)}
+      <div className="ox-stream">
+        {visible.map((it) => <TaskActivityRow key={it.key} item={it} />)}
       </div>
-      {hidden > 0 && <Button tone="ghost" onClick={() => setExpanded(true)}>Show {hidden} earlier steps</Button>}
-      {expanded && <Button tone="ghost" onClick={() => setExpanded(false)}>Collapse</Button>}
+      {hidden > 0 && <Button tone="ghost" onClick={() => setExpanded(true)}>Show {hidden} earlier updates</Button>}
+      {expanded && <Button tone="ghost" onClick={() => setExpanded(false)}>Show recent activity</Button>}
+      <span className="ox-sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</span>
     </Card>
   );
 }
 
-export function LiveActivityPill({ active, label, elapsed, onOpen, onPause, onStop }: { active: boolean; label: string; elapsed?: string; onOpen: () => void; onPause?: () => void; onStop?: () => void }) {
+export function LiveActivityPill({ active, label, status = active ? 'running' : 'idle', elapsed, onOpen, onPause, onStop }: { active: boolean; label: string; status?: string; elapsed?: string; onOpen: () => void; onPause?: () => void; onStop?: () => void }) {
   const [open, setOpen] = useState(false);
-  if (!active) return null;
+  const { tone, label: statusLabel } = runTone(status);
   return (
-    <>
-      <div className="ox-pill-float" role="status" aria-label={`Agent working: ${label}`}>
-        <Icon name="dot" />
-        <button onClick={() => { setOpen(!open); onOpen(); }} style={{ background: 'none', border: 0, color: 'inherit', font: 'inherit' }} aria-expanded={open}>
-          Agent working{elapsed ? ` · ${elapsed}` : ''}
-        </button>
-        {onPause && <Button tone="ghost" onClick={onPause}>Pause</Button>}
-        {onStop && <Button tone="ghost" onClick={onStop}>Stop</Button>}
+    <div className="ox-live-wrap">
+      <div className="ox-live" data-tone={tone}>
+        <Icon name={active ? 'dot' : status === 'completed' ? 'check' : status === 'failed' ? 'x' : 'ring'} />
+        <button onClick={() => { setOpen(!open); onOpen(); }} aria-expanded={open}>{statusLabel}{elapsed ? ` · ${elapsed}` : ''}</button>
+        <span className="ox-live-task">{label}</span>
+        {active && onPause && <Button tone="ghost" onClick={onPause}>Pause</Button>}
+        {active && onStop && <Button tone="ghost" onClick={onStop}>Stop</Button>}
       </div>
-      {open && (
-        <Card>
-          <div className="ox-row"><Badge tone="work">{label}</Badge></div>
-          <div className="small">Tap Stop to cancel the current run. Completed work is preserved.</div>
-        </Card>
-      )}
-    </>
+      {open && <div className="ox-live-detail"><Badge tone={tone}>{statusLabel}</Badge><span>{label}</span>{active && <span className="small">Current task. You can keep reading while activity continues below.</span>}</div>}
+    </div>
   );
 }
 
