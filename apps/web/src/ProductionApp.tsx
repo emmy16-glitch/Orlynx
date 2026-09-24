@@ -310,12 +310,21 @@ export default function ProductionApp() {
             if (project.owner !== 'local' && project.owner) { await openSession(project); restored = true; }
           }
         }
-        // localStorage is only a convenience pointer. On a new phone/browser,
-        // recover the newest durable session from the authenticated Orlynx account.
-        if (!restored) {
-          const response = await fetch('/v1/sessions?limit=1');
-          if (response.ok) {
-            const sessions = await response.json() as any[];
+        // localStorage is only a convenience pointer. Always refresh recent
+        // projects from durable identity-owned sessions so a second phone does
+        // not look empty merely because its local cache is new.
+        const response = await fetch('/v1/sessions?limit=8');
+        if (response.ok) {
+          const sessions = await response.json() as any[];
+          const durableNames = sessions.map((item) => String(item.project || '')).filter((name) => name.includes('/'));
+          if (durableNames.length) {
+            setRecentProjects((previous) => {
+              const next = [...durableNames, ...previous].filter((name, index, all) => all.indexOf(name) === index).slice(0, 8);
+              try { localStorage.setItem(RECENTS, JSON.stringify(next)); } catch {}
+              return next;
+            });
+          }
+          if (!restored) {
             const project = sessions[0];
             if (project?.owner && project.owner !== 'local') { await openSession(project); restored = true; }
           }
@@ -503,10 +512,19 @@ export default function ProductionApp() {
   async function openRecentProject(project: string) {
     try {
       const id = localStorage.getItem(sessionKey(project));
-      if (!id) throw new Error('No saved Orlynx conversation exists for this repository. Open the repository to start one.');
-      const response = await fetch(`/v1/sessions/${id}`);
-      if (!response.ok) throw new Error('The repository session is no longer available. Re-import the repository.');
-      await openSession(await response.json());
+      if (id) {
+        const response = await fetch(`/v1/sessions/${id}`);
+        if (response.ok) { await openSession(await response.json()); return; }
+      }
+      // New device/browser: resolve the project from server-owned session
+      // history instead of requiring a localStorage mapping.
+      const response = await fetch('/v1/sessions?limit=50');
+      if (response.ok) {
+        const sessions = await response.json() as any[];
+        const durable = sessions.find((item) => item.project === project);
+        if (durable) { await openSession(durable); return; }
+      }
+      throw new Error('No saved Orlynx conversation exists for this repository. Open the repository to start one.');
     } catch (error: any) { setError(error.message || 'Project could not be opened.'); }
   }
 
