@@ -1,73 +1,97 @@
-# Orlynx UI Architecture
+# Orlynx UI architecture
 
-## Application shell
+## Product model
 
-`apps/web/src/App.tsx` is the current route/state shell. The repository has no
-router dependency; view transitions are modeled as typed `Page` and project `Tab`
-state so navigation does not introduce an unrelated routing framework. The shell
-has:
+Orlynx is not an infrastructure dashboard. The primary user journey is:
 
-- a desktop project rail with Home, Projects, Agents, Cloud, Settings, and recents;
-- a project header with repository, branch, global search, and Work on cloud;
-- project tabs and a center work area;
-- a contextual right column on wide screens;
-- a compact bottom navigation on mobile.
+```text
+Connect GitHub
+→ choose repository
+→ enter project conversation
+→ ask Orlynx to work
+→ watch useful activity
+→ review files/changes
+→ approve publication
+```
 
-Welcome hides the project rail until a user chooses to start or import a workspace.
-Last-session and per-project session IDs live in localStorage; API session state
-remains authoritative. Draft text, theme, recent project names, and SSE cursor are
-device-local preferences.
+Implementation concepts such as OpenCode, Codespaces, bridge processes and GitHub
+App credentials remain behind the product experience.
+
+## First run
+
+A disconnected user sees a simple GitHub connection path. The full workspace
+navigation is not useful until a repository is available.
+
+GitHub consent happens on GitHub. Orlynx uses the resulting installation to list
+only authorized repositories.
+
+## Project shell
+
+The project is chat-first. Mobile primary navigation is:
+
+- Chat
+- Files
+- Changes
+- More
+
+The project header keeps repository and branch context visible. Preview, Terminal,
+workspace controls and Settings are contextual or live under More instead of
+competing with Chat as top-level destinations.
+
+On larger screens Orlynx may expose more context simultaneously, but it should not
+turn the product into a dashboard of infrastructure modules.
 
 ## State and API boundaries
 
-| UI flow | Existing/API integration | Product truth |
+| UI flow | Real integration | Source of truth |
 | --- | --- | --- |
-| Restore/open project | `GET /v1/sessions/:id`, `POST /v1/sessions` | API session/run records |
-| Chat + activity | session message routes, SSE event stream | API messages/runs + normalized `ActivityEvent` projection |
-| Files/code viewer | session files/file routes | repository gateway data |
-| Changes/commit | change sets, approve, commit routes | base-SHA guard and local Git commit |
-| Remote push | `POST /v1/changes/:id/push` | server credential + imported remote + explicit client confirmation |
-| GitHub picker/import | status, repository metadata, branch, import routes | server-configured GitHub credential; no credential entry in UI |
-| Attachments | multipart session attachment route | API metadata/files |
-| Cloud | existing workspace route | local simulation until Codespaces provisioning is connected |
-| Preview | explicit user-provided URL | iframe/display only; no auto-detected preview provider |
-| Terminal | existing exec route | command runs in the project root and is only exposed in Terminal |
+| Restore/open project | `GET /v1/sessions`, `GET/POST /v1/sessions` | Postgres session/user state in production |
+| Chat + activity | message routes + SSE | durable messages/tasks/events |
+| AI model/mode/access | `/v1/ai/*` | durable session preferences + real OpenCode/provider state |
+| Files/code | session file routes | GitHub when no workspace, workspace bridge when ready |
+| Changes/review | change-set routes | durable change sets + real workspace Git |
+| Publish | `POST /v1/changes/:id/push` | real GitHub push/PR result |
+| GitHub picker | GitHub App routes | live authorized installation repositories |
+| Attachments | multipart session route | durable metadata + workspace transfer |
+| Cloud | session cloud routes | GitHub Codespaces + durable workspace state |
+| Preview | session ports | real workspace bridge port discovery |
+| Terminal | session terminal routes | real PTY in workspace bridge |
 
-No OAuth callback/App installation flow, provider credential management, or
-Codespaces provisioning route exists. The UI says so and avoids implying a
-successful connection. A GitHub token/app installation credential may be supplied
-server-side; it is never requested from the user in a normal screen.
+## Session continuity
 
-## Navigation and session behavior
+localStorage may remember drafts, theme and a recent session pointer, but it is not
+server truth. Orlynx refreshes recent sessions from the authenticated user's
+durable account state and can recover the latest project on another device.
 
-The shell retains project Chat/Files/Changes/Preview/More view state. Terminal is
-a dedicated in-project view reached through the desktop workspace tab or More on
-mobile. Screens without an active project (Welcome, Home, Projects, GitHub picker,
-Agents, Cloud, Settings, Search, Tasks) use the same warm-neutral shell. Project
-recents reopen the stored per-project session instead of silently creating another.
+AI model/mode/access preferences are also stored server-side per session.
 
-## Progressive content
+## Streaming
 
-The chat centers on authored messages and the existing activity presentation. The
-right panel shows only project context, optional cloud, recent changes, and preview
-status. Long/raw command details remain in Terminal or the activity receipt's
-explicit raw-output layer. File browsing is a simple list/code viewer, not an IDE.
-Diff changes are expanded one file at a time and use separate prose for agent
-context.
+The browser consumes ordered SSE events with replay by sequence. If the user
+scrolls away from the bottom, Orlynx does not force the viewport down; new activity
+continues below and a New activity affordance returns to the latest point.
 
-## Error and loading behavior
+On online, focus and foreground transitions the client reconnects and refreshes the
+authoritative session snapshot.
 
-Each API action surfaces a readable inline alert; file and repository states have
-explicit empty and loading copy. Offline preserves drafts and does not claim a
-message was sent. A rejected push leaves the local commit available. Cloud failure
-keeps the chat, files, and changes visible. Restore errors fall back to Welcome and
-the user may continue with a local project.
+## Errors and recovery
+
+Normal users see capability-oriented recovery:
+
+- Connect/Reconnect GitHub
+- Connect AI
+- Start/Retry workspace
+- Review changes
+- Retry publication
+
+Operator concepts such as environment variables, app private keys, bridge tokens
+or OpenCode server URLs do not belong in normal product copy.
+
+Production failures remain fail-closed; simplifying the UI must never mean
+pretending a provider succeeded.
 
 ## Accessibility and performance
 
-Shared buttons and controls use 44px targets, visible focus, semantic tab/navigation
-roles, textual state alongside color, and one polite activity milestone region.
-The event client deduplicates stable IDs and batches updates to animation frames;
-the activity mapper and output display are bounded. See
-[`agent-activity-presentation.md`](agent-activity-presentation.md) and
-[`orlynx-responsive-behavior.md`](orlynx-responsive-behavior.md).
+Controls use touch-sized targets, visible focus, semantic labels and text alongside
+status color. Activity updates are batched; history/raw-output views are bounded;
+screen readers should receive milestone announcements rather than token/log spam.
