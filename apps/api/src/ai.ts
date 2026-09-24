@@ -6,6 +6,8 @@ import type { AgentMode, AIModel, AISessionPrefs, PermissionProfile } from '@orl
 import { AGENT_MODES, PERMISSION_PROFILES } from '@orlynx/shared';
 import { dataDir, store } from './store.js';
 import { openCodeStatus } from './opencode.js';
+import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
+import { encryptCredential } from './credentials.js';
 
 export const MODES = AGENT_MODES;
 export const PERMISSIONS = PERMISSION_PROFILES;
@@ -37,7 +39,7 @@ function titleCase(id: string): string {
 }
 
 const KNOWN_PROVIDERS: Record<string, string> = {
-  openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google Gemini', gemini: 'Google Gemini',
+  opencode: 'OpenCode', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google Gemini', gemini: 'Google Gemini',
   openrouter: 'OpenRouter', azure: 'Azure OpenAI', bedrock: 'Amazon Bedrock', vertex: 'Google Vertex',
   ollama: 'Ollama', lmstudio: 'LM Studio', deepseek: 'DeepSeek', mistral: 'Mistral',
   groq: 'Groq', xai: 'xAI', together: 'Together', fireworks: 'Fireworks',
@@ -117,17 +119,28 @@ export interface ProviderConnection {
   message: string;
 }
 
-export async function listProviderConnections(project = ''): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
+export async function listProviderConnections(project = '', userId?: string): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
   const status = await openCodeStatus(project || undefined);
-  const secrets = readSecrets();
+  const localSecrets = durableStorageConfigured() ? { providers: {}, keys: {} } as Secrets : readSecrets();
+  const durableRows = durableStorageConfigured() && userId ? await controlPlaneRepository().listProviderConnections(userId) : [];
+  const durableIds = durableRows.filter((row) => row.state === 'connected').map((row) => row.provider);
+  const locallyStored = Object.keys(localSecrets.keys);
+  const accountIds = new Set([...durableIds, ...locallyStored]);
+
   if (!status.configured || !status.connected) {
-    const stored = Object.keys(secrets.keys);
-    return {
-      engine: { connected: false, message: status.message },
-      providers: stored.map((id) => ({ id, name: providerDisplayName(id), state: 'key-stored' as const, modelsAvailable: 0, keyEnding: maskKey(secrets.keys[id]), message: 'Key is stored on the Orlynx server. The AI engine is unreachable, so availability cannot be confirmed.' })),
-      models: [],
-    };
+    const providers: ProviderConnection[] = [...accountIds].map((id) => ({
+      id,
+      name: providerDisplayName(id),
+      state: durableIds.includes(id) ? 'connected' as const : 'key-stored' as const,
+      modelsAvailable: 0,
+      keyEnding: localSecrets.keys[id] ? maskKey(localSecrets.keys[id]) : undefined,
+      message: durableIds.includes(id)
+        ? 'Connected to Orlynx. Start the workspace to load this provider in OpenCode.'
+        : 'Credential is saved, but the AI engine is not ready yet.',
+    }));
+    return { engine: { connected: false, message: status.message }, providers, models: [] };
   }
+
   const { providersAll, connectedIds } = await catalog(project);
   const models = extractModels(providersAll, connectedIds);
   const byProvider = new Map<string, AIModel[]>();
@@ -136,13 +149,21 @@ export async function listProviderConnections(project = ''): Promise<{ engine: {
     rows.push(model);
     byProvider.set(model.providerId, rows);
   }
-  const ids = new Set([...byProvider.keys(), ...Object.keys(secrets.keys)]);
+  const ids = new Set([...byProvider.keys(), ...accountIds]);
   const providers: ProviderConnection[] = [...ids].map((id) => {
     const rows = byProvider.get(id) || [];
-    const connected = rows.some((m) => m.connected) || connectedIds.some((c) => c.toLowerCase() === id.toLowerCase());
-    const hasKey = Boolean(secrets.keys[id]);
-    if (connected) return { id, name: providerDisplayName(id), state: 'connected', modelsAvailable: rows.length, keyEnding: hasKey ? maskKey(secrets.keys[id]) : undefined, message: 'Connected.' };
-    if (hasKey) return { id, name: providerDisplayName(id), state: 'key-stored', modelsAvailable: 0, keyEnding: maskKey(secrets.keys[id]), message: 'Key is stored on the Orlynx server, but the engine does not report this provider as connected yet. It becomes available once the engine picks the key up.' };
+    const engineConnected = rows.some((m) => m.connected) || connectedIds.some((c) => c.toLowerCase() === id.toLowerCase());
+    const durableConnected = durableIds.includes(id);
+    const hasLocalKey = Boolean(localSecrets.keys[id]);
+    if (engineConnected || durableConnected) return {
+      id,
+      name: providerDisplayName(id),
+      state: 'connected',
+      modelsAvailable: rows.length,
+      keyEnding: hasLocalKey ? maskKey(localSecrets.keys[id]) : undefined,
+      message: engineConnected ? 'Connected and ready.' : 'Connected. Restart or reconnect the workspace to refresh available models.',
+    };
+    if (hasLocalKey) return { id, name: providerDisplayName(id), state: 'key-stored', modelsAvailable: 0, keyEnding: maskKey(localSecrets.keys[id]), message: 'Credential is saved, but OpenCode has not loaded it yet.' };
     return { id, name: providerDisplayName(id), state: 'not-connected', modelsAvailable: rows.length, message: 'Not connected.' };
   });
   providers.sort((a, b) => a.name.localeCompare(b.name));
@@ -153,11 +174,43 @@ export function supportedProviderIds(): string[] {
   return Object.keys(KNOWN_PROVIDERS);
 }
 
-export async function connectProviderKey(providerId: string, apiKey: string): Promise<ProviderConnection> {
+async function validateOpenCodeAccountKey(apiKey: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch('https://opencode.ai/zen/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(12_000),
+    });
+  } catch {
+    throw new Error('OpenCode could not be reached. Check your connection and try again.');
+  }
+  if (response.status === 401 || response.status === 403) throw new Error('OpenCode rejected this key. Copy a fresh key from your OpenCode account and try again.');
+  if (!response.ok) throw new Error(`OpenCode could not verify this account right now (HTTP ${response.status}). Try again shortly.`);
+}
+
+export async function connectProviderKey(providerId: string, apiKey: string, userId?: string): Promise<ProviderConnection> {
   const id = providerId.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(id)) throw new Error('Unknown provider. Choose a supported AI provider.');
+  if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(id) || !supportedProviderIds().includes(id)) throw new Error('Unknown provider. Choose a supported AI provider.');
   if (!apiKey || apiKey.trim().length < 8) throw new Error('That API key looks incomplete. Check it and try again.');
   if (apiKey.length > 4096) throw new Error('That API key looks invalid. Check it and try again.');
+
+  if (durableStorageConfigured()) {
+    if (!userId) throw new Error('Reconnect GitHub before connecting an AI account.');
+    if (id !== 'opencode') throw new Error('This provider connection is not available yet. Connect OpenCode for the current workspace.');
+    await validateOpenCodeAccountKey(apiKey.trim());
+    const now = new Date().toISOString();
+    await controlPlaneRepository().upsertProviderConnection({
+      id: `provider:${userId}:${id}`,
+      userId,
+      provider: id,
+      credential: encryptCredential(apiKey.trim()),
+      state: 'connected',
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { id, name: providerDisplayName(id), state: 'connected', modelsAvailable: 0, message: 'Connected to Orlynx. Start or reconnect the workspace to load your OpenCode models.' };
+  }
+
   const secrets = readSecrets();
   secrets.keys[id] = apiKey.trim();
   secrets.providers[id] = { updatedAt: new Date().toISOString() };
@@ -168,8 +221,13 @@ export async function connectProviderKey(providerId: string, apiKey: string): Pr
   return row;
 }
 
-export async function disconnectProvider(providerId: string): Promise<void> {
+export async function disconnectProvider(providerId: string, userId?: string): Promise<void> {
   const id = providerId.trim().toLowerCase();
+  if (durableStorageConfigured()) {
+    if (!userId) throw new Error('Reconnect GitHub before managing AI connections.');
+    await controlPlaneRepository().deleteProviderConnection(userId, id);
+    return;
+  }
   const secrets = readSecrets();
   delete secrets.keys[id];
   delete secrets.providers[id];
@@ -177,6 +235,7 @@ export async function disconnectProvider(providerId: string): Promise<void> {
 }
 
 export function providerHasKey(providerId: string): boolean {
+  if (durableStorageConfigured()) return false;
   return Boolean(readSecrets().keys[providerId.trim().toLowerCase()]);
 }
 
@@ -312,20 +371,20 @@ export function classifyError(message: string): 'rate_limit' | 'quota' | 'auth' 
 
 export type AIState = 'disconnected' | 'ready' | 'working' | 'needs_attention' | 'error';
 
-export async function aiStatus(sessionId?: string, project?: string): Promise<{
+export async function aiStatus(sessionId?: string, project?: string, userId?: string): Promise<{
   state: AIState; engine: string; engineConnected: boolean; message: string;
   model?: AIModel; mode: AgentMode; permission: PermissionProfile;
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? getSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models } = await listProviderConnections(project);
+  const { engine, models } = await listProviderConnections(project, userId);
   const running = sessionId ? (store.db.runs[sessionId] || []).some((r) => r.state === 'running') : false;
   if (!engine.connected) {
     return { state: 'error', engine: 'OpenCode', engineConnected: false, message: engine.message, mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: 0 } };
   }
   const available = models.filter((m) => m.status === 'available');
   const model = prefs.modelId ? models.find((m) => m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
-  const keyStoredOnly = (await listProviderConnections(project)).providers.some((p) => p.state === 'key-stored');
+  const keyStoredOnly = (await listProviderConnections(project, userId)).providers.some((p) => p.state === 'key-stored');
   if (!available.length) {
     return { state: keyStoredOnly ? 'needs_attention' : 'disconnected', engine: 'OpenCode', engineConnected: true, message: keyStoredOnly ? 'A stored key has not been picked up by the engine yet.' : 'Connect an AI account to start working.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: models.length } };
   }
