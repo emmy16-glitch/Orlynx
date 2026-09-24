@@ -22,6 +22,16 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
       await repository.putWorkspace(workspace);
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
+    } else if (workspace.state === 'failed') {
+      // A failed workspace is retryable. This matters after the user approves
+      // a newly requested GitHub Codespaces permission or after a transient
+      // bootstrap failure.
+      workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
+      await repository.putWorkspace(workspace);
+      workspace = workspace.codespaceName
+        ? await provider.get(workspace)
+        : await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
+      await repository.putWorkspace(workspace);
     }
     if (workspace.state === 'stopped') { workspace = { ...(await provider.start(workspace)), state: 'starting' }; await repository.putWorkspace(workspace); }
     if (['creating', 'starting'].includes(workspace.state)) {
