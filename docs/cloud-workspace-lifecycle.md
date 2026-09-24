@@ -1,30 +1,16 @@
-# Cloud Workspace Lifecycle
+# Cloud workspace lifecycle
 
-The UI keeps optional compute inside the same project conversation. States are
-`none → preparing → ready`, `ready → stopped`, and provider failure → `failed`.
-SSE connection state is separate from workspace state.
+The project conversation stays stable while compute changes underneath it.
+`POST /v1/sessions/:id/cloud` creates or starts a real GitHub Codespace and
+bootstraps its bridge. The response may be `202` while the state is still
+preparing. The client reads the durable workspace on session refresh and keeps
+the same conversation.
 
-## Current implementation boundary
+Explicit states are `not_created`, `creating`, `starting`, `bootstrapping`,
+`connecting`, `ready`, `stopping`, `stopped`, and `failed`. Bridge and OpenCode
+health are separate fields. `POST .../cloud/reconnect` rotates the scoped bridge
+identity and re-runs the out-of-repository bootstrap; `POST .../cloud/stop`
+stops the Codespace without deleting chat, tasks, events, changes, or approvals.
 
-The route calls `ensureWorkspace`, emits `workspace.preparing`, and the local
-adapter simulates a ready transition. `WorkspaceInfo.provider` deliberately stays
-`local`; a configured GitHub credential alone does not mean a Codespace exists.
-The existing `createCodespaceViaGitHub` helper is not wired into provisioning or
-polling. The UI describes this as a local simulation and does not display guessed
-machine size, uptime, or cloud-provider readiness.
-
-## User flow
-
-`Work on cloud` retains the session and conversation, shows a restrained preparing
-transition, and returns to the same Chat tab. Cloud detail offers current status,
-provider type, refresh, stop, and a route back to the conversation. Stop keeps
-conversation, messages, and changes. Start errors keep the chat visible and
-explain that saved changes are preserved.
-
-## Future provider contract
-
-A real Codespaces provider must create, poll, reconnect, stop, and report workspace
-identity, branch, and readiness from the remote API. Until then, do not say
-“GitHub Codespaces”, show fabricated compute specs/uptime, or use the local timer as
-evidence of remote readiness. See [system-integration.md](system-integration.md)
-and [orlynx-screen-inventory.md](orlynx-screen-inventory.md).
+Failures use stable user language (start failed, connection interrupted, or AI
+could not start) while technical detail remains in authenticated diagnostics.

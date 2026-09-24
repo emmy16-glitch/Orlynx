@@ -81,7 +81,7 @@ export function buildManifest(appName: string): Record<string, unknown> {
     setup_url: `${publicUrl}/v1/github/setup`,
     description: 'Orlynx — GitHub-native AI development workspace.',
     public: false,
-    default_permissions: { contents: 'write', metadata: 'read' },
+    default_permissions: { contents: 'write', metadata: 'read', codespaces: 'write', codespaces_lifecycle_admin: 'write' },
   };
 }
 

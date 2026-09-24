@@ -77,6 +77,26 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
     assert.match(res.headers.get('location') || '', /\?github=error/);
   });
 
+  it('stateless repository-update callback still fails closed without app credentials', async () => {
+    // Update/return flows from GitHub management pages carry no install
+    // state. Without a configured app the live verification must fail
+    // closed — never redirect to GitHub OAuth on an unverified id.
+    const res = await fetch(`${base}/v1/github/setup?installation_id=1&setup_action=update`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /\?github=error/);
+  });
+
+  it('manual return without installation id or session redirects to the error route', async () => {
+    const res = await fetch(`${base}/v1/github/setup`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /\?github=error/);
+  });
+
+  it('repository sync requires a signed session cookie', async () => {
+    const res = await fetch(`${base}/v1/github/sync`, { method: 'POST' });
+    assert.equal(res.status, 401);
+  });
+
   it('never accepts a GitHub user authorization callback without its browser-bound state', async () => {
     const res = await fetch(`${base}/v1/github/setup?code=fake-code&state=fake-state`, { redirect: 'manual' });
     assert.equal(res.status, 302);

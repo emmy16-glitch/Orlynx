@@ -1,39 +1,34 @@
-# Vercel production deployment
+# Vercel production
 
-## Project
+The `orlynx` Vercel project serves the frontend and control-plane functions.
+`/v1/*` and `/health` reach the Express API; `/bridge` reaches the WebSocket
+gateway. Long-running work stays in GitHub Codespaces.
 
-- Vercel project: **orlynx** (`emmy16-glitchs-projects`), git-connected to
-  `emmy16-glitch/Orlynx` (pushes to `main` auto-deploy).
-- Canonical production URL: **https://orlynx.vercel.app**
-- `vercel.json`: builds the Vite web app to `apps/web/dist` (served as static),
-  rewrites `/v1/*` and `/health` to the `api/index.mjs` serverless function
-  (the Express control plane, 60s max duration).
+Required production environment:
 
-## What runs where
+- GitHub App: `ORLYNX_PUBLIC_URL`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
+  `GITHUB_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY`,
+  `GITHUB_WEBHOOK_SECRET`, and `ORLYNX_SESSION_SECRET`.
+- Postgres: `DATABASE_URL` (Vercel Marketplace Neon is supported).
+- Security: `ORLYNX_CREDENTIAL_ENCRYPTION_KEY` (base64 32 bytes) and an
+  independent `ORLYNX_BRIDGE_SIGNING_SECRET` (at least 32 bytes).
+- Bootstrap: Vercel Sandbox authenticates automatically with deployment OIDC.
+  `ORLYNX_RUNTIME_WORKER_URL` and `ORLYNX_RUNTIME_WORKER_TOKEN` are only needed
+  when choosing the standalone container worker instead.
 
-Control plane on Vercel: frontend/PWA, GitHub install/setup/webhook/status
-routes, manifest bootstrap, AI provider config APIs, stateless orchestration
-reads. Workspace/execution plane stays OUTSIDE Vercel (Codespace or persistent
-host running OpenCode + bridge) — see `docs/workspace-runtime.md`. Preview
-deployments never receive production GitHub credentials; production GitHub URLs
-always use `ORLYNX_PUBLIC_URL`, never `VERCEL_URL`.
+The GitHub App must have repository contents write, metadata read, Codespaces
+write, and Codespaces lifecycle admin write. Existing installations must accept
+new permissions and users must reconnect once so Orlynx can store the encrypted,
+expiring GitHub App user token and refresh token.
 
-## Environment (production)
+Production refuses authenticated product work when Postgres is absent. The
+health route verifies schema access and reports control-plane readiness without
+printing secrets. A global `OPENCODE_BASE_URL` is ignored on Vercel.
 
-Set via `vercel env add <NAME> production` (values hidden, never in chat/logs):
+## Live verification
 
-`ORLYNX_PUBLIC_URL`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`,
-`GITHUB_APP_CLIENT_SECRET`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`,
-`ORLYNX_SETUP_TOKEN` (owner bootstrap only), plus `VERCEL_TOKEN`,
-`VERCEL_PROJECT_ID`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT` so the manifest
-callback can store generated credentials itself. Any env change requires a
-production redeploy (`vercel --prod`).
-
-## Known serverless limits (not hidden)
-
-- Filesystem store is **ephemeral** (`/tmp`, `durable:false` in `/health`).
-  Installation/session mappings work per-instance but are not durable
-  multi-instance truth. Attach Postgres/KV and swap the `Store` backend before
-  claiming durable multi-device production behavior.
-- SSE streams are bounded by function lifetime; clients already reconnect with
-  `?after=` replay cursors.
+Set `ORLYNX_E2E_ENABLED=true` only for the controlled test deployment. CI uses a
+Playwright storage-state file (`ORLYNX_E2E_STORAGE_STATE`) captured after the
+normal GitHub login, or a dedicated secret cookie as fallback. The E2E creates
+only an `orlynx-e2e/<timestamp>` branch; the bridge refuses this helper for any
+other branch and refuses pushes to `main`/`master`.

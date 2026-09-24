@@ -117,8 +117,8 @@ export interface ProviderConnection {
   message: string;
 }
 
-export async function listProviderConnections(): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
-  const status = await openCodeStatus();
+export async function listProviderConnections(project = ''): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
+  const status = await openCodeStatus(project || undefined);
   const secrets = readSecrets();
   if (!status.configured || !status.connected) {
     const stored = Object.keys(secrets.keys);
@@ -128,7 +128,7 @@ export async function listProviderConnections(): Promise<{ engine: { connected: 
       models: [],
     };
   }
-  const { providersAll, connectedIds } = await catalog();
+  const { providersAll, connectedIds } = await catalog(project);
   const models = extractModels(providersAll, connectedIds);
   const byProvider = new Map<string, AIModel[]>();
   for (const model of models) {
@@ -241,11 +241,11 @@ export function setProjectDefaults(project: string, patch: { modelId?: string; m
 
 const MODE_AGENT: Record<AgentMode, string> = { build: '', plan: 'plan', ask: 'explore' };
 
-export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string): Promise<{ agent?: string; note?: string }> {
+export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string, project = ''): Promise<{ agent?: string; note?: string }> {
   if (mode === 'build') return configuredAgent ? { agent: configuredAgent } : {};
   const wanted = MODE_AGENT[mode];
   try {
-    const { agents } = await catalog();
+    const { agents } = await catalog(project);
     const names = agents.map((a) => String(a?.name || a?.id || '').toLowerCase());
     if (names.includes(wanted)) return { agent: wanted };
     return { agent: configuredAgent || undefined, note: `The engine does not offer a ${wanted} agent, so this task uses the default agent with ${mode} instructions instead.` };
@@ -318,14 +318,14 @@ export async function aiStatus(sessionId?: string, project?: string): Promise<{
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? getSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models } = await listProviderConnections();
+  const { engine, models } = await listProviderConnections(project);
   const running = sessionId ? (store.db.runs[sessionId] || []).some((r) => r.state === 'running') : false;
   if (!engine.connected) {
     return { state: 'error', engine: 'OpenCode', engineConnected: false, message: engine.message, mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: 0 } };
   }
   const available = models.filter((m) => m.status === 'available');
   const model = prefs.modelId ? models.find((m) => m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
-  const keyStoredOnly = (await listProviderConnections()).providers.some((p) => p.state === 'key-stored');
+  const keyStoredOnly = (await listProviderConnections(project)).providers.some((p) => p.state === 'key-stored');
   if (!available.length) {
     return { state: keyStoredOnly ? 'needs_attention' : 'disconnected', engine: 'OpenCode', engineConnected: true, message: keyStoredOnly ? 'A stored key has not been picked up by the engine yet.' : 'Connect an AI account to start working.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: models.length } };
   }

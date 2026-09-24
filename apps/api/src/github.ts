@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { dataDir, store } from './store.js';
+import { decryptCredential, encryptCredential } from './credentials.js';
+import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
 const API = 'https://api.github.com';
 
@@ -169,14 +171,24 @@ export async function disconnectGitHub(installationId: number): Promise<void> {
   tokenCache.delete(installationId);
   repositoryCache.delete(installationId);
   store.db.githubInstallations = store.db.githubInstallations.filter((item) => item.id !== installationId);
+  if (durableStorageConfigured()) await controlPlaneRepository().deleteGitHubConnection(installationId);
   store.save();
 }
 
 export async function completeGitHubInstallation(installationId: string, state: string, setupAction: string): Promise<{ redirect: string; installationId: number | null }> {
-  const claims = verifyState(state);
-  if (claims.purpose !== 'install') throw new Error('GitHub installation state is invalid.');
   const id = Number(installationId);
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('GitHub returned an invalid installation id.');
+  try {
+    const claims = verifyState(state);
+    if (claims.purpose !== 'install') throw new Error('GitHub installation state is invalid.');
+  } catch (error) {
+    // Repository updates from GitHub's installation management pages (and the
+    // "Redirect on update" return) do not carry our install state. Never trust
+    // the id blindly: fall through to live verification against the GitHub
+    // API below, then still require the OAuth step before any session exists.
+    if (setupAction !== 'update' && setupAction !== 'install') throw error;
+    console.info('[orlynx] github setup continuing without install state (update/return flow); verifying installation with GitHub');
+  }
   if (setupAction === 'uninstall') {
     forgetInstallation(id);
   } else if (setupAction === 'install' || setupAction === 'update') {
@@ -215,6 +227,7 @@ export function githubOAuthUrl(installationId: number): { url: string; state: st
 }
 
 export async function completeGitHubOAuth(code: string, state: string): Promise<{ installationId: number; login: string }> {
+  if (process.env.VERCEL === '1' && !durableStorageConfigured()) throw new Error('Durable storage must be configured before users can connect GitHub.');
   const claims = verifyState(state);
   if (claims.purpose !== 'oauth' || !Number.isSafeInteger(claims.installationId) || Number(claims.installationId) <= 0) {
     throw new Error('GitHub authorization state is invalid.');
@@ -226,7 +239,7 @@ export async function completeGitHubOAuth(code: string, state: string): Promise<
     body: JSON.stringify({ client_id: clientId(), client_secret: clientSecret(), code, redirect_uri: `${publicUrl()}/v1/github/setup` }),
     signal: AbortSignal.timeout(10_000),
   });
-  const tokenBody = await tokenResponse.json().catch(() => ({})) as { access_token?: string; error?: string };
+  const tokenBody = await tokenResponse.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number; error?: string };
   if (!tokenResponse.ok || !tokenBody.access_token) throw new Error('GitHub could not verify your account. Start the connection again.');
   const userHeaders = githubHeaders(tokenBody.access_token);
   const [userResponse, installationsResponse] = await Promise.all([
@@ -234,14 +247,45 @@ export async function completeGitHubOAuth(code: string, state: string): Promise<
     fetch(`${API}/user/installations?per_page=100`, { headers: userHeaders, signal: AbortSignal.timeout(10_000) }),
   ]);
   if (!userResponse.ok || !installationsResponse.ok) throw new Error('GitHub could not verify access to this installation.');
-  const user = await userResponse.json() as { login?: string };
+  const user = await userResponse.json() as { id?: number; login?: string };
   const installations = await installationsResponse.json() as { installations?: { id: number }[] };
   const installationId = Number(claims.installationId);
   if (!(installations.installations || []).some((item) => item.id === installationId)) {
     throw new Error('Your GitHub account does not have access to this Orlynx installation.');
   }
+  if (!user.id) throw new Error('GitHub did not return a stable user identity.');
+  const now = new Date();
+  if (durableStorageConfigured()) await controlPlaneRepository().upsertGitHubConnection({
+    userId: String(user.id), installationId, login: user.login || 'GitHub user',
+    accessToken: encryptCredential(tokenBody.access_token),
+    refreshToken: tokenBody.refresh_token ? encryptCredential(tokenBody.refresh_token) : undefined,
+    accessTokenExpiresAt: tokenBody.expires_in ? new Date(now.getTime() + tokenBody.expires_in * 1000).toISOString() : undefined,
+    refreshTokenExpiresAt: tokenBody.refresh_token_expires_in ? new Date(now.getTime() + tokenBody.refresh_token_expires_in * 1000).toISOString() : undefined,
+    createdAt: now.toISOString(), updatedAt: now.toISOString(),
+  });
   await restoreGitHubInstallation(installationId);
   return { installationId, login: user.login || 'GitHub user' };
+}
+
+export async function githubUserAccessToken(userId: string): Promise<string> {
+  const repository = controlPlaneRepository();
+  // The installation lookup is intentionally explicit: a user-scoped token is
+  // never substituted with an app installation token or operator PAT.
+  const connection = await repository.getGitHubConnectionByUser(userId);
+  if (!connection) throw new Error('GitHub user authorization is required for Codespaces.');
+  const expiresAt = connection.accessTokenExpiresAt ? Date.parse(connection.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
+  if (expiresAt > Date.now() + 5 * 60_000) return decryptCredential(connection.accessToken);
+  if (!connection.refreshToken) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+  const response = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(), grant_type: 'refresh_token', refresh_token: decryptCredential(connection.refreshToken) }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number };
+  if (!response.ok || !body.access_token) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+  const now = new Date();
+  await repository.upsertGitHubConnection({ ...connection, accessToken: encryptCredential(body.access_token), refreshToken: body.refresh_token ? encryptCredential(body.refresh_token) : connection.refreshToken, accessTokenExpiresAt: body.expires_in ? new Date(now.getTime() + body.expires_in * 1000).toISOString() : undefined, refreshTokenExpiresAt: body.refresh_token_expires_in ? new Date(now.getTime() + body.refresh_token_expires_in * 1000).toISOString() : connection.refreshTokenExpiresAt, updatedAt: now.toISOString() });
+  return body.access_token;
 }
 
 export function githubCallbackErrorUrl(reason: string): string {
@@ -255,6 +299,10 @@ export async function githubConnectionStatus(installationId?: number | null) {
     manageUrl: githubAppConfigured() ? githubManageUrl(id) : null,
   }));
   const active = installations.filter((item) => item.status !== 'suspended');
+  let userAuthorizationState: 'established' | 'not-established' = 'not-established';
+  if (installationId && durableStorageConfigured()) {
+    try { if (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId)) userAuthorizationState = 'established'; } catch {}
+  }
   return {
     configured: githubAppConfigured(),
     connected: githubAppConfigured() && active.length > 0,
@@ -269,7 +317,7 @@ export async function githubConnectionStatus(installationId?: number | null) {
     webhookUrl: githubAppConfigured() ? githubWebhookUrl() : null,
     // User-scoped GitHub authorization (e.g. Codespaces) is not established by
     // the installation flow. Cloud stays fail-closed until that exists.
-    userAuthorizationState: 'not-established',
+    userAuthorizationState,
   };
 }
 
@@ -328,6 +376,22 @@ export async function restoreGitHubInstallation(installationId: number): Promise
   if (!response.ok) throw new Error(response.status === 404 ? 'Your GitHub connection is no longer available.' : 'GitHub connection could not be verified.');
   const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
   touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+}
+
+// Explicit re-verification after the user changes repository access on
+// GitHub (Manage repositories / Redirect on update). Drops cached tokens and
+// listings, re-reads the authoritative set from GitHub, and stamps the
+// verification time. Never invents access: every check hits the live API.
+export async function refreshGitHubInstallation(installationId: number): Promise<{ authorizedRepositories: number }> {
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) throw new Error('Reconnect GitHub to continue.');
+  repositoryCache.delete(installationId);
+  tokenCache.delete(installationId);
+  await restoreGitHubInstallation(installationId);
+  await installationToken(installationId);
+  const repos = await githubListRepos(installationId);
+  const row = store.db.githubInstallations.find((item) => item.id === installationId);
+  if (row) { row.lastVerifiedAt = new Date().toISOString(); store.save(); }
+  return { authorizedRepositories: repos.length };
 }
 
 const usedStates = new Map<string, number>();
@@ -399,6 +463,7 @@ function gitCredentialEnv(token: string): NodeJS.ProcessEnv {
 }
 
 export interface GitHubRepository {
+  id: number;
   full: string; name: string; owner: string; ownerType: string; private: boolean;
   defaultBranch: string; language: string | null; updatedAt: string; url: string;
   installationId: number;
@@ -415,8 +480,8 @@ export async function githubListRepos(installationId?: number): Promise<GitHubRe
     for (let page = 1; page <= 10; page++) {
       const response = await fetch(`${API}/installation/repositories?per_page=100&page=${page}`, { headers: githubHeaders(token) });
       if (!response.ok) throw new Error(`Could not list repositories for GitHub installation ${installation.account} (HTTP ${response.status}).`);
-      const data = await response.json() as { repositories: { full_name: string; name: string; owner: { login: string; type: string }; private: boolean; default_branch: string; language: string | null; updated_at: string; html_url: string }[]; total_count: number };
-      installationRepos.push(...data.repositories.map((repo) => ({ full: repo.full_name, name: repo.name, owner: repo.owner.login, ownerType: repo.owner.type, private: repo.private, defaultBranch: repo.default_branch, language: repo.language, updatedAt: repo.updated_at, url: repo.html_url, installationId: installation.id })));
+      const data = await response.json() as { repositories: { id: number; full_name: string; name: string; owner: { login: string; type: string }; private: boolean; default_branch: string; language: string | null; updated_at: string; html_url: string }[]; total_count: number };
+      installationRepos.push(...data.repositories.map((repo) => ({ id: repo.id, full: repo.full_name, name: repo.name, owner: repo.owner.login, ownerType: repo.owner.type, private: repo.private, defaultBranch: repo.default_branch, language: repo.language, updatedAt: repo.updated_at, url: repo.html_url, installationId: installation.id })));
       if (data.repositories.length < 100 || installationRepos.length >= data.total_count) break;
     }
     repositoryCache.set(installation.id, { repos: installationRepos, expiresAt: Date.now() + 30_000 });
@@ -446,6 +511,26 @@ export async function githubBranches(fullName: string, installationId?: number):
   if (!response.ok) throw new Error(`Could not load branches for ${fullName} (HTTP ${response.status}).`);
   const body = await response.json() as { name: string }[];
   return body.map((branch) => branch.name);
+}
+
+export async function githubRepositoryFiles(fullName: string, branch: string, directory: string, installationId?: number): Promise<{ name: string; dir: boolean; modified: boolean }[]> {
+  const repo = await findRepository(fullName, installationId); const token = await installationToken(repo.installationId);
+  const clean = directory.replace(/^\/+|\/+$/g, ''); if (clean.split('/').includes('..')) throw new Error('path escape denied');
+  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
+  if (!response.ok) throw new Error(`GitHub could not read repository files (HTTP ${response.status}).`);
+  const body = await response.json() as Array<{ name: string; type: string }>;
+  if (!Array.isArray(body)) throw new Error('The requested GitHub path is not a directory.');
+  return body.filter((item) => item.name !== '.git').map((item) => ({ name: item.name, dir: item.type === 'dir', modified: false }));
+}
+
+export async function githubRepositoryFile(fullName: string, branch: string, filename: string, installationId?: number): Promise<string> {
+  const repo = await findRepository(fullName, installationId); const token = await installationToken(repo.installationId);
+  const clean = filename.replace(/^\/+/, ''); if (!clean || clean.split('/').includes('..')) throw new Error('path escape denied');
+  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
+  if (!response.ok) throw new Error(`GitHub could not read this file (HTTP ${response.status}).`);
+  const body = await response.json() as { type?: string; encoding?: string; content?: string; size?: number };
+  if (body.type !== 'file' || body.encoding !== 'base64' || !body.content || Number(body.size || 0) > 1_000_000) throw new Error('This GitHub file cannot be displayed.');
+  return Buffer.from(body.content.replace(/\n/g, ''), 'base64').toString('utf8');
 }
 
 export function repoRoot(project: string): string {

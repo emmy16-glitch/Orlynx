@@ -8,15 +8,17 @@ import { store } from './store.js';
 import { configureCommitIdentity, headSha, repoRoot } from './github.js';
 import { pushGitHubRepository } from './github.js';
 import { emit } from './events.js';
+import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
-export function createChangeSet(sessionId: string, project: string, files: ChangedFile[], runId?: string): ChangeSet {
+export function createChangeSet(sessionId: string, project: string, files: ChangedFile[], runId?: string, baseSha?: string): ChangeSet {
   const cs: ChangeSet = {
     id: `chg_${uuid().slice(0, 8)}`, sessionId, runId,
-    baseSha: headSha(project), files,
+    baseSha: baseSha || (durableStorageConfigured() ? '' : headSha(project)), files,
     reviewState: 'pending', createdAt: new Date().toISOString(),
   };
   (store.db.changes[sessionId] ||= []).push(cs);
   store.save();
+  if (durableStorageConfigured()) void controlPlaneRepository().putChangeSet(cs);
   emit(sessionId, 'changes.updated', { changeId: cs.id, count: files.length }, runId);
   return cs;
 }
@@ -28,7 +30,7 @@ export function currentChanges(sessionId: string): ChangeSet[] {
 export function approve(changeId: string): ChangeSet | undefined {
   for (const list of Object.values(store.db.changes)) {
     const c = list.find((x) => x.id === changeId);
-    if (c) { c.reviewState = 'approved'; store.save(); return c; }
+    if (c) { c.reviewState = 'approved'; store.save(); if (durableStorageConfigured()) void controlPlaneRepository().putChangeSet(c); return c; }
   }
 }
 

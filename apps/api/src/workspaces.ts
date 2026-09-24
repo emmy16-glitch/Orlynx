@@ -1,9 +1,63 @@
-// Codespaces is fail-closed until a remote execution bridge is configured.
-export interface WorkspaceInfo {
-  id: string; sessionId: string; project: string; branch: string;
-  provider: 'codespaces'; state: 'preparing' | 'ready' | 'reconnecting' | 'stopped' | 'failed';
-  updatedAt: string; externalId?: string;
+import crypto from 'node:crypto';
+import { v4 as uuid } from 'uuid';
+import type { WorkspaceRecord } from '@orlynx/shared';
+import { createBridgeToken } from './bridge-auth.js';
+import { GitHubCodespacesProvider } from './github-codespaces.js';
+import { bootstrapWorkspace } from './runtime-worker.js';
+import { controlPlaneRepository } from './storage.js';
+
+const provider = new GitHubCodespacesProvider();
+
+export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
+  return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
 
-// No local timer or fabricated workspace state is returned as cloud readiness.
-export function getWorkspace(_sessionId: string): WorkspaceInfo | undefined { return undefined; }
+export async function prepareWorkspace(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+  const repository = controlPlaneRepository();
+  let workspace = await repository.getWorkspaceBySession(input.sessionId);
+  try {
+    if (!workspace) {
+      const now = new Date().toISOString();
+      workspace = { id: `ws_${uuid()}`, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, provider: 'github-codespaces', repositoryId: input.repositoryId, branch: input.branch, state: 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', createdAt: now, updatedAt: now };
+      await repository.putWorkspace(workspace);
+      workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
+      await repository.putWorkspace(workspace);
+    }
+    if (workspace.state === 'stopped') { workspace = { ...(await provider.start(workspace)), state: 'starting' }; await repository.putWorkspace(workspace); }
+    if (['creating', 'starting'].includes(workspace.state)) {
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        workspace = await provider.get(workspace); await repository.putWorkspace(workspace);
+        if (workspace.state === 'connecting' || workspace.state === 'failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+    }
+    if (workspace.state === 'connecting' && workspace.bridgeState !== 'ready' && !workspace.connectionId) {
+      const connectionId = uuid();
+      workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
+      await repository.putWorkspace(workspace);
+      const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
+      await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
+      workspace = { ...workspace, state: 'connecting', openCodeState: 'starting', updatedAt: new Date().toISOString() };
+      await repository.putWorkspace(workspace);
+    }
+    return (await repository.getWorkspace(workspace.id)) || workspace;
+  } catch (error) {
+    if (workspace) {
+      workspace = { ...workspace, state: 'failed', bridgeState: 'disconnected', openCodeState: workspace.openCodeState === 'starting' ? 'failed' : workspace.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
+      await repository.putWorkspace(workspace);
+    }
+    throw error;
+  }
+}
+
+export async function stopWorkspace(sessionId: string): Promise<WorkspaceRecord> {
+  const repository = controlPlaneRepository();
+  const workspace = await repository.getWorkspaceBySession(sessionId);
+  if (!workspace) throw new Error('This project does not have a cloud workspace.');
+  const stopping = { ...workspace, state: 'stopping' as const, updatedAt: new Date().toISOString() };
+  await repository.putWorkspace(stopping);
+  const stopped = await provider.stop(stopping);
+  await repository.putWorkspace(stopped);
+  return stopped;
+}

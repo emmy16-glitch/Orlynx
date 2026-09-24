@@ -1,15 +1,17 @@
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
-import type { AgentMode, AgentRun, ChangedFile, PermissionProfile } from '@orlynx/shared';
+import type { AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } from '@orlynx/shared';
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
 import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDefaultAgent, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
 import { canPerform, classifyError, getSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
+import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
+import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 
 export type Engine = 'opencode';
-const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean }>();
+const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
 export interface TaskOptions {
@@ -46,7 +48,23 @@ export async function startRun(sessionId: string, project: string, userText: str
   }
   const connection = await openCodeStatus(project);
   if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
-  const resolvedAgent = await resolveAgentForMode(mode, openCodeDefaultAgent());
+  const resolvedAgent = await resolveAgentForMode(mode, openCodeDefaultAgent(), project);
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    const workspace = await repository.getWorkspaceBySession(sessionId);
+    if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
+    if ((await repository.listTasks(sessionId)).some((item) => item.state === 'running' || item.state === 'queued')) throw new Error('An OpenCode task is already running in this project.');
+    const startedAt = new Date().toISOString();
+    const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'running', activity: 'Starting work', startedAt };
+    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, state: 'running', prompt: userText, createdAt: startedAt, updatedAt: startedAt };
+    (store.db.runs[sessionId] ||= []).push(run); store.save(); await repository.putTask(task);
+    emit(sessionId, 'run.started', { taskId: task.id, engine, provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Starting work' }, run.id);
+    const guardedText = [permission !== 'full' ? readOnlyInstruction() : '', mode === 'plan' ? planInstruction() : '', mode === 'ask' ? readOnlyInstruction() : '', userText].filter(Boolean).join('\n\n');
+    const engineSessionId = await repository.getEngineSession(sessionId);
+    await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
+    return run;
+  }
   const openCodeSession = await getOrCreateOpenCodeSession(sessionId, project);
   const before = await openCodeMessages(project, openCodeSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
@@ -62,7 +80,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   if (resolvedAgent.note) emit(sessionId, 'activity.progress', { text: resolvedAgent.note }, run.id);
   emit(sessionId, 'message.start', { engine }, run.id);
   // Backend-enforced mode guardrails travel with the task itself.
-  const availableAttachments = materializeAttachments(sessionId, project);
+  const availableAttachments = durableStorageConfigured() ? [] : materializeAttachments(sessionId, project);
   const attachmentInstruction = availableAttachments.length
     ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
     : '';
@@ -122,11 +140,13 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
     if (!assistant) throw new Error('OpenCode finished without returning an assistant response.');
     const responseText = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
     (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, createdAt: new Date().toISOString() });
+    if (durableStorageConfigured()) await controlPlaneRepository().putMessage(store.db.messages[sessionId][store.db.messages[sessionId].length - 1]);
     emit(sessionId, 'message.end', {}, run.id);
     await captureDiff(sessionId, project, run.id, openCodeSessionId);
     run.state = 'completed';
     run.finishedAt = new Date().toISOString();
     run.activity = 'Ready for review';
+    if (active.task) { active.task.state = 'completed'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
     store.save();
     emit(sessionId, 'run.completed', { summary: 'Work completed. Review the result.' }, run.id);
     emit(sessionId, 'activity.completed', { text: 'Work completed' }, run.id);
@@ -136,6 +156,7 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
     run.finishedAt = new Date().toISOString();
     run.activity = 'Work needs attention';
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
+    if (active.task) { active.task.state = 'failed'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
     store.save();
     for (const [toolId, state] of toolStates) if (state === 'running') emit(sessionId, 'tool.failed', { toolCallId: toolId, error: 'OpenCode did not complete this action.' }, run.id);
     emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode task failed.', errorKind: run.errorKind }, run.id);
@@ -170,7 +191,11 @@ async function captureDiff(sessionId: string, project: string, runId: string, op
     const action = item.status === 'added' ? 'create' : item.status === 'deleted' ? 'delete' : 'modify';
     return [{ path: file, action, before: typeof item.before === 'string' ? item.before : undefined, after: typeof item.after === 'string' ? item.after : undefined, diff: typeof item.diff === 'string' ? item.diff : undefined }];
   });
-  if (files.length) createChangeSet(sessionId, project, files, runId);
+  if (files.length) {
+    let baseSha: string | undefined;
+    if (durableStorageConfigured()) { const workspace = await controlPlaneRepository().getWorkspaceBySession(sessionId); if (workspace) baseSha = (await bridgeRequest<{ head?: string }>(workspace.id, 'git.status')).head; }
+    createChangeSet(sessionId, project, files, runId, baseSha);
+  }
 }
 
 export async function cancelRun(sessionId: string, runId: string) {
@@ -182,6 +207,7 @@ export async function cancelRun(sessionId: string, runId: string) {
     try { await abortOpenCodeSession(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
+  if (active?.task) { active.task.state = 'cancelled'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
   store.save();
   emit(sessionId, 'run.failed', { cancelled: true }, runId);
   return run;

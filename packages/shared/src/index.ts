@@ -1,6 +1,7 @@
 // @orlynx/shared — canonical types per Architecture Spec v1.1 §§13-14
 export type SessionMode = 'repository' | 'cloud';
-export type WorkspaceState = 'none' | 'preparing' | 'ready' | 'reconnecting' | 'stopped' | 'failed';
+export type WorkspaceState = 'not_created' | 'creating' | 'starting' | 'bootstrapping' | 'connecting' | 'ready' | 'stopping' | 'stopped' | 'failed';
+export type OpenCodeState = 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed';
 export type RunState = 'queued' | 'running' | 'waiting_input' | 'waiting_approval' | 'paused' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
 export type ReviewState = 'pending' | 'approved' | 'committed' | 'stale' | 'discarded';
 
@@ -84,6 +85,36 @@ export interface AgentRun {
   errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'unknown';
 }
 
+export interface WorkspaceRecord {
+  id: string;
+  sessionId: string;
+  userId: string;
+  projectId: string;
+  provider: 'github-codespaces';
+  codespaceName?: string;
+  repositoryId: number;
+  branch: string;
+  state: WorkspaceState;
+  bridgeState: 'disconnected' | 'connecting' | 'ready';
+  openCodeState: OpenCodeState;
+  connectionId?: string;
+  repoRoot?: string;
+  failureCode?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskRecord {
+  id: string;
+  sessionId: string;
+  workspaceId: string;
+  runId?: string;
+  state: RunState;
+  prompt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Unified Orlynx AI layer (engine/provider/model stay underneath).
 export type AgentMode = 'build' | 'plan' | 'ask';
 export type PermissionProfile = 'full' | 'ask-first' | 'read-only';
@@ -134,7 +165,9 @@ export type EventType =
 export interface OrlynxEvent {
   eventId: string;
   sessionId: string;
+  taskId?: string;
   runId?: string;
+  workspaceId?: string;
   sequence: number;
   type: EventType;
   timestamp: string;

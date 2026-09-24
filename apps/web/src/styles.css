@@ -408,3 +408,12 @@ pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: any
   .sheet { width: 100%; max-height: min(82dvh, 720px); border-radius: 20px 20px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); }
   .attachment-popover { width: min(280px, calc(100vw - 28px)); }
 }
+
+/* GitHub return-flow sync states (mockup screen 5: automatic redirect & sync). */
+.screen-alert.tone-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.screen-alert.tone-neutral { color: var(--foreground-muted); border-color: var(--border); }
+.syncing-card { display: grid; gap: 10px; }
+.syncing-card b { font-size: var(--text-small); }
+.sync-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; color: var(--foreground-muted); font-size: var(--text-small); }
+.sync-steps li.active { color: var(--foreground); font-weight: 600; }
+.sync-steps li.done { color: var(--success); }

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { router } from './routes.js';
 import { githubAppConfigured } from './github.js';
 import { sameOriginOnly } from './auth.js';
+import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -18,12 +19,12 @@ app.use(sameOriginOnly);
 app.use('/v1/github/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
 app.use(express.json({ limit: '2mb' }));
 
-app.get('/health', (_req, res) => res.json({
-  ok: true,
-  service: 'orlynx-api',
-  time: new Date().toISOString(),
-  ready: githubAppConfigured(),
-}));
+app.get('/health', async (_req, res) => {
+  let database = false;
+  if (durableStorageConfigured()) { try { await controlPlaneRepository().initialize(); database = true; } catch {} }
+  const ready = githubAppConfigured() && (database || process.env.VERCEL !== '1');
+  res.status(ready ? 200 : 503).json({ ok: ready, service: 'orlynx-api', time: new Date().toISOString(), ready, durableStorage: database, runtimeBootstrapConfigured: process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN), bridgeConfigured: Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET) });
+});
 app.use('/v1', router);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const uploadError = error as { code?: string };

@@ -7,13 +7,14 @@
     "apps/api",
     "apps/web",
     "packages/shared",
-    "bridge"
+    "bridge",
+    "runtime-worker"
   ],
   "scripts": {
     "dev": "npm run dev --workspace=@orlynx/api & npm run dev --workspace=@orlynx/web",
     "dev:api": "npm run dev --workspace=@orlynx/api",
     "dev:web": "npm run dev --workspace=@orlynx/web",
-    "build": "npm run build --workspace=@orlynx/shared && npm run build --workspace=@orlynx/api && npm run build --workspace=@orlynx/web && npm run build --workspace=@orlynx/bridge",
+    "build": "npm run build --workspace=@orlynx/shared && npm run build --workspace=@orlynx/bridge && npm run build --workspace=@orlynx/api && npm run build --workspace=@orlynx/web && npm run build --workspace=@orlynx/runtime-worker",
     "typecheck": "npm run build --workspace=@orlynx/shared && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspace=@orlynx/api",
     "e2e": "npm run e2e --workspace=@orlynx/api"
