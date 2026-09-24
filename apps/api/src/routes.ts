@@ -300,6 +300,7 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     s.mode = 'cloud'; s.workspaceId = workspace.id; s.updatedAt = new Date().toISOString(); store.save();
     await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
     emit(s.id, workspace.state === 'ready' ? 'workspace.ready' : 'workspace.preparing', { state: workspace.state, bridge: workspace.bridgeState, openCode: workspace.openCodeState });
+    await recordAudit(req, s.id, 'workspace.start', 'accepted', { workspaceId: workspace.id, state: workspace.state, provider: workspace.provider });
     return res.status(workspace.state === 'ready' ? 200 : 202).json(workspace);
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : 'Workspace start failed.';
@@ -316,7 +317,7 @@ router.post('/sessions/:id/cloud', async (req, res) => {
 router.post('/sessions/:id/cloud/stop', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  try { const workspace = await stopWorkspace(s.id); emit(s.id, 'workspace.stopped', { workspaceId: workspace.id }); return res.json(workspace); }
+  try { const workspace = await stopWorkspace(s.id); emit(s.id, 'workspace.stopped', { workspaceId: workspace.id }); await recordAudit(req, s.id, 'workspace.stop', 'completed', { workspaceId: workspace.id }); return res.json(workspace); }
   catch (error) { return res.status(502).json({ error: error instanceof Error ? error.message : 'Workspace could not be stopped.' }); }
 });
 
@@ -462,6 +463,7 @@ router.post('/changes/:changeId/approve', async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   emit(c.sessionId, 'approval.resolved', { changeId: c.id, approved: true });
   if (durableStorageConfigured()) { const now = new Date().toISOString(); await controlPlaneRepository().putApproval({ id: `approval_${c.id}`, sessionId: c.sessionId, action: 'changes.approve', state: 'approved', context: { changeId: c.id }, createdAt: now, resolvedAt: now }); await controlPlaneRepository().putChangeSet(c); }
+  await recordAudit(req, c.sessionId, 'changes.approve', 'approved', { changeId: c.id, files: c.files.length });
   res.json(c);
 });
 router.post('/changes/:changeId/commit', async (req, res) => {
@@ -476,9 +478,10 @@ router.post('/changes/:changeId/commit', async (req, res) => {
       if (!c || c.reviewState !== 'approved') return res.status(409).json({ error: 'approve before commit (safe-by-default)' });
       const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
       const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', { message: String(req.body?.message || 'Orlynx update') });
-      c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); return res.json(c);
+      c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: result.sha }); return res.json(c);
     }
     const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));
+    await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: c.commitSha });
     res.json(c);
   } catch (e: unknown) { res.status(409).json({ error: (e as Error).message }); }
 });
@@ -493,9 +496,11 @@ router.post('/changes/:changeId/push', async (req, res) => {
     if (durableStorageConfigured()) {
       const c = currentChanges(sid).find((item) => item.id === req.params.changeId); if (!c || c.reviewState !== 'committed') return res.status(409).json({ error: 'commit and approve this changeset before pushing' });
       const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-      await bridgeRequest(workspace.id, 'git.push', { approved: true }); c.pushedAt = new Date().toISOString(); store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: session.branch }); return res.json(c);
+      await bridgeRequest(workspace.id, 'git.push', { approved: true }); c.pushedAt = new Date().toISOString(); store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: session.branch }); await recordAudit(req, sid, 'git.push', 'completed', { changeId: c.id, branch: session.branch, commitSha: c.commitSha }); return res.json(c);
     }
-    res.json(await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req)));
+    const pushed = await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req));
+    await recordAudit(req, sid, 'git.push', 'completed', { changeId: pushed.id, branch: session.branch, commitSha: pushed.commitSha });
+    res.json(pushed);
   }
   catch (error) { res.status(409).json({ error: (error as Error).message }); }
 });
