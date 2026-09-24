@@ -25,6 +25,37 @@ export function githubAppConfigured(): boolean {
   return Boolean(appId && appSlug && publicOriginIsSafe && clientSecret && privateKey && webhookSecret);
 }
 
+export interface GitHubInstallation {
+  id: number;
+  account: string;
+  accountType: string;
+  status: 'active' | 'suspended';
+  connectedAt: string;
+  updatedAt: string;
+  lastVerifiedAt?: string;
+}
+
+function touchInstallation(id: number, account: string, accountType: string, status: 'active' | 'suspended'): void {
+  const now = new Date().toISOString();
+  const existing = store.db.githubInstallations.find((item) => item.id === id);
+  if (existing) {
+    existing.account = account;
+    existing.accountType = accountType;
+    existing.status = status;
+    existing.updatedAt = now;
+  } else {
+    store.db.githubInstallations.push({ id, account, accountType, status, connectedAt: now, updatedAt: now });
+  }
+  store.save();
+}
+
+function forgetInstallation(id: number): void {
+  store.db.githubInstallations = store.db.githubInstallations.filter((item) => item.id !== id);
+  tokenCache.delete(id);
+  repositoryCache.delete(id);
+  store.save();
+}
+
 export function githubInstallUrl(): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
   const state = signState({ purpose: 'install', nonce: crypto.randomBytes(18).toString('base64url'), exp: Date.now() + 10 * 60_000 });
@@ -41,24 +72,75 @@ export function githubWebhookUrl(): string {
   return `${publicUrl}/v1/github/webhook`;
 }
 
-export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, event: string): Promise<void> {
+export interface GitHubWebhookSummary {
+  event: string;
+  action?: string;
+  installationId?: number;
+  account?: string;
+  repositoriesChanged?: number;
+}
+
+export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, event: string, deliveryId = ''): Promise<GitHubWebhookSummary> {
   if (!webhookSecret) throw new Error('GitHub webhook signing is not configured.');
   const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest();
-  const received = Buffer.from(signature.replace(/^sha256=/, ''), 'hex');
+  let received: Buffer;
+  try { received = Buffer.from(signature.replace(/^sha256=/, ''), 'hex'); }
+  catch { throw new Error('GitHub webhook signature is invalid.'); }
   if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) throw new Error('GitHub webhook signature is invalid.');
-  const payload = JSON.parse(rawBody.toString('utf8')) as { action?: string; installation?: { id: number; account?: { login?: string; type?: string } } };
-  if (event !== 'installation' || !payload.installation) return;
-  const id = payload.installation.id;
-  if (payload.action === 'deleted' || payload.action === 'suspend') {
-    store.db.githubInstallations = store.db.githubInstallations.filter((item) => item.id !== id);
-    tokenCache.delete(id);
-    store.save();
-  } else if (payload.action === 'created' || payload.action === 'unsuspend') {
-    const rows = store.db.githubInstallations.filter((item) => item.id !== id);
-    rows.push({ id, account: payload.installation.account?.login || 'GitHub account', accountType: payload.installation.account?.type || 'User', installedAt: new Date().toISOString() });
-    store.db.githubInstallations = rows;
-    store.save();
+  let payload: {
+    action?: string;
+    installation?: { id: number; account?: { login?: string; type?: string } };
+    repositories_added?: { full_name: string }[];
+    repositories_removed?: { full_name: string }[];
+  };
+  try { payload = JSON.parse(rawBody.toString('utf8')); }
+  catch { throw new Error('GitHub webhook payload is not valid JSON.'); }
+  const installationId = payload.installation?.id;
+  const account = payload.installation?.account?.login;
+  // Never log secrets: event type, delivery, action, installation/account only.
+  console.info(`[orlynx] github webhook event=${event} action=${payload.action || '-'} delivery=${deliveryId || '-'} installation=${installationId || '-'} account=${account || '-'}`);
+  if (event === 'installation' && installationId) {
+    const name = account || 'GitHub account';
+    const kind = payload.installation?.account?.type || 'User';
+    if (payload.action === 'deleted') {
+      forgetInstallation(installationId);
+    } else if (payload.action === 'suspend') {
+      touchInstallation(installationId, name, kind, 'suspended');
+    } else if (payload.action === 'unsuspend') {
+      touchInstallation(installationId, name, kind, 'active');
+      repositoryCache.delete(installationId);
+    } else if (payload.action === 'created' || payload.action === 'new_permissions_accepted') {
+      touchInstallation(installationId, name, kind, 'active');
+      repositoryCache.delete(installationId);
+    }
+    return { event, action: payload.action, installationId, account: name };
   }
+  if (event === 'installation_repositories' && installationId) {
+    // Repository scope changed on GitHub: drop cached listing so the next
+    // authorization check re-reads the authoritative set. History is preserved.
+    repositoryCache.delete(installationId);
+    const changed = (payload.repositories_added?.length || 0) + (payload.repositories_removed?.length || 0);
+    return { event, action: payload.action, installationId, account, repositoriesChanged: changed };
+  }
+  return { event, action: payload.action, installationId, account };
+}
+
+export function githubManageUrl(installationId?: number): string {
+  if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
+  if (installationId) return `https://github.com/settings/installations/${installationId}`;
+  return `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`;
+}
+
+export async function disconnectGitHub(): Promise<void> {
+  // Orlynx-side disconnect: stop minting tokens, drop cached access, forget
+  // installation metadata. Sessions, messages, changes and local history stay.
+  // (Uninstalling the app on github.com is a separate, user-driven action.)
+  for (const installation of store.db.githubInstallations) {
+    tokenCache.delete(installation.id);
+    repositoryCache.delete(installation.id);
+  }
+  store.db.githubInstallations = [];
+  store.save();
 }
 
 export async function completeGitHubInstallation(installationId: string, state: string, setupAction: string) {
@@ -66,37 +148,79 @@ export async function completeGitHubInstallation(installationId: string, state: 
   if (claims.purpose !== 'install') throw new Error('GitHub installation state is invalid.');
   const id = Number(installationId);
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('GitHub returned an invalid installation id.');
-  if (setupAction === 'install' || setupAction === 'update') {
+  if (setupAction === 'uninstall') {
+    forgetInstallation(id);
+  } else if (setupAction === 'install' || setupAction === 'update') {
     const jwt = createAppJwt();
     const response = await fetch(`${API}/app/installations/${id}`, { headers: githubHeaders(jwt) });
-    if (!response.ok) throw new Error(`GitHub could not verify the app installation (HTTP ${response.status}).`);
-    const installation = await response.json() as { id: number; account?: { login?: string; type?: string } };
-    const rows = store.db.githubInstallations.filter((item) => item.id !== installation.id);
-    rows.push({ id: installation.id, account: installation.account?.login || 'GitHub account', accountType: installation.account?.type || 'User', installedAt: new Date().toISOString() });
-    store.db.githubInstallations = rows;
-    store.save();
-  } else if (setupAction === 'uninstall') {
-    store.db.githubInstallations = store.db.githubInstallations.filter((item) => item.id !== id);
-    store.save();
+    if (!response.ok) {
+      if (response.status === 403) throw new Error('This organization requires owner approval before Orlynx can access its repositories. Ask an organization owner to approve the installation, then reconnect.');
+      throw new Error(`GitHub could not verify the app installation (HTTP ${response.status}).`);
+    }
+    const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
+    touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+    // Post-connection verification: mint a token and list repositories before
+    // reporting success. A stored installation alone is never "connected".
+    repositoryCache.delete(installation.id);
+    try {
+      await installationToken(installation.id);
+      await githubListRepos();
+      const row = store.db.githubInstallations.find((item) => item.id === installation.id);
+      if (row) { row.lastVerifiedAt = new Date().toISOString(); store.save(); }
+    } catch (error) {
+      forgetInstallation(installation.id);
+      throw new Error(error instanceof Error ? error.message : 'GitHub verification failed after installation.');
+    }
   } else {
     throw new Error('GitHub returned an unsupported installation action.');
   }
   return `${publicUrl}/?github=${setupAction === 'uninstall' ? 'disconnected' : 'connected'}`;
 }
 
+export function githubCallbackErrorUrl(reason: string): string {
+  return `${publicUrl || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
+}
+
 export async function githubConnectionStatus() {
+  const installations = store.db.githubInstallations.map(({ id, account, accountType, installedAt, connectedAt, updatedAt, lastVerifiedAt, status }) => ({
+    id, account, accountType, installedAt: connectedAt || installedAt, updatedAt, lastVerifiedAt: lastVerifiedAt || null, status: status || 'active',
+    manageUrl: githubAppConfigured() ? githubManageUrl(id) : null,
+  }));
+  const active = installations.filter((item) => item.status !== 'suspended');
   return {
     configured: githubAppConfigured(),
-    connected: githubAppConfigured() && store.db.githubInstallations.length > 0,
-    auth: !githubAppConfigured() ? 'not-configured' : store.db.githubInstallations.length ? 'github-app' : 'installation-required',
+    connected: githubAppConfigured() && active.length > 0,
+    needsAttention: githubAppConfigured() && installations.length > 0 && active.length === 0,
+    auth: !githubAppConfigured() ? 'not-configured' : active.length ? 'github-app' : installations.length ? 'suspended' : 'installation-required',
     provider: 'GitHub App',
-    installations: store.db.githubInstallations.map(({ id, account, accountType, installedAt }) => ({ id, account, accountType, installedAt })),
+    login: active[0]?.account || installations[0]?.account || null,
+    installations,
     installUrl: githubAppConfigured() ? '/v1/github/install' : null,
+    manageUrl: githubAppConfigured() ? '/v1/github/manage' : null,
     setupCallbackUrl: githubAppConfigured() ? githubSetupUrl() : null,
     webhookUrl: githubAppConfigured() ? githubWebhookUrl() : null,
+    // User-scoped GitHub authorization (e.g. Codespaces) is not established by
+    // the installation flow. Cloud stays fail-closed until that exists.
+    userAuthorizationState: 'not-established',
   };
 }
 
+export async function githubHealth(): Promise<{ healthy: boolean; authorizedRepositories: number; message: string }> {
+  if (!githubAppConfigured()) return { healthy: false, authorizedRepositories: 0, message: 'GitHub App is not configured on this Orlynx server.' };
+  const active = store.db.githubInstallations.filter((item) => (item.status || 'active') !== 'suspended');
+  if (!active.length) {
+    const any = store.db.githubInstallations.length > 0;
+    return { healthy: false, authorizedRepositories: 0, message: any ? 'The GitHub App installation is suspended. Ask an organization owner to unsuspend it, then reconnect.' : 'Install the Orlynx GitHub App to connect repositories.' };
+  }
+  try {
+    const repos = await githubListRepos();
+    return { healthy: true, authorizedRepositories: repos.length, message: repos.length ? 'GitHub App is healthy.' : 'GitHub App is connected but no repositories are selected. Add repositories on GitHub.' };
+  } catch (error) {
+    return { healthy: false, authorizedRepositories: 0, message: error instanceof Error ? error.message : 'GitHub verification failed.' };
+  }
+}
+
+const usedStates = new Map<string, number>();
 function signState(claims: Record<string, unknown>): string {
   const data = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = crypto.createHmac('sha256', clientSecret).update(data).digest('base64url');
@@ -111,9 +235,14 @@ function verifyState(state: string): { purpose: string; exp: number } {
   let received: Buffer;
   try { received = Buffer.from(signature, 'base64url'); } catch { throw new Error('GitHub installation state is invalid.'); }
   if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) throw new Error('GitHub installation state signature is invalid.');
-  let claims: { purpose: string; exp: number };
+  let claims: { purpose: string; exp: number; nonce?: string };
   try { claims = JSON.parse(Buffer.from(data, 'base64url').toString('utf8')); } catch { throw new Error('GitHub installation state is invalid.'); }
   if (!claims.exp || claims.exp < Date.now()) throw new Error('GitHub installation state expired. Start the connection again.');
+  // Single-use: reject replayed callbacks.
+  const now = Date.now();
+  for (const [value, expires] of usedStates) if (expires < now) usedStates.delete(value);
+  if (usedStates.has(state)) throw new Error('GitHub installation state was already used. Start the connection again.');
+  usedStates.set(state, claims.exp);
   return claims;
 }
 
@@ -134,7 +263,9 @@ const repositoryCache = new Map<number, { repos: GitHubRepository[]; expiresAt: 
 async function installationToken(installationId: number): Promise<string> {
   const cached = tokenCache.get(installationId);
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
-  if (!store.db.githubInstallations.some((item) => item.id === installationId)) throw new Error('This GitHub installation is not connected to Orlynx.');
+  const installation = store.db.githubInstallations.find((item) => item.id === installationId);
+  if (!installation) throw new Error('This GitHub installation is not connected to Orlynx.');
+  if ((installation.status || 'active') === 'suspended') throw new Error('This GitHub installation is suspended. Ask an organization owner to unsuspend it, then reconnect.');
   const response = await fetch(`${API}/app/installations/${installationId}/access_tokens`, { method: 'POST', headers: githubHeaders(createAppJwt()), body: '{}' });
   if (!response.ok) throw new Error(`GitHub could not issue an installation token (HTTP ${response.status}).`);
   const data = await response.json() as { token: string; expires_at: string };
@@ -165,7 +296,8 @@ export interface GitHubRepository {
 
 export async function githubListRepos(): Promise<GitHubRepository[]> {
   const repos: GitHubRepository[] = [];
-  for (const installation of store.db.githubInstallations) {
+  const active = store.db.githubInstallations.filter((item) => (item.status || 'active') !== 'suspended');
+  for (const installation of active) {
     const cached = repositoryCache.get(installation.id);
     if (cached && cached.expiresAt > Date.now()) { repos.push(...cached.repos); continue; }
     const token = await installationToken(installation.id);

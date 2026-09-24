@@ -5,6 +5,17 @@ import type { AttachmentMeta, AgentRun, ChangeSet, ChatMessage, OrlynxEvent, Pro
 const DATA_DIR = process.env.ORLYNX_DATA_DIR || path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'orlynx.json');
 
+export interface GitHubInstallationRecord {
+  id: number;
+  account: string;
+  accountType: string;
+  installedAt: string;
+  status?: 'active' | 'suspended';
+  connectedAt?: string;
+  updatedAt?: string;
+  lastVerifiedAt?: string;
+}
+
 interface DB {
   sessions: Record<string, ProjectSession>;
   messages: Record<string, ChatMessage[]>;
@@ -13,7 +24,7 @@ interface DB {
   changes: Record<string, ChangeSet[]>;
   runs: Record<string, AgentRun[]>;
   seq: Record<string, number>;
-  githubInstallations: { id: number; account: string; accountType: string; installedAt: string }[];
+  githubInstallations: GitHubInstallationRecord[];
   openCodeSessions: Record<string, string>;
 }
 
@@ -28,7 +39,16 @@ export class Store {
     fs.mkdirSync(path.join(DATA_DIR, 'attachments'), { recursive: true });
     try {
       if (fs.existsSync(DB_FILE)) {
-        this.db = { ...blank(), ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) };
+        const raw = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+        this.db = { ...blank(), ...raw };
+        // Migrate pre-status installation rows to the current shape.
+        const now = new Date().toISOString();
+        this.db.githubInstallations = (this.db.githubInstallations || []).map((item) => ({
+          status: 'active' as const,
+          connectedAt: item.installedAt,
+          updatedAt: item.updatedAt || item.installedAt || now,
+          ...item,
+        }));
       } else {
         this.db = blank();
       }

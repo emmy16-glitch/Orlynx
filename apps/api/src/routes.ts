@@ -3,7 +3,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { emit, history, subscribe } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, githubBranches, githubConnectionStatus, githubInstallUrl, githubListRepos, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace } from './workspaces.js';
@@ -30,7 +30,10 @@ router.post('/sessions', (req, res) => {
 router.get('/sessions/:id', (req, res) => {
   const s = store.db.sessions[req.params.id];
   if (!s || !importedRepositoryRoot(s.project)) return res.status(404).json({ error: 'imported project session not found' });
-  res.json({ ...s, head: headSha(s.project), workspace: getWorkspace(s.id) || null });
+  const githubAccess = store.db.githubInstallations.some((item) => (item.status || 'active') !== 'suspended')
+    ? 'connected'
+    : 'disconnected';
+  res.json({ ...s, head: headSha(s.project), workspace: getWorkspace(s.id) || null, githubAccess });
 });
 
 // POST /v1/sessions/{id}/messages — send user task (idempotent via clientId)
@@ -194,31 +197,64 @@ router.get('/github/install', (_req, res) => {
   try { res.redirect(302, githubInstallUrl()); }
   catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
 });
+router.get('/github/manage', (_req, res) => {
+  try {
+    const first = store.db.githubInstallations[0]?.id;
+    res.redirect(302, githubManageUrl(first));
+  } catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
+});
+router.post('/github/disconnect', async (_req, res) => {
+  // Orlynx-side disconnect. Sessions, messages, changes and local history are
+  // preserved; only GitHub access metadata and cached tokens are dropped.
+  await disconnectGitHub();
+  res.json({ disconnected: true, ...(await githubConnectionStatus()) });
+});
 router.get('/github/setup', async (req, res) => {
   try {
     const redirect = await completeGitHubInstallation(String(req.query.installation_id || ''), String(req.query.state || ''), String(req.query.setup_action || ''));
     res.redirect(302, redirect);
-  } catch (error) { res.status(400).send(`GitHub connection failed: ${error instanceof Error ? error.message : 'invalid setup callback'}`); }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'invalid setup callback';
+    res.redirect(302, githubCallbackErrorUrl(reason));
+  }
 });
 router.post('/github/webhook', async (req, res) => {
   if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: 'Expected a signed GitHub JSON webhook.' });
   try {
-    await acceptGitHubWebhook(req.body, String(req.header('x-hub-signature-256') || ''), String(req.header('x-github-event') || ''));
+    const summary = await acceptGitHubWebhook(req.body, String(req.header('x-hub-signature-256') || ''), String(req.header('x-github-event') || ''), String(req.header('x-github-delivery') || ''));
     res.status(204).end();
+    void summary;
   } catch (error) { res.status(401).json({ error: error instanceof Error ? error.message : 'GitHub webhook verification failed.' }); }
 });
 router.get('/agents', async (_req, res) => res.json(await openCodeStatus()));
 router.get('/integrations/status', async (_req, res) => {
-  const [github, opencode] = await Promise.all([githubConnectionStatus(), openCodeStatus()]);
-  res.json({ github, agent: opencode, cloud: { configured: false, connected: false, message: 'A Codespaces execution bridge is not configured.' } });
+  const [connection, opencode] = await Promise.all([githubConnectionStatus(), openCodeStatus()]);
+  const health = connection.connected || connection.needsAttention
+    ? await githubHealth()
+    : { healthy: false as boolean, authorizedRepositories: 0, message: connection.configured ? 'Install the Orlynx GitHub App to connect repositories.' : 'GitHub App is not configured on this Orlynx server.' };
+  res.json({
+    github: { ...connection, health: health.healthy ? 'healthy' : 'unhealthy', healthMessage: health.message, authorizedRepositories: health.authorizedRepositories },
+    agent: opencode,
+    cloud: { configured: false, connected: false, message: 'A Codespaces execution bridge is not configured. Cloud access needs a user-authorized GitHub bridge first.' },
+  });
 });
 router.get('/repos/:owner/:name/branches', async (req, res) => {
-  const branches = await githubBranches(`${req.params.owner}/${req.params.name}`);
-  if (!branches.length && !(await githubConnectionStatus()).connected) return res.status(503).json({ error: 'GitHub access is not configured.' });
-  res.json({ branches });
+  try {
+    const branches = await githubBranches(`${req.params.owner}/${req.params.name}`);
+    res.json({ branches });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'GitHub access failed.';
+    if (/not available through an installed GitHub App|not connected|requir|approv/i.test(message)) return res.status(403).json({ error: 'Repository is not authorized for this Orlynx installation.' });
+    if (/not configured/i.test(message)) return res.status(503).json({ error: message });
+    res.status(502).json({ error: message });
+  }
 });
 router.post('/repos/import', async (req, res) => {
   const { repository = '', branch = 'main' } = req.body || {};
   try { res.json({ project: await importGitHubRepository(String(repository), String(branch)), branch }); }
-  catch (error) { res.status(400).json({ error: (error as Error).message }); }
+  catch (error) {
+    const message = (error as Error).message;
+    if (/not available through an installed GitHub App|not connected|requir|approv/i.test(message)) return res.status(403).json({ error: 'Repository is not authorized for this Orlynx installation.' });
+    res.status(400).json({ error: message });
+  }
 });
