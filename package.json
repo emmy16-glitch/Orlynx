@@ -14,6 +14,7 @@
     "dev:api": "npm run dev --workspace=@orlynx/api",
     "dev:web": "npm run dev --workspace=@orlynx/web",
     "build": "npm run build --workspace=@orlynx/shared && npm run build --workspace=@orlynx/api && npm run build --workspace=@orlynx/web && npm run build --workspace=@orlynx/bridge",
+    "typecheck": "npm run build --workspace=@orlynx/shared && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspace=@orlynx/api",
     "e2e": "npm run e2e --workspace=@orlynx/api"
   },
