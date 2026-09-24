@@ -3,7 +3,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { durableHistory, emit, subscribe } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
@@ -494,9 +494,47 @@ router.post('/changes/:changeId/push', async (req, res) => {
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   try {
     if (durableStorageConfigured()) {
-      const c = currentChanges(sid).find((item) => item.id === req.params.changeId); if (!c || c.reviewState !== 'committed') return res.status(409).json({ error: 'commit and approve this changeset before pushing' });
-      const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-      await bridgeRequest(workspace.id, 'git.push', { approved: true }); c.pushedAt = new Date().toISOString(); store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: session.branch }); await recordAudit(req, sid, 'git.push', 'completed', { changeId: c.id, branch: session.branch, commitSha: c.commitSha }); return res.json(c);
+      const c = currentChanges(sid).find((item) => item.id === req.params.changeId);
+      if (!c || c.reviewState !== 'committed') return res.status(409).json({ error: 'commit and approve this changeset before publishing' });
+      const workspace = await getWorkspace(sid);
+      if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
+
+      const explicitStrategy = String(req.body?.strategy || '');
+      const publishAsPullRequest = explicitStrategy === 'pull-request' || ['main', 'master'].includes(session.branch);
+      let publishedBranch = session.branch;
+      let pullRequest: { number: number; url: string } | undefined;
+
+      if (publishAsPullRequest) {
+        const gitStatus = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status');
+        if (gitStatus.branch && /^orlynx\/[a-zA-Z0-9._-]+$/.test(gitStatus.branch)) {
+          publishedBranch = gitStatus.branch;
+        } else {
+          publishedBranch = `orlynx/${c.id.replace(/^chg_/, '')}`;
+          await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishedBranch });
+        }
+        await bridgeRequest(workspace.id, 'git.push', { approved: true });
+        pullRequest = await createGitHubPullRequest(
+          session.project,
+          session.branch,
+          publishedBranch,
+          String(req.body?.title || 'Orlynx changes'),
+          String(req.body?.body || `Changes prepared and reviewed in Orlynx.\n\nCommit: ${c.commitSha || 'pending'}`),
+          requestInstallationId(req),
+        );
+        c.pullRequestUrl = pullRequest.url;
+        c.pullRequestNumber = pullRequest.number;
+      } else {
+        const result = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.push', { approved: true });
+        publishedBranch = result.branch || session.branch;
+      }
+
+      c.pushedAt = new Date().toISOString();
+      c.pushedBranch = publishedBranch;
+      store.save();
+      await controlPlaneRepository().putChangeSet(c);
+      emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: publishedBranch, pullRequestUrl: c.pullRequestUrl, pullRequestNumber: c.pullRequestNumber });
+      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
+      return res.json(c);
     }
     const pushed = await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req));
     await recordAudit(req, sid, 'git.push', 'completed', { changeId: pushed.id, branch: session.branch, commitSha: pushed.commitSha });
