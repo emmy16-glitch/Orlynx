@@ -13,6 +13,7 @@ const USER_ID = process.env.ORLYNX_USER_ID || '';
 const CONNECTION_ID = process.env.ORLYNX_CONNECTION_ID || '';
 const REPO_ROOT = path.resolve(process.env.ORLYNX_REPO_ROOT || process.cwd());
 const OPENCODE_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD || '';
+const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || '';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
@@ -76,7 +77,7 @@ async function openCodeHealth(): Promise<'ready' | 'unavailable'> {
 async function startOpenCode(): Promise<'ready' | 'failed'> {
   if (await openCodeHealth() === 'ready') return 'ready';
   if (spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return 'failed';
-  const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], { cwd: REPO_ROOT, detached: true, stdio: 'ignore', env: cleanEnvironment({ OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD }) });
+  const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], { cwd: REPO_ROOT, detached: true, stdio: 'ignore', env: cleanEnvironment({ OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD, ...(OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}) }) });
   child.unref();
   for (let attempt = 0; attempt < 30; attempt++) { await new Promise((resolve) => setTimeout(resolve, 1_000)); if (await openCodeHealth() === 'ready') return 'ready'; }
   return 'failed';
