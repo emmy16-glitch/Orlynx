@@ -9,7 +9,7 @@ import { saveAttachment } from './attachments.js';
 import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
-import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
+import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
 import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
@@ -337,6 +337,7 @@ router.post('/sessions/:id/exec', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { cmd = 'echo ok', approved = false } = req.body || {};
+  if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
   const gate = canPerform(s.id, 'terminal.exec', { cmd: String(cmd) });
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   if (gate.needsApproval && !approved) {
@@ -546,22 +547,29 @@ router.post('/ai/providers/:id/disconnect', async (req, res) => {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'AI account could not be disconnected.' });
   }
 });
-router.get('/ai/session/:id', (req, res) => {
+router.get('/ai/session/:id', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
-  res.json({ prefs: getSessionPrefs(s.id, s.project), activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
+  const prefs = durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project);
+  const activeRun = durableStorageConfigured()
+    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+    : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+  res.json({ prefs, activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
 });
-router.put('/ai/session/:id', (req, res) => {
+router.put('/ai/session/:id', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
+    if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
     const prefs = setSessionPrefs(s.id, {
       ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
       ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
       ...(req.body?.permission ? { permission: String(req.body.permission) as 'full' | 'ask-first' | 'read-only' } : {}),
     });
-    const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+    if (durableStorageConfigured()) await controlPlaneRepository().putAISessionPrefs(prefs);
+    const activeRun = durableStorageConfigured()
+      ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+      : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
     // Never interrupt an active run: changes apply to the next turn.
     res.json({ prefs, appliesTo: activeRun ? 'next-turn' : 'next-task' });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Preferences could not be saved.' }); }
