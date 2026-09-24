@@ -19,6 +19,7 @@ export interface GitHubInstallationRecord {
   connectedAt?: string;
   updatedAt?: string;
   lastVerifiedAt?: string;
+  repositorySelection?: 'all' | 'selected';
 }
 
 interface DB {
