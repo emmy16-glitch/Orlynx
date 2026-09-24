@@ -32,3 +32,7 @@ Playwright storage-state file (`ORLYNX_E2E_STORAGE_STATE`) captured after the
 normal GitHub login, or a dedicated secret cookie as fallback. The E2E creates
 only an `orlynx-e2e/<timestamp>` branch; the bridge refuses this helper for any
 other branch and refuses pushes to `main`/`master`.
+
+## Marketplace database rollout
+
+After attaching the Neon Postgres resource to the Orlynx Vercel project, create a fresh Production deployment so the new database environment variables are available to the runtime. Verify `/health` reports `durableStorage: true` before considering project/session creation ready.
