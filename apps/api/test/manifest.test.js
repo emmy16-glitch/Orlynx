@@ -55,6 +55,7 @@ describe('github app manifest bootstrap', () => {
     assert.deepEqual(body.manifest.default_permissions, {
       contents: 'write',
       metadata: 'read',
+      pull_requests: 'write',
       codespaces: 'write',
       codespaces_lifecycle_admin: 'write',
     });
