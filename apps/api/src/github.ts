@@ -119,16 +119,27 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
   catch { throw new Error('GitHub webhook payload is not valid JSON.'); }
   const installationId = payload.installation?.id;
   const account = payload.installation?.account?.login;
-  // Webhook idempotency: GitHub may redeliver. Never process the same
-  // delivery twice as separate authorization changes.
+  // Webhook idempotency: GitHub may redeliver. In production the delivery
+  // ledger is durable and atomic across instances/redeploys. Local JSON is only
+  // a development fallback.
   if (deliveryId) {
-    if (store.db.webhookDeliveries.some((item) => item.id === deliveryId)) {
-      console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
-      return { event, action: payload.action, installationId, account, duplicate: true };
+    if (durableStorageConfigured()) {
+      const fresh = await controlPlaneRepository().recordWebhookDelivery(deliveryId, event);
+      if (!fresh) {
+        console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
+        return { event, action: payload.action, installationId, account, duplicate: true };
+      }
+      // Keep operational tables bounded without putting correctness on a cron.
+      void controlPlaneRepository().pruneOperationalData().catch(() => {});
+    } else {
+      if (store.db.webhookDeliveries.some((item) => item.id === deliveryId)) {
+        console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
+        return { event, action: payload.action, installationId, account, duplicate: true };
+      }
+      store.db.webhookDeliveries.push({ id: deliveryId, event, receivedAt: new Date().toISOString() });
+      if (store.db.webhookDeliveries.length > 500) store.db.webhookDeliveries = store.db.webhookDeliveries.slice(-500);
+      store.save();
     }
-    store.db.webhookDeliveries.push({ id: deliveryId, event, receivedAt: new Date().toISOString() });
-    if (store.db.webhookDeliveries.length > 500) store.db.webhookDeliveries = store.db.webhookDeliveries.slice(-500);
-    store.save();
   }
   // Never log secrets: event type, delivery, action, installation/account only.
   console.info(`[orlynx] github webhook event=${event} action=${payload.action || '-'} delivery=${deliveryId || '-'} installation=${installationId || '-'} account=${account || '-'}`);
@@ -137,6 +148,7 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
     const kind = payload.installation?.account?.type || 'User';
     if (payload.action === 'deleted') {
       forgetInstallation(installationId);
+      if (durableStorageConfigured()) await controlPlaneRepository().deleteGitHubConnection(installationId);
     } else if (payload.action === 'suspend') {
       touchInstallation(installationId, name, kind, 'suspended');
     } else if (payload.action === 'unsuspend') {
