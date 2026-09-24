@@ -316,6 +316,7 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
       GITHUB_WEBHOOK_SECRET: present('GITHUB_WEBHOOK_SECRET'),
     },
     privateKeyLooksValid: key.includes('BEGIN') && key.includes('END'),
+    pkDebug: { len: key.length, head: key.slice(0, 27), tail: key.slice(-25), newlines: (key.match(/\n/g) || []).length, backslashN: (key.match(/\\n/g) || []).length },
     vercel: process.env.VERCEL === '1',
     moduleLoad: moduleLoadSnapshot(),
     check: {
