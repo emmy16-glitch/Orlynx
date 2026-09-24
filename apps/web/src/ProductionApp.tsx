@@ -55,6 +55,7 @@ export default function ProductionApp() {
   const [integration, setIntegration] = useState<any>({ github: {}, githubAvailable: true, ai: { available: false }, workspace: { terminalAvailable: false, cloudAvailable: false, previewAvailable: false } });
   const [repos, setRepos] = useState<Repo[]>([]);
   const [repoQuery, setRepoQuery] = useState('');
+  const [repoExpanded, setRepoExpanded] = useState(false);
   const [repoFilter, setRepoFilter] = useState('all');
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
@@ -230,6 +231,7 @@ export default function ProductionApp() {
       window.history.replaceState({}, '', '/');
       if (callback === 'connected') {
         setPage('github');
+        setError('');
         // Mockup screen 5: automatic redirect & sync. The session cookie was
         // just issued by /v1/github/setup, so re-read integrations, force a
         // live re-verification, then list repositories — no manual step.
@@ -242,7 +244,7 @@ export default function ProductionApp() {
             setSyncStep('Fetching repositories');
             try { await fetch('/v1/github/sync', { method: 'POST' }); } catch { /* sync is best-effort; status refresh below still applies */ }
             await refreshIntegrations();
-            setSyncStep('Preparing your workspace');
+            setSyncStep('Finishing setup');
             const response = await fetch('/v1/repos');
             if (response.ok) {
               const result = await j<any>(response);
@@ -250,7 +252,8 @@ export default function ProductionApp() {
               setRepos(result.github || []);
               setSelectedRepo(null); setBranches([]);
               repoLoadAttempt.current = true;
-              setGithubNotice({ tone: 'ok', text: result.github?.length ? 'GitHub connected. Choose a repository to open.' : 'GitHub connected, but no repositories are selected. Add repositories on GitHub, then refresh.' });
+              setError('');
+              setGithubNotice(result.github?.length ? null : { tone: 'neutral', text: 'No repositories are available yet. Choose repositories on GitHub, then refresh.' });
             } else {
               setGithubNotice({ tone: 'ok', text: 'GitHub connected. Choose a repository to open.' });
             }
@@ -351,7 +354,10 @@ export default function ProductionApp() {
       const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: repo.full, owner: repo.owner, branch: chosenBranch }) }));
       await openSession(record);
     } catch (error: any) {
-      setError(error.message || 'This repository could not be opened.');
+      const message = String(error?.message || '');
+      setError(message.includes('workspace storage') || message.includes('STORAGE_REQUIRED') || message.includes('durable storage')
+        ? 'This project cannot open yet because the Orlynx workspace service is still being prepared.'
+        : message || 'This repository could not be opened.');
     } finally {
       setRepoBusy(false);
     }
@@ -553,7 +559,12 @@ export default function ProductionApp() {
     if (repoFilter === 'personal') return repo.ownerType !== 'Organization';
     if (repoFilter === 'recent') return recentProjects.includes(repo.full);
     return true;
+  }).sort((a, b) => {
+    const aTime = a.updatedAt ? Date.parse(a.updatedAt) : 0;
+    const bTime = b.updatedAt ? Date.parse(b.updatedAt) : 0;
+    return bTime - aTime;
   });
+  const visibleRepos = repoQuery.trim() || repoExpanded ? filteredRepos : filteredRepos.slice(0, 6);
   const activities = useMemo(() => toActivities(events), [events]);
   const running = lastRun?.state === 'running' || lastRun?.state === 'queued' || activities.some((event) => event.state === 'running');
   const globalNav = [
@@ -565,7 +576,7 @@ export default function ProductionApp() {
 
   const onboarded = Boolean(session || integration.github?.connected || recentProjects.length);
   return (
-    <div className={`orlynx-app ${page === 'workspace' ? 'is-workspace' : ''} ${page === 'welcome' ? 'is-welcome' : ''}`}>
+    <div className={`orlynx-app ${page === 'workspace' ? 'is-workspace' : ''} ${page === 'welcome' ? 'is-welcome' : ''} ${page === 'github' ? 'is-github' : ''}`}>
       {page !== 'welcome' && page !== 'github' && onboarded && <aside className="sidebar">
         <button className="brand-lockup" onClick={() => setPage(session ? 'home' : 'github')}><span className="brand-mark" /><span><b>Orlynx</b><small>Your development workspace</small></span></button>
         <nav className="side-nav" aria-label="Main navigation">{globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} />{label}</button>)}</nav>
@@ -626,9 +637,9 @@ export default function ProductionApp() {
           {showConnectAI && <ConnectAiSheet models={aiModels} providers={aiProviders} search={modelSearch} setSearch={setModelSearch} onSelectModel={(id) => { setShowConnectAI(false); setAiPrefs({ modelId: id }); }} onClose={() => setShowConnectAI(false)} />}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
-          <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>
+          {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
           <main className="page-body">
-            {error && <div className="screen-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
+            {error && page !== 'github' && <div className="screen-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
             {restoring && !session && <div className="loading-screen"><Spinner label="Restoring repository session" /><p>Checking imported repositories…</p></div>}
             {!restoring && page === 'welcome' && <section className="welcome-screen">
               <div className="welcome-brand"><span className="brand-mark" /><b>Orlynx</b></div>
@@ -654,8 +665,8 @@ export default function ProductionApp() {
               <p>We're verifying your access and bringing your repositories into Orlynx.</p>
               <ul className="sync-steps premium">
                 <li className={syncStep === 'Verifying installation' ? 'active' : 'done'}><span>{syncStep === 'Verifying installation' ? '●' : '✓'}</span>Verifying installation</li>
-                <li className={syncStep === 'Fetching repositories' ? 'active' : syncStep === 'Preparing your workspace' || !syncStep ? 'done' : ''}><span>{syncStep === 'Fetching repositories' ? '●' : syncStep === 'Preparing your workspace' || !syncStep ? '✓' : '○'}</span>Fetching repositories</li>
-                <li className={syncStep === 'Preparing your workspace' ? 'active' : ''}><span>{syncStep === 'Preparing your workspace' ? '●' : '○'}</span>Preparing Orlynx</li>
+                <li className={syncStep === 'Fetching repositories' ? 'active' : syncStep === 'Finishing setup' || !syncStep ? 'done' : ''}><span>{syncStep === 'Fetching repositories' ? '●' : syncStep === 'Finishing setup' || !syncStep ? '✓' : '○'}</span>Fetching repositories</li>
+                <li className={syncStep === 'Finishing setup' ? 'active' : ''}><span>{syncStep === 'Finishing setup' ? '●' : '○'}</span>Preparing Orlynx</li>
               </ul>
             </section> : <section className="repo-flow-screen">
               <header className="repo-flow-header"><div className="flow-brand"><span className="brand-mark" /><b>Orlynx</b></div><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></header>
@@ -667,21 +678,20 @@ export default function ProductionApp() {
                 <Button className="welcome-github-button" disabled={repoBusy || connectingGithub || integration.githubAvailable === false} onClick={connectGitHub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}<Icon name="arrow" /></Button>
               </div> : <>
                 <div className="repo-flow-intro"><h1>Welcome back!</h1><p>Choose a repository to start working with Orlynx.</p></div>
-                {githubNotice && <div className={`screen-alert tone-${githubNotice.tone}`} role={githubNotice.tone === 'fail' ? 'alert' : 'status'}><span>{githubNotice.text}</span><button onClick={() => setGithubNotice(null)} aria-label="Dismiss"><Icon name="close" /></button></div>}
-                {error && <div className="screen-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
-                <label className="repo-search"><Icon name="search" /><input value={repoQuery} onChange={(event) => setRepoQuery(event.target.value)} placeholder="Search repositories…" aria-label="Search repositories" /></label>
-                <div className="repo-list-heading"><span>Recently updated</span><button className="text-button" onClick={() => void refreshAfterManage()} disabled={repoBusy}>{repoBusy ? 'Refreshing…' : 'Refresh'}</button></div>
+                {githubNotice && githubNotice.tone !== 'ok' && <div className={`screen-alert repo-inline-alert tone-${githubNotice.tone}`} role={githubNotice.tone === 'fail' ? 'alert' : 'status'}><span>{githubNotice.text}</span><button onClick={() => setGithubNotice(null)} aria-label="Dismiss"><Icon name="close" /></button></div>}
+                {error && <div className="screen-alert repo-inline-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
+                <label className="repo-search"><Icon name="search" /><input value={repoQuery} onChange={(event) => { setRepoQuery(event.target.value); if (event.target.value) setRepoExpanded(true); }} placeholder="Search repositories…" aria-label="Search repositories" /></label>
+                <div className="repo-list-heading"><span>{repoQuery.trim() ? 'Search results' : repoExpanded ? 'All repositories' : 'Recently updated'}</span><button className="repo-refresh-button" onClick={() => void refreshAfterManage()} disabled={repoBusy} aria-label="Refresh repositories" title="Refresh repositories"><Icon name="refresh" /></button></div>
                 <div className="repo-flow-list">
-                  {repoBusy && !repos.length ? <div className="repo-loading premium"><Spinner /><span>Loading your repositories…</span></div> : filteredRepos.map((repo) => <div className="repo-flow-row" key={`${repo.installationId}:${repo.full}`}>
+                  {repoBusy && !repos.length ? <div className="repo-loading premium"><Spinner /><span>Loading your repositories…</span></div> : visibleRepos.map((repo) => <div className="repo-flow-row" key={`${repo.installationId}:${repo.full}`}>
                     <span className="repo-flow-icon"><Icon name="repo" /></span>
                     <span className="repo-flow-copy"><b>{repo.name}</b><small>{repo.private ? 'Private' : 'Public'} · {repoUpdatedLabel(repo.updatedAt)}</small></span>
                     <Button className="repo-open-button" disabled={repoBusy} onClick={() => void openRepository(repo)}>Open</Button>
                   </div>)}
-                  {!repoBusy && !filteredRepos.length && <div className="repo-empty"><span className="repo-flow-icon"><Icon name="repo" /></span><h2>No repositories yet</h2><p>Choose repositories on GitHub, then come back here.</p><Button tone="ghost" onClick={openManageRepositories}>Choose repositories on GitHub</Button></div>}
+                  {!repoBusy && !visibleRepos.length && <div className="repo-empty"><span className="repo-flow-icon"><Icon name="repo" /></span><h2>No repositories yet</h2><p>Choose repositories on GitHub, then come back here.</p><Button tone="ghost" onClick={openManageRepositories}>Choose repositories on GitHub</Button></div>}
                 </div>
-                <button className="view-all-repositories" onClick={openManageRepositories}>Manage repository access <Icon name="arrow" /></button>
-                <button className="repo-disconnect-link" onClick={() => setConfirmDisconnect(true)}>Disconnect GitHub</button>
-                {confirmDisconnect && <div className="disconnect-sheet"><div><b>Disconnect GitHub?</b><p>Orlynx will stop accessing your repositories. Your conversations and project history remain.</p></div><div className="action-row"><Button tone="ghost" onClick={() => setConfirmDisconnect(false)}>Cancel</Button><Button disabled={disconnecting} onClick={disconnectGitHub}>{disconnecting ? 'Disconnecting…' : 'Disconnect'}</Button></div></div>}
+                {!repoQuery.trim() && filteredRepos.length > 6 && <button className="view-all-repositories" onClick={() => setRepoExpanded((value) => !value)}>{repoExpanded ? 'Show recent repositories' : 'View all repositories'} <Icon name={repoExpanded ? 'chevron' : 'arrow'} /></button>}
+                <button className="manage-access-link" onClick={openManageRepositories}><Icon name="github" />Manage GitHub access</button>
               </>}
             </section>)}
             {!restoring && page === 'setup' && <SetupScreen notice={githubNotice} clearNotice={() => setGithubNotice(null)} />}
