@@ -51,6 +51,7 @@ describe('github app manifest bootstrap', () => {
     assert.equal(body.manifest.redirect_url, 'https://orlynx.example.com/v1/setup/github-app/callback');
     assert.equal(body.manifest.hook_attributes.url, 'https://orlynx.example.com/v1/github/webhook');
     assert.equal(body.manifest.setup_url, 'https://orlynx.example.com/v1/github/setup');
+    assert.equal(body.manifest.setup_on_update, true);
     assert.deepEqual(body.manifest.default_permissions, {
       contents: 'write',
       metadata: 'read',
