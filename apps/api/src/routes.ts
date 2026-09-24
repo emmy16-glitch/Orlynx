@@ -305,6 +305,7 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
   const present = (name: string) => Boolean(process.env[name]);
   const key = process.env.GITHUB_PRIVATE_KEY || '';
   res.json({
+    build: 'lazy-env-002',
     presence: {
       ORLYNX_PUBLIC_URL: present('ORLYNX_PUBLIC_URL'),
       GITHUB_APP_ID: present('GITHUB_APP_ID'),
