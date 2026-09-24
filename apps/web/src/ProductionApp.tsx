@@ -241,8 +241,8 @@ export default function ProductionApp() {
   }, [page, integration.github?.connected]);
 
   async function selectRepository(repo: Repo) {
-    setSelectedRepo(repo); setBranch(repo.defaultBranch);
-    try { const result = await j<any>(await fetch(`/v1/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/branches`)); setBranches(result.branches?.length ? result.branches : [repo.defaultBranch]); }
+    setSelectedRepo(repo); setBranch(repo.defaultBranch); setError('');
+    try { const result = await j<any>(await fetch(`/v1/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/branches`)); setBranches(result.branches?.length ? result.branches : [repo.defaultBranch]); setBranch(result.branches?.[0] || repo.defaultBranch); }
     catch (error: any) { setBranches([]); setError(error.message || 'Branches could not be loaded.'); }
   }
 

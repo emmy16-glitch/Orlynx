@@ -391,6 +391,9 @@ export async function githubBranches(fullName: string): Promise<string[]> {
   const repo = await findRepository(fullName);
   const token = await installationToken(repo.installationId);
   const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/branches?per_page=100`, { headers: githubHeaders(token) });
+  // findRepository already enforces installation authorization, so a 404 here
+  // means the repository exists but has no branches yet (e.g. empty repo).
+  if (response.status === 404) return [];
   if (!response.ok) throw new Error(`Could not load branches for ${fullName} (HTTP ${response.status}).`);
   const body = await response.json() as { name: string }[];
   return body.map((branch) => branch.name);
