@@ -21,9 +21,10 @@ function privateKey(): string {
   return '';
 }
 
-export function moduleLoadSnapshot(): Record<string, boolean> {
+export function moduleLoadSnapshot(): Record<string, boolean | string> {
   // Now identical to request-time reads (env is lazy); kept for diagnostics.
   return {
+    impl: 'lazy-003',
     appId: Boolean(appId()),
     appSlug: Boolean(appSlug()),
     publicUrl: Boolean(publicUrl()),
