@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest } from './bridge-rpc.js';
+import { encryptCredential } from './credentials.js';
 
 export const router = Router();
 
@@ -284,8 +285,9 @@ router.post('/sessions/:id/attachments', upload.single('file'), async (req, res)
   if (durableStorageConfigured()) {
     const id = `att_${uuid().slice(0, 8)}`; const now = new Date().toISOString(); const name = safeName(req.file.originalname);
     const meta = { id, sessionId: s.id, filename: req.file.originalname, safeName: name, mime: req.file.mimetype, size: req.file.size, hash: crypto.createHash('sha256').update(req.file.buffer).digest('hex').slice(0, 16), createdAt: now };
-    await controlPlaneRepository().putAttachment({ ...meta, contentBase64: req.file.buffer.toString('base64') });
-    const workspace = await getWorkspace(s.id); if (workspace?.state === 'ready') await bridgeRequest(workspace.id, 'fs.write-attachment', { name: `${id}__${name}`, contentBase64: req.file.buffer.toString('base64') });
+    const contentBase64 = req.file.buffer.toString('base64');
+    await controlPlaneRepository().putAttachment({ ...meta, contentBase64: encryptCredential(contentBase64) });
+    const workspace = await getWorkspace(s.id); if (workspace?.state === 'ready') await bridgeRequest(workspace.id, 'fs.write-attachment', { name: `${id}__${name}`, contentBase64 });
     emit(s.id, 'state.delta', { attachment: meta.id }); return res.json(meta);
   }
   const { meta } = saveAttachment(s.id, req.file.originalname, req.file.mimetype, req.file.buffer);
