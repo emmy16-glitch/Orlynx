@@ -1745,3 +1745,469 @@ button, input, textarea, select { font: inherit; }
     font-size: 86px;
   }
 }
+
+
+/* === Unified workspace + OpenCode connection polish: 2026-09-24 === */
+/* Active projects keep one mental model at every size: repository header,
+   Chat / Files / Changes / More, and the conversation. Infrastructure stays
+   contextual instead of becoming desktop navigation. */
+.is-workspace .app-main {
+  width: 100%;
+  margin-left: 0;
+  padding-bottom: 0;
+}
+.is-workspace .sidebar,
+.is-workspace .context-panel {
+  display: none !important;
+}
+.is-workspace .workspace-layout {
+  width: 100%;
+  max-width: none;
+  display: block;
+  margin: 0;
+  padding: 0 24px 160px;
+}
+.is-workspace .workspace-main {
+  width: min(100%, 920px);
+  margin: 0 auto;
+}
+.is-workspace .conversation {
+  width: min(100%, 820px);
+  max-width: none;
+  min-height: calc(100dvh - 220px);
+  margin: 0 auto;
+  padding: 24px 8px 130px;
+}
+.is-workspace .project-header {
+  min-height: 64px;
+  grid-template-columns: minmax(230px, .8fr) minmax(320px, 640px) minmax(80px, .8fr);
+  top: 0;
+  padding: 8px clamp(18px, 3vw, 42px);
+  background: rgb(251 248 243 / 94%);
+  border-bottom-color: var(--border-subtle);
+  backdrop-filter: blur(18px);
+}
+.is-workspace .project-tabs {
+  height: 48px;
+  top: 64px;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  background: rgb(251 248 243 / 96%);
+  border-bottom-color: var(--border-subtle);
+  backdrop-filter: blur(14px);
+}
+.is-workspace .project-tabs button {
+  min-width: 82px;
+}
+.is-workspace .repo-avatar.large {
+  width: 34px;
+  height: 34px;
+  background: #fffdfa;
+}
+.is-workspace .global-search {
+  min-height: 39px;
+  border-color: var(--border-subtle);
+  background: rgb(255 253 249 / 78%);
+  box-shadow: none;
+}
+.is-workspace .composer {
+  right: auto;
+  left: 50%;
+  bottom: 22px;
+  width: min(820px, calc(100vw - 44px));
+  max-width: none;
+  transform: translateX(-50%);
+  margin: 0;
+  border-color: #ddd4ca;
+  background: rgb(255 253 249 / 97%);
+  box-shadow: 0 16px 48px rgb(43 33 25 / 11%);
+  backdrop-filter: blur(18px);
+}
+.is-workspace .new-activity {
+  bottom: 112px;
+}
+
+/* The first useful decision is AI account → workspace → task. */
+.conversation-intro.setup-aware {
+  width: min(100%, 620px);
+  max-width: 620px;
+  margin: clamp(52px, 12vh, 116px) auto 32px;
+  padding: 24px 26px;
+  align-items: flex-start;
+  gap: 16px;
+  border: 1px solid #e8ddd2;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 100% 0, rgb(242 218 196 / 42%), transparent 34%),
+    #fffdfa;
+  box-shadow: 0 14px 42px rgb(55 42 31 / 5%);
+}
+.conversation-intro.setup-aware .agent-avatar {
+  width: 38px;
+  height: 38px;
+  margin-top: 2px;
+}
+.conversation-intro.setup-aware > div {
+  min-width: 0;
+  flex: 1;
+}
+.conversation-intro.setup-aware h2 {
+  margin: 0 0 7px;
+  font-size: 22px;
+  letter-spacing: -.04em;
+}
+.conversation-intro.setup-aware p:not(.setup-kicker) {
+  max-width: 500px;
+  margin: 0;
+  color: var(--foreground-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.setup-kicker {
+  margin: 0 0 7px !important;
+  color: #9a7459 !important;
+  font-size: 9px !important;
+  font-weight: 760;
+  letter-spacing: .13em;
+}
+.setup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.setup-actions .ox-btn {
+  min-height: 42px;
+}
+.workspace-recovery-card {
+  width: min(100%, 680px);
+  margin: 22px auto 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #ead9bf;
+  border-radius: 16px;
+  background: #fffaf2;
+  color: var(--foreground);
+}
+.recovery-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #f5e6d4;
+  color: #79563f;
+}
+.workspace-recovery-card b {
+  font-size: 13px;
+}
+.workspace-recovery-card p {
+  max-width: 560px;
+  margin: 5px 0 0;
+  color: var(--foreground-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.recovery-actions .ox-btn {
+  min-height: 39px;
+  font-size: 12px;
+}
+
+/* AI account sheet */
+.ai-sheet {
+  width: min(600px, 100%);
+  padding: 22px;
+}
+.ai-sheet-alert {
+  margin: 0 0 12px;
+  max-width: none;
+}
+.ai-connect-card,
+.ai-connected-card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  background: #fffcf8;
+}
+.ai-provider-lockup {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+}
+.ai-provider-lockup > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ai-provider-lockup b {
+  font-size: 14px;
+}
+.ai-provider-lockup small {
+  color: var(--foreground-muted);
+  font-size: 11px;
+}
+.ai-provider-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+.ai-provider-mark.connected {
+  color: white;
+  background: var(--success);
+}
+.ai-connect-steps {
+  list-style: none;
+  margin: 18px 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 11px;
+}
+.ai-connect-steps li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.ai-connect-steps li > span {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #f2e8de;
+  color: #79563f;
+  font-size: 10px;
+  font-weight: 750;
+}
+.ai-connect-steps li div {
+  display: grid;
+  gap: 2px;
+}
+.ai-connect-steps b {
+  font-size: 12px;
+}
+.ai-connect-steps small {
+  color: var(--foreground-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.opencode-account-link {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 14px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.opencode-account-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ai-key-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: end;
+}
+.ai-key-form label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--foreground-muted);
+  font-size: 11px;
+}
+.ai-key-form input {
+  width: 100%;
+  min-height: 44px;
+  background: var(--surface);
+}
+.ai-key-form .ox-btn {
+  min-height: 44px;
+}
+.ai-privacy-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 11px 0 0;
+  color: var(--foreground-subtle);
+  font-size: 10px;
+}
+.ai-connected-card {
+  margin-bottom: 12px;
+}
+.model-list {
+  max-height: 310px;
+  overflow-y: auto;
+  border-top: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 13px;
+}
+.model-list .project-list-row:last-child {
+  border-bottom: 0;
+}
+.ai-model-wait {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 11px;
+  padding: 14px;
+  border-radius: 13px;
+  background: var(--surface-muted);
+  color: var(--foreground-muted);
+}
+.ai-model-wait b {
+  color: var(--foreground);
+  font-size: 12px;
+}
+.ai-model-wait p {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.ai-sheet-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 13px;
+}
+.danger-text {
+  color: var(--danger) !important;
+}
+
+/* Avoid displaying the same project as a different product on tablet. */
+@media (max-width: 1099px) {
+  .is-workspace .project-tabs,
+  .is-workspace .global-search {
+    display: none !important;
+  }
+  .is-workspace .project-header {
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 7px 14px;
+  }
+  .is-workspace .repo-identity > .repo-avatar {
+    display: none;
+  }
+  .is-workspace .workspace-layout {
+    padding: 0 14px 210px;
+  }
+  .is-workspace .conversation {
+    min-height: calc(100dvh - 150px);
+    padding: 16px 2px 80px;
+  }
+  .is-workspace .mobile-project-nav {
+    min-height: calc(61px + env(safe-area-inset-bottom));
+    height: auto;
+    position: fixed;
+    z-index: 20;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-around;
+    padding: 5px 8px env(safe-area-inset-bottom);
+    border-top: 1px solid var(--border-subtle);
+    background: rgb(255 253 249 / 97%);
+    backdrop-filter: blur(18px);
+  }
+  .is-workspace .mobile-project-nav button {
+    min-width: 58px;
+    min-height: 50px;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 3px;
+    border: 0;
+    border-radius: 10px;
+    color: var(--foreground-muted);
+    background: transparent;
+    font-size: 9px;
+  }
+  .is-workspace .mobile-project-nav button.selected {
+    color: #684a36;
+    background: #f3e6d9;
+  }
+  .is-workspace .composer {
+    bottom: calc(66px + env(safe-area-inset-bottom));
+    width: calc(100vw - 20px);
+  }
+  .is-workspace .new-activity {
+    bottom: calc(176px + env(safe-area-inset-bottom));
+  }
+  .conversation-intro.setup-aware {
+    margin-top: clamp(36px, 9vh, 76px);
+  }
+}
+
+@media (max-width: 620px) {
+  .is-workspace .workspace-layout {
+    padding-inline: 10px;
+  }
+  .is-workspace .conversation {
+    padding-inline: 0;
+  }
+  .conversation-intro.setup-aware {
+    margin-top: 34px;
+    padding: 18px;
+    gap: 11px;
+    border-radius: 17px;
+  }
+  .conversation-intro.setup-aware h2 {
+    font-size: 20px;
+  }
+  .setup-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .setup-actions .ox-btn {
+    width: 100%;
+  }
+  .workspace-recovery-card {
+    grid-template-columns: 1fr;
+    margin-top: 12px;
+    padding: 14px;
+  }
+  .recovery-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ai-sheet {
+    width: 100%;
+  }
+  .ai-key-form {
+    grid-template-columns: 1fr;
+  }
+  .ai-key-form .ox-btn {
+    width: 100%;
+  }
+  .ai-provider-lockup {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .ai-provider-lockup .ox-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (min-width: 1100px) {
+  .is-workspace .mobile-project-nav {
+    display: none !important;
+  }
+}
