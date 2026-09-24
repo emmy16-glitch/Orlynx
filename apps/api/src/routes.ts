@@ -315,6 +315,14 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
     },
     privateKeyLooksValid: key.includes('BEGIN') && key.includes('END'),
     vercel: process.env.VERCEL === '1',
+    check: {
+      appId: Boolean(process.env.GITHUB_APP_ID),
+      appSlug: Boolean(process.env.GITHUB_APP_SLUG),
+      publicUrl: process.env.ORLYNX_PUBLIC_URL || null,
+      clientSecret: Boolean(process.env.GITHUB_APP_CLIENT_SECRET),
+      privateKey: Boolean(process.env.GITHUB_PRIVATE_KEY),
+      webhookSecret: Boolean(process.env.GITHUB_WEBHOOK_SECRET),
+    },
   });
 });
 router.get('/setup/github-app/callback', async (req, res) => {
