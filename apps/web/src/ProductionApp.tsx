@@ -70,18 +70,17 @@ export default function ProductionApp() {
   const [cloudNotice, setCloudNotice] = useState(false);
 
   async function connectGitHub() {
-    // User flow only: the backend owns the GitHub URL. If the platform is not
-    // ready, say so plainly without exposing infrastructure details.
-    setConnectingGithub(true); setGithubNotice(null);
-    try {
-      const res = await fetch('/v1/github/install', { redirect: 'manual' });
-      if (res.status === 302) { window.location.assign('/v1/github/install'); return; }
+    // User flow only: navigate straight to the backend, which owns the GitHub
+    // URL and redirects there. (A fetch-probe breaks on some mobile browsers,
+    // which follow the redirect into a CORS failure instead of reporting 302.)
+    // If the platform is known to be unready, say so without a round trip.
+    if (integration.githubPlatform && integration.githubPlatform.configured === false) {
       setGithubNotice({ tone: 'fail', text: 'GitHub connection is temporarily unavailable. Please try again.' });
       setPage('github');
-    } catch {
-      setGithubNotice({ tone: 'fail', text: 'GitHub connection is temporarily unavailable. Please try again.' });
-      setPage('github');
-    } finally { setConnectingGithub(false); }
+      return;
+    }
+    setConnectingGithub(true);
+    window.location.assign('/v1/github/install');
   }
   const [nearBottom, setNearBottom] = useState(true);
   const [newActivity, setNewActivity] = useState(false);
