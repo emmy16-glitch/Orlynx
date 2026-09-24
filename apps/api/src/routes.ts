@@ -297,7 +297,26 @@ router.get('/setup/github-app', (req, res) => {
     });
   } catch (error) { res.status(503).json({ mode: 'unavailable', error: error instanceof Error ? error.message : 'Setup is unavailable.' }); }
 });
-router.get('/setup/github-app/callback', async (req, res) => {
+router.get('/setup/github-app/diagnostics', (req, res) => {
+  if (!setupAuthorized(String(req.header('x-setup-token') || ''), String(req.query.setup_token || ''))) {
+    return res.status(401).json({ error: 'Owner setup token required.' });
+  }
+  const present = (name: string) => Boolean(process.env[name]);
+  const key = process.env.GITHUB_PRIVATE_KEY || '';
+  res.json({
+    presence: {
+      ORLYNX_PUBLIC_URL: present('ORLYNX_PUBLIC_URL'),
+      GITHUB_APP_ID: present('GITHUB_APP_ID'),
+      GITHUB_APP_SLUG: present('GITHUB_APP_SLUG'),
+      GITHUB_CLIENT_ID: present('GITHUB_CLIENT_ID'),
+      GITHUB_APP_CLIENT_SECRET: present('GITHUB_APP_CLIENT_SECRET'),
+      GITHUB_PRIVATE_KEY: present('GITHUB_PRIVATE_KEY'),
+      GITHUB_WEBHOOK_SECRET: present('GITHUB_WEBHOOK_SECRET'),
+    },
+    privateKeyLooksValid: key.includes('BEGIN') && key.includes('END'),
+    vercel: process.env.VERCEL === '1',
+  });
+});
   const access = setupAccess();
   const fail = (reason: string) => res.redirect(302, `/?internal=setup-github&error=${encodeURIComponent(reason.slice(0, 160))}`);
   if (access.locked) return res.redirect(302, '/?internal=setup-github&created=0');
