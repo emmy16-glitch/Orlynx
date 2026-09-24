@@ -649,11 +649,16 @@ export default function ProductionApp() {
                 <Button className="welcome-github-button" onClick={connectGitHub} disabled={connectingGithub || integration.githubAvailable === false}><Icon name="github" size={20} />{connectingGithub ? 'Opening GitHub…' : integration.githubAvailable === false ? 'GitHub is temporarily unavailable' : integration.github?.connected ? 'Choose a repository' : 'Continue with GitHub'}<Icon name="arrow" /></Button>
                 <p className="welcome-trust">Your repositories stay under your GitHub permissions.</p>
               </div>
-              <div className="welcome-landscape" aria-hidden="true"><span className="sun" /><span className="ridge ridge-one" /><span className="ridge ridge-two" /><span className="ridge ridge-three" /></div>
-              <div className="welcome-values" aria-label="Orlynx principles">
-                <span><Icon name="github" /><small>GitHub native</small></span>
-                <span><Icon name="shield" /><small>Your code stays yours</small></span>
-                <span><Icon name="code" /><small>Built for real work</small></span>
+              <div className="welcome-landscape" aria-hidden="true">
+                <span className="sun" />
+                <span className="ridge ridge-one" />
+                <span className="ridge ridge-two" />
+                <span className="ridge ridge-three" />
+                <div className="welcome-values">
+                  <span><Icon name="github" /><small>GitHub native</small></span>
+                  <span><Icon name="shield" /><small>Your code stays yours</small></span>
+                  <span><Icon name="code" /><small>Built for real work</small></span>
+                </div>
               </div>
             </section>}
             {!restoring && page === 'home' && <section className="home-screen"><div className="home-greeting"><p className="eyebrow">YOUR REPOSITORIES</p><h1>{integration.github?.connected && integration.github?.login ? `Welcome, ${integration.github.login}.` : 'Welcome to Orlynx.'}</h1><p>{integration.github?.connected ? 'Choose a repository to start working.' : 'Connect GitHub to start building with your repositories.'}</p></div><div className="home-primary-actions">{integration.github?.connected ? <Button onClick={() => { setPage('github'); loadRepositories(); }}><Icon name="github" />Browse repositories</Button> : <Button onClick={connectGitHub} disabled={connectingGithub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}</Button>}</div><div className="home-grid"><section className="home-section"><div className="section-title"><h2>Recent projects</h2><button className="text-button" onClick={() => setPage('projects')}>View all</button></div>{recentProjects.length ? recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-list-row" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>) : <EmptyState title="No repositories yet" hint={integration.github?.connected ? 'Choose a repository above to open your first project.' : 'Your repositories will appear here after connecting GitHub.'} />}</section></div></section>}
