@@ -13,7 +13,7 @@
     "dev": "npm run dev --workspace=@orlynx/api & npm run dev --workspace=@orlynx/web",
     "dev:api": "npm run dev --workspace=@orlynx/api",
     "dev:web": "npm run dev --workspace=@orlynx/web",
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspace=@orlynx/shared && npm run build --workspace=@orlynx/api && npm run build --workspace=@orlynx/web && npm run build --workspace=@orlynx/bridge",
     "test": "npm run test --workspace=@orlynx/api",
     "e2e": "npm run e2e --workspace=@orlynx/api"
   },
