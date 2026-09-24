@@ -27,19 +27,6 @@ export function saveAttachment(sessionId: string, original: string, mime: string
   store.save();
   return { meta, path: dest };
 }
-
-export function materializeForRuntime(sessionId: string, project: string): string[] {
-  // copy session attachments into workspace-scoped dir (PDF §9.2)
-  const wsDir = path.join(dataDir, 'repos', project.replace(/[^a-zA-Z0-9._-]/g, '_'), '.app', 'attachments', sessionId);
-  fs.mkdirSync(wsDir, { recursive: true });
-  const out: string[] = [];
-  for (const a of store.db.attachments[sessionId] || []) {
-    const src = path.join(dataDir, 'attachments', `${a.id}__${a.safeName}`);
-    if (fs.existsSync(src)) {
-      const dst = path.join(wsDir, a.safeName);
-      fs.copyFileSync(src, dst);
-      out.push(dst);
-    }
-  }
-  return out;
-}
+// NOTE: attachments are served to OpenCode via the session record only.
+// No materializeForRuntime copy into the imported repository exists, so agent
+// diffs never include Orlynx runtime files.

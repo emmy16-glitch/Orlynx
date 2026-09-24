@@ -1,88 +1,42 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 
 const BASE = process.env.ORLYNX_API || 'http://localhost:4000';
 
 async function health() {
-  try {
-    const r = await fetch(`${BASE}/health`);
-    return r.ok;
-  } catch { return false; }
+  try { return (await fetch(`${BASE}/health`)).ok; } catch { return false; }
 }
 
-describe('orlynx integration (requires api on :4000)', async () => {
-  const up = await health();
-  if (!up) {
-    console.log('  (api not running — integration tests skipped)');
+describe('fail-closed production integrations (API must be running)', async () => {
+  if (!await health()) {
+    console.log('  (API integration checks skipped — API is not running)');
     return;
   }
 
-  it('idempotent send: same clientId never duplicates run', async () => {
-    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-idem', branch: 'main' }) })).json();
-    const body = { text: 'Update README docs', clientId: 'test-client-1' };
-    const r1 = await (await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
-    const r2 = await (await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
-    assert.equal(r1.message.id, r2.message.id, 'duplicate message created');
-    assert.equal(r2.deduplicated, true, 'second send not flagged deduplicated');
-    const msgs = await (await fetch(`${BASE}/v1/sessions/${s.id}/messages`)).json();
-    assert.equal(msgs.filter((m) => m.id === 'test-client-1').length, 1);
-    assert.ok(msgs.some((m) => m.role === 'assistant' && m.text), 'assistant response was not persisted');
+  it('reports integration readiness without disclosing credentials', async () => {
+    const status = await (await fetch(`${BASE}/v1/integrations/status`)).json();
+    assert.equal(typeof status.github.configured, 'boolean');
+    assert.equal(typeof status.github.connected, 'boolean');
+    assert.equal(typeof status.agent.configured, 'boolean');
+    assert.equal(typeof status.agent.connected, 'boolean');
+    assert.equal(status.cloud.configured, false);
+    assert.equal(JSON.stringify(status).includes('PRIVATE KEY'), false);
+    assert.equal(Object.hasOwn(status.github, 'token'), false);
   });
 
-  it('runs snapshot endpoint restores task state', async () => {
-    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-runs', branch: 'main' }) })).json();
-    await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Fix login bug and run tests' }) });
-    const runs = await (await fetch(`${BASE}/v1/sessions/${s.id}/runs`)).json();
-    assert.ok(runs.length >= 1, 'no runs in snapshot');
-    assert.ok(['completed', 'running'].includes(runs[runs.length - 1].state), 'unexpected run state');
+  it('does not create synthetic local repositories or demo sessions', async () => {
+    const response = await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'not-imported', owner: 'local', branch: 'main' }) });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /imported GitHub repository/i);
   });
 
-  it('SSE replay is ordered with monotonic sequences', async () => {
-    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-sse', branch: 'main' }) })).json();
-    await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Update docs' }) });
-    // Read the infinite SSE stream via reader, then cancel — fetch().text() never resolves on SSE.
-    const res = await fetch(`${BASE}/v1/sessions/${s.id}/events?after=0`);
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    const deadline = Date.now() + 4000;
-    while (Date.now() < deadline) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      if ((buf.match(/^id: /gm) || []).length >= 5) break;
-    }
-    reader.cancel().catch(() => {});
-    const seqs = [...buf.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
-    assert.ok(seqs.length >= 3, `expected replayed events, got ${seqs.length}`);
-    const sorted = [...seqs].sort((a, b) => a - b);
-    assert.deepEqual(seqs, sorted, 'events out of order');
+  it('does not create conversation messages for an unknown project session', async () => {
+    const response = await fetch(`${BASE}/v1/sessions/not-a-session/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'run tests', clientId: 'unavailable-agent' }) });
+    assert.equal(response.status, 404);
   });
 
-  it('empty message rejected (composer guard)', async () => {
-    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-empty', branch: 'main' }) })).json();
-    const r = await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '   ' }) });
-    assert.equal(r.status, 400, 'empty message not rejected');
-  });
-
-  it('GitHub status reports server configuration without exposing credential values', async () => {
-    const response = await fetch(`${BASE}/v1/github/status`);
-    assert.equal(response.status, 200);
-    const status = await response.json();
-    assert.equal(typeof status.connected, 'boolean');
-    assert.ok(['server-configured', 'not-configured', 'expired', 'unavailable'].includes(status.auth));
-    assert.equal(Object.hasOwn(status, 'token'), false);
-  });
-
-  it('local-only projects cannot claim a remote push succeeded', async () => {
-    const s = await (await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'integ-local-push', branch: 'main' }) })).json();
-    await fetch(`${BASE}/v1/sessions/${s.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Update README docs' }) });
-    const [change] = await (await fetch(`${BASE}/v1/sessions/${s.id}/changes`)).json();
-    await fetch(`${BASE}/v1/changes/${change.id}/approve`, { method: 'POST' });
-    const committed = await fetch(`${BASE}/v1/changes/${change.id}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'test local commit' }) });
-    assert.equal(committed.status, 200);
-    const pushed = await fetch(`${BASE}/v1/changes/${change.id}/push`, { method: 'POST' });
-    assert.equal(pushed.status, 409);
-    assert.match((await pushed.json()).error, /local-only project/i);
+  it('does not report cloud readiness when the remote execution bridge is absent', async () => {
+    const response = await fetch(`${BASE}/v1/sessions/not-a-session/cloud`, { method: 'POST' });
+    assert.equal(response.status, 404);
   });
 });

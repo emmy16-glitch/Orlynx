@@ -15,10 +15,11 @@ npm run dev
 ```
 
 Open **http://localhost:5173/**. The Vite development server proxies `/v1` and
-`/health` requests to the API on **http://localhost:4000/**. The local provider is
-the default and does not require credentials. GitHub repository access requires a
-server-managed `GITHUB_TOKEN` in the API process environment; `.env.example`
-documents the variable, but the current dev script does not auto-load `.env`.
+`/health` requests to the API on **http://localhost:4000/**. Agent work requires
+a configured OpenCode server; GitHub repository access requires a GitHub App
+installation (server-managed `GITHUB_APP_*` variables plus `GITHUB_WEBHOOK_SECRET`
+in the API process environment). `.env.example` documents every variable. There
+is no demo agent, no local workspace fallback, and no `GITHUB_TOKEN` path.
 
 Useful commands:
 
@@ -44,15 +45,16 @@ bridge         Outbound WebSocket bridge prototype
 ```
 
 The web client restores sessions, streams ordered events over SSE, and reconciles
-replay by stable IDs/sequences. If the API server is configured with authorized
-GitHub credentials, the repository picker can list, branch-select, clone/import,
-commit, and explicitly push the imported project. There is no end-user OAuth/App
-installation screen yet; credentials remain server-side. Configure `GITHUB_TOKEN`
-on the API process for local GitHub access (the dev runner does not load `.env`
-automatically). The native agent is a
-local demonstration adapter, cloud readiness is locally simulated, preview URLs
-are user-entered, and the terminal is a local shell adapter. OpenCode/Cline
-process control and real Codespaces provisioning are not enabled.
+replay by stable IDs/sequences. Repository access flows through the installed
+GitHub App only: install via `/v1/github/install`, complete via
+`/v1/github/setup`, verify signatures on `/v1/github/webhook`, then list,
+branch-select, clone/import, commit, and explicitly push the imported project.
+Credentials remain server-side in environment variables. Configure the
+`GITHUB_APP_*` set plus `ORLYNX_PUBLIC_URL` on the API process for GitHub App
+access. The agent is the authenticated OpenCode server adapter only (no
+built-in/demo fallback); cloud/Codespaces provisioning is fail-closed until a
+remote execution bridge exists; preview URLs are user-entered; the terminal runs
+through the OpenCode server shell in the imported repository directory.
 
 ## Interface system
 

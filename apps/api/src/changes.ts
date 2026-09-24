@@ -2,10 +2,10 @@
 import { v4 as uuid } from 'uuid';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import type { ChangeSet, ChangedFile } from '@orlynx/shared';
 import { store } from './store.js';
-import { headSha, repoRoot } from './github.js';
+import { configureCommitIdentity, headSha, repoRoot } from './github.js';
 import { pushGitHubRepository } from './github.js';
 import { emit } from './events.js';
 
@@ -45,14 +45,15 @@ export function commit(sessionId: string, project: string, changeId: string, mes
     throw new Error('Repository changed since work started. Review before committing.');
   }
   const root = repoRoot(project);
+  configureCommitIdentity(project);
   for (const f of cs.files) {
     const target = path.normalize(path.join(root, f.path));
     if (!target.startsWith(root)) throw new Error('path escape denied');
     if (f.action === 'delete') { if (fs.existsSync(target)) fs.rmSync(target); }
     else { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.after ?? ''); }
   }
-  execSync('git add -A', { cwd: root, stdio: 'ignore' });
-  execSync(`git commit -m ${JSON.stringify(message || 'Orlynx update')} --allow-empty`, { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['add', '-A'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', message || 'Orlynx update', '--allow-empty'], { cwd: root, stdio: 'ignore' });
   const sha = headSha(project);
   cs.reviewState = 'committed'; cs.commitSha = sha; cs.currentHead = sha;
   store.save();
@@ -60,12 +61,12 @@ export function commit(sessionId: string, project: string, changeId: string, mes
   return cs;
 }
 
-export function push(sessionId: string, project: string, branch: string, changeId: string): ChangeSet {
+export async function push(sessionId: string, project: string, branch: string, changeId: string): Promise<ChangeSet> {
   const cs = (store.db.changes[sessionId] || []).find((change) => change.id === changeId);
   if (!cs) throw new Error('changeset not found');
   if (cs.reviewState !== 'committed') throw new Error('commit and approve this changeset before pushing');
   if (cs.pushedAt) return cs;
-  pushGitHubRepository(project, branch);
+  await pushGitHubRepository(project, branch);
   cs.pushedAt = new Date().toISOString();
   store.save();
   emit(sessionId, 'receipt.created', { changeId, pushedAt: cs.pushedAt, branch });

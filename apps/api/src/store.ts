@@ -13,10 +13,12 @@ interface DB {
   changes: Record<string, ChangeSet[]>;
   runs: Record<string, AgentRun[]>;
   seq: Record<string, number>;
+  githubInstallations: { id: number; account: string; accountType: string; installedAt: string }[];
+  openCodeSessions: Record<string, string>;
 }
 
 function blank(): DB {
-  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {} };
+  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {}, githubInstallations: [], openCodeSessions: {} };
 }
 
 export class Store {
@@ -26,7 +28,7 @@ export class Store {
     fs.mkdirSync(path.join(DATA_DIR, 'attachments'), { recursive: true });
     try {
       if (fs.existsSync(DB_FILE)) {
-        this.db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+        this.db = { ...blank(), ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) };
       } else {
         this.db = blank();
       }

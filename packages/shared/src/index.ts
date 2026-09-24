@@ -70,7 +70,7 @@ export interface ChangedFile {
 export interface AgentRun {
   id: string;
   sessionId: string;
-  engine: 'native' | 'opencode' | 'cline';
+  engine: 'opencode';
   model?: string;
   state: RunState;
   activity?: string;
