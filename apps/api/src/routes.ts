@@ -31,6 +31,12 @@ const publicEndpoint = (req: Request) => (
   || (req.method === 'POST' && req.path === '/github/webhook')
 );
 
+const storageOptionalEndpoint = (req: Request) => (
+  (req.method === 'GET' && ['/github/manage', '/repos'].includes(req.path))
+  || (req.method === 'GET' && /^\/repos\/[^/]+\/[^/]+\/branches$/.test(req.path))
+  || (req.method === 'POST' && ['/github/sync', '/github/disconnect'].includes(req.path))
+);
+
 router.use(async (req, res, next) => {
   const installationId = installationIdFor(req);
   if (installationId) {
@@ -47,7 +53,9 @@ router.use(async (req, res, next) => {
     if (session?.installationId === installationId) store.db.sessions[session.id] = session;
   }
   if (publicEndpoint(req)) return next();
-  if (process.env.VERCEL === '1' && !durableStorageConfigured()) return res.status(503).json({ error: 'Orlynx durable storage is not configured.', code: 'STORAGE_REQUIRED' });
+  if (process.env.VERCEL === '1' && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
+    return res.status(503).json({ error: 'This action needs Orlynx workspace storage before it can continue.', code: 'STORAGE_REQUIRED' });
+  }
   return requireSession(req, res, async () => {
     if (durableStorageConfigured()) {
       const match = req.path.match(/^\/sessions\/([^/]+)/);
@@ -540,8 +548,16 @@ router.get('/repos', async (req, res) => {
   res.json({ github, connection });
 });
 router.get('/github/install', (_req, res) => {
-  try { res.redirect(302, githubInstallUrl()); }
-  catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
+  try {
+    // OAuth first. If Orlynx is already installed, GitHub can identify the
+    // user's accessible installation and return directly to Orlynx. If there
+    // is no installation yet, the callback continues to the install screen.
+    const oauth = githubOAuthUrl();
+    setOAuthStateCookie(res, oauth.state);
+    res.redirect(302, oauth.url);
+  } catch (error) {
+    res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' });
+  }
 });
 router.get('/github/manage', (req, res) => {
   try {
@@ -576,6 +592,11 @@ router.get('/github/setup', async (req, res) => {
       if (!state || oauthStateFor(req) !== state) throw new Error('GitHub authorization could not be verified. Start the connection again.');
       const result = await completeGitHubOAuth(String(req.query.code), state);
       clearOAuthStateCookie(res);
+      if (result.needsInstall || !result.installationId) {
+        // First-time user: authorization succeeded but the App is not installed
+        // yet. Continue directly into GitHub's official install/repo picker.
+        return res.redirect(302, githubInstallUrl());
+      }
       setSessionCookie(res, result.installationId);
       return res.redirect(302, `${publicSiteUrl()}/?github=connected`);
     }
