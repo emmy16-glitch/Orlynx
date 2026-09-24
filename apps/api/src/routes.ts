@@ -12,6 +12,7 @@ import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './openco
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs, supportedProviderIds } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
+import { moduleLoadSnapshot } from './github.js';
 
 export const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -315,6 +316,7 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
     },
     privateKeyLooksValid: key.includes('BEGIN') && key.includes('END'),
     vercel: process.env.VERCEL === '1',
+    moduleLoad: moduleLoadSnapshot(),
     check: {
       appId: Boolean(process.env.GITHUB_APP_ID),
       appSlug: Boolean(process.env.GITHUB_APP_SLUG),

@@ -16,6 +16,17 @@ const privateKey = privateKeyValue.includes('BEGIN')
   ? privateKeyValue.replace(/\\n/g, '\n')
   : privateKeyValue ? Buffer.from(privateKeyValue, 'base64').toString('utf8') : '';
 
+export function moduleLoadSnapshot(): Record<string, boolean> {
+  return {
+    appId: Boolean(appId),
+    appSlug: Boolean(appSlug),
+    publicUrl: Boolean(publicUrl),
+    clientSecret: Boolean(clientSecret),
+    privateKey: Boolean(privateKey),
+    webhookSecret: Boolean(webhookSecret),
+  };
+}
+
 export function githubAppConfigured(): boolean {
   let publicOriginIsSafe = false;
   try {
