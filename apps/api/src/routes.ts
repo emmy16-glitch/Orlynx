@@ -530,9 +530,10 @@ router.post('/changes/:changeId/push', async (req, res) => {
           await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishedBranch });
         }
         await bridgeRequest(workspace.id, 'git.push', { approved: true });
+        const baseBranch = session.branch;
         pullRequest = await createGitHubPullRequest(
           session.project,
-          session.branch,
+          baseBranch,
           publishedBranch,
           String(req.body?.title || 'Orlynx changes'),
           String(req.body?.body || `Changes prepared and reviewed in Orlynx.\n\nCommit: ${c.commitSha || 'pending'}`),
@@ -540,6 +541,20 @@ router.post('/changes/:changeId/push', async (req, res) => {
         );
         c.pullRequestUrl = pullRequest.url;
         c.pullRequestNumber = pullRequest.number;
+
+        // The real workspace is now on the published branch. Keep Orlynx
+        // session state aligned with Git instead of telling the next task it is
+        // still on main/master while the Codespace is actually elsewhere.
+        session.branch = publishedBranch;
+        session.updatedAt = new Date().toISOString();
+        const durableSession = await controlPlaneRepository().getSession(sid);
+        if (durableSession) {
+          await controlPlaneRepository().putSession({
+            ...session,
+            userId: durableSession.userId,
+            projectId: durableSession.projectId,
+          });
+        }
       } else {
         const result = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.push', { approved: true });
         publishedBranch = result.branch || session.branch;
@@ -550,7 +565,7 @@ router.post('/changes/:changeId/push', async (req, res) => {
       store.save();
       await controlPlaneRepository().putChangeSet(c);
       emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: publishedBranch, pullRequestUrl: c.pullRequestUrl, pullRequestNumber: c.pullRequestNumber });
-      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
+      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: pullRequest ? String(req.body?.baseBranch || 'default') : session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
       return res.json(c);
     }
     const pushed = await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req));
