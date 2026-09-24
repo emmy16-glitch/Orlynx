@@ -28,6 +28,7 @@ type Repo = { full: string; owner: string; name: string; ownerType: string; priv
 const LAST_SESSION = 'orlynx:lastSession';
 const RECENTS = 'orlynx:recentProjects';
 const THEME = 'orlynx:theme';
+const PENDING_REPO = 'orlynx:pendingRepository';
 const sessionKey = (project: string) => `orlynx:projectSession:${project}`;
 const seqKey = (sessionId: string) => `orlynx:seq:${sessionId}`;
 const draftKey = (sessionId: string) => `orlynx:draft:${sessionId}`;
@@ -254,6 +255,14 @@ export default function ProductionApp() {
               repoLoadAttempt.current = true;
               setError('');
               setGithubNotice(result.github?.length ? null : { tone: 'neutral', text: 'No repositories are available yet. Choose repositories on GitHub, then refresh.' });
+              // If project opening had to finish OAuth after durable storage
+              // was enabled, continue the user's original action automatically.
+              const pendingFull = sessionStorage.getItem(PENDING_REPO);
+              const pendingRepo = pendingFull ? (result.github || []).find((repo: Repo) => repo.full === pendingFull) : null;
+              if (pendingRepo) {
+                sessionStorage.removeItem(PENDING_REPO);
+                await openRepository(pendingRepo);
+              }
             } else {
               setGithubNotice({ tone: 'ok', text: 'GitHub connected. Choose a repository to open.' });
             }
@@ -355,6 +364,12 @@ export default function ProductionApp() {
       await openSession(record);
     } catch (error: any) {
       const message = String(error?.message || '');
+      if (message.includes('Reconnect GitHub before creating a durable project session')) {
+        try { sessionStorage.setItem(PENDING_REPO, repo.full); } catch {}
+        setGithubNotice({ tone: 'neutral', text: 'Finishing your secure GitHub connection…' });
+        window.location.assign('/v1/github/install');
+        return;
+      }
       setError(message.includes('workspace storage') || message.includes('STORAGE_REQUIRED') || message.includes('durable storage')
         ? 'This project cannot open yet because the Orlynx workspace service is still being prepared.'
         : message || 'This repository could not be opened.');
