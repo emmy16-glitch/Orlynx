@@ -517,8 +517,9 @@ router.post('/changes/:changeId/push', async (req, res) => {
       if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
 
       const explicitStrategy = String(req.body?.strategy || '');
-      const publishAsPullRequest = explicitStrategy === 'pull-request' || ['main', 'master'].includes(session.branch);
-      let publishedBranch = session.branch;
+      const originalBranch = session.branch;
+      const publishAsPullRequest = explicitStrategy === 'pull-request' || ['main', 'master'].includes(originalBranch);
+      let publishedBranch = originalBranch;
       let pullRequest: { number: number; url: string } | undefined;
 
       if (publishAsPullRequest) {
@@ -530,10 +531,9 @@ router.post('/changes/:changeId/push', async (req, res) => {
           await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishedBranch });
         }
         await bridgeRequest(workspace.id, 'git.push', { approved: true });
-        const baseBranch = session.branch;
         pullRequest = await createGitHubPullRequest(
           session.project,
-          baseBranch,
+          originalBranch,
           publishedBranch,
           String(req.body?.title || 'Orlynx changes'),
           String(req.body?.body || `Changes prepared and reviewed in Orlynx.\n\nCommit: ${c.commitSha || 'pending'}`),
@@ -565,7 +565,7 @@ router.post('/changes/:changeId/push', async (req, res) => {
       store.save();
       await controlPlaneRepository().putChangeSet(c);
       emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: publishedBranch, pullRequestUrl: c.pullRequestUrl, pullRequestNumber: c.pullRequestNumber });
-      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: pullRequest ? String(req.body?.baseBranch || 'default') : session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
+      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: pullRequest ? originalBranch : session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
       return res.json(c);
     }
     const pushed = await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req));
