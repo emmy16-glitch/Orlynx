@@ -469,7 +469,11 @@ export async function importGitHubRepository(fullName: string, branch: string): 
   try {
     execFileSync('git', ['clone', '--depth', '1', `--branch=${branch}`, `https://github.com/${fullName}.git`, root], { env: gitCredentialEnv(token), stdio: 'pipe', timeout: 120_000 });
     return fullName;
-  } catch {
+  } catch (error) {
+    const err = error as { message?: string; stderr?: Buffer | string };
+    const detail = String(err.stderr || err.message || 'unknown').slice(0, 300);
+    // Safe to log: clone URL carries no token (auth travels via header).
+    console.error(`[orlynx] import failed repo=${fullName} branch=${branch}: ${detail}`);
     fs.rmSync(root, { recursive: true, force: true });
     throw new Error('The repository import failed. Verify GitHub App contents access and retry.');
   }
