@@ -317,6 +317,7 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
     vercel: process.env.VERCEL === '1',
   });
 });
+router.get('/setup/github-app/callback', async (req, res) => {
   const access = setupAccess();
   const fail = (reason: string) => res.redirect(302, `/?internal=setup-github&error=${encodeURIComponent(reason.slice(0, 160))}`);
   if (access.locked) return res.redirect(302, '/?internal=setup-github&created=0');
