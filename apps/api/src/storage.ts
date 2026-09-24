@@ -48,6 +48,7 @@ export interface ControlPlaneRepository {
   upsertProject(value: { id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string }): Promise<void>;
   putSession(value: ProjectSession & { userId: string; projectId: string }): Promise<void>;
   getSession(id: string): Promise<(ProjectSession & { userId: string; projectId: string }) | null>;
+  listSessionsByUser(userId: string, limit?: number): Promise<Array<ProjectSession & { userId: string; projectId: string }>>;
   putMessage(value: ChatMessage): Promise<void>;
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
@@ -70,6 +71,10 @@ export interface ControlPlaneRepository {
   getChangeSet(id: string): Promise<ChangeSet | null>;
   getEngineSession(sessionId: string): Promise<string | null>;
   putEngineSession(sessionId: string, engineSessionId: string): Promise<void>;
+  recordWebhookDelivery(deliveryId: string, event: string): Promise<boolean>;
+  recordAudit(value: { id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail?: Record<string, unknown>; createdAt: string }): Promise<void>;
+  listAudit(sessionId: string, limit?: number): Promise<Array<{ id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail: Record<string, unknown>; createdAt: string }>>;
+  pruneOperationalData(now?: Date): Promise<void>;
 }
 
 type Sql = NeonQueryFunction<false, false>;
@@ -92,11 +97,27 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS bridge_commands (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL, result jsonb, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS engine_sessions (session_id text PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS change_sets (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS webhook_deliveries (delivery_id text PRIMARY KEY, event text NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS audit_log_session_idx ON audit_log(session_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS webhook_deliveries_received_idx ON webhook_deliveries(received_at)`,
   `CREATE INDEX IF NOT EXISTS bridge_commands_delivery_idx ON bridge_commands(workspace_id, status, created_at)`,
 ];
 
 function rows<T>(value: unknown): T[] { return value as T[]; }
 function iso(value: unknown): string { return new Date(String(value)).toISOString(); }
+
+function mapSession(r: Record<string, unknown>): ProjectSession & { userId: string; projectId: string } {
+  return {
+    id: String(r.id), userId: String(r.user_id), projectId: String(r.project_id),
+    installationId: r.installation_id ? Number(r.installation_id) : undefined,
+    project: String(r.project), owner: r.owner ? String(r.owner) : undefined,
+    branch: String(r.branch), mode: r.mode as ProjectSession['mode'],
+    workspaceId: r.workspace_id ? String(r.workspace_id) : null,
+    checkpoint: (r.checkpoint || undefined) as ProjectSession['checkpoint'],
+    createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+  };
+}
 
 function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
   return {
@@ -162,8 +183,12 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async getSession(id: string) {
     await this.initialize();
     const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM sessions WHERE id=${id}`)[0];
-    if (!r) return null;
-    return { id: String(r.id), userId: String(r.user_id), projectId: String(r.project_id), installationId: r.installation_id ? Number(r.installation_id) : undefined, project: String(r.project), owner: r.owner ? String(r.owner) : undefined, branch: String(r.branch), mode: r.mode as ProjectSession['mode'], workspaceId: r.workspace_id ? String(r.workspace_id) : null, checkpoint: (r.checkpoint || undefined) as ProjectSession['checkpoint'], createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) };
+    return r ? mapSession(r) : null;
+  }
+  async listSessionsByUser(userId: string, limit = 20) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+    return rows<Record<string, unknown>>(await this.sql.query('SELECT * FROM sessions WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2', [userId, safeLimit])).map(mapSession);
   }
   async putMessage(v: ChatMessage) { await this.initialize(); await this.sql`INSERT INTO messages (id,session_id,role,text,created_at) VALUES (${v.id},${v.sessionId},${v.role},${v.text},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
@@ -196,6 +221,29 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async getChangeSet(id: string) { await this.initialize(); return rows<{ record: ChangeSet }>(await this.sql`SELECT record FROM change_sets WHERE id=${id}`)[0]?.record || null; }
   async getEngineSession(sessionId: string) { await this.initialize(); const r = rows<{ engine_session_id: string }>(await this.sql`SELECT engine_session_id FROM engine_sessions WHERE session_id=${sessionId}`)[0]; return r?.engine_session_id || null; }
   async putEngineSession(sessionId: string, engineSessionId: string) { await this.initialize(); await this.sql`INSERT INTO engine_sessions (session_id,engine_session_id) VALUES (${sessionId},${engineSessionId}) ON CONFLICT (session_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`; }
+  async recordWebhookDelivery(deliveryId: string, event: string) {
+    await this.initialize();
+    const result = rows<{ delivery_id: string }>(await this.sql`INSERT INTO webhook_deliveries (delivery_id,event) VALUES (${deliveryId},${event}) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`);
+    return result.length === 1;
+  }
+  async recordAudit(v: { id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail?: Record<string, unknown>; createdAt: string }) {
+    await this.initialize();
+    await this.sql`INSERT INTO audit_log (id,user_id,session_id,project_id,action,outcome,detail,created_at) VALUES (${v.id},${v.userId},${v.sessionId || null},${v.projectId || null},${v.action},${v.outcome},${JSON.stringify(v.detail || {})},${v.createdAt}) ON CONFLICT (id) DO NOTHING`;
+  }
+  async listAudit(sessionId: string, limit = 100) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+    return rows<Record<string, unknown>>(await this.sql.query('SELECT * FROM audit_log WHERE session_id=$1 ORDER BY created_at DESC LIMIT $2', [sessionId, safeLimit])).map((r) => ({
+      id: String(r.id), userId: String(r.user_id), sessionId: r.session_id ? String(r.session_id) : undefined,
+      projectId: r.project_id ? String(r.project_id) : undefined, action: String(r.action), outcome: String(r.outcome),
+      detail: (r.detail || {}) as Record<string, unknown>, createdAt: iso(r.created_at),
+    }));
+  }
+  async pruneOperationalData(now = new Date()) {
+    await this.initialize();
+    await this.sql.query("DELETE FROM webhook_deliveries WHERE received_at < $1::timestamptz - interval '30 days'", [now.toISOString()]);
+    await this.sql.query("DELETE FROM bridge_commands WHERE status IN ('completed','failed') AND updated_at < $1::timestamptz - interval '7 days'", [now.toISOString()]);
+  }
 }
 
 function mapCommand(r: Record<string, unknown>): BridgeCommand { return { id: String(r.id), workspaceId: String(r.workspace_id), kind: String(r.kind), payload: r.payload as Record<string, unknown>, status: r.status as BridgeCommand['status'], result: (r.result || undefined) as Record<string, unknown> | undefined, expiresAt: iso(r.expires_at), createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) }; }
