@@ -52,6 +52,7 @@ export interface ControlPlaneRepository {
   getAISessionPrefs(sessionId: string): Promise<AISessionPrefs | null>;
   putAISessionPrefs(value: AISessionPrefs): Promise<void>;
   putMessage(value: ChatMessage): Promise<void>;
+  deleteMessage(id: string, sessionId: string): Promise<void>;
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
@@ -203,6 +204,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.sql`INSERT INTO ai_session_prefs (session_id,provider_id,model_id,mode,permission,updated_at) VALUES (${v.sessionId},${v.providerId || null},${v.modelId || null},${v.mode},${v.permission},${v.updatedAt}) ON CONFLICT (session_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,updated_at=EXCLUDED.updated_at`;
   }
   async putMessage(v: ChatMessage) { await this.initialize(); await this.sql`INSERT INTO messages (id,session_id,role,text,created_at) VALUES (${v.id},${v.sessionId},${v.role},${v.text},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
+  async deleteMessage(id: string, sessionId: string) { await this.initialize(); await this.sql`DELETE FROM messages WHERE id=${id} AND session_id=${sessionId}`; }
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
   async putTask(v: TaskRecord) { await this.initialize(); await this.sql`INSERT INTO tasks (id,session_id,workspace_id,run_id,state,prompt,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.runId || null},${v.state},${v.prompt},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,state=EXCLUDED.state,updated_at=EXCLUDED.updated_at`; }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), workspaceId: String(r.workspace_id), runId: r.run_id ? String(r.run_id) : undefined, state: r.state as TaskRecord['state'], prompt: String(r.prompt), createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) })); }
