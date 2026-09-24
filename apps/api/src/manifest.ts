@@ -121,6 +121,18 @@ export function maskedConversionSummary(conversion: { id: number; slug: string; 
 
 interface VercelPersistResult { stored: boolean; redeployed: boolean; detail: string }
 
+// Env keys the bootstrap writes. Must cover REQUIRED_GITHUB_ENV exactly
+// (asserted in tests) or production silently misconfigures itself.
+export const MANIFEST_CREDENTIAL_KEYS = [
+  'ORLYNX_PUBLIC_URL',
+  'GITHUB_APP_ID',
+  'GITHUB_APP_SLUG',
+  'GITHUB_CLIENT_ID',
+  'GITHUB_APP_CLIENT_SECRET',
+  'GITHUB_APP_PRIVATE_KEY',
+  'GITHUB_WEBHOOK_SECRET',
+] as const;
+
 export async function persistCredentialsToVercel(conversion: Conversion): Promise<VercelPersistResult> {
   const token = process.env.VERCEL_TOKEN || '';
   const project = process.env.VERCEL_PROJECT_ID || process.env.VERCEL_PROJECT || '';
@@ -139,7 +151,8 @@ export async function persistCredentialsToVercel(conversion: Conversion): Promis
     { key: 'GITHUB_APP_SLUG', value: conversion.slug, type: 'plain' },
     { key: 'GITHUB_CLIENT_ID', value: conversion.client_id, type: 'sensitive' },
     { key: 'GITHUB_APP_CLIENT_SECRET', value: conversion.client_secret, type: 'sensitive' },
-    { key: 'GITHUB_PRIVATE_KEY', value: conversion.pem, type: 'sensitive' },
+    // Canonical name required by the gateway (see REQUIRED_GITHUB_ENV).
+    { key: 'GITHUB_APP_PRIVATE_KEY', value: conversion.pem, type: 'sensitive' },
     { key: 'GITHUB_WEBHOOK_SECRET', value: conversion.webhook_secret, type: 'sensitive' },
   ];
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };

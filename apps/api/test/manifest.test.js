@@ -90,4 +90,16 @@ describe('github app manifest bootstrap', () => {
     assert.doesNotMatch(JSON.stringify(summary), /BEGIN|sk_|whsec|ghs_/i);
     assert.equal(summary.appId, 123);
   });
+
+  it('bootstrap writes exactly the env names the gateway requires', async () => {
+    const github = await import('../src/github.js');
+    for (const name of github.REQUIRED_GITHUB_ENV) {
+      assert.ok(manifest.MANIFEST_CREDENTIAL_KEYS.includes(name), `bootstrap must write ${name}`);
+    }
+  });
+
+  it('gateway accepts the canonical key name (local sanity)', async () => {
+    const github = await import('../src/github.js');
+    assert.ok(github.REQUIRED_GITHUB_ENV.includes('GITHUB_APP_PRIVATE_KEY'));
+  });
 });

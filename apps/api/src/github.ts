@@ -15,24 +15,23 @@ function publicUrl(): string { return (process.env.ORLYNX_PUBLIC_URL || '').repl
 function clientSecret(): string { return process.env.GITHUB_APP_CLIENT_SECRET || ''; }
 function webhookSecret(): string { return process.env.GITHUB_WEBHOOK_SECRET || ''; }
 function privateKey(): string {
-  const raw = process.env.GITHUB_APP_PRIVATE_KEY || '';
+  // Canonical name is GITHUB_APP_PRIVATE_KEY; GITHUB_PRIVATE_KEY is accepted
+  // as a legacy alias (early bootstrap wrote that name).
+  const raw = process.env.GITHUB_APP_PRIVATE_KEY || process.env.GITHUB_PRIVATE_KEY || '';
   if (raw.includes('BEGIN')) return raw.replace(/\\n/g, '\n');
   if (raw) { try { return Buffer.from(raw, 'base64').toString('utf8'); } catch { return ''; } }
   return '';
 }
 
-export function moduleLoadSnapshot(): Record<string, boolean | string> {
-  // Now identical to request-time reads (env is lazy); kept for diagnostics.
-  return {
-    impl: 'lazy-003',
-    appId: Boolean(appId()),
-    appSlug: Boolean(appSlug()),
-    publicUrl: Boolean(publicUrl()),
-    clientSecret: Boolean(clientSecret()),
-    privateKey: Boolean(privateKey()),
-    webhookSecret: Boolean(webhookSecret()),
-  };
-}
+// Canonical server env names for the GitHub App integration. The manifest
+// bootstrap must write exactly these (plus ORLYNX_PUBLIC_URL).
+export const REQUIRED_GITHUB_ENV = [
+  'GITHUB_APP_ID',
+  'GITHUB_APP_SLUG',
+  'GITHUB_APP_CLIENT_SECRET',
+  'GITHUB_APP_PRIVATE_KEY',
+  'GITHUB_WEBHOOK_SECRET',
+] as const;
 
 export function githubAppConfigured(): boolean {
   let publicOriginIsSafe = false;

@@ -12,7 +12,6 @@ import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './openco
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs, supportedProviderIds } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
-import { moduleLoadSnapshot } from './github.js';
 
 export const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -303,30 +302,21 @@ router.get('/setup/github-app/diagnostics', (req, res) => {
     return res.status(401).json({ error: 'Owner setup token required.' });
   }
   const present = (name: string) => Boolean(process.env[name]);
-  const key = process.env.GITHUB_PRIVATE_KEY || '';
+  const key = process.env.GITHUB_APP_PRIVATE_KEY || process.env.GITHUB_PRIVATE_KEY || '';
   res.json({
-    build: 'lazy-env-002',
+    build: 'env-names-004',
     presence: {
       ORLYNX_PUBLIC_URL: present('ORLYNX_PUBLIC_URL'),
       GITHUB_APP_ID: present('GITHUB_APP_ID'),
       GITHUB_APP_SLUG: present('GITHUB_APP_SLUG'),
       GITHUB_CLIENT_ID: present('GITHUB_CLIENT_ID'),
       GITHUB_APP_CLIENT_SECRET: present('GITHUB_APP_CLIENT_SECRET'),
-      GITHUB_PRIVATE_KEY: present('GITHUB_PRIVATE_KEY'),
+      GITHUB_APP_PRIVATE_KEY: present('GITHUB_APP_PRIVATE_KEY'),
+      GITHUB_PRIVATE_KEY_LEGACY: present('GITHUB_PRIVATE_KEY'),
       GITHUB_WEBHOOK_SECRET: present('GITHUB_WEBHOOK_SECRET'),
     },
     privateKeyLooksValid: key.includes('BEGIN') && key.includes('END'),
-    pkDebug: { len: key.length, head: key.slice(0, 27), tail: key.slice(-25), newlines: (key.match(/\n/g) || []).length, backslashN: (key.match(/\\n/g) || []).length },
     vercel: process.env.VERCEL === '1',
-    moduleLoad: moduleLoadSnapshot(),
-    check: {
-      appId: Boolean(process.env.GITHUB_APP_ID),
-      appSlug: Boolean(process.env.GITHUB_APP_SLUG),
-      publicUrl: process.env.ORLYNX_PUBLIC_URL || null,
-      clientSecret: Boolean(process.env.GITHUB_APP_CLIENT_SECRET),
-      privateKey: Boolean(process.env.GITHUB_PRIVATE_KEY),
-      webhookSecret: Boolean(process.env.GITHUB_WEBHOOK_SECRET),
-    },
   });
 });
 router.get('/setup/github-app/callback', async (req, res) => {
