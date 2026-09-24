@@ -1,5 +1,5 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
-import type { ChangeSet, ChatMessage, OrlynxEvent, ProjectSession, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
+import type { AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
 
 export interface GitHubConnectionRecord {
   userId: string;
@@ -49,6 +49,8 @@ export interface ControlPlaneRepository {
   putSession(value: ProjectSession & { userId: string; projectId: string }): Promise<void>;
   getSession(id: string): Promise<(ProjectSession & { userId: string; projectId: string }) | null>;
   listSessionsByUser(userId: string, limit?: number): Promise<Array<ProjectSession & { userId: string; projectId: string }>>;
+  getAISessionPrefs(sessionId: string): Promise<AISessionPrefs | null>;
+  putAISessionPrefs(value: AISessionPrefs): Promise<void>;
   putMessage(value: ChatMessage): Promise<void>;
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
@@ -90,6 +92,7 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
   `CREATE INDEX IF NOT EXISTS task_events_replay_idx ON task_events(session_id, sequence)`,
+  `CREATE TABLE IF NOT EXISTS ai_session_prefs (session_id text PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, provider_id text, model_id text, mode text NOT NULL, permission text NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS provider_connections (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), provider text NOT NULL, credential text, state text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS approvals (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, action text NOT NULL, state text NOT NULL, context jsonb NOT NULL, created_at timestamptz NOT NULL, resolved_at timestamptz)`,
   `CREATE TABLE IF NOT EXISTS attachments (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, filename text NOT NULL, safe_name text NOT NULL, mime text NOT NULL, size bigint NOT NULL, hash text, blob_url text, created_at timestamptz NOT NULL)`,
@@ -189,6 +192,15 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
     return rows<Record<string, unknown>>(await this.sql.query('SELECT * FROM sessions WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2', [userId, safeLimit])).map(mapSession);
+  }
+  async getAISessionPrefs(sessionId: string) {
+    await this.initialize();
+    const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM ai_session_prefs WHERE session_id=${sessionId}`)[0];
+    return r ? { sessionId: String(r.session_id), providerId: r.provider_id ? String(r.provider_id) : undefined, modelId: r.model_id ? String(r.model_id) : undefined, mode: String(r.mode) as AISessionPrefs['mode'], permission: String(r.permission) as AISessionPrefs['permission'], updatedAt: iso(r.updated_at) } : null;
+  }
+  async putAISessionPrefs(v: AISessionPrefs) {
+    await this.initialize();
+    await this.sql`INSERT INTO ai_session_prefs (session_id,provider_id,model_id,mode,permission,updated_at) VALUES (${v.sessionId},${v.providerId || null},${v.modelId || null},${v.mode},${v.permission},${v.updatedAt}) ON CONFLICT (session_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,updated_at=EXCLUDED.updated_at`;
   }
   async putMessage(v: ChatMessage) { await this.initialize(); await this.sql`INSERT INTO messages (id,session_id,role,text,created_at) VALUES (${v.id},${v.sessionId},${v.role},${v.text},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
