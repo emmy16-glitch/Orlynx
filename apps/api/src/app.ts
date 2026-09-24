@@ -19,6 +19,16 @@ app.use(sameOriginOnly);
 app.use('/v1/github/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
 app.use(express.json({ limit: '2mb' }));
 
+// Production must never silently drop into the local JSON/dev code paths.
+// The one-time owner GitHub-App manifest bootstrap is allowed before the data
+// plane is ready; all normal product APIs remain unavailable until durable
+// storage exists.
+app.use((req, res, next) => {
+  if (process.env.VERCEL !== '1' || durableStorageConfigured()) return next();
+  if (req.path === '/health' || req.path.startsWith('/v1/setup/github-app')) return next();
+  return res.status(503).json({ error: 'Orlynx is temporarily unavailable.' });
+});
+
 app.get('/health', async (_req, res) => {
   let database = false;
   if (durableStorageConfigured()) { try { await controlPlaneRepository().initialize(); database = true; } catch {} }
