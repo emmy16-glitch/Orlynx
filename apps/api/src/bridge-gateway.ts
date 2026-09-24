@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
 import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridge-auth.js';
 import { controlPlaneRepository } from './storage.js';
+import { decryptCredential } from './credentials.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
@@ -67,7 +68,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             type: 'fs.write-attachment',
             payload: {
               name: `${attachment.id}__${attachment.safeName}`,
-              contentBase64: attachment.contentBase64,
+              contentBase64: attachment.contentBase64.startsWith('v1.')
+                ? decryptCredential(attachment.contentBase64)
+                : attachment.contentBase64,
             },
           }));
         }
