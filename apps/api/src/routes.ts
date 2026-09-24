@@ -832,7 +832,7 @@ router.get('/integrations/status', async (req, res) => {
   const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
   const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
-    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
+    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, repositorySelection: connection.repositorySelection, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
     githubAvailable: platform.configured && platform.healthy,
     ai: { available: opencode.connected },
     workspace: { terminalAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', cloudAvailable: infrastructure && connection.userAuthorizationState === 'established', previewAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', state: workspace?.state || 'not_created' },
