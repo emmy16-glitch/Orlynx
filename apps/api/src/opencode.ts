@@ -100,14 +100,23 @@ export async function getOrCreateOpenCodeSession(lynxSessionId: string, project:
 
 export function getOpenCodeSessionId(lynxSessionId: string): string | undefined { return store.db.openCodeSessions[lynxSessionId]; }
 
-export async function promptOpenCode(project: string, openCodeSessionId: string, text: string): Promise<void> {
+export interface PromptOptions {
+  model?: { providerID: string; modelID: string };
+  agent?: string;
+}
+
+function parseModel(value: string): { providerID: string; modelID: string } {
+  const [providerID, ...rest] = value.split('/');
+  if (!providerID || !rest.length) throw new Error('Model must use provider/model format.');
+  return { providerID, modelID: rest.join('/') };
+}
+
+export async function promptOpenCode(project: string, openCodeSessionId: string, text: string, options: PromptOptions = {}): Promise<void> {
   const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
-  if (agentName) body.agent = agentName;
-  if (defaultModel) {
-    const [providerID, ...rest] = defaultModel.split('/');
-    if (!providerID || !rest.length) throw new Error('OPENCODE_MODEL must use provider/model format.');
-    body.model = { providerID, modelID: rest.join('/') };
-  }
+  const agent = options.agent || agentName;
+  if (agent) body.agent = agent;
+  const model = options.model || (defaultModel ? parseModel(defaultModel) : undefined);
+  if (model) body.model = model;
   await request(project, `/session/${encodeURIComponent(openCodeSessionId)}/prompt_async`, { method: 'POST', body: JSON.stringify(body) });
 }
 
@@ -128,11 +137,11 @@ export async function abortOpenCodeSession(project: string, openCodeSessionId: s
   await request(project, `/session/${encodeURIComponent(openCodeSessionId)}/abort`, { method: 'POST' });
 }
 
-export async function runOpenCodeShell(project: string, openCodeSessionId: string, command: string): Promise<Record<string, any>> {
-  const body: Record<string, unknown> = { command, agent: agentName || 'build' };
-  if (defaultModel) {
-    const [providerID, ...rest] = defaultModel.split('/');
-    if (providerID && rest.length) body.model = { providerID, modelID: rest.join('/') };
-  }
+export async function runOpenCodeShell(project: string, openCodeSessionId: string, command: string, options: PromptOptions = {}): Promise<Record<string, any>> {
+  const body: Record<string, unknown> = { command, agent: options.agent || agentName || 'build' };
+  const model = options.model || (defaultModel ? parseModel(defaultModel) : undefined);
+  if (model) body.model = model;
   return request(project, `/session/${encodeURIComponent(openCodeSessionId)}/shell`, { method: 'POST', body: JSON.stringify(body) });
 }
+
+export function openCodeDefaultAgent(): string { return agentName; }

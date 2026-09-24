@@ -9,6 +9,7 @@ import { saveAttachment } from './attachments.js';
 import { getWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
+import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs, supportedProviderIds } from './ai.js';
 
 export const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -40,7 +41,7 @@ router.get('/sessions/:id', (req, res) => {
 router.post('/sessions/:id/messages', async (req, res) => {
   const s = store.db.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const { text = '', clientId = '' } = req.body || {};
+  const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
   if (clientId) {
     const dup = (store.db.messages[s.id] || []).find((m: { id: string }) => m.id === clientId);
@@ -58,11 +59,19 @@ router.post('/sessions/:id/messages', async (req, res) => {
   store.save();
   console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   let run;
-  try { run = await startRun(s.id, s.project, text, 'opencode'); }
+  try {
+    run = await startRun(s.id, s.project, text, 'opencode', {
+      ...(modelId ? { modelId: String(modelId) } : {}),
+      ...(mode ? { mode: String(mode) as 'build' | 'plan' | 'ask' } : {}),
+      // Temporary elevation: full access for this task only, expires with the run.
+      ...(fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
+    });
+  }
   catch (error) {
     store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
     store.save();
-    return res.status(503).json({ error: error instanceof Error ? error.message : 'OpenCode could not accept this task.' });
+    const kind = (error as { errorKind?: string }).errorKind;
+    return res.status(kind === 'permission' ? 403 : 503).json({ error: error instanceof Error ? error.message : 'OpenCode could not accept this task.' });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
@@ -115,10 +124,17 @@ router.post('/sessions/:id/cloud/stop', (req, res) => {
 router.post('/sessions/:id/exec', (req, res) => {
   const s = store.db.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const { cmd = 'echo ok' } = req.body || {};
+  const { cmd = 'echo ok', approved = false } = req.body || {};
+  const gate = canPerform(s.id, 'terminal.exec', { cmd: String(cmd) });
+  if (!gate.allowed) return res.status(403).json({ error: gate.reason });
+  if (gate.needsApproval && !approved) {
+    emit(s.id, 'approval.required', { action: 'terminal.exec', cmd: String(cmd).slice(0, 200) });
+    return res.status(409).json({ error: 'Approval required before running this command.', approvalRequired: true, cmd: String(cmd).slice(0, 200) });
+  }
   const openCodeSession = getOpenCodeSessionId(s.id);
   if (!openCodeSession) return res.status(503).json({ error: 'OpenCode has not opened this project session yet.' });
-  runOpenCodeShell(s.project, openCodeSession, String(cmd)).then((result) => {
+  const prefs = getSessionPrefs(s.id, s.project);
+  runOpenCodeShell(s.project, openCodeSession, String(cmd), prefs.modelId ? { model: { providerID: prefs.modelId.split('/')[0], modelID: prefs.modelId.split('/').slice(1).join('/') } } : {}).then((result) => {
     const parts = Array.isArray(result.parts) ? result.parts : [];
     const out = parts.filter((part: any) => part.type === 'text').map((part: any) => part.text || '').join('\n');
     emit(s.id, 'receipt.created', { cmd: String(cmd).slice(0, 200), code: result.info?.error ? 1 : 0, out });
@@ -130,7 +146,14 @@ router.post('/sessions/:id/exec', (req, res) => {
 router.post('/sessions/:id/agent-runs', async (req, res) => {
   const s = store.db.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'session not found' });
-  try { const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), 'opencode'); res.json(run); }
+  try {
+    const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), 'opencode', {
+      ...(req.body?.modelId ? { modelId: String(req.body.modelId) } : {}),
+      ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
+      ...(req.body?.fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
+    });
+    res.json(run);
+  }
   catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'OpenCode is unavailable.' }); }
 });
 router.post('/agent-runs/:runId/cancel', async (req, res) => {
@@ -171,6 +194,8 @@ router.post('/changes/:changeId/commit', (req, res) => {
   for (const [k, v] of Object.entries(store.db.changes)) if (v.some((c) => c.id === req.params.changeId)) sid = k;
   const s = store.db.sessions[sid];
   if (!s) return res.status(404).json({ error: 'session not found' });
+  const gate = canPerform(sid, 'git.commit');
+  if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   try {
     const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));
     res.json(c);
@@ -182,8 +207,71 @@ router.post('/changes/:changeId/push', async (req, res) => {
   for (const [k, list] of Object.entries(store.db.changes)) if (list.some((change) => change.id === req.params.changeId)) sid = k;
   const session = store.db.sessions[sid];
   if (!session) return res.status(404).json({ error: 'changeset not found' });
+  const gate = canPerform(sid, 'git.push');
+  if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   try { res.json(await push(sid, session.project, session.branch, req.params.changeId)); }
   catch (error) { res.status(409).json({ error: (error as Error).message }); }
+});
+
+// unified AI layer (engine underneath, one experience on top)
+router.get('/ai/status', async (req, res) => {
+  const sessionId = String(req.query.sessionId || '');
+  const s = sessionId ? store.db.sessions[sessionId] : undefined;
+  try { res.json(await aiStatus(sessionId || undefined, s?.project)); }
+  catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'AI status is unavailable.' }); }
+});
+router.get('/ai/providers', async (req, res) => {
+  try {
+    const { engine, providers, models } = await listProviderConnections();
+    res.json({ engine: 'OpenCode', engineConnected: engine.connected, engineMessage: engine.message, supported: supportedProviderIds(), providers, connectedModels: models.filter((m) => m.status === 'available').length });
+  } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Provider list is unavailable.' }); }
+});
+router.get('/ai/models', async (req, res) => {
+  try {
+    const { engine, models } = await listProviderConnections();
+    res.json({ engineConnected: engine.connected, engineMessage: engine.message, models });
+  } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
+});
+router.post('/ai/providers/connect-key', async (req, res) => {
+  const { providerId = '', apiKey = '' } = req.body || {};
+  if (!providerId || !apiKey) return res.status(400).json({ error: 'Choose a provider and enter its API key.' });
+  try { res.json(await connectProviderKey(String(providerId), String(apiKey))); }
+  catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Connection failed. The key was not stored.' }); }
+});
+router.post('/ai/providers/:id/disconnect', async (req, res) => {
+  await disconnectProvider(String(req.params.id));
+  res.json({ disconnected: true, providerId: String(req.params.id) });
+});
+router.get('/ai/session/:id', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+  res.json({ prefs: getSessionPrefs(s.id, s.project), activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
+});
+router.put('/ai/session/:id', (req, res) => {
+  const s = store.db.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  try {
+    const prefs = setSessionPrefs(s.id, {
+      ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
+      ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
+      ...(req.body?.permission ? { permission: String(req.body.permission) as 'full' | 'ask-first' | 'read-only' } : {}),
+    });
+    const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+    // Never interrupt an active run: changes apply to the next turn.
+    res.json({ prefs, appliesTo: activeRun ? 'next-turn' : 'next-task' });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Preferences could not be saved.' }); }
+});
+router.put('/ai/project-defaults', (req, res) => {
+  const { project = '', modelId, mode, permission } = req.body || {};
+  try {
+    setProjectDefaults(String(project), {
+      ...(modelId !== undefined ? { modelId: String(modelId) || undefined } : {}),
+      ...(mode ? { mode: String(mode) as 'build' | 'plan' | 'ask' } : {}),
+      ...(permission ? { permission: String(permission) as 'full' | 'ask-first' | 'read-only' } : {}),
+    });
+    res.json({ project, saved: true });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Project defaults could not be saved.' }); }
 });
 
 // repos
@@ -235,6 +323,7 @@ router.get('/integrations/status', async (_req, res) => {
   res.json({
     github: { ...connection, health: health.healthy ? 'healthy' : 'unhealthy', healthMessage: health.message, authorizedRepositories: health.authorizedRepositories },
     agent: opencode,
+    ai: await aiStatus().catch(() => ({ state: 'error' as const, engine: 'OpenCode', engineConnected: false, message: 'AI status is unavailable.', mode: 'build' as const, permission: 'ask-first' as const, providers: { connected: 0, total: 0 } })),
     cloud: { configured: false, connected: false, message: 'A Codespaces execution bridge is not configured. Cloud access needs a user-authorized GitHub bridge first.' },
   });
 });

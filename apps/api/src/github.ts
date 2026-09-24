@@ -44,7 +44,7 @@ function touchInstallation(id: number, account: string, accountType: string, sta
     existing.status = status;
     existing.updatedAt = now;
   } else {
-    store.db.githubInstallations.push({ id, account, accountType, status, connectedAt: now, updatedAt: now });
+    store.db.githubInstallations.push({ id, account, accountType, installedAt: now, status, connectedAt: now, updatedAt: now });
   }
   store.save();
 }

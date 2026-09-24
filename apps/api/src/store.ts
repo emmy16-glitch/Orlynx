@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AttachmentMeta, AgentRun, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession } from '@orlynx/shared';
+import type { AttachmentMeta, AgentRun, AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession } from '@orlynx/shared';
 
 const DATA_DIR = process.env.ORLYNX_DATA_DIR || path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'orlynx.json');
@@ -26,10 +26,12 @@ interface DB {
   seq: Record<string, number>;
   githubInstallations: GitHubInstallationRecord[];
   openCodeSessions: Record<string, string>;
+  aiSessions: Record<string, AISessionPrefs>;
+  aiProjectDefaults: Record<string, Partial<Pick<AISessionPrefs, 'providerId' | 'modelId' | 'mode' | 'permission'>>>;
 }
 
 function blank(): DB {
-  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {}, githubInstallations: [], openCodeSessions: {} };
+  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {}, githubInstallations: [], openCodeSessions: {}, aiSessions: {}, aiProjectDefaults: {} };
 }
 
 export class Store {

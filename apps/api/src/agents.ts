@@ -1,38 +1,74 @@
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
-import type { AgentRun, ChangedFile } from '@orlynx/shared';
+import type { AgentMode, AgentRun, ChangedFile, PermissionProfile } from '@orlynx/shared';
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
+import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDefaultAgent, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
+import { canPerform, classifyError, getSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 
 export type Engine = 'opencode';
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
-export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode'): Promise<AgentRun> {
+export interface TaskOptions {
+  modelId?: string;
+  mode?: AgentMode;
+  tempPermission?: PermissionProfile;
+}
+
+export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
   if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
   if ((store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
+  const gate = canPerform(sessionId, 'agent.task');
+  if (!gate.allowed) {
+    const error = new Error(gate.reason || 'This task is blocked by the project access level.');
+    (error as { errorKind?: string }).errorKind = 'permission';
+    throw error;
+  }
+  const prefs = getSessionPrefs(sessionId, project);
+  const mode = options.mode || prefs.mode;
+  const permission = options.tempPermission || prefs.permission;
+  const modelId = options.modelId || prefs.modelId;
+  let model: { providerID: string; modelID: string } | undefined;
+  let provider: string | undefined;
+  if (modelId) {
+    const [providerID, ...rest] = modelId.split('/');
+    if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
+    provider = providerID;
+    model = { providerID, modelID: rest.join('/') };
+  }
   const connection = await openCodeStatus(project);
   if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
+  const resolvedAgent = await resolveAgentForMode(mode, openCodeDefaultAgent());
   const openCodeSession = await getOrCreateOpenCodeSession(sessionId, project);
   const before = await openCodeMessages(project, openCodeSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const run: AgentRun = {
-    id: `run_${uuid().slice(0, 8)}`, sessionId, engine,
+    id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId,
+    mode, permission, tempPermission: options.tempPermission,
     state: 'running', activity: 'Sending work to OpenCode', startedAt: new Date().toISOString(),
   };
   (store.db.runs[sessionId] ||= []).push(run);
   store.save();
-  emit(sessionId, 'run.started', { engine }, run.id);
+  emit(sessionId, 'run.started', { engine, provider, model: modelId, mode, permission }, run.id);
   emit(sessionId, 'activity.started', { text: 'Sending task to OpenCode' }, run.id);
+  if (resolvedAgent.note) emit(sessionId, 'activity.progress', { text: resolvedAgent.note }, run.id);
   emit(sessionId, 'message.start', { engine }, run.id);
+  // Backend-enforced mode guardrails travel with the task itself.
+  const guardedText = [
+    permission === 'read-only' ? readOnlyInstruction() : '',
+    mode === 'plan' ? planInstruction() : '',
+    mode === 'ask' ? readOnlyInstruction() : '',
+    userText,
+  ].filter(Boolean).join('\n\n');
   try {
-    await promptOpenCode(project, openCodeSession.id, userText);
+    await promptOpenCode(project, openCodeSession.id, guardedText, { model, agent: resolvedAgent.agent });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
+    run.errorKind = classifyError(error instanceof Error ? error.message : '');
     store.save();
-    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode rejected the task.' }, run.id);
+    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode rejected the task.', errorKind: run.errorKind }, run.id);
     throw error;
   }
   activeOpenCodeSessions.set(run.id, { project, sessionId: openCodeSession.id, cancelled: false });
@@ -88,9 +124,10 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
     run.state = 'failed';
     run.finishedAt = new Date().toISOString();
     run.activity = 'OpenCode task failed';
+    run.errorKind = classifyError(error instanceof Error ? error.message : '');
     store.save();
     for (const [toolId, state] of toolStates) if (state === 'running') emit(sessionId, 'tool.failed', { toolCallId: toolId, error: 'OpenCode did not complete this action.' }, run.id);
-    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode task failed.' }, run.id);
+    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode task failed.', errorKind: run.errorKind }, run.id);
   } finally {
     activeOpenCodeSessions.delete(run.id);
   }

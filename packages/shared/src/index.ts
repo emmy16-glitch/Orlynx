@@ -71,12 +71,52 @@ export interface AgentRun {
   id: string;
   sessionId: string;
   engine: 'opencode';
+  provider?: string;
   model?: string;
+  mode?: AgentMode;
+  permission?: PermissionProfile;
+  tempPermission?: PermissionProfile;
   state: RunState;
   activity?: string;
   startedAt: string;
   finishedAt?: string;
+  errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'unknown';
 }
+
+// Unified Orlynx AI layer (engine/provider/model stay underneath).
+export type AgentMode = 'build' | 'plan' | 'ask';
+export type PermissionProfile = 'full' | 'ask-first' | 'read-only';
+
+export interface AIModel {
+  id: string;
+  providerId: string;
+  providerName: string;
+  displayName: string;
+  family: string;
+  connected: boolean;
+  status: 'available' | 'needs-connection' | 'unavailable';
+}
+
+export interface AISessionPrefs {
+  sessionId: string;
+  providerId?: string;
+  modelId?: string;
+  mode: AgentMode;
+  permission: PermissionProfile;
+  updatedAt: string;
+}
+
+export const AGENT_MODES: { id: AgentMode; name: string; hint: string }[] = [
+  { id: 'build', name: 'Build', hint: 'Make changes and use tools.' },
+  { id: 'plan', name: 'Plan', hint: 'Inspect and plan before changing anything.' },
+  { id: 'ask', name: 'Ask', hint: 'Answer questions. No modifications.' },
+];
+
+export const PERMISSION_PROFILES: { id: PermissionProfile; name: string; hint: string }[] = [
+  { id: 'full', name: 'Full access', hint: 'Work independently inside this project.' },
+  { id: 'ask-first', name: 'Ask first', hint: 'Request approval before consequential actions.' },
+  { id: 'read-only', name: 'Read only', hint: 'Inspect and explain without changing the project.' },
+];
 
 // §§14.2-14.3 event envelope + taxonomy
 export type EventType =
