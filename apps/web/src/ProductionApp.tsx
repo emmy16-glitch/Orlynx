@@ -636,8 +636,17 @@ export default function ProductionApp() {
 
   async function pushChange(change: any) {
     setBusyChange(change.id); setError('');
-    try { await j(await fetch(`/v1/changes/${change.id}/push`, { method: 'POST' })); setPushReview(null); await refreshSession(session.id); }
-    catch (error: any) { setError(error.message || 'Push failed. The local commit remains available.'); }
+    const safeReview = ['main', 'master'].includes(session?.branch);
+    try {
+      await j(await fetch(`/v1/changes/${change.id}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(safeReview ? { strategy: 'pull-request', title: `Orlynx: ${commitMessage.trim() || 'reviewed changes'}` } : {}),
+      }));
+      setPushReview(null);
+      await refreshSession(session.id);
+    }
+    catch (error: any) { setError(error.message || 'GitHub publish failed. Your commit remains safe in the workspace.'); }
     finally { setBusyChange(null); }
   }
 
@@ -721,9 +730,11 @@ export default function ProductionApp() {
               {tab === 'changes' && <section className="screen-section changes-screen">
                 {changes.length > 0 && changes.every((change: any) => Boolean(change.pushedAt)) ? <div className="push-success-screen">
                   <span className="success-check"><Icon name="check" size={28} /></span>
-                  <h1>Changes pushed!</h1>
-                  <p>{changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)} files have been committed and pushed to <b>{session.branch}</b>.</p>
-                  <a className="success-github-link" href={`https://github.com/${session.project}/tree/${encodeURIComponent(session.branch)}`} target="_blank" rel="noreferrer">View on GitHub <Icon name="external" /></a>
+                  <h1>{changes.some((change: any) => change.pullRequestUrl) ? 'Pull request created!' : 'Changes published!'}</h1>
+                  <p>{changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)} files have been published safely to GitHub.</p>
+                  {changes.find((change: any) => change.pullRequestUrl)?.pullRequestUrl
+                    ? <a className="success-github-link" href={changes.find((change: any) => change.pullRequestUrl).pullRequestUrl} target="_blank" rel="noreferrer">Review pull request <Icon name="external" /></a>
+                    : <a className="success-github-link" href={`https://github.com/${session.project}/tree/${encodeURIComponent(session.branch)}`} target="_blank" rel="noreferrer">View on GitHub <Icon name="external" /></a>}
                   <div className="success-next"><b>What's next?</b><button onClick={() => setTab('chat')}><Icon name="inbox" /><span>Continue working</span><Icon name="chevron" /></button>{integration.workspace?.previewAvailable && <button onClick={() => setTab('preview')}><Icon name="preview" /><span>Open preview</span><Icon name="chevron" /></button>}<a href={`https://github.com/${session.project}/compare/${encodeURIComponent(session.branch)}?expand=1`} target="_blank" rel="noreferrer"><Icon name="branch" /><span>Create pull request</span><Icon name="chevron" /></a></div>
                 </div> : <>
                   <div className="changes-topbar"><button className="icon-button" onClick={() => setTab('chat')} aria-label="Back to chat">‹</button><h1>Changes ({changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)} files)</h1></div>
@@ -734,8 +745,8 @@ export default function ProductionApp() {
                     {change.files.map((file: any) => <details className="diff-file" key={file.path}><summary>{file.path}</summary><p className="diff-explanation">Exact diff</p><pre>{file.diff || file.after || file.before || '(binary or empty file)'}</pre></details>)}
                     {change.reviewState === 'pending' && <AgentApprovalCard title="Approve these changes" detail="Review the exact files above before continuing." busy={busyChange === change.id} onApprove={() => reviewChange(change)} />}
                     {change.reviewState === 'approved' && <div className="commit-form premium"><div><h2>Ready to commit changes</h2><p>Write the message that will appear in Git history.</p></div><label>Commit message<input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this change" /></label><div className="commit-branch"><span>Push to branch</span><b><Icon name="branch" />{session.branch}</b></div><Button disabled={!commitMessage.trim() || busyChange === change.id} onClick={() => commitChange(change)}>{busyChange === change.id ? 'Committing…' : 'Create commit'}</Button></div>}
-                    {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to push changes</h2><p>{change.files.length} files are committed locally and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} /><div className="commit-branch"><span>Push to branch</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review push</Button></div>}
-                    {pushReview?.id === change.id && <div className="push-confirm"><b>Push {change.files.length} files to {session.project} · {session.branch}?</b><p>This writes the approved commit to GitHub.</p><div className="action-row"><Button tone="ghost" onClick={() => setPushReview(null)}>Cancel</Button><Button onClick={() => pushChange(change)} disabled={busyChange === change.id}>Approve & push</Button></div></div>}
+                    {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to publish changes</h2><p>{change.files.length} files are committed and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} /><div className="commit-branch"><span>{['main', 'master'].includes(session.branch) ? 'Review target' : 'Push to branch'}</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review publish</Button></div>}
+                    {pushReview?.id === change.id && <div className="push-confirm"><b>{['main', 'master'].includes(session.branch) ? `Create a review branch and pull request to ${session.branch}?` : `Push ${change.files.length} files to ${session.project} · ${session.branch}?`}</b><p>{['main', 'master'].includes(session.branch) ? 'Orlynx will not push directly to the default branch. It will publish an isolated branch and open a pull request for review.' : 'This publishes the approved commit to GitHub.'}</p><div className="action-row"><Button tone="ghost" onClick={() => setPushReview(null)}>Cancel</Button><Button onClick={() => pushChange(change)} disabled={busyChange === change.id}>{['main', 'master'].includes(session.branch) ? 'Approve & create PR' : 'Approve & push'}</Button></div></div>}
                   </section>)}
                 </>}
               </section>}
