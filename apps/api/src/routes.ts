@@ -21,6 +21,22 @@ import { bridgeRequest } from './bridge-rpc.js';
 
 export const router = Router();
 
+const webhookRateBuckets = new Map<string, { count: number; resetAt: number }>();
+function allowWebhookRequest(req: Request): boolean {
+  const now = Date.now();
+  const key = req.ip || String(req.header('x-forwarded-for') || 'unknown').split(',')[0].trim();
+  const current = webhookRateBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    webhookRateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  current.count += 1;
+  if (webhookRateBuckets.size > 500) {
+    for (const [bucketKey, value] of webhookRateBuckets) if (value.resetAt <= now) webhookRateBuckets.delete(bucketKey);
+  }
+  return current.count <= 240;
+}
+
 async function requestUserId(req: Request): Promise<string | null> {
   if (!durableStorageConfigured()) return null;
   const installationId = requestInstallationId(req);
@@ -778,6 +794,7 @@ router.get('/github/setup', async (req, res) => {
   }
 });
 router.post('/github/webhook', async (req, res) => {
+  if (!allowWebhookRequest(req)) return res.status(429).json({ error: 'Too many webhook requests.' });
   if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: 'Expected a signed GitHub JSON webhook.' });
   try {
     const summary = await acceptGitHubWebhook(req.body, String(req.header('x-hub-signature-256') || ''), String(req.header('x-github-event') || ''), String(req.header('x-github-delivery') || ''));
