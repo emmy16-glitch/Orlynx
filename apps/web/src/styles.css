@@ -1229,13 +1229,121 @@ button, input, textarea, select { font: inherit; }
 }
 
 @media (min-width: 900px) {
-  .welcome-screen,
-  .github-sync-screen,
-  .repo-flow-screen {
-    border-inline: 1px solid rgb(222 213 204 / 72%);
-    box-shadow: 0 0 70px rgb(67 49 34 / 6%);
+  /* Desktop is a real responsive composition, not a phone mockup pinned in
+     the middle of a wide browser. Mobile keeps the approved reference flow. */
+  .welcome-screen {
+    width: 100%;
+    max-width: none;
+    min-height: 100dvh;
+    margin: 0;
+    padding: 54px clamp(48px, 7vw, 120px) 48px;
+    display: grid;
+    grid-template-columns: minmax(430px, 48%) minmax(420px, 52%);
+    grid-template-rows: auto 1fr;
+    column-gap: clamp(38px, 6vw, 110px);
+    border: 0;
+    box-shadow: none;
+    background:
+      radial-gradient(circle at 72% 18%, rgb(250 225 202 / 78%) 0 2%, transparent 25%),
+      linear-gradient(115deg, #fffdf9 0 48%, #faeee2 48% 100%);
   }
-  .welcome-screen { min-height: 900px; }
+  .welcome-brand {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+  }
+  .welcome-hero {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+    margin: 0;
+    max-width: 560px;
+    padding-bottom: 70px;
+  }
+  .welcome-hero h1 {
+    font-size: clamp(64px, 6.3vw, 96px);
+    line-height: .92;
+    max-width: 640px;
+  }
+  .welcome-copy {
+    max-width: 440px;
+    font-size: 18px;
+  }
+  .welcome-github-button {
+    max-width: 390px;
+    min-height: 58px;
+  }
+  .welcome-trust {
+    max-width: 390px;
+    text-align: left;
+    padding-left: 4px;
+  }
+  .welcome-landscape {
+    left: 52%;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    height: 100%;
+    border-left: 1px solid rgb(226 210 196 / 70%);
+    background:
+      radial-gradient(circle at 60% 25%, #f4bf88 0 4%, transparent 4.2%),
+      linear-gradient(180deg, #faeadb 0 52%, #efc9a5 100%);
+  }
+  .welcome-landscape::before {
+    height: 58%;
+    background: linear-gradient(135deg, #e3a16f, #b97051 55%, #805044);
+  }
+  .welcome-landscape::after {
+    height: 47%;
+    background: linear-gradient(145deg, #6a463c, #40332f 66%, #24211f);
+  }
+  .welcome-landscape .ridge-one { height: 60%; bottom: 8%; }
+  .welcome-landscape .ridge-two { height: 50%; }
+  .welcome-values {
+    left: auto;
+    right: clamp(36px, 5vw, 90px);
+    bottom: 34px;
+    width: min(42vw, 650px);
+  }
+  .welcome-values small { font-size: 11px; }
+
+  .github-sync-screen {
+    width: 100%;
+    max-width: none;
+    min-height: 100dvh;
+    margin: 0;
+    padding: 54px clamp(48px, 8vw, 140px);
+    border: 0;
+    box-shadow: none;
+    background:
+      radial-gradient(circle at 78% 18%, rgb(248 222 198 / 72%) 0 2%, transparent 28%),
+      linear-gradient(120deg, #fffdf9 0 55%, #faeee2 100%);
+  }
+  .github-sync-screen .flow-brand { max-width: 1120px; margin: 0 auto; }
+  .sync-visual { margin-top: clamp(110px, 17vh, 170px); }
+  .github-sync-screen h1 { max-width: 460px; font-size: 30px; }
+  .github-sync-screen > p { max-width: 460px; font-size: 15px; }
+  .sync-steps.premium { width: min(100%, 380px); }
+
+  .repo-flow-screen {
+    width: min(100%, 920px);
+    min-height: 100dvh;
+    margin: 0 auto;
+    padding: 50px clamp(36px, 5vw, 72px) 70px;
+    border-inline: 1px solid rgb(222 213 204 / 64%);
+    box-shadow: 0 0 70px rgb(67 49 34 / 5%);
+  }
+  .repo-flow-header { margin-bottom: 64px; }
+  .repo-flow-intro h1 { font-size: 42px; }
+  .repo-flow-intro p { font-size: 16px; }
+  .repo-search { max-width: 100%; min-height: 50px; margin-top: 30px; }
+  .repo-flow-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .repo-flow-row { min-height: 78px; }
+  .view-all-repositories { max-width: 420px; margin: 18px auto 0; }
+
   .workspace-layout { grid-template-columns: minmax(0, 1fr) 310px; }
   .context-panel { padding-top: 18px; }
   .composer { bottom: 24px; }
