@@ -15,28 +15,31 @@ describe('fail-closed production integrations (API must be running)', async () =
 
   it('reports integration readiness without disclosing credentials', async () => {
     const status = await (await fetch(`${BASE}/v1/integrations/status`)).json();
-    assert.equal(typeof status.github.configured, 'boolean');
     assert.equal(typeof status.github.connected, 'boolean');
-    assert.equal(typeof status.agent.configured, 'boolean');
-    assert.equal(typeof status.agent.connected, 'boolean');
-    assert.equal(status.cloud.configured, false);
+    assert.equal(typeof status.githubAvailable, 'boolean');
+    assert.equal(typeof status.ai.available, 'boolean');
+    assert.equal(typeof status.workspace.terminalAvailable, 'boolean');
+    assert.equal(status.workspace.cloudAvailable, false);
+    assert.equal(status.workspace.previewAvailable, false);
     assert.equal(JSON.stringify(status).includes('PRIVATE KEY'), false);
     assert.equal(Object.hasOwn(status.github, 'token'), false);
   });
 
-  it('does not create synthetic local repositories or demo sessions', async () => {
+  it('protects session creation before validating repository input', async () => {
     const response = await fetch(`${BASE}/v1/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'not-imported', owner: 'local', branch: 'main' }) });
-    assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /imported GitHub repository/i);
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).code, 'AUTH_REQUIRED');
   });
 
-  it('does not create conversation messages for an unknown project session', async () => {
+  it('protects conversation messages without a signed session', async () => {
     const response = await fetch(`${BASE}/v1/sessions/not-a-session/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'run tests', clientId: 'unavailable-agent' }) });
-    assert.equal(response.status, 404);
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).code, 'AUTH_REQUIRED');
   });
 
-  it('does not report cloud readiness when the remote execution bridge is absent', async () => {
+  it('protects workspace lifecycle routes without a signed session', async () => {
     const response = await fetch(`${BASE}/v1/sessions/not-a-session/cloud`, { method: 'POST' });
-    assert.equal(response.status, 404);
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).code, 'AUTH_REQUIRED');
   });
 });

@@ -47,3 +47,11 @@ describe('event → presentation contract', () => {
     assert.ok(src.includes('aria-live') || true, 'live region handled in workstream.tsx');
   });
 });
+
+describe('signed-out application bootstrap', () => {
+  it('does not call protected AI endpoints before GitHub authentication', () => {
+    const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+    assert.doesNotMatch(src, /refreshIntegrations\(\);\s*refreshAi\(\)/, 'signed-out bootstrap calls protected AI routes');
+    assert.match(src, /if \(integration\.github\?\.connected\) \{\s*refreshAi\(\)/, 'AI refresh is not gated by authenticated GitHub state');
+  });
+});

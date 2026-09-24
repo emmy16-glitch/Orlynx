@@ -189,7 +189,6 @@ export default function ProductionApp() {
 
   useEffect(() => {
     refreshIntegrations();
-    refreshAi().catch(() => {});
     const params = new URLSearchParams(window.location.search);
     const callback = params.get('github');
     const setup = params.get('internal');
@@ -226,6 +225,19 @@ export default function ProductionApp() {
     window.addEventListener('online', onOnline); window.addEventListener('offline', onOffline);
     return () => { sourceRef.current?.close(); if (retryRef.current) clearTimeout(retryRef.current); if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
   }, [connectEvents, openSession, refreshIntegrations, refreshAi]);
+
+  // AI routes are protected by the signed GitHub installation session. Do not
+  // issue guaranteed-to-fail requests while the visitor is still signed out.
+  // Once integration status confirms the session, load the available runtime.
+  useEffect(() => {
+    if (integration.github?.connected) {
+      refreshAi().catch(() => {});
+      return;
+    }
+    setAi({ state: 'disconnected', mode: 'build', permission: 'ask-first', providers: { connected: 0, total: 0 } });
+    setAiModels([]);
+    setAiProviders([]);
+  }, [integration.github?.connected, refreshAi]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
