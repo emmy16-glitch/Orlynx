@@ -68,7 +68,7 @@ describe('github app manifest bootstrap', () => {
     const state = manifest.signManifestState();
     const res = await fetch(`${base}/v1/setup/github-app/callback?code=&state=${encodeURIComponent(state)}`, { redirect: 'manual' });
     assert.equal(res.status, 302);
-    assert.match(res.headers.get('location') || '', /\?setup=github-app&error=/);
+    assert.match(res.headers.get('location') || '', /\?internal=setup-github&error=/);
   });
 
   it('callback with a replayed state is rejected', async () => {

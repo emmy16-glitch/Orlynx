@@ -217,6 +217,38 @@ export async function githubConnectionStatus() {
   };
 }
 
+export interface GitHubPlatformHealth {
+  configured: boolean;
+  healthy: boolean;
+  appId: string | null;
+  slug: string | null;
+  name: string | null;
+  permissions: Record<string, string>;
+  events: string[];
+  message: string;
+}
+
+// Platform check: can this server authenticate as the GitHub App? This is
+// operator/platform state — NOT the user's connection state.
+export async function githubPlatformHealth(): Promise<GitHubPlatformHealth> {
+  if (!githubAppConfigured()) {
+    return { configured: false, healthy: false, appId: null, slug: null, name: null, permissions: {}, events: [], message: 'GitHub App credentials are not configured on this server.' };
+  }
+  try {
+    const response = await fetch(`${API}/app`, { headers: githubHeaders(createAppJwt()), signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const app = await response.json() as { id: number; slug?: string; name?: string; permissions?: Record<string, string>; events?: string[] };
+    return {
+      configured: true, healthy: true,
+      appId: String(app.id), slug: app.slug || null, name: app.name || null,
+      permissions: app.permissions || {}, events: app.events || [],
+      message: 'GitHub App authentication verified.',
+    };
+  } catch (error) {
+    return { configured: true, healthy: false, appId: appId || null, slug: appSlug || null, name: null, permissions: {}, events: [], message: error instanceof Error ? `GitHub App authentication failed: ${error.message}` : 'GitHub App authentication failed.' };
+  }
+}
+
 export async function githubHealth(): Promise<{ healthy: boolean; authorizedRepositories: number; message: string }> {
   if (!githubAppConfigured()) return { healthy: false, authorizedRepositories: 0, message: 'GitHub App is not configured on this Orlynx server.' };
   const active = store.db.githubInstallations.filter((item) => (item.status || 'active') !== 'suspended');

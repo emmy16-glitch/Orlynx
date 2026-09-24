@@ -116,11 +116,14 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
     assert.match((await res.json()).error, /not authorized|not available|not configured|not connected/i);
   });
 
-  it('integration status never leaks secrets and reports real shape', async () => {
+  it('integration status separates platform config from user connection without secrets', async () => {
     const status = await (await fetch(`${base}/v1/integrations/status`)).json();
     assert.equal(status.github.configured, false);
     assert.equal(status.github.connected, false);
     assert.equal(status.github.provider, 'GitHub App');
+    assert.equal(status.githubPlatform.configured, false);
+    assert.equal(status.githubPlatform.healthy, false);
+    assert.equal(status.githubPlatform.appId, null);
     assert.equal(status.github.userAuthorizationState, 'not-established');
     assert.equal(typeof status.github.authorizedRepositories, 'number');
     const serialized = JSON.stringify(status);

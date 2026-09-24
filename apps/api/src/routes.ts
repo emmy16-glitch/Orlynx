@@ -3,7 +3,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { emit, history, subscribe } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubPlatformHealth, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace } from './workspaces.js';
@@ -299,8 +299,8 @@ router.get('/setup/github-app', (req, res) => {
 });
 router.get('/setup/github-app/callback', async (req, res) => {
   const access = setupAccess();
-  const fail = (reason: string) => res.redirect(302, `/?setup=github-app&error=${encodeURIComponent(reason.slice(0, 160))}`);
-  if (access.locked) return res.redirect(302, '/?setup=github-app&created=0');
+  const fail = (reason: string) => res.redirect(302, `/?internal=setup-github&error=${encodeURIComponent(reason.slice(0, 160))}`);
+  if (access.locked) return res.redirect(302, '/?internal=setup-github&created=0');
   if (!access.enabled) return fail(access.reason);
   try {
     verifyManifestState(String(req.query.state || ''));
@@ -309,7 +309,7 @@ router.get('/setup/github-app/callback', async (req, res) => {
     // Only masked metadata is ever exposed. Secrets went straight to Vercel.
     console.info(`[orlynx] github app created id=${conversion.id} slug=${conversion.slug} stored=${persistence.stored} redeployed=${persistence.redeployed}`);
     if (!persistence.stored) return fail(persistence.detail);
-    return res.redirect(302, `/?setup=github-app&created=1&slug=${encodeURIComponent(conversion.slug)}`);
+    return res.redirect(302, `/?internal=setup-github&created=1&slug=${encodeURIComponent(conversion.slug)}`);
   } catch (error) { return fail(error instanceof Error ? error.message : 'Setup failed.'); }
 });
 
@@ -355,15 +355,18 @@ router.post('/github/webhook', async (req, res) => {
 });
 router.get('/agents', async (_req, res) => res.json(await openCodeStatus()));
 router.get('/integrations/status', async (_req, res) => {
-  const [connection, opencode] = await Promise.all([githubConnectionStatus(), openCodeStatus()]);
+  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(), openCodeStatus(), githubPlatformHealth()]);
   const health = connection.connected || connection.needsAttention
     ? await githubHealth()
-    : { healthy: false as boolean, authorizedRepositories: 0, message: connection.configured ? 'Install the Orlynx GitHub App to connect repositories.' : 'GitHub App is not configured on this Orlynx server.' };
+    : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
   res.json({
     github: { ...connection, health: health.healthy ? 'healthy' : 'unhealthy', healthMessage: health.message, authorizedRepositories: health.authorizedRepositories },
+    // Platform vs user-connection split: operators read githubPlatform,
+    // the public UI reads github.connected.
+    githubPlatform: { configured: platform.configured, healthy: platform.healthy, appId: platform.appId, slug: platform.slug, name: platform.name, message: platform.message },
     agent: opencode,
     ai: await aiStatus().catch(() => ({ state: 'error' as const, engine: 'OpenCode', engineConnected: false, message: 'AI status is unavailable.', mode: 'build' as const, permission: 'ask-first' as const, providers: { connected: 0, total: 0 } })),
-    cloud: { configured: false, connected: false, message: 'A Codespaces execution bridge is not configured. Cloud access needs a user-authorized GitHub bridge first.' },
+    cloud: { configured: false, connected: false, message: 'Cloud workspace is temporarily unavailable.' },
   });
 });
 router.get('/repos/:owner/:name/branches', async (req, res) => {
