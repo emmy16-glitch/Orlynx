@@ -28,7 +28,7 @@ Normal users never see this. They use Connect GitHub after setup completes.
 (homepage, `redirect_url` = callback, `callback_urls` = setup,
 `setup_url`, webhook URL) and minimum permissions mapped to real calls:
 `contents:write` (clone/commit/push), `metadata:read`, events
-`installation` + `installation_repositories`. No admin/secrets/actions scopes.
+the registered webhook URL (GitHub rejects installation lifecycle names as manifest `default_events`; the endpoint verifies whatever GitHub delivers). No admin/secrets/actions scopes.
 
 ## If automation is missing
 

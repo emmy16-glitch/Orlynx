@@ -63,6 +63,12 @@ export function verifyManifestState(state: string): void {
 //   push (pushGitHubRepository) via installation tokens.
 // - metadata:read → required companion permission for repository access.
 // Everything else is intentionally NOT requested.
+//
+// NOTE: no `default_events` is sent. GitHub's manifest flow rejects
+// `installation` / `installation_repositories` as default events, and Orlynx
+// must not subscribe to activity events it never handles. Installation
+// lifecycle is learned from the setup callback + live API checks, and the
+// webhook endpoint verifies anything GitHub delivers to the registered hook.
 export function buildManifest(appName: string): Record<string, unknown> {
   const publicUrl = publicSiteUrl();
   if (!publicUrl) throw new Error('ORLYNX_PUBLIC_URL must be the canonical production HTTPS URL before creating the GitHub App.');
@@ -76,7 +82,6 @@ export function buildManifest(appName: string): Record<string, unknown> {
     description: 'Orlynx — GitHub-native AI development workspace.',
     public: false,
     default_permissions: { contents: 'write', metadata: 'read' },
-    default_events: ['installation', 'installation_repositories'],
   };
 }
 
