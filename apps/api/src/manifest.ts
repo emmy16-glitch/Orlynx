@@ -79,6 +79,9 @@ export function buildManifest(appName: string): Record<string, unknown> {
     redirect_url: `${publicUrl}/v1/setup/github-app/callback`,
     callback_urls: [`${publicUrl}/v1/github/setup`],
     setup_url: `${publicUrl}/v1/github/setup`,
+    // GitHub redirects back to Orlynx after repository access is changed.
+    // This corresponds to "Redirect on update" in GitHub App settings.
+    setup_on_update: true,
     description: 'Orlynx — GitHub-native AI development workspace.',
     public: false,
     default_permissions: { contents: 'write', metadata: 'read', codespaces: 'write', codespaces_lifecycle_admin: 'write' },
