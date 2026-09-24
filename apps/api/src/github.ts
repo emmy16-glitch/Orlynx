@@ -218,21 +218,32 @@ export async function completeGitHubInstallation(installationId: string, state: 
   return { redirect: `${publicUrl()}/?github=${setupAction === 'uninstall' ? 'disconnected' : 'connected'}`, installationId: setupAction === 'uninstall' ? null : id };
 }
 
-export function githubOAuthUrl(installationId: number): { url: string; state: string } {
+export function githubOAuthUrl(installationId?: number): { url: string; state: string } {
   if (!githubAppConfigured()) throw new Error('GitHub connection is temporarily unavailable.');
-  if (!Number.isSafeInteger(installationId) || installationId <= 0) throw new Error('GitHub returned an invalid installation id.');
-  const state = signState({ purpose: 'oauth', installationId, nonce: crypto.randomBytes(18).toString('base64url'), exp: Date.now() + 10 * 60_000 });
+  if (installationId !== undefined && (!Number.isSafeInteger(installationId) || installationId <= 0)) {
+    throw new Error('GitHub returned an invalid installation id.');
+  }
+  // OAuth-first connection is deliberate: if the App is already installed,
+  // /user/installations lets us bind the browser to the real installation and
+  // return straight to Orlynx instead of dropping the user on GitHub settings.
+  const state = signState({
+    purpose: installationId ? 'oauth' : 'connect',
+    ...(installationId ? { installationId } : {}),
+    nonce: crypto.randomBytes(18).toString('base64url'),
+    exp: Date.now() + 10 * 60_000,
+  });
   const query = new URLSearchParams({ client_id: clientId(), redirect_uri: `${publicUrl()}/v1/github/setup`, state });
   return { url: `https://github.com/login/oauth/authorize?${query}`, state };
 }
 
-export async function completeGitHubOAuth(code: string, state: string): Promise<{ installationId: number; login: string }> {
-  if (process.env.VERCEL === '1' && !durableStorageConfigured()) throw new Error('Durable storage must be configured before users can connect GitHub.');
+export async function completeGitHubOAuth(code: string, state: string): Promise<{ installationId: number | null; login: string; needsInstall: boolean; durableAuthorization: boolean }> {
   const claims = verifyState(state);
-  if (claims.purpose !== 'oauth' || !Number.isSafeInteger(claims.installationId) || Number(claims.installationId) <= 0) {
+  if (!['oauth', 'connect'].includes(claims.purpose)) throw new Error('GitHub authorization state is invalid.');
+  if (claims.purpose === 'oauth' && (!Number.isSafeInteger(claims.installationId) || Number(claims.installationId) <= 0)) {
     throw new Error('GitHub authorization state is invalid.');
   }
   if (!code || code.length > 512) throw new Error('GitHub did not return an authorization code.');
+
   const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -241,30 +252,70 @@ export async function completeGitHubOAuth(code: string, state: string): Promise<
   });
   const tokenBody = await tokenResponse.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number; error?: string };
   if (!tokenResponse.ok || !tokenBody.access_token) throw new Error('GitHub could not verify your account. Start the connection again.');
+
   const userHeaders = githubHeaders(tokenBody.access_token);
   const [userResponse, installationsResponse] = await Promise.all([
     fetch(`${API}/user`, { headers: userHeaders, signal: AbortSignal.timeout(10_000) }),
     fetch(`${API}/user/installations?per_page=100`, { headers: userHeaders, signal: AbortSignal.timeout(10_000) }),
   ]);
-  if (!userResponse.ok || !installationsResponse.ok) throw new Error('GitHub could not verify access to this installation.');
+  if (!userResponse.ok || !installationsResponse.ok) throw new Error('GitHub could not verify your Orlynx installation.');
+
   const user = await userResponse.json() as { id?: number; login?: string };
-  const installations = await installationsResponse.json() as { installations?: { id: number }[] };
-  const installationId = Number(claims.installationId);
-  if (!(installations.installations || []).some((item) => item.id === installationId)) {
-    throw new Error('Your GitHub account does not have access to this Orlynx installation.');
-  }
+  const installations = await installationsResponse.json() as {
+    installations?: { id: number; app_id?: number; app_slug?: string; account?: { login?: string; type?: string }; suspended_at?: string | null }[]
+  };
   if (!user.id) throw new Error('GitHub did not return a stable user identity.');
-  const now = new Date();
-  if (durableStorageConfigured()) await controlPlaneRepository().upsertGitHubConnection({
-    userId: String(user.id), installationId, login: user.login || 'GitHub user',
-    accessToken: encryptCredential(tokenBody.access_token),
-    refreshToken: tokenBody.refresh_token ? encryptCredential(tokenBody.refresh_token) : undefined,
-    accessTokenExpiresAt: tokenBody.expires_in ? new Date(now.getTime() + tokenBody.expires_in * 1000).toISOString() : undefined,
-    refreshTokenExpiresAt: tokenBody.refresh_token_expires_in ? new Date(now.getTime() + tokenBody.refresh_token_expires_in * 1000).toISOString() : undefined,
-    createdAt: now.toISOString(), updatedAt: now.toISOString(),
+
+  // GitHub documents /user/installations as installations of THIS GitHub App
+  // accessible to the user access token. Still filter defensively by app id/slug.
+  const candidates = (installations.installations || []).filter((item) => {
+    const appMatches = item.app_id === Number(appId()) || item.app_slug === appSlug();
+    return appMatches && !item.suspended_at;
   });
+
+  let installationId: number | null = null;
+  if (claims.purpose === 'oauth') {
+    const requested = Number(claims.installationId);
+    if (!candidates.some((item) => item.id === requested)) {
+      throw new Error('Your GitHub account does not have access to this Orlynx installation.');
+    }
+    installationId = requested;
+  } else {
+    // Prefer the user's personal installation when present; otherwise use the
+    // first installation the authenticated user can explicitly access.
+    const preferred = candidates.find((item) =>
+      item.account?.type === 'User'
+      && item.account?.login?.toLowerCase() === String(user.login || '').toLowerCase()
+    ) || candidates[0];
+    installationId = preferred?.id || null;
+  }
+
+  // No installation yet: the route will send the user to GitHub's official
+  // installation screen, preserving the normal install/repository-selection flow.
+  if (!installationId) {
+    return { installationId: null, login: user.login || 'GitHub user', needsInstall: true, durableAuthorization: false };
+  }
+
+  const now = new Date();
+  let durableAuthorization = false;
+  if (durableStorageConfigured()) {
+    await controlPlaneRepository().upsertGitHubConnection({
+      userId: String(user.id), installationId, login: user.login || 'GitHub user',
+      accessToken: encryptCredential(tokenBody.access_token),
+      refreshToken: tokenBody.refresh_token ? encryptCredential(tokenBody.refresh_token) : undefined,
+      accessTokenExpiresAt: tokenBody.expires_in ? new Date(now.getTime() + tokenBody.expires_in * 1000).toISOString() : undefined,
+      refreshTokenExpiresAt: tokenBody.refresh_token_expires_in ? new Date(now.getTime() + tokenBody.refresh_token_expires_in * 1000).toISOString() : undefined,
+      createdAt: now.toISOString(), updatedAt: now.toISOString(),
+    });
+    durableAuthorization = true;
+  }
+
   await restoreGitHubInstallation(installationId);
-  return { installationId, login: user.login || 'GitHub user' };
+  // Verify installation-token access before the browser is considered connected.
+  repositoryCache.delete(installationId);
+  await installationToken(installationId);
+  await githubListRepos(installationId);
+  return { installationId, login: user.login || 'GitHub user', needsInstall: false, durableAuthorization };
 }
 
 export async function githubUserAccessToken(userId: string): Promise<string> {
