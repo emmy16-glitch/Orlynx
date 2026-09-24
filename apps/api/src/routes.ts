@@ -9,7 +9,7 @@ import { saveAttachment } from './attachments.js';
 import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
-import { aiStatus, canPerform, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
+import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
 import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
@@ -20,6 +20,14 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest } from './bridge-rpc.js';
 
 export const router = Router();
+
+async function requestUserId(req: Request): Promise<string | null> {
+  if (!durableStorageConfigured()) return null;
+  const installationId = requestInstallationId(req);
+  if (!installationId) return null;
+  return (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId))?.userId || null;
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: Number(process.env.ORLYNX_MAX_UPLOAD_MB || 15) * 1024 * 1024, files: 1 },
@@ -226,7 +234,16 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
     emit(s.id, workspace.state === 'ready' ? 'workspace.ready' : 'workspace.preparing', { state: workspace.state, bridge: workspace.bridgeState, openCode: workspace.openCodeState });
     return res.status(workspace.state === 'ready' ? 200 : 202).json(workspace);
-  } catch (error) { return res.status(502).json({ error: "Cloud workspace couldn't start.", retryable: true, diagnostic: error instanceof Error ? error.message : 'Workspace start failed.' }); }
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message : 'Workspace start failed.';
+    const permission = /codespaces.*(permission|403|forbidden)|HTTP 403/i.test(diagnostic);
+    return res.status(permission ? 409 : 502).json({
+      error: permission ? 'GitHub Codespaces access needs approval before this workspace can start.' : "Cloud workspace couldn't start.",
+      code: permission ? 'CODESPACES_PERMISSION_REQUIRED' : 'WORKSPACE_START_FAILED',
+      retryable: true,
+      diagnostic,
+    });
+  }
 });
 
 router.post('/sessions/:id/cloud/stop', async (req, res) => {
@@ -421,7 +438,7 @@ router.get('/ai/status', async (req, res) => {
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
   try {
-    const status = await aiStatus(sessionId || undefined, s?.project);
+    const status = await aiStatus(sessionId || undefined, s?.project, await requestUserId(req) || undefined);
     res.json({ state: status.state, message: status.engineConnected ? status.message : 'AI is not available for this workspace yet.', model: status.model, mode: status.mode, permission: status.permission, providers: status.providers });
   }
   catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'AI status is unavailable.' }); }
@@ -429,22 +446,38 @@ router.get('/ai/status', async (req, res) => {
 router.get('/ai/providers', async (req, res) => {
   try {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
-    const { engine, providers, models } = await listProviderConnections(session?.project);
-    res.json({ available: engine.connected, providers: providers.filter((provider) => provider.state === 'connected'), connectedModels: models.filter((m) => m.status === 'available').length });
+    const { engine, providers, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined);
+    res.json({ available: engine.connected, providers, connectedModels: models.filter((m) => m.status === 'available').length });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Provider list is unavailable.' }); }
 });
 router.get('/ai/models', async (req, res) => {
   try {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
-    const { engine, models } = await listProviderConnections(session?.project);
+    const { engine, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined);
     res.json({ available: engine.connected, models });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
 });
 router.post('/ai/providers/connect-key', async (req, res) => {
-  res.status(501).json({ error: 'Connecting AI accounts is not available in this deployment.' });
+  try {
+    const userId = await requestUserId(req);
+    if (!userId) return res.status(401).json({ error: 'Reconnect GitHub before connecting AI.', code: 'AUTH_REQUIRED' });
+    const providerId = String(req.body?.providerId || '');
+    const apiKey = String(req.body?.apiKey || '');
+    const provider = await connectProviderKey(providerId, apiKey, userId);
+    return res.json({ provider });
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'AI account could not be connected.' });
+  }
 });
 router.post('/ai/providers/:id/disconnect', async (req, res) => {
-  res.status(501).json({ error: 'Managing AI accounts is not available in this deployment.' });
+  try {
+    const userId = await requestUserId(req);
+    if (!userId) return res.status(401).json({ error: 'Reconnect GitHub before managing AI.', code: 'AUTH_REQUIRED' });
+    await disconnectProvider(req.params.id, userId);
+    return res.json({ disconnected: true });
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'AI account could not be disconnected.' });
+  }
 });
 router.get('/ai/session/:id', (req, res) => {
   const s = ownedSession(req, req.params.id);
