@@ -1353,3 +1353,187 @@ button, input, textarea, select { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .sync-orbit { animation: none; }
 }
+
+
+/* === Repository picker cleanup: 2026-09-24 === */
+.is-welcome .page-body,
+.is-github .page-body {
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+.is-github .app-main,
+.is-welcome .app-main {
+  margin-left: 0;
+}
+.is-github .simple-header { display: none !important; }
+
+.repo-flow-screen {
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  padding: max(34px, env(safe-area-inset-top)) clamp(20px, 5vw, 72px) calc(52px + env(safe-area-inset-bottom));
+  background:
+    radial-gradient(circle at 82% 4%, rgb(250 226 204 / 58%) 0 1.5%, transparent 21%),
+    linear-gradient(180deg, #fffdf9 0%, #fbf8f3 100%);
+}
+.repo-flow-header,
+.repo-flow-intro,
+.repo-search,
+.repo-list-heading,
+.repo-flow-list,
+.view-all-repositories,
+.manage-access-link,
+.repo-inline-alert {
+  width: min(100%, 760px);
+  margin-left: auto;
+  margin-right: auto;
+}
+.repo-flow-header {
+  margin-bottom: 54px;
+}
+.repo-flow-intro {
+  margin-bottom: 0;
+}
+.repo-flow-intro h1 {
+  font-size: clamp(34px, 5vw, 48px);
+  letter-spacing: -.055em;
+}
+.repo-flow-intro p {
+  max-width: 470px;
+  font-size: 15px;
+}
+.repo-search {
+  margin-top: 30px;
+  margin-bottom: 26px;
+  min-height: 50px;
+  border-color: #ded7cf;
+  box-shadow: 0 1px 2px rgb(37 29 22 / 2%);
+}
+.repo-list-heading {
+  margin-bottom: 10px;
+  min-height: 32px;
+}
+.repo-list-heading > span {
+  color: #6f6a64;
+  font-size: 12px;
+  font-weight: 650;
+}
+.repo-refresh-button {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--foreground-muted);
+  cursor: pointer;
+}
+.repo-refresh-button:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+.repo-flow-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.repo-flow-row {
+  min-height: 72px;
+  padding: 10px 11px 10px 12px;
+  border-color: #e4ddd5;
+  border-radius: 14px;
+  background: rgb(255 253 250 / 96%);
+  transition: transform var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
+}
+.repo-flow-row:hover {
+  transform: translateY(-1px);
+  border-color: #d5c9bd;
+  box-shadow: 0 8px 22px rgb(53 40 29 / 5%);
+}
+.repo-flow-copy b {
+  font-size: 14px;
+  letter-spacing: -.015em;
+}
+.repo-flow-copy small {
+  font-size: 11px;
+}
+.repo-open-button {
+  min-width: 68px;
+  min-height: 38px !important;
+  box-shadow: none !important;
+}
+.view-all-repositories {
+  margin-top: 14px;
+  min-height: 48px;
+  background: var(--surface);
+  border-color: #ddd5cc;
+}
+.manage-access-link {
+  min-height: 40px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.manage-access-link:hover { color: var(--foreground); }
+.repo-inline-alert {
+  min-height: 44px;
+  margin-top: 18px;
+  margin-bottom: 0;
+  padding: 9px 12px;
+  font-size: 12px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+.repo-inline-alert.tone-neutral {
+  color: #6f665d;
+  border-color: #e6ddd3;
+  background: #faf5ef;
+}
+.repo-inline-alert.tone-fail {
+  color: #9c423d;
+  border-color: #efd0cd;
+  background: #fff7f6;
+}
+
+@media (min-width: 900px) {
+  .welcome-screen {
+    width: 100vw;
+    max-width: none;
+  }
+  .repo-flow-screen {
+    width: 100vw;
+    max-width: none;
+    border: 0;
+    box-shadow: none;
+  }
+  .repo-flow-header {
+    width: min(100%, 900px);
+  }
+}
+
+@media (max-width: 899px) {
+  .repo-flow-screen {
+    padding-inline: 16px;
+  }
+  .repo-flow-header {
+    margin-bottom: 38px;
+  }
+  .repo-flow-intro h1 {
+    font-size: 32px;
+  }
+  .repo-flow-row {
+    min-height: 66px;
+  }
+}
