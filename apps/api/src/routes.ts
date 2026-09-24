@@ -28,6 +28,23 @@ async function requestUserId(req: Request): Promise<string | null> {
   return (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId))?.userId || null;
 }
 
+async function recordAudit(req: Request, sessionId: string | undefined, action: string, outcome: string, detail: Record<string, unknown> = {}): Promise<void> {
+  if (!durableStorageConfigured()) return;
+  try {
+    const repository = controlPlaneRepository();
+    const userId = await requestUserId(req);
+    if (!userId) return;
+    const session = sessionId ? await repository.getSession(sessionId) : null;
+    await repository.recordAudit({
+      id: `audit_${uuid()}`, userId, sessionId,
+      projectId: session?.projectId, action, outcome, detail,
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // Auditing must never turn a completed user action into a failed response.
+  }
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: Number(process.env.ORLYNX_MAX_UPLOAD_MB || 15) * 1024 * 1024, files: 1 },
@@ -96,6 +113,15 @@ async function ownedChangeSession(req: Request, changeId: string): Promise<strin
   return '';
 }
 
+// GET /v1/sessions — identity-based restore across phones/laptops.
+router.get('/sessions', async (req, res) => {
+  if (!durableStorageConfigured()) return res.json([]);
+  const userId = await requestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Reconnect GitHub to continue.' });
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+  res.json(await controlPlaneRepository().listSessionsByUser(userId, limit));
+});
+
 // POST /v1/sessions — create/resume project session (§14.1)
 router.post('/sessions', async (req, res) => {
   const { project = '', branch = '', owner = '' } = req.body || {};
@@ -138,9 +164,14 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
   if (clientId) {
-    const dup = (store.db.messages[s.id] || []).find((m: { id: string }) => m.id === clientId);
+    const existingMessages = durableStorageConfigured()
+      ? await controlPlaneRepository().listMessages(s.id)
+      : (store.db.messages[s.id] || []);
+    const dup = existingMessages.find((m: { id: string }) => m.id === clientId);
     if (dup) {
-      const run = (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
+      const run = durableStorageConfigured()
+        ? (await controlPlaneRepository().listTasks(s.id)).slice(-1)[0] || null
+        : (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
       console.info(`[orlynx] sid=${s.id} duplicate message ignored clientId=${clientId}`);
       return res.json({ message: dup, run, deduplicated: true });
     }
@@ -148,10 +179,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const agent = await openCodeStatus(s.project);
   if (!agent.connected) return res.status(503).json({ error: 'AI is not available for this workspace yet. No message was sent.' });
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
-  (store.db.messages[s.id] ||= []).push(msg);
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
-  store.save();
-  if (durableStorageConfigured()) await controlPlaneRepository().putMessage(msg);
   console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   let run;
   try {
@@ -163,11 +191,19 @@ router.post('/sessions/:id/messages', async (req, res) => {
     });
   }
   catch (error) {
-    store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
-    store.save();
+    // The durable message is written only after the real agent accepts the task,
+    // so a failed start can never leave a phantom cross-device message behind.
     const kind = (error as { errorKind?: string }).errorKind;
     const detail = error instanceof Error ? error.message : '';
     return res.status(kind === 'permission' ? 403 : 503).json({ error: kind === 'permission' ? detail : 'Orlynx AI could not accept this task.' });
+  }
+  (store.db.messages[s.id] ||= []).push(msg);
+  store.save();
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    await repository.putMessage(msg);
+    const durableSession = await repository.getSession(s.id);
+    if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
@@ -243,6 +279,12 @@ router.post('/sessions/:id/attachments', upload.single('file'), async (req, res)
 router.get('/sessions/:id/attachments', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(durableStorageConfigured() ? await controlPlaneRepository().listAttachments(req.params.id) : store.db.attachments[req.params.id] || []);
+});
+
+router.get('/sessions/:id/audit', async (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.json([]);
+  res.json(await controlPlaneRepository().listAudit(req.params.id, Number(req.query.limit) || 100));
 });
 
 // cloud lifecycle
