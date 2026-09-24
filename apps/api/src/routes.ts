@@ -54,7 +54,7 @@ router.use(async (req, res, next) => {
   }
   if (publicEndpoint(req)) return next();
   if (process.env.VERCEL === '1' && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
-    return res.status(503).json({ error: 'This action needs Orlynx workspace storage before it can continue.', code: 'STORAGE_REQUIRED' });
+    return res.status(503).json({ error: 'This project is not ready to open yet. Please try again shortly.', code: 'STORAGE_REQUIRED' });
   }
   return requireSession(req, res, async () => {
     if (durableStorageConfigured()) {
