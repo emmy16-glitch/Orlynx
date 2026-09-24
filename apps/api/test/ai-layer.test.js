@@ -112,12 +112,17 @@ describe('orlynx AI layer', () => {
     assert.equal(ai.classifyError('Read only: blocked'), 'permission');
   });
 
-  it('does not accept provider keys when account connection is unsupported', async () => {
-    for (const body of [{ providerId: 'openai', apiKey: 'short' }, { providerId: 'nope!!', apiKey: 'sk-valid-looking-key-12345' }, { providerId: '', apiKey: '' }]) {
-      const res = await fetch(`${base}/v1/ai/providers/connect-key`, { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      assert.equal(res.status, 501);
-    }
-    assert.equal(ai.providerHasKey('openai'), false);
+  it('keeps AI account connection bound to a durable authenticated user', async () => {
+    assert.equal(ai.supportedProviderIds().includes('opencode'), true);
+    const res = await fetch(`${base}/v1/ai/providers/connect-key`, { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ providerId: 'opencode', apiKey: 'not-a-real-key' }) });
+    assert.equal(res.status, 401);
+    assert.equal(ai.providerHasKey('opencode'), false);
+  });
+
+  it('rejects malformed provider credentials before storing them', async () => {
+    await assert.rejects(() => ai.connectProviderKey('opencode', 'short'), /incomplete/);
+    await assert.rejects(() => ai.connectProviderKey('nope!!', 'sk-valid-looking-key-12345'), /Unknown provider/);
+    assert.equal(ai.providerHasKey('opencode'), false);
   });
 
   it('exec is blocked for read-only sessions over HTTP', async () => {
@@ -151,9 +156,9 @@ describe('orlynx AI layer', () => {
     assert.deepEqual(body.models, []);
   });
 
-  it('provider disconnect is unavailable when no real account connection exists', async () => {
-    const res = await fetch(`${base}/v1/ai/providers/openai/disconnect`, { method: 'POST', headers: AUTH });
-    assert.equal(res.status, 501);
+  it('provider management requires a durable authenticated user', async () => {
+    const res = await fetch(`${base}/v1/ai/providers/opencode/disconnect`, { method: 'POST', headers: AUTH });
+    assert.equal(res.status, 401);
   });
 
   it('protects project APIs without a signed Orlynx session', async () => {
