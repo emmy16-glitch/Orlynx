@@ -190,9 +190,34 @@ router.get('/sessions/:id/events', async (req, res) => {
   const replay = await durableHistory(id, after, 2000);
   for (const e of replay) res.write(`id: ${e.sequence}\ndata: ${JSON.stringify(e)}\n\n`);
   if (durableStorageConfigured()) {
-    let cursor = replay.at(-1)?.sequence || after; let busy = false;
-    const poll = setInterval(async () => { if (busy) return; busy = true; try { const events = await durableHistory(id, cursor, 200); for (const event of events) { cursor = Math.max(cursor, event.sequence); res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`); } } catch {} finally { busy = false; } }, 750);
-    req.on('close', () => clearInterval(poll)); return;
+    let cursor = replay.at(-1)?.sequence || after; let busy = false; let closed = false;
+    res.write('retry: 1500\n\n');
+    const poll = setInterval(async () => {
+      if (busy || closed) return;
+      busy = true;
+      try {
+        const events = await durableHistory(id, cursor, 200);
+        for (const event of events) {
+          cursor = Math.max(cursor, event.sequence);
+          res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+      } catch {} finally { busy = false; }
+    }, 750);
+    const heartbeat = setInterval(() => { if (!closed) res.write(': keep-alive\n\n'); }, 15_000);
+    // Vercel functions have a finite lifetime. Close before the hard limit so
+    // EventSource reconnects cleanly with ?after=sequence instead of producing
+    // a platform timeout/error. Durable replay fills any gap.
+    const recycle = setTimeout(() => { if (!closed) res.end(); }, 240_000);
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(poll);
+      clearInterval(heartbeat);
+      clearTimeout(recycle);
+    };
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+    return;
   }
   const off = subscribe(id, res);
   req.on('close', off);
