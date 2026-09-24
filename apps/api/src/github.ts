@@ -692,3 +692,36 @@ export async function pushGitHubRepository(project: string, branch: string, inst
   try { execFileSync('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: root, env: gitCredentialEnv(token), stdio: 'pipe', timeout: 120_000 }); }
   catch { throw new Error('GitHub rejected the push. Your local commit is safe; refresh the branch and retry.'); }
 }
+
+export async function createGitHubPullRequest(
+  project: string,
+  base: string,
+  head: string,
+  title: string,
+  body: string,
+  installationId?: number,
+): Promise<{ number: number; url: string }> {
+  if (!/^[\w./-]+$/.test(base) || !/^[\w./-]+$/.test(head) || base.startsWith('-') || head.startsWith('-')) {
+    throw new Error('Pull request branch name is invalid.');
+  }
+  const repo = await findRepository(project, installationId);
+  const token = await installationToken(repo.installationId);
+  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/pulls`, {
+    method: 'POST',
+    headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: title.trim().slice(0, 180) || 'Orlynx changes',
+      head,
+      base,
+      body: body.trim().slice(0, 8_000),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const result = await response.json().catch(() => ({})) as { number?: number; html_url?: string; message?: string };
+  if (!response.ok || !result.number || !result.html_url) {
+    if (response.status === 403) throw new Error('GitHub needs Pull requests write permission before Orlynx can open a pull request.');
+    if (response.status === 422) throw new Error(result.message || 'GitHub could not create this pull request. The pushed branch is safe.');
+    throw new Error(`GitHub could not create the pull request (HTTP ${response.status}). The pushed branch is safe.`);
+  }
+  return { number: result.number, url: result.html_url };
+}
