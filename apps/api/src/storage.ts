@@ -13,6 +13,16 @@ export interface GitHubConnectionRecord {
   updatedAt: string;
 }
 
+export interface ProviderConnectionRecord {
+  id: string;
+  userId: string;
+  provider: string;
+  credential: string;
+  state: 'connected' | 'needs_attention' | 'disconnected';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BridgeCommand {
   id: string;
   workspaceId: string;
@@ -31,6 +41,10 @@ export interface ControlPlaneRepository {
   getGitHubConnectionByInstallation(installationId: number): Promise<GitHubConnectionRecord | null>;
   getGitHubConnectionByUser(userId: string): Promise<GitHubConnectionRecord | null>;
   deleteGitHubConnection(installationId: number): Promise<void>;
+  upsertProviderConnection(value: ProviderConnectionRecord): Promise<void>;
+  getProviderConnection(userId: string, provider: string): Promise<ProviderConnectionRecord | null>;
+  listProviderConnections(userId: string): Promise<ProviderConnectionRecord[]>;
+  deleteProviderConnection(userId: string, provider: string): Promise<void>;
   upsertProject(value: { id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string }): Promise<void>;
   putSession(value: ProjectSession & { userId: string; projectId: string }): Promise<void>;
   getSession(id: string): Promise<(ProjectSession & { userId: string; projectId: string }) | null>;
@@ -120,6 +134,23 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     return { userId: String(result.user_id), installationId: Number(result.installation_id), login: String(result.github_login), accessToken: String(result.access_token), refreshToken: result.refresh_token ? String(result.refresh_token) : undefined, accessTokenExpiresAt: result.access_token_expires_at ? iso(result.access_token_expires_at) : undefined, refreshTokenExpiresAt: result.refresh_token_expires_at ? iso(result.refresh_token_expires_at) : undefined, createdAt: iso(result.created_at), updatedAt: iso(result.updated_at) };
   }
   async deleteGitHubConnection(installationId: number) { await this.initialize(); await this.sql`DELETE FROM github_connections WHERE installation_id=${installationId}`; }
+  async upsertProviderConnection(v: ProviderConnectionRecord) {
+    await this.initialize();
+    await this.sql`INSERT INTO provider_connections (id,user_id,provider,credential,state,created_at,updated_at) VALUES (${v.id},${v.userId},${v.provider},${v.credential},${v.state},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET credential=EXCLUDED.credential,state=EXCLUDED.state,updated_at=EXCLUDED.updated_at`;
+  }
+  async getProviderConnection(userId: string, provider: string) {
+    await this.initialize();
+    const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM provider_connections WHERE user_id=${userId} AND provider=${provider} ORDER BY updated_at DESC LIMIT 1`)[0];
+    return r ? { id: String(r.id), userId: String(r.user_id), provider: String(r.provider), credential: String(r.credential || ''), state: String(r.state) as ProviderConnectionRecord['state'], createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) } : null;
+  }
+  async listProviderConnections(userId: string) {
+    await this.initialize();
+    return rows<Record<string, unknown>>(await this.sql`SELECT * FROM provider_connections WHERE user_id=${userId} ORDER BY updated_at DESC`).map((r) => ({ id: String(r.id), userId: String(r.user_id), provider: String(r.provider), credential: String(r.credential || ''), state: String(r.state) as ProviderConnectionRecord['state'], createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) }));
+  }
+  async deleteProviderConnection(userId: string, provider: string) {
+    await this.initialize();
+    await this.sql`DELETE FROM provider_connections WHERE user_id=${userId} AND provider=${provider}`;
+  }
   async upsertProject(v: { id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string }) {
     await this.initialize();
     await this.sql`INSERT INTO projects (id,user_id,installation_id,repository_id,full_name,default_branch) VALUES (${v.id},${v.userId},${v.installationId},${v.repositoryId},${v.fullName},${v.defaultBranch}) ON CONFLICT (id) DO UPDATE SET full_name=EXCLUDED.full_name,default_branch=EXCLUDED.default_branch,updated_at=now()`;
