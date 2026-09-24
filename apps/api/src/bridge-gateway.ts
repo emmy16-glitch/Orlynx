@@ -51,7 +51,28 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
         return;
       }
-      if (message.kind === 'READY') { await persistBridgeState(claims, 'ready', message); return; }
+      if (message.kind === 'READY') {
+        await persistBridgeState(claims, 'ready', message);
+
+        // Attachments can be uploaded before a cloud workspace exists. Once
+        // the authenticated bridge is ready, replay those durable attachments
+        // directly into the private workspace. Reconnects are safe because the
+        // bridge writes deterministic attachment names and overwrites them.
+        const attachments = await repository.listAttachmentPayloads(claims.sessionId);
+        for (const attachment of attachments) {
+          if (ws.readyState !== ws.OPEN) break;
+          ws.send(JSON.stringify({
+            kind: 'COMMAND',
+            commandId: `attachment_${attachment.id}_${uuid()}`,
+            type: 'fs.write-attachment',
+            payload: {
+              name: `${attachment.id}__${attachment.safeName}`,
+              contentBase64: attachment.contentBase64,
+            },
+          }));
+        }
+        return;
+      }
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
         await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', message.result || { error: message.error || 'Workspace command failed.' });
