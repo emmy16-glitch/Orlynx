@@ -169,6 +169,7 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
 
 function humanActivity(text: string): string {
   if (!text) return 'Working on your request';
+  if (/opencode|agent engine/i.test(text)) return 'Starting Orlynx AI';
   if (/reasoning|thinking/i.test(text)) return 'Reviewing the request';
   if (/read(ing)? files|search(ing)? repository/i.test(text)) return 'Inspecting the repository';
   if (/plan/i.test(text)) return 'Planning the next steps';

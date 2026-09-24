@@ -121,8 +121,8 @@ export function maskedConversionSummary(conversion: { id: number; slug: string; 
 
 interface VercelPersistResult { stored: boolean; redeployed: boolean; detail: string }
 
-// Env keys the bootstrap writes. Must cover REQUIRED_GITHUB_ENV exactly
-// (asserted in tests) or production silently misconfigures itself.
+// Env keys the bootstrap writes. Must cover the complete GitHub gateway
+// configuration or production silently misconfigures itself.
 export const MANIFEST_CREDENTIAL_KEYS = [
   'ORLYNX_PUBLIC_URL',
   'GITHUB_APP_ID',

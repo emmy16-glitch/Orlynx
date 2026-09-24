@@ -48,7 +48,7 @@ export function commit(sessionId: string, project: string, changeId: string, mes
   configureCommitIdentity(project);
   for (const f of cs.files) {
     const target = path.normalize(path.join(root, f.path));
-    if (!target.startsWith(root)) throw new Error('path escape denied');
+    if (target === root || !target.startsWith(`${root}${path.sep}`)) throw new Error('path escape denied');
     if (f.action === 'delete') { if (fs.existsSync(target)) fs.rmSync(target); }
     else { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.after ?? ''); }
   }
@@ -61,12 +61,12 @@ export function commit(sessionId: string, project: string, changeId: string, mes
   return cs;
 }
 
-export async function push(sessionId: string, project: string, branch: string, changeId: string): Promise<ChangeSet> {
+export async function push(sessionId: string, project: string, branch: string, changeId: string, installationId?: number): Promise<ChangeSet> {
   const cs = (store.db.changes[sessionId] || []).find((change) => change.id === changeId);
   if (!cs) throw new Error('changeset not found');
   if (cs.reviewState !== 'committed') throw new Error('commit and approve this changeset before pushing');
   if (cs.pushedAt) return cs;
-  await pushGitHubRepository(project, branch);
+  await pushGitHubRepository(project, branch, installationId);
   cs.pushedAt = new Date().toISOString();
   store.save();
   emit(sessionId, 'receipt.created', { changeId, pushedAt: cs.pushedAt, branch });

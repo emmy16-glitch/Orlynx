@@ -49,14 +49,14 @@ export function TaskActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-export function AgentApprovalCard({ title, detail, onApprove, onCancel, busy }: { title: string; detail?: string; onApprove: () => void; onCancel: () => void; busy?: boolean }) {
+export function AgentApprovalCard({ title, detail, onApprove, onCancel, busy }: { title: string; detail?: string; onApprove: () => void; onCancel?: () => void; busy?: boolean }) {
   return (
     <Card role="group" aria-label={`Approval: ${title}`}>
       <div className="ox-row"><Icon name="warn" /><b>{title}</b></div>
       {detail && <div className="small" style={{ margin: '6px 0' }}>{detail}</div>}
       <div className="ox-row">
-        <Button tone="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>
-        <Button onClick={onApprove} disabled={busy}>{busy ? 'Approving…' : 'Approve & push'}</Button>
+        {onCancel && <Button tone="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>}
+        <Button onClick={onApprove} disabled={busy}>{busy ? 'Approving…' : 'Approve changes'}</Button>
       </div>
     </Card>
   );

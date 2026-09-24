@@ -6,6 +6,7 @@ export type ReviewState = 'pending' | 'approved' | 'committed' | 'stale' | 'disc
 
 export interface ProjectSession {
   id: string;
+  installationId?: number;
   project: string;
   owner?: string;
   repo?: string;

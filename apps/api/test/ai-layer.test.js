@@ -8,14 +8,20 @@ import path from 'node:path';
 import express from 'express';
 
 process.env.ORLYNX_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orlynx-ai-test-'));
+process.env.ORLYNX_SESSION_SECRET = 'test-session-secret-at-least-32-bytes';
 delete process.env.OPENCODE_BASE_URL;
 
 const ai = await import('../src/ai.js');
 const { store } = await import('../src/store.js');
+const { createSessionToken } = await import('../src/auth.js');
 const { router } = await import('../src/routes.js');
+const { taskPermission } = await import('../src/agents.js');
 
 const SID = 'ses_aitest1';
-store.db.sessions[SID] = { id: SID, project: 'acme/demo', owner: 'acme', branch: 'main', mode: 'repository', workspaceId: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+const INSTALLATION_ID = 123;
+const AUTH = { Cookie: `orlynx_session=${createSessionToken(INSTALLATION_ID)}` };
+store.db.githubInstallations.push({ id: INSTALLATION_ID, account: 'acme', accountType: 'User', installedAt: new Date().toISOString(), status: 'active' });
+store.db.sessions[SID] = { id: SID, installationId: INSTALLATION_ID, project: 'acme/demo', owner: 'acme', branch: 'main', mode: 'repository', workspaceId: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 store.save();
 
 let base;
@@ -85,6 +91,19 @@ describe('orlynx AI layer', () => {
     store.save();
   });
 
+  it('only permits per-task elevation from Ask first', () => {
+    assert.deepEqual(taskPermission('ask-first', 'full'), { permission: 'full', tempPermission: 'full' });
+    assert.deepEqual(taskPermission('read-only', 'full'), { permission: 'read-only' });
+    assert.deepEqual(taskPermission('full', 'full'), { permission: 'full' });
+  });
+
+  it('does not expose another installation session through AI status', async () => {
+    store.db.sessions.ses_other = { ...store.db.sessions[SID], id: 'ses_other', installationId: 456 };
+    const res = await fetch(`${base}/v1/ai/status?sessionId=ses_other`, { headers: AUTH });
+    assert.equal(res.status, 404);
+    delete store.db.sessions.ses_other;
+  });
+
   it('classifies provider/engine errors for honest UX', () => {
     assert.equal(ai.classifyError('HTTP 429 rate limit exceeded'), 'rate_limit');
     assert.equal(ai.classifyError('insufficient quota'), 'quota');
@@ -93,48 +112,52 @@ describe('orlynx AI layer', () => {
     assert.equal(ai.classifyError('Read only: blocked'), 'permission');
   });
 
-  it('rejects weak provider keys over HTTP without storing them', async () => {
+  it('does not accept provider keys when account connection is unsupported', async () => {
     for (const body of [{ providerId: 'openai', apiKey: 'short' }, { providerId: 'nope!!', apiKey: 'sk-valid-looking-key-12345' }, { providerId: '', apiKey: '' }]) {
-      const res = await fetch(`${base}/v1/ai/providers/connect-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      assert.equal(res.status, 400);
+      const res = await fetch(`${base}/v1/ai/providers/connect-key`, { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.equal(res.status, 501);
     }
     assert.equal(ai.providerHasKey('openai'), false);
   });
 
   it('exec is blocked for read-only sessions over HTTP', async () => {
     ai.setSessionPrefs(SID, { permission: 'read-only' });
-    const res = await fetch(`${base}/v1/sessions/${SID}/exec`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'npm test' }) });
+    const res = await fetch(`${base}/v1/sessions/${SID}/exec`, { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'npm test' }) });
     assert.equal(res.status, 403);
   });
 
   it('exec requires approval for ask-first sessions over HTTP', async () => {
     ai.setSessionPrefs(SID, { permission: 'ask-first' });
-    const res = await fetch(`${base}/v1/sessions/${SID}/exec`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'npm test' }) });
+    const res = await fetch(`${base}/v1/sessions/${SID}/exec`, { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'npm test' }) });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).approvalRequired, true);
   });
 
   it('session prefs endpoint validates and never interrupts silently', async () => {
-    const bad = await fetch(`${base}/v1/ai/session/${SID}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'turbo' }) });
+    const bad = await fetch(`${base}/v1/ai/session/${SID}`, { method: 'PUT', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'turbo' }) });
     assert.equal(bad.status, 400);
-    const ok = await fetch(`${base}/v1/ai/session/${SID}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'ask', permission: 'read-only' }) });
+    const ok = await fetch(`${base}/v1/ai/session/${SID}`, { method: 'PUT', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'ask', permission: 'read-only' }) });
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).prefs.mode, 'ask');
-    const missing = await fetch(`${base}/v1/ai/session/ses_nope`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'ask' }) });
+    const missing = await fetch(`${base}/v1/ai/session/ses_nope`, { method: 'PUT', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'ask' }) });
     assert.equal(missing.status, 404);
   });
 
   it('models endpoint fails closed without inventing availability', async () => {
-    const res = await fetch(`${base}/v1/ai/models`);
+    const res = await fetch(`${base}/v1/ai/models`, { headers: AUTH });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.engineConnected, false);
+    assert.equal(body.available, false);
     assert.deepEqual(body.models, []);
   });
 
-  it('provider disconnect removes the credential and verifies over HTTP', async () => {
-    const res = await fetch(`${base}/v1/ai/providers/openai/disconnect`, { method: 'POST' });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).disconnected, true);
+  it('provider disconnect is unavailable when no real account connection exists', async () => {
+    const res = await fetch(`${base}/v1/ai/providers/openai/disconnect`, { method: 'POST', headers: AUTH });
+    assert.equal(res.status, 501);
+  });
+
+  it('protects project APIs without a signed Orlynx session', async () => {
+    const res = await fetch(`${base}/v1/ai/models`);
+    assert.equal(res.status, 401);
   });
 });

@@ -3,35 +3,76 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { emit, history, subscribe } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubPlatformHealth, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
-import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs, supportedProviderIds } from './ai.js';
+import { aiStatus, canPerform, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
+import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
+import type { Request } from 'express';
 
 export const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: Number(process.env.ORLYNX_MAX_UPLOAD_MB || 15) * 1024 * 1024, files: 1 },
+});
+
+const publicEndpoint = (req: Request) => (
+  (req.method === 'GET' && ['/github/install', '/github/setup', '/github/status', '/integrations/status'].includes(req.path))
+  || req.path.startsWith('/setup/github-app')
+  || (req.method === 'POST' && req.path === '/github/webhook')
+);
+
+router.use(async (req, res, next) => {
+  const installationId = installationIdFor(req);
+  if (installationId) {
+    try {
+      await restoreGitHubInstallation(installationId);
+      (req as Request & { orlynxInstallationId?: number }).orlynxInstallationId = installationId;
+    } catch {
+      clearSessionCookie(res);
+      if (!publicEndpoint(req)) return res.status(401).json({ error: 'Reconnect GitHub to continue.', code: 'AUTH_EXPIRED' });
+    }
+  }
+  if (publicEndpoint(req)) return next();
+  return requireSession(req, res, next);
+});
+
+function ownedSession(req: Request, id: string) {
+  const session = store.db.sessions[id];
+  return session && session.installationId === requestInstallationId(req) ? session : undefined;
+}
+
+function ownedChangeSession(req: Request, changeId: string): string {
+  const installationId = requestInstallationId(req);
+  for (const [sessionId, list] of Object.entries(store.db.changes)) {
+    if (store.db.sessions[sessionId]?.installationId === installationId && list.some((change) => change.id === changeId)) return sessionId;
+  }
+  return '';
+}
 
 // POST /v1/sessions — create/resume project session (§14.1)
-router.post('/sessions', (req, res) => {
+router.post('/sessions', async (req, res) => {
   const { project = '', branch = '', owner = '' } = req.body || {};
+  const installationId = requestInstallationId(req);
   if (!project || !branch || !owner || owner === 'local') return res.status(400).json({ error: 'Open an imported GitHub repository and branch to create a project session.' });
+  if (!await githubRepositoryAuthorized(String(project), installationId)) return res.status(403).json({ error: 'This repository is not available to your GitHub connection.' });
   if (!importedRepositoryRoot(String(project))) return res.status(409).json({ error: 'Import this repository through the connected GitHub App before opening a project.' });
   if (importedRepositoryBranch(String(project)) !== String(branch)) return res.status(409).json({ error: 'The selected branch is not checked out locally. Import the branch again.' });
   const id = `ses_${uuid().slice(0, 8)}`;
   const now = new Date().toISOString();
-  store.db.sessions[id] = { id, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
+  store.db.sessions[id] = { id, installationId, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
   store.save();
   emit(id, 'state.snapshot', { project, branch, mode: 'repository' });
   res.json(store.db.sessions[id]);
 });
 
 router.get('/sessions/:id', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s || !importedRepositoryRoot(s.project)) return res.status(404).json({ error: 'imported project session not found' });
   const githubAccess = store.db.githubInstallations.some((item) => (item.status || 'active') !== 'suspended')
     ? 'connected'
@@ -41,7 +82,7 @@ router.get('/sessions/:id', (req, res) => {
 
 // POST /v1/sessions/{id}/messages — send user task (idempotent via clientId)
 router.post('/sessions/:id/messages', async (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
@@ -54,7 +95,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     }
   }
   const agent = await openCodeStatus(s.project);
-  if (!agent.connected) return res.status(503).json({ error: agent.message || 'OpenCode is unavailable. No message was sent.' });
+  if (!agent.connected) return res.status(503).json({ error: 'AI is not available for this workspace yet. No message was sent.' });
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
@@ -73,32 +114,35 @@ router.post('/sessions/:id/messages', async (req, res) => {
     store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
     store.save();
     const kind = (error as { errorKind?: string }).errorKind;
-    return res.status(kind === 'permission' ? 403 : 503).json({ error: error instanceof Error ? error.message : 'OpenCode could not accept this task.' });
+    const detail = error instanceof Error ? error.message : '';
+    return res.status(kind === 'permission' ? 403 : 503).json({ error: kind === 'permission' ? detail : 'Orlynx AI could not accept this task.' });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
 });
 
 router.get('/sessions/:id/messages', (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(store.db.messages[req.params.id] || []);
 });
 
 // GET /v1/sessions/{id}/events — SSE stream with ?after=seq (§14.2 reconnect)
 router.get('/sessions/:id/events', (req, res) => {
   const id = req.params.id;
+  if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
   const after = Number(req.query.after || 0);
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   // replay missed events first
-  for (const e of history(id, after)) res.write(`id: ${e.sequence}\ndata: ${JSON.stringify(e)}\n\n`);
+  for (const e of history(id, after, 2000)) res.write(`id: ${e.sequence}\ndata: ${JSON.stringify(e)}\n\n`);
   const off = subscribe(id, res);
   req.on('close', off);
 });
 
 // attachments
 router.post('/sessions/:id/attachments', upload.single('file'), (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!req.file) return res.status(400).json({ error: 'no file' });
   const { meta } = saveAttachment(s.id, req.file.originalname, req.file.mimetype, req.file.buffer);
@@ -107,24 +151,25 @@ router.post('/sessions/:id/attachments', upload.single('file'), (req, res) => {
 });
 
 router.get('/sessions/:id/attachments', (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(store.db.attachments[req.params.id] || []);
 });
 
 // cloud lifecycle
 router.post('/sessions/:id/cloud', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  return res.status(503).json({ error: 'Codespaces execution is not configured. Orlynx will not start a simulated workspace.' });
+  return res.status(503).json({ error: 'Cloud workspaces are not available yet.' });
 });
 
 router.post('/sessions/:id/cloud/stop', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  return res.status(503).json({ error: 'This session has no connected Codespaces workspace.' });
+  return res.status(503).json({ error: 'This project does not have a cloud workspace.' });
 });
 
 router.post('/sessions/:id/exec', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { cmd = 'echo ok', approved = false } = req.body || {};
   const gate = canPerform(s.id, 'terminal.exec', { cmd: String(cmd) });
@@ -134,19 +179,19 @@ router.post('/sessions/:id/exec', (req, res) => {
     return res.status(409).json({ error: 'Approval required before running this command.', approvalRequired: true, cmd: String(cmd).slice(0, 200) });
   }
   const openCodeSession = getOpenCodeSessionId(s.id);
-  if (!openCodeSession) return res.status(503).json({ error: 'OpenCode has not opened this project session yet.' });
+  if (!openCodeSession) return res.status(503).json({ error: 'The project workspace is not ready yet.' });
   const prefs = getSessionPrefs(s.id, s.project);
   runOpenCodeShell(s.project, openCodeSession, String(cmd), prefs.modelId ? { model: { providerID: prefs.modelId.split('/')[0], modelID: prefs.modelId.split('/').slice(1).join('/') } } : {}).then((result) => {
     const parts = Array.isArray(result.parts) ? result.parts : [];
     const out = parts.filter((part: any) => part.type === 'text').map((part: any) => part.text || '').join('\n');
     emit(s.id, 'receipt.created', { cmd: String(cmd).slice(0, 200), code: result.info?.error ? 1 : 0, out });
     res.json({ code: result.info?.error ? 1 : 0, out });
-  }).catch((error) => res.status(502).json({ error: error instanceof Error ? error.message : 'OpenCode shell failed.' }));
+  }).catch(() => res.status(502).json({ error: 'The terminal command could not be completed.' }));
 });
 
 // agent runs
 router.post('/sessions/:id/agent-runs', async (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
     const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), 'opencode', {
@@ -156,44 +201,48 @@ router.post('/sessions/:id/agent-runs', async (req, res) => {
     });
     res.json(run);
   }
-  catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'OpenCode is unavailable.' }); }
+  catch (error) { res.status(503).json({ error: (error as { errorKind?: string }).errorKind === 'permission' && error instanceof Error ? error.message : 'Orlynx AI is not available for this task.' }); }
 });
 router.post('/agent-runs/:runId/cancel', async (req, res) => {
   const { sessionId } = req.body || {};
+  if (!ownedSession(req, String(sessionId))) return res.status(404).json({ error: 'session not found' });
   console.info(`[orlynx] sid=${sessionId} cancel run=${req.params.runId}`);
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
 });
 
 // runs — snapshot for session restore ("agent still working" / receipts)
 router.get('/sessions/:id/runs', (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(currentRuns(req.params.id));
 });
 
 // files
 router.get('/sessions/:id/files', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   res.json({ files: listFiles(s.project, String(req.query.path || '')), head: headSha(s.project), status: status(s.project) });
 });
 router.get('/sessions/:id/file', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try { res.json({ path: req.query.path, content: readFile(s.project, String(req.query.path || 'README.md')) }); }
   catch (e: unknown) { res.status(400).json({ error: (e as Error).message }); }
 });
 
 // changes
-router.get('/sessions/:id/changes', (req, res) => res.json(currentChanges(req.params.id)));
+router.get('/sessions/:id/changes', (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
+  res.json(currentChanges(req.params.id));
+});
 router.post('/changes/:changeId/approve', (req, res) => {
+  if (!ownedChangeSession(req, req.params.changeId)) return res.status(404).json({ error: 'not found' });
   const c = approve(req.params.changeId);
   if (!c) return res.status(404).json({ error: 'not found' });
   emit(c.sessionId, 'approval.resolved', { changeId: c.id, approved: true });
   res.json(c);
 });
 router.post('/changes/:changeId/commit', (req, res) => {
-  // locate session via changeset
-  let sid = '';
-  for (const [k, v] of Object.entries(store.db.changes)) if (v.some((c) => c.id === req.params.changeId)) sid = k;
+  const sid = ownedChangeSession(req, req.params.changeId);
   const s = store.db.sessions[sid];
   if (!s) return res.status(404).json({ error: 'session not found' });
   const gate = canPerform(sid, 'git.commit');
@@ -205,53 +254,52 @@ router.post('/changes/:changeId/commit', (req, res) => {
 });
 
 router.post('/changes/:changeId/push', async (req, res) => {
-  let sid = '';
-  for (const [k, list] of Object.entries(store.db.changes)) if (list.some((change) => change.id === req.params.changeId)) sid = k;
+  const sid = ownedChangeSession(req, req.params.changeId);
   const session = store.db.sessions[sid];
   if (!session) return res.status(404).json({ error: 'changeset not found' });
   const gate = canPerform(sid, 'git.push');
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
-  try { res.json(await push(sid, session.project, session.branch, req.params.changeId)); }
+  try { res.json(await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req))); }
   catch (error) { res.status(409).json({ error: (error as Error).message }); }
 });
 
 // unified AI layer (engine underneath, one experience on top)
 router.get('/ai/status', async (req, res) => {
   const sessionId = String(req.query.sessionId || '');
-  const s = sessionId ? store.db.sessions[sessionId] : undefined;
-  try { res.json(await aiStatus(sessionId || undefined, s?.project)); }
+  const s = sessionId ? ownedSession(req, sessionId) : undefined;
+  if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
+  try {
+    const status = await aiStatus(sessionId || undefined, s?.project);
+    res.json({ state: status.state, message: status.engineConnected ? status.message : 'AI is not available for this workspace yet.', model: status.model, mode: status.mode, permission: status.permission, providers: status.providers });
+  }
   catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'AI status is unavailable.' }); }
 });
 router.get('/ai/providers', async (req, res) => {
   try {
     const { engine, providers, models } = await listProviderConnections();
-    res.json({ engine: 'OpenCode', engineConnected: engine.connected, engineMessage: engine.message, supported: supportedProviderIds(), providers, connectedModels: models.filter((m) => m.status === 'available').length });
+    res.json({ available: engine.connected, providers: providers.filter((provider) => provider.state === 'connected'), connectedModels: models.filter((m) => m.status === 'available').length });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Provider list is unavailable.' }); }
 });
 router.get('/ai/models', async (req, res) => {
   try {
     const { engine, models } = await listProviderConnections();
-    res.json({ engineConnected: engine.connected, engineMessage: engine.message, models });
+    res.json({ available: engine.connected, models });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
 });
 router.post('/ai/providers/connect-key', async (req, res) => {
-  const { providerId = '', apiKey = '' } = req.body || {};
-  if (!providerId || !apiKey) return res.status(400).json({ error: 'Choose a provider and enter its API key.' });
-  try { res.json(await connectProviderKey(String(providerId), String(apiKey))); }
-  catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Connection failed. The key was not stored.' }); }
+  res.status(501).json({ error: 'Connecting AI accounts is not available in this deployment.' });
 });
 router.post('/ai/providers/:id/disconnect', async (req, res) => {
-  await disconnectProvider(String(req.params.id));
-  res.json({ disconnected: true, providerId: String(req.params.id) });
+  res.status(501).json({ error: 'Managing AI accounts is not available in this deployment.' });
 });
 router.get('/ai/session/:id', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
   res.json({ prefs: getSessionPrefs(s.id, s.project), activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
 });
 router.put('/ai/session/:id', (req, res) => {
-  const s = store.db.sessions[req.params.id];
+  const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
     const prefs = setSessionPrefs(s.id, {
@@ -266,6 +314,8 @@ router.put('/ai/session/:id', (req, res) => {
 });
 router.put('/ai/project-defaults', (req, res) => {
   const { project = '', modelId, mode, permission } = req.body || {};
+  const ownsProject = Object.values(store.db.sessions).some((session) => session.installationId === requestInstallationId(req) && session.project === project);
+  if (!ownsProject) return res.status(404).json({ error: 'project not found' });
   try {
     setProjectDefaults(String(project), {
       ...(modelId !== undefined ? { modelId: String(modelId) || undefined } : {}),
@@ -336,35 +386,52 @@ router.get('/setup/github-app/callback', async (req, res) => {
 });
 
 // repos
-router.get('/github/status', async (_req, res) => res.json(await githubConnectionStatus()));
-router.get('/repos', async (_req, res) => {
-  const connection = await githubConnectionStatus();
-  const github = connection.connected ? await githubListRepos() : [];
-  res.json({ github, connection, localNote: 'Projects are imported GitHub App repositories only. No local demo projects are created.' });
+router.get('/github/status', async (req, res) => res.json(await githubConnectionStatus(installationIdFor(req))));
+router.get('/repos', async (req, res) => {
+  const installationId = requestInstallationId(req);
+  const connection = await githubConnectionStatus(installationId);
+  const github = connection.connected ? await githubListRepos(installationId) : [];
+  res.json({ github, connection });
 });
 router.get('/github/install', (_req, res) => {
   try { res.redirect(302, githubInstallUrl()); }
   catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
 });
-router.get('/github/manage', (_req, res) => {
+router.get('/github/manage', (req, res) => {
   try {
-    const first = store.db.githubInstallations[0]?.id;
-    res.redirect(302, githubManageUrl(first));
+    res.redirect(302, githubManageUrl(requestInstallationId(req)));
   } catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
 });
-router.post('/github/disconnect', async (_req, res) => {
+router.post('/github/disconnect', async (req, res) => {
   // Orlynx-side disconnect. Sessions, messages, changes and local history are
   // preserved; only GitHub access metadata and cached tokens are dropped.
-  await disconnectGitHub();
-  res.json({ disconnected: true, ...(await githubConnectionStatus()) });
+  await disconnectGitHub(requestInstallationId(req));
+  clearSessionCookie(res);
+  res.json({ disconnected: true, ...(await githubConnectionStatus(null)) });
 });
 router.get('/github/setup', async (req, res) => {
   try {
-    const redirect = await completeGitHubInstallation(String(req.query.installation_id || ''), String(req.query.state || ''), String(req.query.setup_action || ''));
-    res.redirect(302, redirect);
+    if (req.query.code) {
+      const state = String(req.query.state || '');
+      if (!state || oauthStateFor(req) !== state) throw new Error('GitHub authorization could not be verified. Start the connection again.');
+      const result = await completeGitHubOAuth(String(req.query.code), state);
+      clearOAuthStateCookie(res);
+      setSessionCookie(res, result.installationId);
+      return res.redirect(302, `${publicSiteUrl()}/?github=connected`);
+    }
+    const result = await completeGitHubInstallation(String(req.query.installation_id || ''), String(req.query.state || ''), String(req.query.setup_action || ''));
+    if (!result.installationId) {
+      clearOAuthStateCookie(res);
+      clearSessionCookie(res);
+      return res.redirect(302, result.redirect);
+    }
+    const oauth = githubOAuthUrl(result.installationId);
+    setOAuthStateCookie(res, oauth.state);
+    return res.redirect(302, oauth.url);
   } catch (error) {
+    clearOAuthStateCookie(res);
     const reason = error instanceof Error ? error.message : 'invalid setup callback';
-    res.redirect(302, githubCallbackErrorUrl(reason));
+    return res.redirect(302, githubCallbackErrorUrl(reason));
   }
 });
 router.post('/github/webhook', async (req, res) => {
@@ -375,39 +442,38 @@ router.post('/github/webhook', async (req, res) => {
     void summary;
   } catch (error) { res.status(401).json({ error: error instanceof Error ? error.message : 'GitHub webhook verification failed.' }); }
 });
-router.get('/agents', async (_req, res) => res.json(await openCodeStatus()));
-router.get('/integrations/status', async (_req, res) => {
-  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(), openCodeStatus(), githubPlatformHealth()]);
+router.get('/agents', (_req, res) => res.status(404).json({ error: 'Not found.' }));
+router.get('/integrations/status', async (req, res) => {
+  const installationId = installationIdFor(req);
+  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(installationId), openCodeStatus(), githubPlatformHealth()]);
   const health = connection.connected || connection.needsAttention
-    ? await githubHealth()
+    ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
   res.json({
-    github: { ...connection, health: health.healthy ? 'healthy' : 'unhealthy', healthMessage: health.message, authorizedRepositories: health.authorizedRepositories },
-    // Platform vs user-connection split: operators read githubPlatform,
-    // the public UI reads github.connected.
-    githubPlatform: { configured: platform.configured, healthy: platform.healthy, appId: platform.appId, slug: platform.slug, name: platform.name, message: platform.message },
-    agent: opencode,
-    ai: await aiStatus().catch(() => ({ state: 'error' as const, engine: 'OpenCode', engineConnected: false, message: 'AI status is unavailable.', mode: 'build' as const, permission: 'ask-first' as const, providers: { connected: 0, total: 0 } })),
-    cloud: { configured: false, connected: false, message: 'Cloud workspace is temporarily unavailable.' },
+    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
+    githubAvailable: platform.configured && platform.healthy,
+    ai: { available: opencode.connected },
+    workspace: { terminalAvailable: opencode.connected, cloudAvailable: false, previewAvailable: false },
   });
 });
 router.get('/repos/:owner/:name/branches', async (req, res) => {
   try {
-    const branches = await githubBranches(`${req.params.owner}/${req.params.name}`);
+    const branches = await githubBranches(`${req.params.owner}/${req.params.name}`, requestInstallationId(req));
     res.json({ branches });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'GitHub access failed.';
     if (/not available through an installed GitHub App|not connected|requir|approv/i.test(message)) return res.status(403).json({ error: 'Repository is not authorized for this Orlynx installation.' });
-    if (/not configured/i.test(message)) return res.status(503).json({ error: message });
+    if (/not configured|settings are incomplete/i.test(message)) return res.status(503).json({ error: 'GitHub is temporarily unavailable.' });
     res.status(502).json({ error: message });
   }
 });
 router.post('/repos/import', async (req, res) => {
   const { repository = '', branch = 'main' } = req.body || {};
-  try { res.json({ project: await importGitHubRepository(String(repository), String(branch)), branch }); }
+  try { res.json({ project: await importGitHubRepository(String(repository), String(branch), requestInstallationId(req)), branch }); }
   catch (error) {
     const message = (error as Error).message;
     if (/not available through an installed GitHub App|not connected|requir|approv/i.test(message)) return res.status(403).json({ error: 'Repository is not authorized for this Orlynx installation.' });
+    if (/not configured|settings are incomplete/i.test(message)) return res.status(503).json({ error: 'GitHub is temporarily unavailable.' });
     res.status(400).json({ error: message });
   }
 });

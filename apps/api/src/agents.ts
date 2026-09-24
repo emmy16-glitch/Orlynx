@@ -6,6 +6,7 @@ import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
 import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDefaultAgent, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
 import { canPerform, classifyError, getSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
+import { materializeAttachments } from './attachments.js';
 
 export type Engine = 'opencode';
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean }>();
@@ -15,6 +16,11 @@ export interface TaskOptions {
   modelId?: string;
   mode?: AgentMode;
   tempPermission?: PermissionProfile;
+}
+
+export function taskPermission(current: PermissionProfile, requested?: PermissionProfile): { permission: PermissionProfile; tempPermission?: PermissionProfile } {
+  const tempPermission = current === 'ask-first' && requested === 'full' ? 'full' : undefined;
+  return { permission: tempPermission || current, ...(tempPermission ? { tempPermission } : {}) };
 }
 
 export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
@@ -28,7 +34,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   }
   const prefs = getSessionPrefs(sessionId, project);
   const mode = options.mode || prefs.mode;
-  const permission = options.tempPermission || prefs.permission;
+  const { permission, tempPermission } = taskPermission(prefs.permission, options.tempPermission);
   const modelId = options.modelId || prefs.modelId;
   let model: { providerID: string; modelID: string } | undefined;
   let provider: string | undefined;
@@ -46,20 +52,25 @@ export async function startRun(sessionId: string, project: string, userText: str
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const run: AgentRun = {
     id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId,
-    mode, permission, tempPermission: options.tempPermission,
-    state: 'running', activity: 'Sending work to OpenCode', startedAt: new Date().toISOString(),
+    mode, permission, tempPermission,
+    state: 'running', activity: 'Starting work', startedAt: new Date().toISOString(),
   };
   (store.db.runs[sessionId] ||= []).push(run);
   store.save();
   emit(sessionId, 'run.started', { engine, provider, model: modelId, mode, permission }, run.id);
-  emit(sessionId, 'activity.started', { text: 'Sending task to OpenCode' }, run.id);
+  emit(sessionId, 'activity.started', { text: 'Starting work' }, run.id);
   if (resolvedAgent.note) emit(sessionId, 'activity.progress', { text: resolvedAgent.note }, run.id);
   emit(sessionId, 'message.start', { engine }, run.id);
   // Backend-enforced mode guardrails travel with the task itself.
+  const availableAttachments = materializeAttachments(sessionId, project);
+  const attachmentInstruction = availableAttachments.length
+    ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
+    : '';
   const guardedText = [
-    permission === 'read-only' ? readOnlyInstruction() : '',
+    permission !== 'full' ? readOnlyInstruction() : '',
     mode === 'plan' ? planInstruction() : '',
     mode === 'ask' ? readOnlyInstruction() : '',
+    attachmentInstruction,
     userText,
   ].filter(Boolean).join('\n\n');
   try {
@@ -117,13 +128,13 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
     run.finishedAt = new Date().toISOString();
     run.activity = 'Ready for review';
     store.save();
-    emit(sessionId, 'run.completed', { summary: 'OpenCode finished. Review the changes.' }, run.id);
-    emit(sessionId, 'activity.completed', { text: 'OpenCode task completed' }, run.id);
+    emit(sessionId, 'run.completed', { summary: 'Work completed. Review the result.' }, run.id);
+    emit(sessionId, 'activity.completed', { text: 'Work completed' }, run.id);
   } catch (error) {
     if (active.cancelled) return;
     run.state = 'failed';
     run.finishedAt = new Date().toISOString();
-    run.activity = 'OpenCode task failed';
+    run.activity = 'Work needs attention';
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
     store.save();
     for (const [toolId, state] of toolStates) if (state === 'running') emit(sessionId, 'tool.failed', { toolCallId: toolId, error: 'OpenCode did not complete this action.' }, run.id);

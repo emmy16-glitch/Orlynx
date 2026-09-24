@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 import { safeName } from '@orlynx/shared';
 import { store, dataDir } from './store.js';
+import { repoRoot } from './github.js';
 
 const MAX_MB = Number(process.env.ORLYNX_MAX_UPLOAD_MB || 15);
 
@@ -27,6 +28,24 @@ export function saveAttachment(sessionId: string, original: string, mime: string
   store.save();
   return { meta, path: dest };
 }
-// NOTE: attachments are served to OpenCode via the session record only.
-// No materializeForRuntime copy into the imported repository exists, so agent
-// diffs never include Orlynx runtime files.
+
+export function materializeAttachments(sessionId: string, project: string): { name: string; path: string }[] {
+  const attachments = store.db.attachments[sessionId] || [];
+  if (!attachments.length) return [];
+  const root = repoRoot(project);
+  const relativeDir = path.join('.orlynx', 'attachments');
+  const targetDir = path.join(root, relativeDir);
+  fs.mkdirSync(targetDir, { recursive: true });
+  const exclude = path.join(root, '.git', 'info', 'exclude');
+  const existing = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
+  if (!existing.split(/\r?\n/).includes('.orlynx/')) {
+    fs.appendFileSync(exclude, `${existing && !existing.endsWith('\n') ? '\n' : ''}.orlynx/\n`);
+  }
+  return attachments.flatMap((item) => {
+    const source = path.join(dataDir, 'attachments', `${item.id}__${item.safeName}`);
+    if (!fs.existsSync(source)) return [];
+    const relative = path.join(relativeDir, `${item.id}__${item.safeName}`);
+    fs.copyFileSync(source, path.join(root, relative));
+    return [{ name: item.filename, path: relative.split(path.sep).join('/') }];
+  });
+}

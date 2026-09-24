@@ -11,6 +11,7 @@ import express from 'express';
 
 process.env.ORLYNX_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orlynx-test-'));
 process.env.GITHUB_WEBHOOK_SECRET = 'test-webhook-secret';
+process.env.ORLYNX_SESSION_SECRET = 'test-session-secret-at-least-32-bytes';
 delete process.env.GITHUB_APP_ID;
 delete process.env.GITHUB_APP_SLUG;
 delete process.env.GITHUB_APP_CLIENT_SECRET;
@@ -18,11 +19,23 @@ delete process.env.GITHUB_APP_PRIVATE_KEY;
 delete process.env.ORLYNX_PUBLIC_URL;
 
 const { router } = await import('../src/routes.js');
+const { store } = await import('../src/store.js');
+const { createSessionToken } = await import('../src/auth.js');
+const { sameOriginOnly } = await import('../src/auth.js');
+
+const INSTALLATION_ID = 123;
+const AUTH = { Cookie: `orlynx_session=${createSessionToken(INSTALLATION_ID)}` };
+function authorize() {
+  if (!store.db.githubInstallations.some((item) => item.id === INSTALLATION_ID)) {
+    store.db.githubInstallations.push({ id: INSTALLATION_ID, account: 'acme', accountType: 'User', installedAt: new Date().toISOString(), status: 'active' });
+  }
+}
 
 let base;
 let server;
 before(async () => {
   const app = express();
+  app.use(sameOriginOnly);
   app.use('/v1/github/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
   app.use(express.json({ limit: '2mb' }));
   app.use('/v1', router);
@@ -47,7 +60,8 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
   });
 
   it('manage route fails closed when the app is not configured', async () => {
-    const res = await fetch(`${base}/v1/github/manage`, { redirect: 'manual' });
+    authorize();
+    const res = await fetch(`${base}/v1/github/manage`, { redirect: 'manual', headers: AUTH });
     assert.equal(res.status, 503);
   });
 
@@ -61,6 +75,13 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
     const res = await fetch(`${base}/v1/github/setup?state=bogus`, { redirect: 'manual' });
     assert.equal(res.status, 302);
     assert.match(res.headers.get('location') || '', /\?github=error/);
+  });
+
+  it('never accepts a GitHub user authorization callback without its browser-bound state', async () => {
+    const res = await fetch(`${base}/v1/github/setup?code=fake-code&state=fake-state`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location') || '', /\?github=error/);
+    assert.match(res.headers.get('set-cookie') || '', /orlynx_oauth_state=.*Max-Age=0/i);
   });
 
   it('rejects webhooks with an invalid signature', async () => {
@@ -99,7 +120,8 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
   });
 
   it('disconnect clears access metadata but reports a clean status payload', async () => {
-    const res = await fetch(`${base}/v1/github/disconnect`, { method: 'POST' });
+    authorize();
+    const res = await fetch(`${base}/v1/github/disconnect`, { method: 'POST', headers: AUTH });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.disconnected, true);
@@ -108,26 +130,38 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
   });
 
   it('rejects import of unauthorized repositories without trusting the client', async () => {
+    authorize();
     const res = await fetch(`${base}/v1/repos/import`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' },
       body: JSON.stringify({ repository: 'someone/private-repo', branch: 'main' }),
     });
-    assert.ok([400, 403].includes(res.status));
-    assert.match((await res.json()).error, /not authorized|not available|not configured|not connected/i);
+    assert.ok([400, 403, 503].includes(res.status));
+    assert.match((await res.json()).error, /not authorized|not available|not configured|not connected|temporarily unavailable/i);
   });
 
   it('integration status separates platform config from user connection without secrets', async () => {
     const status = await (await fetch(`${base}/v1/integrations/status`)).json();
-    assert.equal(status.github.configured, false);
     assert.equal(status.github.connected, false);
-    assert.equal(status.github.provider, 'GitHub App');
-    assert.equal(status.githubPlatform.configured, false);
-    assert.equal(status.githubPlatform.healthy, false);
-    assert.equal(status.githubPlatform.appId, null);
-    assert.equal(status.github.userAuthorizationState, 'not-established');
+    assert.equal(status.githubAvailable, false);
     assert.equal(typeof status.github.authorizedRepositories, 'number');
     const serialized = JSON.stringify(status);
     assert.doesNotMatch(serialized, /PRIVATE KEY|CLIENT_SECRET|BEGIN RSA/i);
+    assert.doesNotMatch(serialized, /OpenCode|githubPlatform|appId|webhookUrl|setupCallbackUrl/i);
     assert.equal(Object.hasOwn(status.github, 'token'), false);
+  });
+
+  it('rejects protected repository APIs without a signed session cookie', async () => {
+    const res = await fetch(`${base}/v1/repos`);
+    assert.equal(res.status, 401);
+  });
+
+  it('allows the configured production origin and rejects other write origins', async () => {
+    process.env.ORLYNX_PUBLIC_URL = 'https://orlynx.vercel.app';
+    const rejected = await fetch(`${base}/v1/github/disconnect`, { method: 'POST', headers: { ...AUTH, Origin: 'https://example.invalid' } });
+    assert.equal(rejected.status, 403);
+    authorize();
+    const accepted = await fetch(`${base}/v1/github/disconnect`, { method: 'POST', headers: { ...AUTH, Origin: 'https://orlynx.vercel.app' } });
+    assert.equal(accepted.status, 200);
+    delete process.env.ORLYNX_PUBLIC_URL;
   });
 });
