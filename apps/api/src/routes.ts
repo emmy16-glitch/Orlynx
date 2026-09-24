@@ -180,6 +180,14 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (!agent.connected) return res.status(503).json({ error: 'AI is not available for this workspace yet. No message was sent.' });
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
+  (store.db.messages[s.id] ||= []).push(msg);
+  store.save();
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    await repository.putMessage(msg);
+    const durableSession = await repository.getSession(s.id);
+    if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+  }
   console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   let run;
   try {
@@ -191,19 +199,12 @@ router.post('/sessions/:id/messages', async (req, res) => {
     });
   }
   catch (error) {
-    // The durable message is written only after the real agent accepts the task,
-    // so a failed start can never leave a phantom cross-device message behind.
+    store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
+    store.save();
+    if (durableStorageConfigured()) await controlPlaneRepository().deleteMessage(msg.id, s.id);
     const kind = (error as { errorKind?: string }).errorKind;
     const detail = error instanceof Error ? error.message : '';
     return res.status(kind === 'permission' ? 403 : 503).json({ error: kind === 'permission' ? detail : 'Orlynx AI could not accept this task.' });
-  }
-  (store.db.messages[s.id] ||= []).push(msg);
-  store.save();
-  if (durableStorageConfigured()) {
-    const repository = controlPlaneRepository();
-    await repository.putMessage(msg);
-    const durableSession = await repository.getSession(s.id);
-    if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
