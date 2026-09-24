@@ -6,34 +6,40 @@ import { execFileSync, execSync } from 'node:child_process';
 import { dataDir, store } from './store.js';
 
 const API = 'https://api.github.com';
-const appId = process.env.GITHUB_APP_ID || '';
-const appSlug = process.env.GITHUB_APP_SLUG || '';
-const publicUrl = (process.env.ORLYNX_PUBLIC_URL || '').replace(/\/$/, '');
-const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET || '';
-const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET || '';
-const privateKeyValue = process.env.GITHUB_APP_PRIVATE_KEY || '';
-const privateKey = privateKeyValue.includes('BEGIN')
-  ? privateKeyValue.replace(/\\n/g, '\n')
-  : privateKeyValue ? Buffer.from(privateKeyValue, 'base64').toString('utf8') : '';
+
+// Read env lazily (per call, never cached at module load): serverless
+// runtimes may not have every variable populated when modules initialize.
+function appId(): string { return process.env.GITHUB_APP_ID || ''; }
+function appSlug(): string { return process.env.GITHUB_APP_SLUG || ''; }
+function publicUrl(): string { return (process.env.ORLYNX_PUBLIC_URL || '').replace(/\/$/, ''); }
+function clientSecret(): string { return process.env.GITHUB_APP_CLIENT_SECRET || ''; }
+function webhookSecret(): string { return process.env.GITHUB_WEBHOOK_SECRET || ''; }
+function privateKey(): string {
+  const raw = process.env.GITHUB_APP_PRIVATE_KEY || '';
+  if (raw.includes('BEGIN')) return raw.replace(/\\n/g, '\n');
+  if (raw) { try { return Buffer.from(raw, 'base64').toString('utf8'); } catch { return ''; } }
+  return '';
+}
 
 export function moduleLoadSnapshot(): Record<string, boolean> {
+  // Now identical to request-time reads (env is lazy); kept for diagnostics.
   return {
-    appId: Boolean(appId),
-    appSlug: Boolean(appSlug),
-    publicUrl: Boolean(publicUrl),
-    clientSecret: Boolean(clientSecret),
-    privateKey: Boolean(privateKey),
-    webhookSecret: Boolean(webhookSecret),
+    appId: Boolean(appId()),
+    appSlug: Boolean(appSlug()),
+    publicUrl: Boolean(publicUrl()),
+    clientSecret: Boolean(clientSecret()),
+    privateKey: Boolean(privateKey()),
+    webhookSecret: Boolean(webhookSecret()),
   };
 }
 
 export function githubAppConfigured(): boolean {
   let publicOriginIsSafe = false;
   try {
-    const url = new URL(publicUrl);
+    const url = new URL(publicUrl());
     publicOriginIsSafe = url.protocol === 'https:' || ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
   } catch { publicOriginIsSafe = false; }
-  return Boolean(appId && appSlug && publicOriginIsSafe && clientSecret && privateKey && webhookSecret);
+  return Boolean(appId() && appSlug() && publicOriginIsSafe && clientSecret() && privateKey() && webhookSecret());
 }
 
 export interface GitHubInstallation {
@@ -70,17 +76,17 @@ function forgetInstallation(id: number): void {
 export function githubInstallUrl(): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
   const state = signState({ purpose: 'install', nonce: crypto.randomBytes(18).toString('base64url'), exp: Date.now() + 10 * 60_000 });
-  return `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new?state=${encodeURIComponent(state)}`;
+  return `https://github.com/apps/${encodeURIComponent(appSlug())}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
 export function githubSetupUrl(): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
-  return `${publicUrl}/v1/github/setup`;
+  return `${publicUrl()}/v1/github/setup`;
 }
 
 export function githubWebhookUrl(): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
-  return `${publicUrl}/v1/github/webhook`;
+  return `${publicUrl()}/v1/github/webhook`;
 }
 
 export interface GitHubWebhookSummary {
@@ -93,8 +99,8 @@ export interface GitHubWebhookSummary {
 }
 
 export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, event: string, deliveryId = ''): Promise<GitHubWebhookSummary> {
-  if (!webhookSecret) throw new Error('GitHub webhook signing is not configured.');
-  const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest();
+  if (!webhookSecret()) throw new Error('GitHub webhook signing is not configured.');
+  const expected = crypto.createHmac('sha256', webhookSecret()).update(rawBody).digest();
   let received: Buffer;
   try { received = Buffer.from(signature.replace(/^sha256=/, ''), 'hex'); }
   catch { throw new Error('GitHub webhook signature is invalid.'); }
@@ -151,7 +157,7 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
 export function githubManageUrl(installationId?: number): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
   if (installationId) return `https://github.com/settings/installations/${installationId}`;
-  return `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`;
+  return `https://github.com/apps/${encodeURIComponent(appSlug())}/installations/new`;
 }
 
 export async function disconnectGitHub(): Promise<void> {
@@ -197,11 +203,11 @@ export async function completeGitHubInstallation(installationId: string, state: 
   } else {
     throw new Error('GitHub returned an unsupported installation action.');
   }
-  return `${publicUrl}/?github=${setupAction === 'uninstall' ? 'disconnected' : 'connected'}`;
+  return `${publicUrl()}/?github=${setupAction === 'uninstall' ? 'disconnected' : 'connected'}`;
 }
 
 export function githubCallbackErrorUrl(reason: string): string {
-  return `${publicUrl || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
+  return `${publicUrl() || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
 }
 
 export async function githubConnectionStatus() {
@@ -256,7 +262,7 @@ export async function githubPlatformHealth(): Promise<GitHubPlatformHealth> {
       message: 'GitHub App authentication verified.',
     };
   } catch (error) {
-    return { configured: true, healthy: false, appId: appId || null, slug: appSlug || null, name: null, permissions: {}, events: [], message: error instanceof Error ? `GitHub App authentication failed: ${error.message}` : 'GitHub App authentication failed.' };
+    return { configured: true, healthy: false, appId: appId() || null, slug: appSlug() || null, name: null, permissions: {}, events: [], message: error instanceof Error ? `GitHub App authentication failed: ${error.message}` : 'GitHub App authentication failed.' };
   }
 }
 
@@ -278,7 +284,7 @@ export async function githubHealth(): Promise<{ healthy: boolean; authorizedRepo
 const usedStates = new Map<string, number>();
 function signState(claims: Record<string, unknown>): string {
   const data = Buffer.from(JSON.stringify(claims)).toString('base64url');
-  const signature = crypto.createHmac('sha256', clientSecret).update(data).digest('base64url');
+  const signature = crypto.createHmac('sha256', clientSecret()).update(data).digest('base64url');
   return `${data}.${signature}`;
 }
 
@@ -286,7 +292,7 @@ function verifyState(state: string): { purpose: string; exp: number } {
   if (!githubAppConfigured()) throw new Error('GitHub App is not configured.');
   const [data, signature, extra] = state.split('.');
   if (!data || !signature || extra) throw new Error('GitHub installation state is invalid.');
-  const expected = crypto.createHmac('sha256', clientSecret).update(data).digest();
+  const expected = crypto.createHmac('sha256', clientSecret()).update(data).digest();
   let received: Buffer;
   try { received = Buffer.from(signature, 'base64url'); } catch { throw new Error('GitHub installation state is invalid.'); }
   if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) throw new Error('GitHub installation state signature is invalid.');
@@ -304,8 +310,8 @@ function verifyState(state: string): { purpose: string; exp: number } {
 function createAppJwt(): string {
   if (!githubAppConfigured()) throw new Error('GitHub App settings are incomplete on this Orlynx server.');
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iat: Math.floor(Date.now() / 1000) - 60, exp: Math.floor(Date.now() / 1000) + 8 * 60, iss: appId })}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), privateKey).toString('base64url');
+  const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iat: Math.floor(Date.now() / 1000) - 60, exp: Math.floor(Date.now() / 1000) + 8 * 60, iss: appId() })}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), privateKey()).toString('base64url');
   return `${unsigned}.${signature}`;
 }
 
@@ -397,8 +403,8 @@ export function repoRoot(project: string): string {
 }
 
 export function configureCommitIdentity(project: string): void {
-  const name = process.env.ORLYNX_GIT_AUTHOR_NAME || `${appSlug}[bot]`;
-  const email = process.env.ORLYNX_GIT_AUTHOR_EMAIL || `${appId}+${appSlug}[bot]@users.noreply.github.com`;
+  const name = process.env.ORLYNX_GIT_AUTHOR_NAME || `${appSlug()}[bot]`;
+  const email = process.env.ORLYNX_GIT_AUTHOR_EMAIL || `${appId()}+${appSlug()}[bot]@users.noreply.github.com`;
   const root = repoRoot(project);
   execFileSync('git', ['config', '--local', 'user.name', name], { cwd: root });
   execFileSync('git', ['config', '--local', 'user.email', email], { cwd: root });
