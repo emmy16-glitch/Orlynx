@@ -62,14 +62,14 @@ export function AgentApprovalCard({ title, detail, onApprove, onCancel, busy }: 
   );
 }
 
-export function AgentErrorCard({ title, hint, onRetry, onReconnect }: { title: string; hint?: string; onRetry?: () => void; onReconnect?: () => void }) {
+export function AgentErrorCard({ title, hint, onRetry, onReconnect, retryLabel = 'Retry' }: { title: string; hint?: string; onRetry?: () => void; onReconnect?: () => void; retryLabel?: string }) {
   return (
     <Card role="alert">
       <div className="ox-row"><Icon name="x" /><b>{title}</b></div>
       {hint && <div className="small" style={{ margin: '6px 0' }}>{hint} Your changes are preserved.</div>}
       <div className="ox-row">
         {onReconnect && <Button onClick={onReconnect}>Reconnect workspace</Button>}
-        {onRetry && <Button tone="ghost" onClick={onRetry}>View logs</Button>}
+        {onRetry && <Button tone="ghost" onClick={onRetry}>{retryLabel}</Button>}
       </div>
     </Card>
   );
