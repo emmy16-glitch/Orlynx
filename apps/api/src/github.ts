@@ -78,6 +78,7 @@ export interface GitHubWebhookSummary {
   installationId?: number;
   account?: string;
   repositoriesChanged?: number;
+  duplicate?: boolean;
 }
 
 export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, event: string, deliveryId = ''): Promise<GitHubWebhookSummary> {
@@ -97,6 +98,17 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
   catch { throw new Error('GitHub webhook payload is not valid JSON.'); }
   const installationId = payload.installation?.id;
   const account = payload.installation?.account?.login;
+  // Webhook idempotency: GitHub may redeliver. Never process the same
+  // delivery twice as separate authorization changes.
+  if (deliveryId) {
+    if (store.db.webhookDeliveries.some((item) => item.id === deliveryId)) {
+      console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
+      return { event, action: payload.action, installationId, account, duplicate: true };
+    }
+    store.db.webhookDeliveries.push({ id: deliveryId, event, receivedAt: new Date().toISOString() });
+    if (store.db.webhookDeliveries.length > 500) store.db.webhookDeliveries = store.db.webhookDeliveries.slice(-500);
+    store.save();
+  }
   // Never log secrets: event type, delivery, action, installation/account only.
   console.info(`[orlynx] github webhook event=${event} action=${payload.action || '-'} delivery=${deliveryId || '-'} installation=${installationId || '-'} account=${account || '-'}`);
   if (event === 'installation' && installationId) {

@@ -10,6 +10,8 @@ import { getWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs, supportedProviderIds } from './ai.js';
+import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, maskedConversionSummary, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
+import { publicSiteUrl } from './site.js';
 
 export const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -272,6 +274,43 @@ router.put('/ai/project-defaults', (req, res) => {
     });
     res.json({ project, saved: true });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Project defaults could not be saved.' }); }
+});
+
+// owner-only GitHub App bootstrap via the official manifest flow.
+// Normal users never see this; they use Connect GitHub after setup completes.
+router.get('/setup/github-app', (req, res) => {
+  const access = setupAccess();
+  if (access.locked) return res.json({ mode: 'complete', message: 'GitHub App already configured. Setup complete.' });
+  if (!access.enabled) return res.status(503).json({ mode: 'unavailable', error: access.reason });
+  if (!setupAuthorized(String(req.header('x-setup-token') || ''), String(req.query.setup_token || ''))) {
+    return res.status(401).json({ mode: 'unauthorized', error: 'Owner setup token required.' });
+  }
+  try {
+    res.json({
+      mode: 'bootstrap',
+      publicUrl: publicSiteUrl(),
+      appName: MANIFEST_APP_NAME,
+      nameFallbacks: MANIFEST_APP_FALLBACKS,
+      manifest: buildManifest(MANIFEST_APP_NAME),
+      manifestEndpoint: 'https://github.com/settings/apps/new',
+      state: signManifestState(),
+    });
+  } catch (error) { res.status(503).json({ mode: 'unavailable', error: error instanceof Error ? error.message : 'Setup is unavailable.' }); }
+});
+router.get('/setup/github-app/callback', async (req, res) => {
+  const access = setupAccess();
+  const fail = (reason: string) => res.redirect(302, `/?setup=github-app&error=${encodeURIComponent(reason.slice(0, 160))}`);
+  if (access.locked) return res.redirect(302, '/?setup=github-app&created=0');
+  if (!access.enabled) return fail(access.reason);
+  try {
+    verifyManifestState(String(req.query.state || ''));
+    const conversion = await exchangeManifestCode(String(req.query.code || ''));
+    const persistence = await persistCredentialsToVercel(conversion);
+    // Only masked metadata is ever exposed. Secrets went straight to Vercel.
+    console.info(`[orlynx] github app created id=${conversion.id} slug=${conversion.slug} stored=${persistence.stored} redeployed=${persistence.redeployed}`);
+    if (!persistence.stored) return fail(persistence.detail);
+    return res.redirect(302, `/?setup=github-app&created=1&slug=${encodeURIComponent(conversion.slug)}`);
+  } catch (error) { return fail(error instanceof Error ? error.message : 'Setup failed.'); }
 });
 
 // repos

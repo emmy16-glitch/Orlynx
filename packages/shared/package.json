@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc --declaration --emitDeclarationOnly --target ES2020 --module ESNext --moduleResolution Bundler --skipLibCheck --outDir dist src/index.ts"
+    "build": "tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --outDir dist src/index.ts"
   },
-  "main": "src/index.ts",
-  "types": "src/index.ts"
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts"
 }

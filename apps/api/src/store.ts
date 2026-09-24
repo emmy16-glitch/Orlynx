@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AttachmentMeta, AgentRun, AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession } from '@orlynx/shared';
 
-const DATA_DIR = process.env.ORLYNX_DATA_DIR || path.resolve(process.cwd(), 'data');
+// Server truth lives here. Local/dev: persistent filesystem store.
+// Vercel serverless: /tmp (ephemeral per instance) — see docs/vercel-production.md.
+// Do NOT treat serverless filesystem state as durable multi-instance truth.
+const DATA_DIR = process.env.ORLYNX_DATA_DIR
+  || (process.env.VERCEL === '1' ? path.join('/tmp', 'orlynx-data') : path.resolve(process.cwd(), 'data'));
 const DB_FILE = path.join(DATA_DIR, 'orlynx.json');
 
 export interface GitHubInstallationRecord {
@@ -28,10 +32,11 @@ interface DB {
   openCodeSessions: Record<string, string>;
   aiSessions: Record<string, AISessionPrefs>;
   aiProjectDefaults: Record<string, Partial<Pick<AISessionPrefs, 'providerId' | 'modelId' | 'mode' | 'permission'>>>;
+  webhookDeliveries: { id: string; event: string; receivedAt: string }[];
 }
 
 function blank(): DB {
-  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {}, githubInstallations: [], openCodeSessions: {}, aiSessions: {}, aiProjectDefaults: {} };
+  return { sessions: {}, messages: {}, events: {}, attachments: {}, changes: {}, runs: {}, seq: {}, githubInstallations: [], openCodeSessions: {}, aiSessions: {}, aiProjectDefaults: {}, webhookDeliveries: [] };
 }
 
 export class Store {
