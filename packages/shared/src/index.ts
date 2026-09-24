@@ -58,6 +58,9 @@ export interface ChangeSet {
   reviewState: ReviewState;
   commitSha?: string;
   pushedAt?: string;
+  pushedBranch?: string;
+  pullRequestUrl?: string;
+  pullRequestNumber?: number;
   createdAt: string;
 }
 
