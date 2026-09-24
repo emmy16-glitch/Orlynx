@@ -718,6 +718,19 @@ export async function createGitHubPullRequest(
     signal: AbortSignal.timeout(15_000),
   });
   const result = await response.json().catch(() => ({})) as { number?: number; html_url?: string; message?: string };
+  if (response.status === 422) {
+    // Retrying after the branch was pushed must be idempotent. If GitHub says
+    // a PR already exists, return that existing PR instead of turning a safe
+    // retry into an error.
+    const lookup = await fetch(
+      `${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/pulls?state=open&head=${encodeURIComponent(`${repo.owner}:${head}`)}&base=${encodeURIComponent(base)}&per_page=1`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
+    );
+    if (lookup.ok) {
+      const existing = await lookup.json() as Array<{ number?: number; html_url?: string }>;
+      if (existing[0]?.number && existing[0]?.html_url) return { number: existing[0].number, url: existing[0].html_url };
+    }
+  }
   if (!response.ok || !result.number || !result.html_url) {
     if (response.status === 403) throw new Error('GitHub needs Pull requests write permission before Orlynx can open a pull request.');
     if (response.status === 422) throw new Error(result.message || 'GitHub could not create this pull request. The pushed branch is safe.');
