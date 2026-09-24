@@ -54,18 +54,20 @@ export interface GitHubInstallation {
   connectedAt: string;
   updatedAt: string;
   lastVerifiedAt?: string;
+  repositorySelection?: 'all' | 'selected';
 }
 
-function touchInstallation(id: number, account: string, accountType: string, status: 'active' | 'suspended'): void {
+function touchInstallation(id: number, account: string, accountType: string, status: 'active' | 'suspended', repositorySelection?: 'all' | 'selected'): void {
   const now = new Date().toISOString();
   const existing = store.db.githubInstallations.find((item) => item.id === id);
   if (existing) {
     existing.account = account;
     existing.accountType = accountType;
     existing.status = status;
+    if (repositorySelection) existing.repositorySelection = repositorySelection;
     existing.updatedAt = now;
   } else {
-    store.db.githubInstallations.push({ id, account, accountType, installedAt: now, status, connectedAt: now, updatedAt: now });
+    store.db.githubInstallations.push({ id, account, accountType, installedAt: now, status, connectedAt: now, updatedAt: now, ...(repositorySelection ? { repositorySelection } : {}) });
   }
   store.save();
 }
@@ -111,7 +113,7 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
   if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) throw new Error('GitHub webhook signature is invalid.');
   let payload: {
     action?: string;
-    installation?: { id: number; account?: { login?: string; type?: string } };
+    installation?: { id: number; account?: { login?: string; type?: string }; repository_selection?: 'all' | 'selected' };
     repositories_added?: { full_name: string }[];
     repositories_removed?: { full_name: string }[];
   };
@@ -155,7 +157,7 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
       touchInstallation(installationId, name, kind, 'active');
       repositoryCache.delete(installationId);
     } else if (payload.action === 'created' || payload.action === 'new_permissions_accepted') {
-      touchInstallation(installationId, name, kind, 'active');
+      touchInstallation(installationId, name, kind, 'active', payload.installation?.repository_selection);
       repositoryCache.delete(installationId);
     }
     return { event, action: payload.action, installationId, account: name };
@@ -210,8 +212,8 @@ export async function completeGitHubInstallation(installationId: string, state: 
       if (response.status === 403) throw new Error('This organization requires owner approval before Orlynx can access its repositories. Ask an organization owner to approve the installation, then reconnect.');
       throw new Error(`GitHub could not verify the app installation (HTTP ${response.status}).`);
     }
-    const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
-    touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+    const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null; repository_selection?: 'all' | 'selected' };
+    touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active', installation.repository_selection);
     // Post-connection verification: mint a token and list repositories before
     // reporting success. A stored installation alone is never "connected".
     repositoryCache.delete(installation.id);
@@ -357,8 +359,8 @@ export function githubCallbackErrorUrl(reason: string): string {
 
 export async function githubConnectionStatus(installationId?: number | null) {
   const source = installationId ? store.db.githubInstallations.filter((item) => item.id === installationId) : [];
-  const installations = source.map(({ id, account, accountType, installedAt, connectedAt, updatedAt, lastVerifiedAt, status }) => ({
-    id, account, accountType, installedAt: connectedAt || installedAt, updatedAt, lastVerifiedAt: lastVerifiedAt || null, status: status || 'active',
+  const installations = source.map(({ id, account, accountType, installedAt, connectedAt, updatedAt, lastVerifiedAt, status, repositorySelection }) => ({
+    id, account, accountType, installedAt: connectedAt || installedAt, updatedAt, lastVerifiedAt: lastVerifiedAt || null, status: status || 'active', repositorySelection: repositorySelection || null,
     manageUrl: githubAppConfigured() ? githubManageUrl(id) : null,
   }));
   const active = installations.filter((item) => item.status !== 'suspended');
@@ -373,6 +375,7 @@ export async function githubConnectionStatus(installationId?: number | null) {
     auth: !githubAppConfigured() ? 'not-configured' : active.length ? 'github-app' : installations.length ? 'suspended' : 'installation-required',
     provider: 'GitHub App',
     login: active[0]?.account || installations[0]?.account || null,
+    repositorySelection: active[0]?.repositorySelection || installations[0]?.repositorySelection || null,
     installations,
     installUrl: githubAppConfigured() ? '/v1/github/install' : null,
     manageUrl: githubAppConfigured() ? '/v1/github/manage' : null,
@@ -437,8 +440,8 @@ export async function restoreGitHubInstallation(installationId: number): Promise
   if (!githubAppConfigured()) throw new Error('GitHub connection is temporarily unavailable.');
   const response = await fetch(`${API}/app/installations/${installationId}`, { headers: githubHeaders(createAppJwt()), signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(response.status === 404 ? 'Your GitHub connection is no longer available.' : 'GitHub connection could not be verified.');
-  const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
-  touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+  const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null; repository_selection?: 'all' | 'selected' };
+  touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active', installation.repository_selection);
 }
 
 // Explicit re-verification after the user changes repository access on
