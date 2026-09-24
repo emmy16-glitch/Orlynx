@@ -1,16 +1,66 @@
 # Production architecture
 
-Browser → `https://orlynx.vercel.app` (Vite PWA + serverless control plane) →
-workspace plane (Codespace/persistent host: bridge → OpenCode) → GitHub
-(installation tokens, server-side only).
+```text
+Browser / PWA
+    |
+    v
+https://orlynx.vercel.app
+    |
+    +-- Vercel web + control-plane API
+    +-- Postgres durable state
+    +-- GitHub App / OAuth
+    |
+    v
+GitHub Codespace
+    |
+    v
+authenticated Orlynx bridge
+    |
+    +-- OpenCode
+    +-- PTY
+    +-- Git/files
+    +-- preview ports
+```
 
-- Same-origin frontend + API: no CORS allowlists, no wildcard credentials.
-- CSRF/state: HMAC-signed single-use expiring tokens for install + manifest
-  callbacks; webhook HMAC (`X-Hub-Signature-256`) with constant-time compare;
-  delivery-ID idempotency (last 500 persisted).
-- Setup endpoints are owner-gated (`ORLYNX_SETUP_TOKEN`) and lock permanently
-  once the GitHub App is configured.
-- Rotation: replace the env value in Vercel and redeploy; no code changes.
-  Webhook secret rotation must match the GitHub App settings page.
-- Failure language is consistent across GitHub/AI/Cloud: disconnected →
-  connect, needs-attention → reconnect, error → retry, all fail-closed.
+## Boundaries
+
+The Vercel control plane owns identity-linked sessions, GitHub authorization,
+workspace orchestration, event persistence/replay, encrypted provider credentials,
+approvals, change sets and audit records.
+
+Long-running code execution does not run as an ordinary Vercel request. It runs in
+the workspace execution plane.
+
+## Security
+
+- Same-origin web/API requests; credentialed wildcard CORS is not used.
+- GitHub install/manifest callbacks use signed, expiring, single-use state.
+- Webhooks use HMAC signature verification and durable delivery-ID idempotency.
+- GitHub installation tokens are short-lived and server-side.
+- GitHub user/provider credentials are encrypted with AES-256-GCM before durable
+  storage.
+- Workspace bridge credentials are short-lived HMAC tokens scoped to user,
+  session, workspace and connection.
+- Direct push to `main`/`master` is denied by the workspace bridge.
+- Default-branch publication uses a separate `orlynx/*` branch and GitHub PR.
+- Consequential actions are recorded in the audit log.
+
+## Durability
+
+Postgres is production truth. Local JSON, in-memory maps and localStorage may
+support development/cache/convenience behavior but must not be required to recover
+a production user's session.
+
+Durable events use stable IDs and per-session sequences for replay.
+
+## Retention
+
+Operational cleanup currently removes webhook-delivery receipts after 30 days and
+completed/failed bridge commands after 7 days. User conversation/audit retention
+remains durable until a product deletion policy is explicitly implemented.
+
+## Failure behavior
+
+Production fails closed when GitHub, durable storage, workspace, bridge or AI
+runtime is unavailable. Public UI exposes recovery actions, not operator secret
+names or infrastructure setup instructions.
