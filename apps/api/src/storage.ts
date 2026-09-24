@@ -68,6 +68,7 @@ export interface ControlPlaneRepository {
   getCommand(id: string): Promise<BridgeCommand | null>;
   putAttachment(value: { id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; blobUrl?: string; contentBase64?: string; createdAt: string }): Promise<void>;
   listAttachments(sessionId: string): Promise<Array<{ id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; createdAt: string }>>;
+  listAttachmentPayloads(sessionId: string): Promise<Array<{ id: string; safeName: string; contentBase64: string }>>;
   putApproval(value: { id: string; sessionId: string; taskId?: string; action: string; state: string; context: Record<string, unknown>; createdAt: string; resolvedAt?: string }): Promise<void>;
   putChangeSet(value: ChangeSet): Promise<void>;
   listChangeSets(sessionId: string): Promise<ChangeSet[]>;
@@ -229,6 +230,10 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async getCommand(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM bridge_commands WHERE id=${id}`)[0]; return r ? mapCommand(r) : null; }
   async putAttachment(v: { id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; blobUrl?: string; contentBase64?: string; createdAt: string }) { await this.initialize(); await this.sql`INSERT INTO attachments (id,session_id,filename,safe_name,mime,size,hash,blob_url,content_base64,created_at) VALUES (${v.id},${v.sessionId},${v.filename},${v.safeName},${v.mime},${v.size},${v.hash || null},${v.blobUrl || null},${v.contentBase64 || null},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async listAttachments(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT id,session_id,filename,safe_name,mime,size,hash,created_at FROM attachments WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), filename: String(r.filename), safeName: String(r.safe_name), mime: String(r.mime), size: Number(r.size), hash: r.hash ? String(r.hash) : undefined, createdAt: iso(r.created_at) })); }
+  async listAttachmentPayloads(sessionId: string) {
+    await this.initialize();
+    return rows<Record<string, unknown>>(await this.sql`SELECT id,safe_name,content_base64 FROM attachments WHERE session_id=${sessionId} AND content_base64 IS NOT NULL ORDER BY created_at`).map((r) => ({ id: String(r.id), safeName: String(r.safe_name), contentBase64: String(r.content_base64) }));
+  }
   async putApproval(v: { id: string; sessionId: string; taskId?: string; action: string; state: string; context: Record<string, unknown>; createdAt: string; resolvedAt?: string }) { await this.initialize(); await this.sql`INSERT INTO approvals (id,session_id,task_id,action,state,context,created_at,resolved_at) VALUES (${v.id},${v.sessionId},${v.taskId || null},${v.action},${v.state},${JSON.stringify(v.context)},${v.createdAt},${v.resolvedAt || null}) ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state,resolved_at=EXCLUDED.resolved_at`; }
   async putChangeSet(v: ChangeSet) { await this.initialize(); await this.sql`INSERT INTO change_sets (id,session_id,record,created_at) VALUES (${v.id},${v.sessionId},${JSON.stringify(v)},${v.createdAt}) ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record,updated_at=now()`; }
   async listChangeSets(sessionId: string) { await this.initialize(); return rows<{ record: ChangeSet }>(await this.sql`SELECT record FROM change_sets WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => r.record); }
