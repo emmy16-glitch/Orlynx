@@ -54,18 +54,20 @@ export interface GitHubInstallation {
   connectedAt: string;
   updatedAt: string;
   lastVerifiedAt?: string;
+  repositorySelection?: 'all' | 'selected';
 }
 
-function touchInstallation(id: number, account: string, accountType: string, status: 'active' | 'suspended'): void {
+function touchInstallation(id: number, account: string, accountType: string, status: 'active' | 'suspended', repositorySelection?: 'all' | 'selected'): void {
   const now = new Date().toISOString();
   const existing = store.db.githubInstallations.find((item) => item.id === id);
   if (existing) {
     existing.account = account;
     existing.accountType = accountType;
     existing.status = status;
+    if (repositorySelection) existing.repositorySelection = repositorySelection;
     existing.updatedAt = now;
   } else {
-    store.db.githubInstallations.push({ id, account, accountType, installedAt: now, status, connectedAt: now, updatedAt: now });
+    store.db.githubInstallations.push({ id, account, accountType, installedAt: now, status, connectedAt: now, updatedAt: now, ...(repositorySelection ? { repositorySelection } : {}) });
   }
   store.save();
 }
@@ -111,7 +113,7 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
   if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) throw new Error('GitHub webhook signature is invalid.');
   let payload: {
     action?: string;
-    installation?: { id: number; account?: { login?: string; type?: string } };
+    installation?: { id: number; account?: { login?: string; type?: string }; repository_selection?: 'all' | 'selected' };
     repositories_added?: { full_name: string }[];
     repositories_removed?: { full_name: string }[];
   };
@@ -119,16 +121,27 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
   catch { throw new Error('GitHub webhook payload is not valid JSON.'); }
   const installationId = payload.installation?.id;
   const account = payload.installation?.account?.login;
-  // Webhook idempotency: GitHub may redeliver. Never process the same
-  // delivery twice as separate authorization changes.
+  // Webhook idempotency: GitHub may redeliver. In production the delivery
+  // ledger is durable and atomic across instances/redeploys. Local JSON is only
+  // a development fallback.
   if (deliveryId) {
-    if (store.db.webhookDeliveries.some((item) => item.id === deliveryId)) {
-      console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
-      return { event, action: payload.action, installationId, account, duplicate: true };
+    if (durableStorageConfigured()) {
+      const fresh = await controlPlaneRepository().recordWebhookDelivery(deliveryId, event);
+      if (!fresh) {
+        console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
+        return { event, action: payload.action, installationId, account, duplicate: true };
+      }
+      // Keep operational tables bounded without putting correctness on a cron.
+      void controlPlaneRepository().pruneOperationalData().catch(() => {});
+    } else {
+      if (store.db.webhookDeliveries.some((item) => item.id === deliveryId)) {
+        console.info(`[orlynx] github webhook duplicate delivery=${deliveryId} ignored`);
+        return { event, action: payload.action, installationId, account, duplicate: true };
+      }
+      store.db.webhookDeliveries.push({ id: deliveryId, event, receivedAt: new Date().toISOString() });
+      if (store.db.webhookDeliveries.length > 500) store.db.webhookDeliveries = store.db.webhookDeliveries.slice(-500);
+      store.save();
     }
-    store.db.webhookDeliveries.push({ id: deliveryId, event, receivedAt: new Date().toISOString() });
-    if (store.db.webhookDeliveries.length > 500) store.db.webhookDeliveries = store.db.webhookDeliveries.slice(-500);
-    store.save();
   }
   // Never log secrets: event type, delivery, action, installation/account only.
   console.info(`[orlynx] github webhook event=${event} action=${payload.action || '-'} delivery=${deliveryId || '-'} installation=${installationId || '-'} account=${account || '-'}`);
@@ -137,13 +150,14 @@ export async function acceptGitHubWebhook(rawBody: Buffer, signature: string, ev
     const kind = payload.installation?.account?.type || 'User';
     if (payload.action === 'deleted') {
       forgetInstallation(installationId);
+      if (durableStorageConfigured()) await controlPlaneRepository().deleteGitHubConnection(installationId);
     } else if (payload.action === 'suspend') {
       touchInstallation(installationId, name, kind, 'suspended');
     } else if (payload.action === 'unsuspend') {
       touchInstallation(installationId, name, kind, 'active');
       repositoryCache.delete(installationId);
     } else if (payload.action === 'created' || payload.action === 'new_permissions_accepted') {
-      touchInstallation(installationId, name, kind, 'active');
+      touchInstallation(installationId, name, kind, 'active', payload.installation?.repository_selection);
       repositoryCache.delete(installationId);
     }
     return { event, action: payload.action, installationId, account: name };
@@ -198,8 +212,8 @@ export async function completeGitHubInstallation(installationId: string, state: 
       if (response.status === 403) throw new Error('This organization requires owner approval before Orlynx can access its repositories. Ask an organization owner to approve the installation, then reconnect.');
       throw new Error(`GitHub could not verify the app installation (HTTP ${response.status}).`);
     }
-    const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
-    touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+    const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null; repository_selection?: 'all' | 'selected' };
+    touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active', installation.repository_selection);
     // Post-connection verification: mint a token and list repositories before
     // reporting success. A stored installation alone is never "connected".
     repositoryCache.delete(installation.id);
@@ -345,8 +359,8 @@ export function githubCallbackErrorUrl(reason: string): string {
 
 export async function githubConnectionStatus(installationId?: number | null) {
   const source = installationId ? store.db.githubInstallations.filter((item) => item.id === installationId) : [];
-  const installations = source.map(({ id, account, accountType, installedAt, connectedAt, updatedAt, lastVerifiedAt, status }) => ({
-    id, account, accountType, installedAt: connectedAt || installedAt, updatedAt, lastVerifiedAt: lastVerifiedAt || null, status: status || 'active',
+  const installations = source.map(({ id, account, accountType, installedAt, connectedAt, updatedAt, lastVerifiedAt, status, repositorySelection }) => ({
+    id, account, accountType, installedAt: connectedAt || installedAt, updatedAt, lastVerifiedAt: lastVerifiedAt || null, status: status || 'active', repositorySelection: repositorySelection || null,
     manageUrl: githubAppConfigured() ? githubManageUrl(id) : null,
   }));
   const active = installations.filter((item) => item.status !== 'suspended');
@@ -361,6 +375,7 @@ export async function githubConnectionStatus(installationId?: number | null) {
     auth: !githubAppConfigured() ? 'not-configured' : active.length ? 'github-app' : installations.length ? 'suspended' : 'installation-required',
     provider: 'GitHub App',
     login: active[0]?.account || installations[0]?.account || null,
+    repositorySelection: active[0]?.repositorySelection || installations[0]?.repositorySelection || null,
     installations,
     installUrl: githubAppConfigured() ? '/v1/github/install' : null,
     manageUrl: githubAppConfigured() ? '/v1/github/manage' : null,
@@ -425,8 +440,8 @@ export async function restoreGitHubInstallation(installationId: number): Promise
   if (!githubAppConfigured()) throw new Error('GitHub connection is temporarily unavailable.');
   const response = await fetch(`${API}/app/installations/${installationId}`, { headers: githubHeaders(createAppJwt()), signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(response.status === 404 ? 'Your GitHub connection is no longer available.' : 'GitHub connection could not be verified.');
-  const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null };
-  touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active');
+  const installation = await response.json() as { id: number; account?: { login?: string; type?: string }; suspended_at?: string | null; repository_selection?: 'all' | 'selected' };
+  touchInstallation(installation.id, installation.account?.login || 'GitHub account', installation.account?.type || 'User', installation.suspended_at ? 'suspended' : 'active', installation.repository_selection);
 }
 
 // Explicit re-verification after the user changes repository access on
@@ -679,4 +694,50 @@ export async function pushGitHubRepository(project: string, branch: string, inst
   const token = await installationToken(repo.installationId);
   try { execFileSync('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: root, env: gitCredentialEnv(token), stdio: 'pipe', timeout: 120_000 }); }
   catch { throw new Error('GitHub rejected the push. Your local commit is safe; refresh the branch and retry.'); }
+}
+
+export async function createGitHubPullRequest(
+  project: string,
+  base: string,
+  head: string,
+  title: string,
+  body: string,
+  installationId?: number,
+): Promise<{ number: number; url: string }> {
+  if (!/^[\w./-]+$/.test(base) || !/^[\w./-]+$/.test(head) || base.startsWith('-') || head.startsWith('-')) {
+    throw new Error('Pull request branch name is invalid.');
+  }
+  const repo = await findRepository(project, installationId);
+  const token = await installationToken(repo.installationId);
+  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/pulls`, {
+    method: 'POST',
+    headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: title.trim().slice(0, 180) || 'Orlynx changes',
+      head,
+      base,
+      body: body.trim().slice(0, 8_000),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const result = await response.json().catch(() => ({})) as { number?: number; html_url?: string; message?: string };
+  if (response.status === 422) {
+    // Retrying after the branch was pushed must be idempotent. If GitHub says
+    // a PR already exists, return that existing PR instead of turning a safe
+    // retry into an error.
+    const lookup = await fetch(
+      `${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/pulls?state=open&head=${encodeURIComponent(`${repo.owner}:${head}`)}&base=${encodeURIComponent(base)}&per_page=1`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
+    );
+    if (lookup.ok) {
+      const existing = await lookup.json() as Array<{ number?: number; html_url?: string }>;
+      if (existing[0]?.number && existing[0]?.html_url) return { number: existing[0].number, url: existing[0].html_url };
+    }
+  }
+  if (!response.ok || !result.number || !result.html_url) {
+    if (response.status === 403) throw new Error('GitHub needs Pull requests write permission before Orlynx can open a pull request.');
+    if (response.status === 422) throw new Error(result.message || 'GitHub could not create this pull request. The pushed branch is safe.');
+    throw new Error(`GitHub could not create the pull request (HTTP ${response.status}). The pushed branch is safe.`);
+  }
+  return { number: result.number, url: result.html_url };
 }

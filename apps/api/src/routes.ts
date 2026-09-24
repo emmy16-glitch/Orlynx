@@ -3,13 +3,13 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { durableHistory, emit, subscribe } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
-import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
+import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
 import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
@@ -18,14 +18,48 @@ import crypto from 'node:crypto';
 import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest } from './bridge-rpc.js';
+import { encryptCredential } from './credentials.js';
 
 export const router = Router();
+
+const webhookRateBuckets = new Map<string, { count: number; resetAt: number }>();
+function allowWebhookRequest(req: Request): boolean {
+  const now = Date.now();
+  const key = req.ip || String(req.header('x-forwarded-for') || 'unknown').split(',')[0].trim();
+  const current = webhookRateBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    webhookRateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  current.count += 1;
+  if (webhookRateBuckets.size > 500) {
+    for (const [bucketKey, value] of webhookRateBuckets) if (value.resetAt <= now) webhookRateBuckets.delete(bucketKey);
+  }
+  return current.count <= 240;
+}
 
 async function requestUserId(req: Request): Promise<string | null> {
   if (!durableStorageConfigured()) return null;
   const installationId = requestInstallationId(req);
   if (!installationId) return null;
   return (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId))?.userId || null;
+}
+
+async function recordAudit(req: Request, sessionId: string | undefined, action: string, outcome: string, detail: Record<string, unknown> = {}): Promise<void> {
+  if (!durableStorageConfigured()) return;
+  try {
+    const repository = controlPlaneRepository();
+    const userId = await requestUserId(req);
+    if (!userId) return;
+    const session = sessionId ? await repository.getSession(sessionId) : null;
+    await repository.recordAudit({
+      id: `audit_${uuid()}`, userId, sessionId,
+      projectId: session?.projectId, action, outcome, detail,
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // Auditing must never turn a completed user action into a failed response.
+  }
 }
 
 const upload = multer({
@@ -96,6 +130,15 @@ async function ownedChangeSession(req: Request, changeId: string): Promise<strin
   return '';
 }
 
+// GET /v1/sessions — identity-based restore across phones/laptops.
+router.get('/sessions', async (req, res) => {
+  if (!durableStorageConfigured()) return res.json([]);
+  const userId = await requestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Reconnect GitHub to continue.' });
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+  res.json(await controlPlaneRepository().listSessionsByUser(userId, limit));
+});
+
 // POST /v1/sessions — create/resume project session (§14.1)
 router.post('/sessions', async (req, res) => {
   const { project = '', branch = '', owner = '' } = req.body || {};
@@ -138,9 +181,14 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
   if (clientId) {
-    const dup = (store.db.messages[s.id] || []).find((m: { id: string }) => m.id === clientId);
+    const existingMessages = durableStorageConfigured()
+      ? await controlPlaneRepository().listMessages(s.id)
+      : (store.db.messages[s.id] || []);
+    const dup = existingMessages.find((m: { id: string }) => m.id === clientId);
     if (dup) {
-      const run = (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
+      const run = durableStorageConfigured()
+        ? (await controlPlaneRepository().listTasks(s.id)).slice(-1)[0] || null
+        : (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
       console.info(`[orlynx] sid=${s.id} duplicate message ignored clientId=${clientId}`);
       return res.json({ message: dup, run, deduplicated: true });
     }
@@ -148,10 +196,15 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const agent = await openCodeStatus(s.project);
   if (!agent.connected) return res.status(503).json({ error: 'AI is not available for this workspace yet. No message was sent.' });
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
-  (store.db.messages[s.id] ||= []).push(msg);
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
+  (store.db.messages[s.id] ||= []).push(msg);
   store.save();
-  if (durableStorageConfigured()) await controlPlaneRepository().putMessage(msg);
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    await repository.putMessage(msg);
+    const durableSession = await repository.getSession(s.id);
+    if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+  }
   console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   let run;
   try {
@@ -165,6 +218,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   catch (error) {
     store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
     store.save();
+    if (durableStorageConfigured()) await controlPlaneRepository().deleteMessage(msg.id, s.id);
     const kind = (error as { errorKind?: string }).errorKind;
     const detail = error instanceof Error ? error.message : '';
     return res.status(kind === 'permission' ? 403 : 503).json({ error: kind === 'permission' ? detail : 'Orlynx AI could not accept this task.' });
@@ -231,8 +285,9 @@ router.post('/sessions/:id/attachments', upload.single('file'), async (req, res)
   if (durableStorageConfigured()) {
     const id = `att_${uuid().slice(0, 8)}`; const now = new Date().toISOString(); const name = safeName(req.file.originalname);
     const meta = { id, sessionId: s.id, filename: req.file.originalname, safeName: name, mime: req.file.mimetype, size: req.file.size, hash: crypto.createHash('sha256').update(req.file.buffer).digest('hex').slice(0, 16), createdAt: now };
-    await controlPlaneRepository().putAttachment({ ...meta, contentBase64: req.file.buffer.toString('base64') });
-    const workspace = await getWorkspace(s.id); if (workspace?.state === 'ready') await bridgeRequest(workspace.id, 'fs.write-attachment', { name: `${id}__${name}`, contentBase64: req.file.buffer.toString('base64') });
+    const contentBase64 = req.file.buffer.toString('base64');
+    await controlPlaneRepository().putAttachment({ ...meta, contentBase64: encryptCredential(contentBase64) });
+    const workspace = await getWorkspace(s.id); if (workspace?.state === 'ready') await bridgeRequest(workspace.id, 'fs.write-attachment', { name: `${id}__${name}`, contentBase64 });
     emit(s.id, 'state.delta', { attachment: meta.id }); return res.json(meta);
   }
   const { meta } = saveAttachment(s.id, req.file.originalname, req.file.mimetype, req.file.buffer);
@@ -243,6 +298,12 @@ router.post('/sessions/:id/attachments', upload.single('file'), async (req, res)
 router.get('/sessions/:id/attachments', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(durableStorageConfigured() ? await controlPlaneRepository().listAttachments(req.params.id) : store.db.attachments[req.params.id] || []);
+});
+
+router.get('/sessions/:id/audit', async (req, res) => {
+  if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.json([]);
+  res.json(await controlPlaneRepository().listAudit(req.params.id, Number(req.query.limit) || 100));
 });
 
 // cloud lifecycle
@@ -258,6 +319,7 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     s.mode = 'cloud'; s.workspaceId = workspace.id; s.updatedAt = new Date().toISOString(); store.save();
     await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
     emit(s.id, workspace.state === 'ready' ? 'workspace.ready' : 'workspace.preparing', { state: workspace.state, bridge: workspace.bridgeState, openCode: workspace.openCodeState });
+    await recordAudit(req, s.id, 'workspace.start', 'accepted', { workspaceId: workspace.id, state: workspace.state, provider: workspace.provider });
     return res.status(workspace.state === 'ready' ? 200 : 202).json(workspace);
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : 'Workspace start failed.';
@@ -274,7 +336,7 @@ router.post('/sessions/:id/cloud', async (req, res) => {
 router.post('/sessions/:id/cloud/stop', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  try { const workspace = await stopWorkspace(s.id); emit(s.id, 'workspace.stopped', { workspaceId: workspace.id }); return res.json(workspace); }
+  try { const workspace = await stopWorkspace(s.id); emit(s.id, 'workspace.stopped', { workspaceId: workspace.id }); await recordAudit(req, s.id, 'workspace.stop', 'completed', { workspaceId: workspace.id }); return res.json(workspace); }
   catch (error) { return res.status(502).json({ error: error instanceof Error ? error.message : 'Workspace could not be stopped.' }); }
 });
 
@@ -295,6 +357,7 @@ router.post('/sessions/:id/exec', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { cmd = 'echo ok', approved = false } = req.body || {};
+  if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
   const gate = canPerform(s.id, 'terminal.exec', { cmd: String(cmd) });
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   if (gate.needsApproval && !approved) {
@@ -419,6 +482,7 @@ router.post('/changes/:changeId/approve', async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   emit(c.sessionId, 'approval.resolved', { changeId: c.id, approved: true });
   if (durableStorageConfigured()) { const now = new Date().toISOString(); await controlPlaneRepository().putApproval({ id: `approval_${c.id}`, sessionId: c.sessionId, action: 'changes.approve', state: 'approved', context: { changeId: c.id }, createdAt: now, resolvedAt: now }); await controlPlaneRepository().putChangeSet(c); }
+  await recordAudit(req, c.sessionId, 'changes.approve', 'approved', { changeId: c.id, files: c.files.length });
   res.json(c);
 });
 router.post('/changes/:changeId/commit', async (req, res) => {
@@ -433,9 +497,10 @@ router.post('/changes/:changeId/commit', async (req, res) => {
       if (!c || c.reviewState !== 'approved') return res.status(409).json({ error: 'approve before commit (safe-by-default)' });
       const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
       const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', { message: String(req.body?.message || 'Orlynx update') });
-      c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); return res.json(c);
+      c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: result.sha }); return res.json(c);
     }
     const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));
+    await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: c.commitSha });
     res.json(c);
   } catch (e: unknown) { res.status(409).json({ error: (e as Error).message }); }
 });
@@ -448,11 +513,66 @@ router.post('/changes/:changeId/push', async (req, res) => {
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   try {
     if (durableStorageConfigured()) {
-      const c = currentChanges(sid).find((item) => item.id === req.params.changeId); if (!c || c.reviewState !== 'committed') return res.status(409).json({ error: 'commit and approve this changeset before pushing' });
-      const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-      await bridgeRequest(workspace.id, 'git.push', { approved: true }); c.pushedAt = new Date().toISOString(); store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: session.branch }); return res.json(c);
+      const c = currentChanges(sid).find((item) => item.id === req.params.changeId);
+      if (!c || c.reviewState !== 'committed') return res.status(409).json({ error: 'commit and approve this changeset before publishing' });
+      const workspace = await getWorkspace(sid);
+      if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
+
+      const explicitStrategy = String(req.body?.strategy || '');
+      const originalBranch = session.branch;
+      const publishAsPullRequest = explicitStrategy === 'pull-request' || ['main', 'master'].includes(originalBranch);
+      let publishedBranch = originalBranch;
+      let pullRequest: { number: number; url: string } | undefined;
+
+      if (publishAsPullRequest) {
+        const gitStatus = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status');
+        if (gitStatus.branch && /^orlynx\/[a-zA-Z0-9._-]+$/.test(gitStatus.branch)) {
+          publishedBranch = gitStatus.branch;
+        } else {
+          publishedBranch = `orlynx/${c.id.replace(/^chg_/, '')}`;
+          await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishedBranch });
+        }
+        await bridgeRequest(workspace.id, 'git.push', { approved: true });
+        pullRequest = await createGitHubPullRequest(
+          session.project,
+          originalBranch,
+          publishedBranch,
+          String(req.body?.title || 'Orlynx changes'),
+          String(req.body?.body || `Changes prepared and reviewed in Orlynx.\n\nCommit: ${c.commitSha || 'pending'}`),
+          requestInstallationId(req),
+        );
+        c.pullRequestUrl = pullRequest.url;
+        c.pullRequestNumber = pullRequest.number;
+
+        // The real workspace is now on the published branch. Keep Orlynx
+        // session state aligned with Git instead of telling the next task it is
+        // still on main/master while the Codespace is actually elsewhere.
+        session.branch = publishedBranch;
+        session.updatedAt = new Date().toISOString();
+        const durableSession = await controlPlaneRepository().getSession(sid);
+        if (durableSession) {
+          await controlPlaneRepository().putSession({
+            ...session,
+            userId: durableSession.userId,
+            projectId: durableSession.projectId,
+          });
+        }
+      } else {
+        const result = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.push', { approved: true });
+        publishedBranch = result.branch || session.branch;
+      }
+
+      c.pushedAt = new Date().toISOString();
+      c.pushedBranch = publishedBranch;
+      store.save();
+      await controlPlaneRepository().putChangeSet(c);
+      emit(sid, 'receipt.created', { changeId: c.id, pushedAt: c.pushedAt, branch: publishedBranch, pullRequestUrl: c.pullRequestUrl, pullRequestNumber: c.pullRequestNumber });
+      await recordAudit(req, sid, pullRequest ? 'git.pull_request' : 'git.push', 'completed', { changeId: c.id, branch: publishedBranch, baseBranch: pullRequest ? originalBranch : session.branch, commitSha: c.commitSha, pullRequestNumber: c.pullRequestNumber });
+      return res.json(c);
     }
-    res.json(await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req)));
+    const pushed = await push(sid, session.project, session.branch, req.params.changeId, requestInstallationId(req));
+    await recordAudit(req, sid, 'git.push', 'completed', { changeId: pushed.id, branch: session.branch, commitSha: pushed.commitSha });
+    res.json(pushed);
   }
   catch (error) { res.status(409).json({ error: (error as Error).message }); }
 });
@@ -504,22 +624,29 @@ router.post('/ai/providers/:id/disconnect', async (req, res) => {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'AI account could not be disconnected.' });
   }
 });
-router.get('/ai/session/:id', (req, res) => {
+router.get('/ai/session/:id', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
-  res.json({ prefs: getSessionPrefs(s.id, s.project), activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
+  const prefs = durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project);
+  const activeRun = durableStorageConfigured()
+    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+    : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+  res.json({ prefs, activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
 });
-router.put('/ai/session/:id', (req, res) => {
+router.put('/ai/session/:id', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
+    if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
     const prefs = setSessionPrefs(s.id, {
       ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
       ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
       ...(req.body?.permission ? { permission: String(req.body.permission) as 'full' | 'ask-first' | 'read-only' } : {}),
     });
-    const activeRun = (store.db.runs[s.id] || []).some((r) => r.state === 'running');
+    if (durableStorageConfigured()) await controlPlaneRepository().putAISessionPrefs(prefs);
+    const activeRun = durableStorageConfigured()
+      ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+      : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
     // Never interrupt an active run: changes apply to the next turn.
     res.json({ prefs, appliesTo: activeRun ? 'next-turn' : 'next-task' });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Preferences could not be saved.' }); }
@@ -684,6 +811,7 @@ router.get('/github/setup', async (req, res) => {
   }
 });
 router.post('/github/webhook', async (req, res) => {
+  if (!allowWebhookRequest(req)) return res.status(429).json({ error: 'Too many webhook requests.' });
   if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: 'Expected a signed GitHub JSON webhook.' });
   try {
     const summary = await acceptGitHubWebhook(req.body, String(req.header('x-hub-signature-256') || ''), String(req.header('x-github-event') || ''), String(req.header('x-github-delivery') || ''));
@@ -704,7 +832,7 @@ router.get('/integrations/status', async (req, res) => {
   const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
   const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
-    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
+    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, repositorySelection: connection.repositorySelection, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
     githubAvailable: platform.configured && platform.healthy,
     ai: { available: opencode.connected },
     workspace: { terminalAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', cloudAvailable: infrastructure && connection.userAuthorizationState === 'established', previewAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', state: workspace?.state || 'not_created' },

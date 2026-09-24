@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
 import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridge-auth.js';
 import { controlPlaneRepository } from './storage.js';
+import { decryptCredential } from './credentials.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
@@ -51,7 +52,30 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
         return;
       }
-      if (message.kind === 'READY') { await persistBridgeState(claims, 'ready', message); return; }
+      if (message.kind === 'READY') {
+        await persistBridgeState(claims, 'ready', message);
+
+        // Attachments can be uploaded before a cloud workspace exists. Once
+        // the authenticated bridge is ready, replay those durable attachments
+        // directly into the private workspace. Reconnects are safe because the
+        // bridge writes deterministic attachment names and overwrites them.
+        const attachments = await repository.listAttachmentPayloads(claims.sessionId);
+        for (const attachment of attachments) {
+          if (ws.readyState !== ws.OPEN) break;
+          ws.send(JSON.stringify({
+            kind: 'COMMAND',
+            commandId: `attachment_${attachment.id}_${uuid()}`,
+            type: 'fs.write-attachment',
+            payload: {
+              name: `${attachment.id}__${attachment.safeName}`,
+              contentBase64: attachment.contentBase64.startsWith('v1.')
+                ? decryptCredential(attachment.contentBase64)
+                : attachment.contentBase64,
+            },
+          }));
+        }
+        return;
+      }
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
         await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', message.result || { error: message.error || 'Workspace command failed.' });

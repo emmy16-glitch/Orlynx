@@ -62,6 +62,8 @@ export function verifyManifestState(state: string): void {
 // - contents:write → clone/import (github.ts importGitHubRepository), commit,
 //   push (pushGitHubRepository) via installation tokens.
 // - metadata:read → required companion permission for repository access.
+// - pull_requests:write → safe branch + PR publishing when the target branch
+//   should not be pushed directly.
 // Everything else is intentionally NOT requested.
 //
 // NOTE: no `default_events` is sent. GitHub's manifest flow rejects
@@ -84,7 +86,7 @@ export function buildManifest(appName: string): Record<string, unknown> {
     setup_on_update: true,
     description: 'Orlynx — GitHub-native AI development workspace.',
     public: false,
-    default_permissions: { contents: 'write', metadata: 'read', codespaces: 'write', codespaces_lifecycle_admin: 'write' },
+    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', codespaces: 'write', codespaces_lifecycle_admin: 'write' },
   };
 }
 

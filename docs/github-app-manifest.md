@@ -1,38 +1,63 @@
 # GitHub App manifest bootstrap (one-time owner setup)
 
-Normal users never see this. They use Connect GitHub after setup completes.
+Normal users never see this flow. They click **Connect GitHub** after the Orlynx
+platform GitHub App is configured.
 
 ## Flow
 
-1. Owner opens `https://orlynx.vercel.app/?setup=github-app`, enters
-   `ORLYNX_SETUP_TOKEN`, and clicks **Create GitHub App**.
-2. Browser posts the server-generated manifest to
-   `https://github.com/settings/apps/new?state=…`. Preferred name **Orlynx**;
-   fallbacks `Orlynx App`, `Orlynx Dev` if taken (owner picks on GitHub's page;
-   the actual slug is reported after creation).
-3. GitHub shows its official confirmation page. Owner approves.
-4. GitHub redirects to `/v1/setup/github-app/callback?code=…&state=…`.
-5. Backend verifies single-use state, exchanges the code at
-   `POST /app-manifests/{code}/conversions`, and writes the credentials
-   straight into Vercel production env via the Vercel API
-   (`GITHUB_APP_ID/SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`,
-   `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `ORLYNX_PUBLIC_URL`),
-   then triggers a production redeploy. Only masked metadata
-   (`appId`, `slug`, `configured`) is ever returned or logged.
-6. Once configured, setup routes lock (`Setup complete`) and normal
-   Connect GitHub works.
+1. Owner opens the protected GitHub App bootstrap route with
+   `ORLYNX_SETUP_TOKEN`.
+2. Orlynx builds a manifest using the canonical production URL.
+3. GitHub shows its official App-creation confirmation. The owner approves.
+4. GitHub redirects to Orlynx with a temporary manifest code.
+5. The backend verifies single-use state and exchanges the code at
+   `POST /app-manifests/{code}/conversions`.
+6. Generated credentials are written directly to Vercel production environment
+   storage when Vercel automation credentials are available.
+7. A production redeploy is triggered and the bootstrap route locks after the App
+   is configured.
 
-## Manifest contents
+Private keys, client secrets and webhook secrets are never returned to the browser
+or printed to logs.
 
-`apps/api/src/manifest.ts → buildManifest()` uses only real production URLs
-(homepage, `redirect_url` = callback, `callback_urls` = setup,
-`setup_url`, webhook URL) and minimum permissions mapped to real calls:
-`contents:write` (clone/commit/push), `metadata:read`, events
-the registered webhook URL (GitHub rejects installation lifecycle names as manifest `default_events`; the endpoint verifies whatever GitHub delivers). No admin/secrets/actions scopes.
+## Manifest permissions
 
-## If automation is missing
+`apps/api/src/manifest.ts → buildManifest()` requests only permissions used by
+real Orlynx features:
 
-Without `VERCEL_TOKEN`/`VERCEL_PROJECT_ID` on the server, the callback stops
-after conversion with a pending-owner-action message instead of handling
-secrets manually. Secrets are never printed, URL-encoded, logged, or returned
-to the browser under any circumstance.
+- `contents: write` — repository content/commit/push operations;
+- `metadata: read` — repository metadata required with repository access;
+- `pull_requests: write` — open a review PR for safe default-branch publishing;
+- `codespaces: write` — create/use the user's Codespaces;
+- `codespaces_lifecycle_admin: write` — start/stop supported Codespace lifecycle.
+
+No PAT flow is used and no administration/secrets/actions permission is requested
+unless a future real feature proves it is necessary.
+
+Changing the manifest permissions for an existing production GitHub App can
+require the installation owner to accept the updated permission on GitHub before
+the new capability becomes available. Orlynx must report that as a connection
+needs-attention state rather than pretending PR creation succeeded.
+
+## URLs
+
+The manifest uses the actual canonical production origin for:
+
+- homepage;
+- setup/callback;
+- manifest conversion redirect;
+- webhook.
+
+Preview deployments must not silently replace production callback URLs.
+
+## Webhooks
+
+The webhook endpoint verifies `X-Hub-Signature-256` and records
+`X-GitHub-Delivery` in durable Postgres storage so redelivery cannot be processed
+as a new authorization change across serverless instances/redeploys.
+
+## If Vercel automation is unavailable
+
+If Orlynx cannot write generated credentials to Vercel securely, the bootstrap
+must stop and report the exact owner action required. It must never print secrets
+into the page or chat as a workaround.

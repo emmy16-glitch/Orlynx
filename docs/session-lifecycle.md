@@ -1,25 +1,50 @@
-# Session Lifecycle
+# Session lifecycle
 
-## Create vs restore
-On load the client reads `orlynx:lastSession`. If the session still exists
-(`GET /v1/sessions/:id` 200), it is restored — never replaced with a fake fresh
-session. Only if restore fails is a new session created.
+An Orlynx session belongs to an authenticated GitHub identity and project, not to a browser tab or a single phone.
 
-## Restored state
-- `GET messages/files/changes/runs/attachments` + session detail (head SHA, workspace).
-- `lastRun` (latest run) drives "Agent working / Done / Failed" without replaying streams.
-- Event history is replayed from the stored session sequence; stable event IDs
-  reconcile lifecycle changes into the same normalized activity row on reconnect.
-- Pending `ChangeSet`s render with `baseSha`; `stale` sets render conflict copy.
-- Composer draft restored from `orlynx:draft:<sid>`; cleared only after server confirms send.
+## Creation
 
-## Close / reopen ("phone closes" scenario)
-Server persists sessions, messages, events (last 2000), changes, runs, attachments
-to `data/orlynx.json` on every mutation, so reopen restores: conversation,
-project/branch, task state, cloud state (`ready` only if the provider record says
-so — a dead bridge never shows "Cloud ready"), missed events (replay from stored
-`orlynx:seq:<sid>`), final results. The client deduplicates by `eventId`, then
-normalizes the surviving event envelopes; command/test details stay behind
-progressive disclosure in the activity stream. The API retains up to 2,000
-events/session; the client retains up to 300 events and renders up to 100 activity
-rows. Raw output size is not currently bounded independently of an event receipt.
+Opening an authorized repository creates a session with:
+
+- user identity
+- project/repository identity
+- GitHub installation
+- branch
+- durable conversation
+- AI preferences
+- optional workspace
+
+The server persists this state in Postgres in production.
+
+## Restore
+
+The browser may keep the last session ID in localStorage only as a convenience pointer. It is not authoritative.
+
+On startup Orlynx:
+
+1. tries the local pointer when present;
+2. if it is missing or stale, requests the most recently updated session for the authenticated user;
+3. restores messages, task state, changes, attachments, AI preferences and workspace state from the server;
+4. reconnects the event stream from the last known sequence.
+
+This allows a session started on one phone/browser to be recovered on another authenticated device.
+
+## Tasks and interruption
+
+Tasks use durable states such as queued, running, waiting, completed, failed and cancelled. The workspace can continue working while the browser is backgrounded. When the user returns, the UI refreshes the authoritative session snapshot and replays events after its cursor.
+
+No success state is inferred from a client-side timer.
+
+## AI preferences
+
+Model, mode and permission profile are persisted per session. A device switch therefore does not silently reset Build/Plan/Ask or access level.
+
+## Disconnects
+
+Disconnecting GitHub removes Orlynx's active GitHub connection but does not delete conversation history. Repository operations fail closed until the user reconnects.
+
+Stopping a cloud workspace does not delete the Orlynx session.
+
+## Retention
+
+Operational dedupe receipts for GitHub webhooks are pruned after 30 days. Completed/failed bridge commands are pruned after 7 days. Conversation/session data, approvals and audit history remain durable until a product-level deletion/retention policy is explicitly applied; Orlynx must not silently discard user history.

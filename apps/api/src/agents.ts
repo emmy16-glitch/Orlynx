@@ -4,8 +4,8 @@ import type { AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } 
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDefaultAgent, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
-import { canPerform, classifyError, getSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
+import { openCodeRuntime, type RuntimeMessage } from './agent-runtime.js';
+import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
@@ -28,6 +28,7 @@ export function taskPermission(current: PermissionProfile, requested?: Permissio
 export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
   if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
   if ((store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
+  if (durableStorageConfigured()) await hydrateSessionPrefs(sessionId, project);
   const gate = canPerform(sessionId, 'agent.task');
   if (!gate.allowed) {
     const error = new Error(gate.reason || 'This task is blocked by the project access level.');
@@ -46,9 +47,9 @@ export async function startRun(sessionId: string, project: string, userText: str
     provider = providerID;
     model = { providerID, modelID: rest.join('/') };
   }
-  const connection = await openCodeStatus(project);
+  const connection = await openCodeRuntime.status(project);
   if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
-  const resolvedAgent = await resolveAgentForMode(mode, openCodeDefaultAgent(), project);
+  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project);
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     const workspace = await repository.getWorkspaceBySession(sessionId);
@@ -65,8 +66,8 @@ export async function startRun(sessionId: string, project: string, userText: str
     await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
     return run;
   }
-  const openCodeSession = await getOrCreateOpenCodeSession(sessionId, project);
-  const before = await openCodeMessages(project, openCodeSession.id);
+  const openCodeSession = await openCodeRuntime.getOrCreateSession(sessionId, project);
+  const before = await openCodeRuntime.messages(project, openCodeSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const run: AgentRun = {
     id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId,
@@ -92,7 +93,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     userText,
   ].filter(Boolean).join('\n\n');
   try {
-    await promptOpenCode(project, openCodeSession.id, guardedText, { model, agent: resolvedAgent.agent });
+    await openCodeRuntime.prompt(project, openCodeSession.id, guardedText, { model, agent: resolvedAgent.agent });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
@@ -109,12 +110,12 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
   const active = activeOpenCodeSessions.get(run.id);
   if (!active) return;
   const deadline = Date.now() + timeoutMs;
-  let assistant: OpenCodeMessage | undefined;
+  let assistant: RuntimeMessage | undefined;
   let visibleText = '';
   const toolStates = new Map<string, string>();
   try {
     while (Date.now() < deadline && !active.cancelled) {
-      const messages = await openCodeMessages(project, openCodeSessionId);
+      const messages = await openCodeRuntime.messages(project, openCodeSessionId);
       assistant = [...messages].reverse().find((message) => message.info?.role === 'assistant' && message.info?.id !== previousAssistantId);
       if (assistant) {
         const text = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
@@ -131,7 +132,7 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
         if (failed) throw new Error('OpenCode reported that the task failed.');
         if (complete) break;
       }
-      const status = await openCodeSessionStatus(project, openCodeSessionId);
+      const status = await openCodeRuntime.sessionStatus(project, openCodeSessionId);
       if (assistant && status.type === 'idle') break;
       await delay(800);
     }
@@ -165,7 +166,7 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
   }
 }
 
-function collectToolEvents(sessionId: string, runId: string, message: OpenCodeMessage, toolStates: Map<string, string>) {
+function collectToolEvents(sessionId: string, runId: string, message: RuntimeMessage, toolStates: Map<string, string>) {
   for (const part of message.parts) {
     if (part.type !== 'tool') continue;
     const toolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
@@ -184,7 +185,7 @@ function collectToolEvents(sessionId: string, runId: string, message: OpenCodeMe
 }
 
 async function captureDiff(sessionId: string, project: string, runId: string, openCodeSessionId: string) {
-  const raw = await openCodeDiff(project, openCodeSessionId);
+  const raw = await openCodeRuntime.diff(project, openCodeSessionId);
   const files: ChangedFile[] = raw.flatMap((item) => {
     const file = String(item.file || item.path || '');
     if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
@@ -204,7 +205,7 @@ export async function cancelRun(sessionId: string, runId: string) {
   const active = activeOpenCodeSessions.get(runId);
   if (active) {
     active.cancelled = true;
-    try { await abortOpenCodeSession(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
+    try { await openCodeRuntime.abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
   if (active?.task) { active.task.state = 'cancelled'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }

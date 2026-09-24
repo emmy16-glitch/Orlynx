@@ -56,7 +56,7 @@ describe('github app connection flow (fail-closed, no live GitHub)', () => {
   it('install route fails closed when the app is not configured', async () => {
     const res = await fetch(`${base}/v1/github/install`, { redirect: 'manual' });
     assert.equal(res.status, 503);
-    assert.match((await res.json()).error, /not configured|incomplete/i);
+    assert.match((await res.json()).error, /not configured|incomplete|temporarily unavailable/i);
   });
 
   it('manage route fails closed when the app is not configured', async () => {

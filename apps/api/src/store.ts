@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AttachmentMeta, AgentRun, AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession } from '@orlynx/shared';
 
-// Server truth lives here. Local/dev: persistent filesystem store.
-// Vercel serverless: /tmp (ephemeral per instance) — see docs/vercel-production.md.
-// Do NOT treat serverless filesystem state as durable multi-instance truth.
+// Local development/test mirror only. In production, Postgres is the
+// authoritative control-plane store and app.ts refuses normal Vercel API
+// traffic when durable storage is unavailable. Never promote this JSON file or
+// /tmp serverless state to cross-device/server truth.
 const DATA_DIR = process.env.ORLYNX_DATA_DIR
   || (process.env.VERCEL === '1' ? path.join('/tmp', 'orlynx-data') : path.resolve(process.cwd(), 'data'));
 const DB_FILE = path.join(DATA_DIR, 'orlynx.json');
@@ -18,6 +19,7 @@ export interface GitHubInstallationRecord {
   connectedAt?: string;
   updatedAt?: string;
   lastVerifiedAt?: string;
+  repositorySelection?: 'all' | 'selected';
 }
 
 interface DB {

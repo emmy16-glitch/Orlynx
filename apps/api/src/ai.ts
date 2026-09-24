@@ -251,6 +251,17 @@ export function defaultPrefs(): { mode: AgentMode; permission: PermissionProfile
   };
 }
 
+export async function hydrateSessionPrefs(sessionId: string, project?: string): Promise<AISessionPrefs> {
+  if (durableStorageConfigured()) {
+    const durable = await controlPlaneRepository().getAISessionPrefs(sessionId);
+    if (durable) {
+      store.db.aiSessions ||= {};
+      store.db.aiSessions[sessionId] = durable;
+    }
+  }
+  return getSessionPrefs(sessionId, project);
+}
+
 export function getSessionPrefs(sessionId: string, project?: string): AISessionPrefs {
   const stored = store.db.aiSessions?.[sessionId];
   const projectDefaults = project ? store.db.aiProjectDefaults?.[project] : undefined;
@@ -376,7 +387,7 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
   model?: AIModel; mode: AgentMode; permission: PermissionProfile;
   providers: { connected: number; total: number };
 }> {
-  const prefs = sessionId ? getSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
+  const prefs = sessionId ? await hydrateSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
   const { engine, models } = await listProviderConnections(project, userId);
   const running = sessionId ? (store.db.runs[sessionId] || []).some((r) => r.state === 'running') : false;
   if (!engine.connected) {

@@ -4,8 +4,27 @@ import { store } from './store.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
 const durableQueues = new Map<string, Promise<void>>();
+const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
+
+function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const encoded = JSON.stringify(payload);
+  if (Buffer.byteLength(encoded) <= MAX_EVENT_PAYLOAD_BYTES) return payload;
+  const clipped: Record<string, unknown> = { ...payload, truncated: true };
+  for (const key of ['rawOutput', 'stdout', 'stderr', 'out', 'data']) {
+    if (typeof clipped[key] === 'string') clipped[key] = String(clipped[key]).slice(0, Math.floor(MAX_EVENT_PAYLOAD_BYTES / 4));
+  }
+  const second = JSON.stringify(clipped);
+  if (Buffer.byteLength(second) <= MAX_EVENT_PAYLOAD_BYTES) return clipped;
+  return {
+    truncated: true,
+    summary: typeof payload.summary === 'string' ? payload.summary.slice(0, 2_000) : undefined,
+    error: typeof payload.error === 'string' ? payload.error.slice(0, 2_000) : undefined,
+    note: 'Large event payload omitted. Raw command output is not retained inline.',
+  };
+}
 
 export function emit(sessionId: string, type: EventType, payload: Record<string, unknown> = {}, runId?: string): OrlynxEvent {
+  payload = boundedPayload(payload);
   if (durableStorageConfigured()) {
     const pending: Omit<OrlynxEvent, 'sequence'> = { eventId: `evt_${uuid()}`, sessionId, runId, type, timestamp: new Date().toISOString(), payload };
     const queued = (durableQueues.get(sessionId) || Promise.resolve()).then(async () => {
