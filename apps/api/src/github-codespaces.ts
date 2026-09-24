@@ -25,7 +25,14 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     const response = await fetch(`${API}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> || {}) }, signal: init.signal || AbortSignal.timeout(20_000) });
     if (!response.ok) {
       const requestId = response.headers.get('x-github-request-id');
-      const error = new Error(`GitHub Codespaces request failed (HTTP ${response.status}${requestId ? `, request ${requestId}` : ''}).`) as Error & { status?: number };
+      const detail = await response.json().catch(() => ({})) as { message?: string };
+      const codespacesPath = path.startsWith('/user/codespaces');
+      const message = response.status === 403 && codespacesPath
+        ? 'GitHub Codespaces permission is not approved for this Orlynx installation.'
+        : response.status === 422 && codespacesPath
+          ? 'GitHub Codespaces is not available for this repository or account yet.'
+          : `GitHub Codespaces request failed (HTTP ${response.status}${requestId ? `, request ${requestId}` : ''})${detail.message ? `: ${detail.message.slice(0, 180)}` : ''}.`;
+      const error = new Error(message) as Error & { status?: number };
       error.status = response.status;
       throw error;
     }
