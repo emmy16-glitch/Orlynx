@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
 import { abortOpenCodeSession, getOrCreateOpenCodeSession, openCodeDefaultAgent, openCodeDiff, openCodeMessages, openCodeSessionStatus, openCodeStatus, promptOpenCode, type OpenCodeMessage } from './opencode.js';
-import { canPerform, classifyError, getSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
+import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
@@ -28,6 +28,7 @@ export function taskPermission(current: PermissionProfile, requested?: Permissio
 export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
   if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
   if ((store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
+  if (durableStorageConfigured()) await hydrateSessionPrefs(sessionId, project);
   const gate = canPerform(sessionId, 'agent.task');
   if (!gate.allowed) {
     const error = new Error(gate.reason || 'This task is blocked by the project access level.');
