@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
-import { durableHistory, emit, subscribe } from './events.js';
+import { durableHistory, emit, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -314,41 +314,66 @@ router.get('/sessions/:id/events', async (req, res) => {
   if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
   const after = Number(req.query.after || 0);
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  // replay missed events first
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.flushHeaders?.();
+
+  // Replay missed events first. Every event has a durable session sequence, so
+  // a phone can reconnect after sleeping or changing networks without gaps.
   const replay = await durableHistory(id, after, 2000);
-  for (const e of replay) res.write(`id: ${e.sequence}\ndata: ${JSON.stringify(e)}\n\n`);
+  for (const event of replay) res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+
   if (durableStorageConfigured()) {
-    let cursor = replay.at(-1)?.sequence || after; let busy = false; let closed = false;
+    let cursor = replay.at(-1)?.sequence || after;
+    let busy = false;
+    let closed = false;
     res.write('retry: 1500\n\n');
+
+    // Fresh events from this control-plane process are pushed immediately.
+    const offEvents = subscribeEvents(id, (event) => {
+      if (closed || event.sequence <= cursor) return;
+      cursor = event.sequence;
+      res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+
+    // Keep a slower durable catch-up for process restarts, multiple instances,
+    // or the tiny replay→subscribe race. This is recovery, not the hot path.
     const poll = setInterval(async () => {
       if (busy || closed) return;
       busy = true;
       try {
         const events = await durableHistory(id, cursor, 200);
         for (const event of events) {
-          cursor = Math.max(cursor, event.sequence);
+          if (event.sequence <= cursor) continue;
+          cursor = event.sequence;
           res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
         }
       } catch {} finally { busy = false; }
-    }, 750);
-    const heartbeat = setInterval(() => { if (!closed) res.write(': keep-alive\n\n'); }, 15_000);
-    // Vercel functions have a finite lifetime. Close before the hard limit so
-    // EventSource reconnects cleanly with ?after=sequence instead of producing
-    // a platform timeout/error. Durable replay fills any gap.
-    const recycle = setTimeout(() => { if (!closed) res.end(); }, 240_000);
+    }, 5_000);
+
+    const heartbeat = setInterval(() => { if (!closed) res.write(': keep-alive\n\n'); }, 10_000);
+
+    // Only serverless Vercel needs proactive recycling. A persistent Render
+    // service keeps the stream open until the client or network closes it.
+    const recycle = process.env.VERCEL === '1'
+      ? setTimeout(() => { if (!closed) res.end(); }, 240_000)
+      : undefined;
+
     const cleanup = () => {
       if (closed) return;
       closed = true;
+      offEvents();
       clearInterval(poll);
       clearInterval(heartbeat);
-      clearTimeout(recycle);
+      if (recycle) clearTimeout(recycle);
     };
     req.on('close', cleanup);
     res.on('close', cleanup);
     return;
   }
+
   const off = subscribe(id, res);
   req.on('close', off);
 });
