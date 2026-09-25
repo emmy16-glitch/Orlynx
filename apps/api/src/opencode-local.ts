@@ -105,9 +105,14 @@ async function runtimeFetch(
 async function runtimeJson<T>(pathname: string, init: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
   const response = await runtimeFetch(pathname, init, timeoutMs);
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    const suffix = detail ? ` · ${detail.slice(0, 300)}` : '';
-    throw new ProviderRequestError(`OpenCode runtime returned HTTP ${response.status}${suffix}`, response.status, true);
+    // Do not forward remote response bodies: they may contain provider,
+    // request, or authentication diagnostics that belong only in the runtime.
+    const message = response.status === 401
+      ? 'OpenCode runtime authentication failed (HTTP 401).'
+      : response.status === 403
+        ? 'OpenCode runtime rejected the request (HTTP 403).'
+        : `OpenCode runtime returned HTTP ${response.status}.`;
+    throw new ProviderRequestError(message, response.status, true);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
