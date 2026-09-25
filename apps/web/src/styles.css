@@ -2211,3 +2211,19 @@ button, input, textarea, select { font: inherit; }
     display: none !important;
   }
 }
+
+/* Keep the current model visible; reveal task options only on request. */
+.composer-controls { overflow: visible; gap: 8px; }
+.model-trigger { min-width: 0; max-width: min(44vw, 250px); display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--surface); color: var(--foreground); cursor: pointer; font-size: 11px; }
+.model-trigger span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-options { position: relative; min-width: 0; }
+.composer-options summary { display: inline-flex; align-items: center; gap: 5px; padding: 6px; color: var(--foreground-muted); cursor: pointer; list-style: none; font-size: 11px; white-space: nowrap; }
+.composer-options summary::-webkit-details-marker { display: none; }
+.composer-options-panel { position: absolute; bottom: calc(100% + 12px); left: 0; z-index: 30; width: min(270px, calc(100vw - 42px)); display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--surface); box-shadow: var(--shadow-2); }
+.composer-options-panel label { display: grid; gap: 5px; font-size: 11px; }
+.composer-options-panel select { width: 100%; max-width: none; border-color: var(--border); }
+@media (max-width: 620px) {
+  .composer-options summary { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+  .model-trigger { max-width: 44vw; }
+  .is-workspace .mobile-project-nav { justify-content: center; gap: clamp(18px, 9vw, 54px); }
+}
