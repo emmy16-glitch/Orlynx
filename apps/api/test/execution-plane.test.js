@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionPlaneFor } from '../src/direct-chat.ts';
+import { chooseNextQueuedTask } from '../src/agents.ts';
 
 test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
@@ -19,4 +20,11 @@ test('runtime and mutating build work requests the development environment', () 
 test('plan and ask modes remain direct because they cannot mutate the project', () => {
   assert.equal(executionPlaneFor('Plan how to refactor the backend', 'plan'), 'direct');
   assert.equal(executionPlaneFor('Tell me how you would fix the build', 'ask'), 'direct');
+});
+
+
+test('direct chat bypasses a blocked workspace task in the queue', () => {
+  const first = { id: 'build-task', state: 'queued', plane: 'workspace', prompt: 'Run tests', createdAt: '', updatedAt: '' };
+  const second = { id: 'chat-task', state: 'queued', plane: 'direct', prompt: 'hi', createdAt: '', updatedAt: '' };
+  assert.equal(chooseNextQueuedTask([first, second])?.id, 'chat-task');
 });
