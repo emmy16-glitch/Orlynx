@@ -267,6 +267,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
           state: task.state,
           model: task.modelId,
           mode: task.mode,
+          permission: task.permission,
           activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state,
           startedAt: task.createdAt,
           finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined,
@@ -553,7 +554,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   if (durableStorageConfigured()) {
     const tasks = await controlPlaneRepository().listTasks(req.params.id);
-    return res.json(tasks.map((task) => ({ id: task.runId || task.id, sessionId: task.sessionId, engine: 'opencode', state: task.state, model: task.modelId, mode: task.mode, activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state === 'completed' ? 'Ready for review' : task.state, startedAt: task.createdAt, finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined })));
+    return res.json(tasks.map((task) => ({ id: task.runId || task.id, sessionId: task.sessionId, engine: 'opencode', state: task.state, model: task.modelId, mode: task.mode, permission: task.permission, activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state === 'completed' ? 'Ready for review' : task.state, startedAt: task.createdAt, finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined })));
   }
   res.json(currentRuns(req.params.id));
 });

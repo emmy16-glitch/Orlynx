@@ -117,6 +117,7 @@ export interface TaskRecord {
   prompt: string;
   modelId?: string;
   mode?: AgentMode;
+  permission?: PermissionProfile;
   tempPermission?: PermissionProfile;
   createdAt: string;
   updatedAt: string;

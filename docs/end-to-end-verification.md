@@ -30,13 +30,15 @@ the deployed application where credentials/permissions allow:
 7. start a real Codespace when execution is required;
 8. confirm bridge + OpenCode readiness;
 9. send a task and receive normalized live activity;
-10. background/lock the phone and return;
-11. replay missed SSE events without duplicates;
-12. inspect files and changes;
-13. approve and commit;
-14. publish safely to GitHub;
-15. for default-branch work, create a real `orlynx/*` branch and pull request;
-16. reload or open another authenticated device and recover the session.
+10. while it is running, send a second task and confirm it is durably queued;
+11. let the first task finish and confirm the queued task starts automatically;
+12. background/lock the phone and return;
+13. replay missed SSE events without duplicates;
+14. inspect files and changes;
+15. approve and commit;
+16. publish safely to GitHub;
+17. for default-branch work, create a real `orlynx/*` branch and pull request;
+18. reload or open another authenticated device and recover the session.
 
 ## Production components that are real
 
@@ -53,6 +55,7 @@ The current architecture contains real implementations for:
 - filesystem read/write and attachment transfer;
 - Git status/diff/commit/push;
 - preview-port discovery;
+- durable ordered prompt admission/queue promotion;
 - durable ordered event replay;
 - approval records and audit log.
 
@@ -88,7 +91,7 @@ Verify:
 
 ## Production-data checks
 
-In Vercel production, durable state must not depend on local filesystem, process
+In hosted production, durable state must not depend on local filesystem, process
 memory or browser localStorage. `DATABASE_URL`/Postgres is authoritative. Local
 JSON is development/test fallback only.
 

@@ -89,7 +89,7 @@ export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun 
       }
       const prefs = getSessionPrefs(sessionId, session.project);
       const mode = task.mode || prefs.mode;
-      const { permission, tempPermission } = taskPermission(prefs.permission, task.tempPermission);
+      const { permission, tempPermission } = taskPermission(task.permission || prefs.permission, task.tempPermission);
       const modelId = task.modelId || prefs.modelId;
       let model: { providerID: string; modelID: string } | undefined;
       let provider: string | undefined;
@@ -184,9 +184,6 @@ export async function startRun(sessionId: string, project: string, userText: str
     provider = providerID;
     model = { providerID, modelID: rest.join('/') };
   }
-  const connection = await openCodeReadiness(project, sessionId);
-  if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
-  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project, sessionId);
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     const workspace = await repository.getWorkspaceBySession(sessionId);
@@ -200,7 +197,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     }
     const admittedAt = new Date().toISOString();
     const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'queued', activity: 'Queued', startedAt: admittedAt };
-    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, messageId: options.messageId, state: 'queued', prompt: userText, modelId, mode, tempPermission: options.tempPermission, createdAt: admittedAt, updatedAt: admittedAt };
+    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, messageId: options.messageId, state: 'queued', prompt: userText, modelId, mode, permission: prefs.permission, tempPermission: options.tempPermission, createdAt: admittedAt, updatedAt: admittedAt };
     (store.db.runs[sessionId] ||= []).push(run);
     store.save();
     await repository.putTask(task);
@@ -208,6 +205,9 @@ export async function startRun(sessionId: string, project: string, userText: str
     const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
     return promoted?.id === run.id ? promoted : run;
   }
+  const connection = await openCodeReadiness(project, sessionId);
+  if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
+  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project, sessionId);
   const openCodeSession = await openCodeRuntime.getOrCreateSession(sessionId, project);
   const before = await openCodeRuntime.messages(project, openCodeSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;

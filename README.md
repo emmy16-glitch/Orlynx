@@ -41,7 +41,7 @@ through GitHub Actions.
 Phone / browser
       |
       v
-Orlynx control plane (Vercel)
+Orlynx control plane (Render)
       |
       +-- GitHub App / OAuth
       +-- Postgres durable sessions + events + approvals + audit
@@ -78,7 +78,7 @@ commands, engine-session mappings, change sets, webhook-delivery receipts and
 audit records.
 
 Local JSON under `data/` is only a development/test fallback. It is not accepted
-as production truth on Vercel.
+as production truth on hosted deployments.
 
 ### Remote execution
 
@@ -91,7 +91,13 @@ preview-port discovery and OpenCode RPC. OpenCode is the first production agent
 runtime; `apps/api/src/agent-runtime.ts` keeps orchestration behind an adapter
 boundary for future real runtimes.
 
-### Events and mobile recovery
+### Events, queueing and mobile recovery
+
+User prompts are admitted to the durable task ledger before execution. Exactly one
+queued task per session is atomically promoted to `running`; later prompts remain
+ordered and survive API restarts. Model, mode and access policy are snapshotted on
+the admitted task so changing conversation settings cannot silently change an
+older queued request.
 
 Agent/runtime events are normalized and persisted before being streamed to the
 browser over SSE. Every event has a stable ID and monotonically increasing
@@ -125,16 +131,17 @@ The event presentation pipeline in `apps/web/src/ui/mapping.ts` turns low-level
 runtime output into summary → evidence → raw detail. Private model reasoning is not
 rendered.
 
-Production deployments are triggered from the `main` branch through the connected Vercel project.
+Production deployments are triggered from `main` to the connected Render web service. The persistent Node process owns HTTP, SSE and `/bridge` WebSocket traffic; GitHub Codespaces remains the execution plane.
 
 ## Production configuration
 
-See `.env.example` and [docs/vercel-production.md](docs/vercel-production.md).
+See `.env.example` and [docs/render-production.md](docs/render-production.md).
 Production requires durable storage, GitHub App configuration, credential
 encryption and bridge signing. Secrets must remain server-side.
 
 ## Documentation
 
+- [Render production](docs/render-production.md)
 - [System integration](docs/system-integration.md)
 - [Session lifecycle](docs/session-lifecycle.md)
 - [Streaming and reconnect](docs/streaming-and-reconnect.md)

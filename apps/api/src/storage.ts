@@ -94,6 +94,7 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS message_id text`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS model_id text`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mode text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS permission text`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS temp_permission text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
@@ -153,6 +154,7 @@ function mapTask(row: Record<string, unknown>): TaskRecord {
     prompt: String(row.prompt),
     modelId: row.model_id ? String(row.model_id) : undefined,
     mode: row.mode ? row.mode as TaskRecord['mode'] : undefined,
+    permission: row.permission ? row.permission as TaskRecord['permission'] : undefined,
     tempPermission: row.temp_permission ? row.temp_permission as TaskRecord['tempPermission'] : undefined,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -233,9 +235,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
   async putTask(v: TaskRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,run_id,message_id,state,prompt,model_id,mode,temp_permission,created_at,updated_at)
-      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.tempPermission || null},${v.createdAt},${v.updatedAt})
-      ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,temp_permission=EXCLUDED.temp_permission,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,created_at,updated_at)
+      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.createdAt},${v.updatedAt})
+      ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,updated_at=EXCLUDED.updated_at`;
   }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
   async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }

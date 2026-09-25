@@ -1,28 +1,109 @@
 # Render production
 
-Orlynx can run as one persistent Render web service. The service serves the
-React build, Express API and authenticated WebSocket bridge on the same origin.
+Render is the primary Orlynx control plane. One persistent Node web service serves
+the built frontend, Express API, session SSE streams and the authenticated
+`/bridge` WebSocket gateway. GitHub Codespaces remains the execution plane and
+OpenCode runs inside each workspace.
 
-Recommended service settings:
+## Service
 
-- Runtime: Node
-- Node version: 24.x (from package.json)
-- Build command: `npm run render:build`
-- Start command: `PATH="$PWD/.render-bin:$PATH" npm run start --workspace=@orlynx/api`
-- Health path: `/health`
-- Plan: Free for development/testing
-- Region: choose the closest available region to the primary users
+Repository: `emmy16-glitch/Orlynx`  
+Branch: `main`  
+Runtime: Node.js 24  
+Build: `npm run render:build`  
+Start: `PATH="$PWD/.render-bin:$PATH" npm run start --workspace=@orlynx/api`
 
-Set `ORLYNX_HOSTED_PRODUCTION=1` and `ORLYNX_BOOTSTRAP_MODE=local`. The
-Render build installs a private copy of the GitHub CLI so the control plane can
-bootstrap the user's Codespace directly without Vercel Sandbox.
+`scripts/render-build.sh` builds every workspace and installs a private copy of
+the GitHub CLI into `.render-bin`. This is required by the local Codespaces
+bootstrap path.
 
-Production still requires the GitHub App variables, `DATABASE_URL`,
-`ORLYNX_SESSION_SECRET`, `ORLYNX_CREDENTIAL_ENCRYPTION_KEY`, and
-`ORLYNX_BRIDGE_SIGNING_SECRET`. `ORLYNX_PUBLIC_URL` must be the canonical
-Render HTTPS URL and the GitHub App callback/setup/webhook URLs must match it.
+## Required host settings
 
-The hosted-production guard refuses authenticated product work if durable
-Postgres is missing. Verify `/health` reports `durableStorage: true`,
-`runtimeBootstrapConfigured: true`, and `bridgeConfigured: true` before
-opening a project.
+Use the Render service's canonical HTTPS origin for the public URL:
+
+```text
+ORLYNX_PUBLIC_URL=https://orlynx.onrender.com
+ORLYNX_HOSTED_PRODUCTION=1
+ORLYNX_BOOTSTRAP_MODE=local
+```
+
+Production also requires the server-side values documented in `.env.example`:
+
+- `DATABASE_URL` or `POSTGRES_URL`
+- `ORLYNX_CREDENTIAL_ENCRYPTION_KEY`
+- `ORLYNX_BRIDGE_SIGNING_SECRET`
+- `ORLYNX_SESSION_SECRET` (recommended even though existing GitHub secrets can
+  provide a fallback signing secret)
+- `GITHUB_APP_ID`
+- `GITHUB_APP_SLUG`
+- `GITHUB_CLIENT_ID`
+- `GITHUB_APP_CLIENT_SECRET`
+- `GITHUB_APP_PRIVATE_KEY`
+- `GITHUB_WEBHOOK_SECRET`
+
+Do not copy a Vercel `ORLYNX_PUBLIC_URL` value into Render. Same-origin
+protection, OAuth return URLs and the Codespace bridge URL all depend on this
+being the Render origin.
+
+## GitHub App URLs
+
+The production GitHub App must allow the Render origin. Configure its public and
+callback URLs consistently:
+
+```text
+Homepage:  https://orlynx.onrender.com
+Callback:  https://orlynx.onrender.com/v1/github/setup
+Setup URL: https://orlynx.onrender.com/v1/github/setup
+Webhook:   https://orlynx.onrender.com/v1/github/webhook
+```
+
+If repository-selection updates use "Redirect on update", they should return to
+the same setup URL.
+
+## Durable chat execution
+
+Messages are stored before agent execution. The task ledger is an ordered durable
+inbox:
+
+```text
+user message
+    -> durable message + queued task
+    -> atomic oldest-task promotion
+    -> bridge agent.run
+    -> OpenCode event stream
+    -> durable Orlynx events
+    -> browser SSE
+    -> completion/failure
+    -> promote next queued task
+```
+
+Only one task can be `running` for a session. Follow-up messages remain
+`queued` and survive API redeploys. The task snapshots model, mode and access
+policy at admission time.
+
+## Streaming and bridge behavior
+
+Render keeps SSE and WebSocket connections on the persistent Node service. Orlynx
+uses event-first delivery with durable replay:
+
+- OpenCode events are primary; a slower session poll is recovery only.
+- Bridge results/commands are durable and idempotent.
+- Browser SSE receives in-process events immediately and checks Postgres on a
+  slower recovery interval.
+- SSE sequence replay fills gaps after sleep, network changes or server restarts.
+- A bridge READY event attempts to resume the oldest admitted queued task.
+
+## Verification after a deployment
+
+A production release should show all of the following before it is treated as
+healthy:
+
+1. GitHub Actions typecheck, tests and build pass for the deployed commit.
+2. Render reports the same commit as live.
+3. Startup logs report that the GitHub App is configured and the API is listening.
+4. `/health` is healthy and durable storage is available.
+5. GitHub OAuth returns to the Render origin.
+6. A Codespace reaches bridge/OpenCode ready.
+7. A chat response streams live.
+8. A second prompt sent during the first run is queued and starts automatically.
+9. Reconnecting the browser replays events without duplicates.

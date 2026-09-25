@@ -1,4 +1,6 @@
-# Vercel production
+# Legacy Vercel deployment
+
+> Render is the primary production control plane. This document is retained only for legacy/fallback Vercel deployments. The current production topology and required host settings are in [render-production.md](render-production.md).
 
 The `orlynx` Vercel project serves the frontend and control-plane functions.
 `/v1/*` and `/health` reach the Express API; `/bridge` reaches the WebSocket

@@ -11,13 +11,14 @@ Orlynx is a phone-first control plane over real GitHub repositories, real cloud 
 5. When execution is needed, Orlynx provisions a GitHub Codespace through the user's GitHub authorization.
 6. The Orlynx workspace bridge is bootstrapped inside that Codespace.
 7. OpenCode runs privately inside the workspace and is reached only through the authenticated bridge.
-8. Runtime events are normalized into the Orlynx event contract and persisted before replay to clients.
-9. The user reviews changes and explicitly approves publication.
-10. Direct publication to main/master is denied by the workspace bridge. Default-branch work is published to an isolated `orlynx/*` branch and opened as a GitHub pull request.
+8. User prompts are admitted durably; one task is atomically promoted while follow-up prompts remain ordered in the session queue.
+9. Runtime events are normalized into the Orlynx event contract and persisted before replay to clients.
+10. The user reviews changes and explicitly approves publication.
+11. Direct publication to main/master is denied by the workspace bridge. Default-branch work is published to an isolated `orlynx/*` branch and opened as a GitHub pull request.
 
 ## Control plane
 
-The Vercel/API control plane owns:
+The Render/API control plane owns:
 
 - GitHub App installation and OAuth handoff
 - repository authorization
@@ -27,7 +28,7 @@ The Vercel/API control plane owns:
 - workspace lifecycle orchestration
 - GitHub publication receipts
 
-When `DATABASE_URL` or `POSTGRES_URL` is configured, Postgres is authoritative. Local JSON storage exists only for local development/tests and is not accepted as production truth on Vercel.
+When `DATABASE_URL` or `POSTGRES_URL` is configured, Postgres is authoritative. Local JSON storage exists only for local development/tests and is not accepted as production truth on hosted deployments.
 
 ## Execution plane
 
