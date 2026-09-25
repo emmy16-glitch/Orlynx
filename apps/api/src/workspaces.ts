@@ -57,12 +57,22 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       // A failed workspace is retryable. This matters after the user approves
       // a newly requested GitHub Codespaces permission or after a transient
       // bootstrap failure.
-      workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
-      await repository.putWorkspace(workspace);
-      workspace = workspace.codespaceName
-        ? await provider.get(workspace)
-        : await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
-      await repository.putWorkspace(workspace);
+      const previousFailure = workspace.failureCode || '';
+      if (workspace.codespaceName && /ssh server|error getting ssh server details/i.test(previousFailure)) {
+        emit(input.sessionId, 'workspace.preparing', {
+          stage: 'codespace.rebuild',
+          message: 'Rebuilding the development environment with SSH support…',
+        });
+        workspace = await provider.rebuild(workspace);
+        await repository.putWorkspace(workspace);
+      } else {
+        workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
+        await repository.putWorkspace(workspace);
+        workspace = workspace.codespaceName
+          ? await provider.get(workspace)
+          : await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
+        await repository.putWorkspace(workspace);
+      }
     }
     if (workspace.state === 'stopped') {
       emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.start', message: 'Waking the existing GitHub Codespace…' });
