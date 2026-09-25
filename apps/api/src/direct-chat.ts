@@ -12,9 +12,10 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
   const value = text.toLowerCase();
   if (/^\s*(explain|what (?:is|are|does)|how (?:do|does|can|would)|why|review|discuss|suggest)\b/i.test(text)) return 'direct';
   if (/^\s*(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks?|thank you)[!.?\s]*$/i.test(text)) return 'direct';
-  const requiresMachine = /\b(npm|pnpm|yarn|bun|pip|pytest|cargo|gradle|mvn|docker|compose|ffmpeg|terminal|shell|command|install|uninstall|compile|run\s+(the\s+)?(tests?|build|app|server|dev)|start\s+(the\s+)?(app|server|dev)|preview|deploy|migration|migrate|benchmark)\b/i.test(value);
+  const requiresMachine = /\b(git|gh\s+codespace|codespace|npm|pnpm|yarn|bun|pip|pytest|cargo|gradle|mvn|docker|compose|ffmpeg|terminal|shell|command|execute|install|uninstall|compile|run\s+(?:it|this|that|the\s+)?(?:in\s+codespace|in\s+the\s+codespace|tests?|build|app|server|dev|command)?|start\s+(?:the\s+)?(?:app|server|dev|codespace)|fetch|pull|checkout|switch\s+branch|git\s+status|git\s+log|git\s+diff|git\s+branch|pwd|ls\b|cat\b|grep\b|sed\b|curl\b|preview|deploy|migration|migrate|benchmark)\b/i.test(value);
+  const actionRequest = /^\s*(run|execute|start|check|inspect|test|build|fetch|pull|checkout|open|list|show|install|fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|merge|revert|patch)\b/i.test(text);
   const mutatesRepo = /\b(fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|merge|revert|patch)\b/i.test(value);
-  return requiresMachine || mutatesRepo ? 'workspace' : 'direct';
+  return requiresMachine || actionRequest || mutatesRepo ? 'workspace' : 'direct';
 }
 
 export function needsRepositoryContext(text: string): boolean {
