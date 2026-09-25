@@ -69,7 +69,7 @@ const upload = multer({
 });
 
 const publicEndpoint = (req: Request) => (
-  (req.method === 'GET' && ['/github/install', '/github/setup', '/github/status', '/integrations/status'].includes(req.path))
+  (req.method === 'GET' && ['/github/install', '/github/setup', '/github/status', '/integrations/status', '/ai/catalog'].includes(req.path))
   || req.path.startsWith('/setup/github-app')
   || (req.method === 'POST' && req.path === '/github/webhook')
 );
@@ -906,6 +906,21 @@ router.post('/changes/:changeId/push', async (req, res) => {
 });
 
 // unified AI layer (engine underneath, one experience on top)
+router.get('/ai/catalog', async (_req, res) => {
+  try {
+    const { models } = await listProviderConnections('', undefined, undefined);
+    const catalogModels = models.filter((model) => model.providerId === 'opencode');
+    console.info(`[ai-catalog] models=${catalogModels.length} available=${catalogModels.filter((model) => model.status === 'available').length}`);
+    return res.json({
+      models: catalogModels,
+      available: catalogModels.some((model) => model.status === 'available'),
+    });
+  } catch (error) {
+    console.warn(`[ai-catalog] failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    return res.status(500).json({ error: 'The model catalog is temporarily unavailable.' });
+  }
+});
+
 router.get('/ai/overview', async (req, res) => {
   const sessionId = String(req.query.sessionId || '');
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
@@ -914,6 +929,7 @@ router.get('/ai/overview', async (req, res) => {
     const userId = await requestUserId(req) || undefined;
     const snapshot = await listProviderConnections(s?.project, userId, sessionId || undefined);
     const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
+    console.info(`[ai-overview] session=${sessionId || '-'} user=${userId ? 'resolved' : 'missing'} models=${snapshot.models.length} available=${snapshot.models.filter((model) => model.status === 'available').length} providers=${snapshot.providers.length}`);
     res.json({
       state: status.state,
       message: status.message,

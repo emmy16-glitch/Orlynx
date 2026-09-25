@@ -144,13 +144,33 @@ export default function ProductionApp() {
   }, []);
 
   const refreshAi = useCallback(async (sessionId?: string) => {
-    try {
-      const overview = await j<any>(await fetch(`/v1/ai/overview${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`));
-      setAiModelError('');
+    const catalogRequest = fetch('/v1/ai/catalog').then((response) => j<any>(response));
+    const overviewRequest = fetch(`/v1/ai/overview${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`).then((response) => j<any>(response));
+    const [catalogResult, overviewResult] = await Promise.allSettled([catalogRequest, overviewRequest]);
+
+    const catalogModels = catalogResult.status === 'fulfilled' ? (catalogResult.value.models || []) : [];
+    const overview = overviewResult.status === 'fulfilled' ? overviewResult.value : null;
+    const overviewModels = overview?.models || [];
+
+    const merged = new Map<string, any>();
+    for (const model of catalogModels) merged.set(String(model.id).toLowerCase(), model);
+    for (const model of overviewModels) merged.set(String(model.id).toLowerCase(), model);
+    const models = [...merged.values()];
+
+    setAiModels(models);
+    if (overview) {
       setAi(overview);
-      setAiModels(overview.models || []);
       setAiProviders(overview.providerConnections || []);
-    } catch (error: any) { setAiModelError(error?.message || 'Models could not be loaded. Try again.'); }
+    }
+
+    if (models.length) {
+      setAiModelError('');
+      return;
+    }
+
+    const catalogError = catalogResult.status === 'rejected' ? catalogResult.reason?.message : '';
+    const overviewError = overviewResult.status === 'rejected' ? overviewResult.reason?.message : '';
+    setAiModelError(catalogError || overviewError || 'Models could not be loaded. Try again.');
   }, []);
 
   async function reconnectStaleWorkspace(id: string) {
@@ -819,7 +839,8 @@ export default function ProductionApp() {
   });
   const visibleRepos = repoQuery.trim() || repoExpanded ? filteredRepos : filteredRepos.slice(0, 6);
   const openCodeConnection = aiProviders.find((provider: any) => provider.id === 'opencode' && provider.state === 'connected');
-  const aiAccountConnected = Boolean(openCodeConnection);
+  const publicFreeModelsAvailable = aiModels.some((model: any) => model.free && model.status === 'available');
+  const aiAccountConnected = Boolean(openCodeConnection || publicFreeModelsAvailable);
   const workspaceReady = session?.workspace?.state === 'ready';
   const workspaceDisconnected = session?.workspace?.state === 'connecting' && session.workspace.bridgeState === 'disconnected' && Boolean(session.workspace.connectionId);
   const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state) && !workspaceDisconnected);
