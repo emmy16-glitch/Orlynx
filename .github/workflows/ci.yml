@@ -38,3 +38,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify compiled provider runtime
+        run: npm run verify:provider-runtime --workspace=@orlynx/api

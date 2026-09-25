@@ -11,7 +11,8 @@
     "start": "node dist/index.js",
     "test": "node --import tsx --test test/*.test.js",
     "e2e": "node test/e2e.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:provider-runtime": "node scripts/verify-provider-runtime.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
@@ -21,7 +22,12 @@
     "express": "^4.19.2",
     "multer": "^2.4.0",
     "uuid": "^14.0.2",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "ai": "6.0.168",
+    "@ai-sdk/openai": "3.0.88",
+    "@ai-sdk/openai-compatible": "2.0.41",
+    "@ai-sdk/anthropic": "3.0.111",
+    "@ai-sdk/google": "3.0.73"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

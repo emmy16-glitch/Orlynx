@@ -107,3 +107,7 @@ healthy:
 7. A chat response streams live.
 8. A second prompt sent during the first run is queued and starts automatically.
 9. Reconnecting the browser replays events without duplicates.
+
+## Lightweight chat dependencies
+
+The API owns its AI SDK dependencies in `apps/api/package.json` and the root lockfile. Build with `bash scripts/render-build.sh`; do not install AI packages in `.render-ai`. The build and startup verify compiled provider imports. See [direct chat architecture](direct-chat-architecture.md) for routing, snapshots, authentication and production smoke tests.

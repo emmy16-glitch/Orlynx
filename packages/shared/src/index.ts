@@ -136,6 +136,7 @@ export interface AIModel {
   providerName: string;
   displayName: string;
   family: string;
+  free?: boolean;
   connected: boolean;
   status: 'available' | 'needs-connection' | 'unavailable';
 }

@@ -1,4 +1,4 @@
-import type { AgentMode, ProjectSession } from '@orlynx/shared';
+import type { AgentMode, ChatMessage, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
 import { githubRepositoryFile, githubRepositoryFiles } from './github.js';
 import { streamWithOfficialOpenCode } from './opencode-local.js';
@@ -10,11 +10,26 @@ export type ExecutionPlane = 'direct' | 'workspace';
 export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane {
   if (mode === 'ask' || mode === 'plan') return 'direct';
   const value = text.toLowerCase();
+  if (/^\s*(explain|what (?:is|are|does)|how (?:do|does|can|would)|why|review|discuss|suggest)\b/i.test(text)) return 'direct';
   if (/^\s*(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks?|thank you)[!.?\s]*$/i.test(text)) return 'direct';
   const requiresMachine = /\b(npm|pnpm|yarn|bun|pip|pytest|cargo|gradle|mvn|docker|compose|ffmpeg|terminal|shell|command|install|uninstall|compile|run\s+(the\s+)?(tests?|build|app|server|dev)|start\s+(the\s+)?(app|server|dev)|preview|deploy|migration|migrate|benchmark)\b/i.test(value);
   const mutatesRepo = /\b(fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|merge|revert|patch)\b/i.test(value);
   return requiresMachine || mutatesRepo ? 'workspace' : 'direct';
 }
+
+export function needsRepositoryContext(text: string): boolean {
+  return /\b(repository|repo|codebase|this (?:project|app)|our (?:code|app)|readme|architecture|authentication flow)\b|[\w/-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/i.test(text);
+}
+
+export function turnsForMessage(history: ChatMessage[], messageId: string | undefined, prompt: string) {
+  const end = messageId ? history.findIndex((message) => message.id === messageId) : -1;
+  const bounded = end >= 0 ? history.slice(0, end) : [];
+  return [...bounded.filter((message) => message.role === 'user' || message.role === 'assistant').slice(-15)
+    .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.text.slice(-12_000) })),
+    { role: 'user' as const, content: prompt }];
+}
+
+const contextCache = new Map<string, { expires: number; value: Promise<string> }>();
 
 async function safeFile(project: string, branch: string, path: string, installationId?: number): Promise<string | null> {
   try {
@@ -23,7 +38,12 @@ async function safeFile(project: string, branch: string, path: string, installat
   } catch { return null; }
 }
 
-async function repositoryContext(session: ProjectSession): Promise<string> {
+async function loadRepositoryContext(session: ProjectSession, paths: string[]): Promise<string> {
+  if (paths.length) {
+    const files = await Promise.all(paths.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
+    return [`Repository: ${session.project}`, `Branch: ${session.branch}`,
+      ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 55_000);
+  }
   let root: { name: string; dir: boolean }[] = [];
   try { root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId); } catch {}
   const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 120);
@@ -48,8 +68,24 @@ async function repositoryContext(session: ProjectSession): Promise<string> {
   ].filter(Boolean).join('\n\n');
 }
 
+async function repositoryContext(session: ProjectSession & { userId: string }, prompt: string): Promise<string> {
+  const paths = [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/g) || [])]
+    .filter((path) => !path.split('/').includes('..')).slice(0, 3);
+  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch, paths]);
+  const existing = contextCache.get(key);
+  if (existing && existing.expires > Date.now()) return existing.value;
+  if (contextCache.size >= 32) contextCache.delete(contextCache.keys().next().value!);
+  const value = loadRepositoryContext(session, paths);
+  contextCache.set(key, { expires: Date.now() + 60_000, value });
+  void value.catch(() => contextCache.delete(key));
+  return value;
+}
+
 export async function streamDirectRepositoryChat(input: {
   runId: string;
+  messageId?: string;
+  prompt: string;
+  acceptedAt?: string;
   session: ProjectSession & { userId: string; projectId: string };
   modelId: string;
   onDelta: (delta: string) => void;
@@ -57,19 +93,24 @@ export async function streamDirectRepositoryChat(input: {
 }): Promise<string> {
   const controller = new AbortController();
   active.set(input.runId, controller);
+  const started = performance.now();
+  const initialMemory = process.memoryUsage().rss;
+  const initialCpu = process.cpuUsage();
+  const timings: Record<string, number> = {};
+  const accepted = Date.parse(input.acceptedAt || '');
+  if (Number.isFinite(accepted)) timings.queueMs = Date.now() - accepted;
   try {
     const repository = controlPlaneRepository();
     const history = await repository.listMessages(input.session.id);
-    const turns = history.slice(-16).filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({
-      role: message.role as 'user' | 'assistant',
-      content: message.text,
-    }));
-    const latestUser = [...turns].reverse().find((turn) => turn.role === 'user')?.content || '';
-    const casual = /^\s*(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks?|thank you)[!.?'\s]*$/i.test(latestUser);
-    if (!casual) input.onStatus?.('Reading repository…');
-    const context = casual
-      ? `Repository: ${input.session.project}\nBranch: ${input.session.branch}`
-      : await repositoryContext(input.session);
+    timings.historyMs = performance.now() - started;
+    const turns = turnsForMessage(history, input.messageId, input.prompt);
+    const contextStarted = performance.now();
+    const needsContext = needsRepositoryContext(input.prompt);
+    if (needsContext) input.onStatus?.('Reading repository…');
+    const context = needsContext ? await repositoryContext(input.session, input.prompt)
+      : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    controller.signal.throwIfAborted();
+    timings.repoContextMs = performance.now() - contextStarted;
     const system = [
       'You are Orlynx AI, assisting inside a GitHub-native coding workspace.',
       'For this direct chat turn you can reason about the repository context supplied below, but you do not have a shell or mutable checkout.',
@@ -78,23 +119,24 @@ export async function streamDirectRepositoryChat(input: {
       'Be concise, practical, and repository-aware.',
       context,
     ].join('\n\n');
-    const transcript = turns.map((turn) => `${turn.role === 'assistant' ? 'Assistant' : 'User'}: ${turn.content}`).join('\n\n');
-    const prompt = [
-      transcript ? 'Conversation so far:\n' + transcript : '',
-      'Respond to the latest user message above. Do not repeat the transcript.',
-    ].filter(Boolean).join('\n\n');
-
     return await streamWithOfficialOpenCode({
       runtimeKey: input.session.id,
       userId: input.session.userId,
       modelId: input.modelId,
       system,
-      prompt,
+      messages: turns,
+      requestId: input.messageId || input.runId,
+      onTiming: (stage, ms) => { timings[stage] = Math.round(ms); },
       signal: controller.signal,
       onDelta: input.onDelta,
       onStatus: input.onStatus,
     });
   } finally {
+    timings.totalMs = Math.round(performance.now() - started);
+    const cpu = process.cpuUsage(initialCpu);
+    console.info('[direct-chat] ' + JSON.stringify({ session: input.session.id, run: input.runId,
+      model: input.modelId, ...timings, rssBeforeBytes: initialMemory, rssAfterBytes: process.memoryUsage().rss,
+      processCpuMs: Math.round((cpu.user + cpu.system) / 1000) }));
     active.delete(input.runId);
   }
 }
@@ -107,6 +149,5 @@ export function cancelDirectRun(runId: string): boolean {
   const controller = active.get(runId);
   if (!controller) return false;
   controller.abort(new Error('Cancelled by user.'));
-  active.delete(runId);
   return true;
 }

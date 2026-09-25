@@ -132,7 +132,7 @@ export async function listProviderConnections(project = '', userId?: string, ses
   const accountIds = new Set([...durableIds, ...locallyStored]);
 
   let zenModels: AIModel[] = [];
-  if (durableStorageConfigured() && userId && durableIds.includes('opencode')) {
+  if (durableStorageConfigured() && userId) {
     try { zenModels = await listZenModels(userId); }
     catch { zenModels = []; }
   }

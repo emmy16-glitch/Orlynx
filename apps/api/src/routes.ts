@@ -630,9 +630,7 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
     const task = (await repository.listTasks(String(sessionId))).find((item) => item.runId === req.params.runId);
     if (!task) return res.status(404).json({ error: 'run not found' });
     if (task.state === 'running') {
-      if (task.plane === 'direct') {
-        cancelDirectRun(task.runId || req.params.runId);
-      } else {
+      if (task.plane !== 'direct') {
         try { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id, runId: task.runId }, 15_000); }
         catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
       }
@@ -643,6 +641,7 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
       await repository.putTask(task);
       const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
       if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
+      if (task.plane === 'direct') cancelDirectRun(task.runId || req.params.runId);
       emit(task.sessionId, 'run.failed', { cancelled: true, taskId: task.id }, task.runId);
       await promoteNextQueuedRun(task.sessionId).catch(() => null);
     }
