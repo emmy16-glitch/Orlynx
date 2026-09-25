@@ -75,10 +75,33 @@ async function openCodeHealth(): Promise<'ready' | 'unauthorized' | 'unavailable
     return body.healthy ? 'ready' : 'unavailable';
   } catch { return 'unavailable'; }
 }
+function stopStaleOpenCode(): boolean {
+  // Earlier reconnects rotated the password while leaving the old server on
+  // this private loopback port. Only stop a verified OpenCode serve process.
+  const result = spawnSync('fuser', ['-n', 'tcp', String(OPENCODE_PORT)], { encoding: 'utf8', timeout: 3_000 });
+  if (result.status !== 0) return false;
+  let stopped = false;
+  for (const match of String(result.stdout).matchAll(/\b\d+\b/g)) {
+    const pid = Number(match[0]);
+    try {
+      const command = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ');
+      if (!/opencode/i.test(command) || !/\bserve\b/.test(command)) continue;
+      process.kill(pid, 'SIGTERM'); stopped = true;
+    } catch { /* another process may have exited during inspection */ }
+  }
+  return stopped;
+}
 async function startOpenCode(): Promise<{ state: 'ready' | 'failed'; reason?: string }> {
   const initialHealth = await openCodeHealth();
   if (initialHealth === 'ready') return { state: 'ready' };
-  if (initialHealth === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+  if (initialHealth === 'unauthorized') {
+    if (!stopStaleOpenCode()) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (await openCodeHealth() === 'unavailable') break;
+    }
+    if (await openCodeHealth() !== 'unavailable') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+  }
   if (spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return { state: 'failed', reason: 'binary_unavailable' };
   const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], { cwd: REPO_ROOT, detached: true, stdio: 'ignore', env: cleanEnvironment({ OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD, ...(OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}) }) });
   child.unref();
