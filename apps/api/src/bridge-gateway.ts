@@ -5,6 +5,8 @@ import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridg
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 import { classifyError } from './ai.js';
+import { promoteNextQueuedRun } from './agents.js';
+import { store } from './store.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string; reason?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
@@ -97,6 +99,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             },
           }));
         }
+        void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after READY failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         return;
       }
       if (message.kind === 'RESULT' && message.commandId) {
@@ -106,9 +109,18 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const taskId = String(command.payload.taskId || ''); const runId = String(command.payload.runId || ''); const task = taskId ? await repository.getTask(taskId) : null; const now = new Date().toISOString();
           if (task?.state === 'cancelled') {
             console.info(`[bridge] ignored late result for cancelled run=${runId}`);
+            void promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
           }
           if (task) { task.state = message.ok ? 'completed' : 'failed'; task.updatedAt = now; await repository.putTask(task); }
+          const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
+          if (memoryRun) {
+            memoryRun.state = message.ok ? 'completed' : 'failed';
+            memoryRun.activity = message.ok ? 'Ready for review' : 'Work needs attention';
+            memoryRun.finishedAt = now;
+            if (!message.ok) memoryRun.errorKind = classifyError(String(message.error || message.result?.error || ''));
+            store.save();
+          }
           if (message.ok) {
             const responseText = String(message.result?.responseText || '');
             if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, createdAt: now });
@@ -149,6 +161,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               },
             });
           }
+          await promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after result failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         }
         return;
       }

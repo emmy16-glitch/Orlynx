@@ -19,9 +19,11 @@ export interface TaskOptions {
   modelId?: string;
   mode?: AgentMode;
   tempPermission?: PermissionProfile;
+  messageId?: string;
 }
 
 const staleTaskGraceMs = 15_000;
+const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
@@ -31,7 +33,7 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   let changed = false;
 
   for (const task of tasks) {
-    if (task.state !== 'running' && task.state !== 'queued') continue;
+    if (task.state !== 'running') continue;
     const touched = Date.parse(task.updatedAt || task.createdAt);
     if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
 
@@ -64,6 +66,102 @@ export function taskPermission(current: PermissionProfile, requested?: Permissio
   return { permission: tempPermission || current, ...(tempPermission ? { tempPermission } : {}) };
 }
 
+export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun | null> {
+  if (!durableStorageConfigured()) return null;
+  const repository = controlPlaneRepository();
+  const session = await repository.getSession(sessionId);
+  if (!session) return null;
+
+  await reconcileDurableTasks(sessionId);
+
+  while (true) {
+    const task = await repository.claimNextQueuedTask(sessionId);
+    if (!task) return null;
+
+    let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+    try {
+      await hydrateSessionPrefs(sessionId, session.project);
+      const gate = canPerform(sessionId, 'agent.task');
+      if (!gate.allowed) {
+        const error = new Error(gate.reason || 'This task is blocked by the project access level.');
+        (error as { errorKind?: string }).errorKind = 'permission';
+        throw error;
+      }
+      const prefs = getSessionPrefs(sessionId, session.project);
+      const mode = task.mode || prefs.mode;
+      const { permission, tempPermission } = taskPermission(prefs.permission, task.tempPermission);
+      const modelId = task.modelId || prefs.modelId;
+      let model: { providerID: string; modelID: string } | undefined;
+      let provider: string | undefined;
+      if (modelId) {
+        const [providerID, ...rest] = modelId.split('/');
+        if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
+        provider = providerID;
+        model = { providerID, modelID: rest.join('/') };
+      }
+
+      const workspace = await repository.getWorkspace(task.workspaceId);
+      if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
+      const connection = await openCodeReadiness(session.project, sessionId);
+      if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable for this workspace.');
+      const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), session.project, sessionId);
+
+      const startedAt = new Date().toISOString();
+      if (!run) {
+        const runId = task.runId || `run_${uuid().slice(0, 8)}`;
+        run = { id: runId, sessionId, engine: 'opencode', provider, model: modelId, mode, permission, tempPermission, state: 'running', activity: 'Starting work', startedAt };
+        task.runId = runId;
+        (store.db.runs[sessionId] ||= []).push(run);
+        await repository.putTask(task);
+      } else {
+        run.provider = provider;
+        run.model = modelId;
+        run.mode = mode;
+        run.permission = permission;
+        run.tempPermission = tempPermission;
+        run.state = 'running';
+        run.activity = 'Starting work';
+        run.startedAt = startedAt;
+        run.finishedAt = undefined;
+        run.errorKind = undefined;
+      }
+      store.save();
+
+      emit(sessionId, 'run.started', { taskId: task.id, engine: 'opencode', provider, model: modelId, mode, permission }, run.id);
+      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Starting work' }, run.id);
+      if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note }, run.id);
+
+      const guardedText = [
+        permission !== 'full' ? readOnlyInstruction() : '',
+        mode === 'plan' ? planInstruction() : '',
+        mode === 'ask' ? readOnlyInstruction() : '',
+        task.prompt,
+      ].filter(Boolean).join('\n\n');
+      const engineSessionId = await repository.getEngineSession(sessionId);
+      await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
+      return run;
+    } catch (error) {
+      const now = new Date().toISOString();
+      const detail = error instanceof Error ? error.message : 'Orlynx AI could not start this queued task.';
+      const errorKind = (error as { errorKind?: AgentRun['errorKind'] }).errorKind || classifyError(detail);
+      task.state = 'failed';
+      task.updatedAt = now;
+      await repository.putTask(task);
+      if (!run && task.runId) {
+        run = { id: task.runId, sessionId, engine: 'opencode', state: 'failed', activity: 'Work needs attention', startedAt: task.createdAt, finishedAt: now, errorKind };
+        (store.db.runs[sessionId] ||= []).push(run);
+      } else if (run) {
+        run.state = 'failed';
+        run.activity = 'Work needs attention';
+        run.finishedAt = now;
+        run.errorKind = errorKind;
+      }
+      store.save();
+      emit(sessionId, 'run.failed', { taskId: task.id, error: detail, errorKind, recoverable: errorKind === 'engine' || errorKind === 'rate_limit' }, task.runId);
+    }
+  }
+}
+
 export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
   if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
   if (!durableStorageConfigured() && (store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
@@ -94,17 +192,21 @@ export async function startRun(sessionId: string, project: string, userText: str
     const workspace = await repository.getWorkspaceBySession(sessionId);
     if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
     const durableTasks = await reconcileDurableTasks(sessionId);
-    if (durableTasks.some((item) => item.state === 'running' || item.state === 'queued')) throw new Error('An OpenCode task is already running in this project.');
-    const startedAt = new Date().toISOString();
-    const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'running', activity: 'Starting work', startedAt };
-    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, state: 'running', prompt: userText, createdAt: startedAt, updatedAt: startedAt };
-    (store.db.runs[sessionId] ||= []).push(run); store.save(); await repository.putTask(task);
-    emit(sessionId, 'run.started', { taskId: task.id, engine, provider, model: modelId, mode, permission }, run.id);
-    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Starting work' }, run.id);
-    const guardedText = [permission !== 'full' ? readOnlyInstruction() : '', mode === 'plan' ? planInstruction() : '', mode === 'ask' ? readOnlyInstruction() : '', userText].filter(Boolean).join('\n\n');
-    const engineSessionId = await repository.getEngineSession(sessionId);
-    await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
-    return run;
+    const queuedAhead = durableTasks.filter((item) => item.state === 'queued').length;
+    if (queuedAhead >= maxQueuedTasks) {
+      const error = new Error(`Orlynx already has ${queuedAhead} queued tasks for this conversation. Wait for one to start or cancel a queued task.`);
+      (error as { errorKind?: string }).errorKind = 'queue_full';
+      throw error;
+    }
+    const admittedAt = new Date().toISOString();
+    const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'queued', activity: 'Queued', startedAt: admittedAt };
+    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, messageId: options.messageId, state: 'queued', prompt: userText, modelId, mode, tempPermission: options.tempPermission, createdAt: admittedAt, updatedAt: admittedAt };
+    (store.db.runs[sessionId] ||= []).push(run);
+    store.save();
+    await repository.putTask(task);
+    emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, engine, provider, model: modelId, mode, permission }, run.id);
+    const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
+    return promoted?.id === run.id ? promoted : run;
   }
   const openCodeSession = await openCodeRuntime.getOrCreateSession(sessionId, project);
   const before = await openCodeRuntime.messages(project, openCodeSession.id);

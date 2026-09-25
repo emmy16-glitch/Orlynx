@@ -112,8 +112,12 @@ export interface TaskRecord {
   sessionId: string;
   workspaceId: string;
   runId?: string;
+  messageId?: string;
   state: RunState;
   prompt: string;
+  modelId?: string;
+  mode?: AgentMode;
+  tempPermission?: PermissionProfile;
   createdAt: string;
   updatedAt: string;
 }
@@ -155,7 +159,7 @@ export const PERMISSION_PROFILES: { id: PermissionProfile; name: string; hint: s
 
 // §§14.2-14.3 event envelope + taxonomy
 export type EventType =
-  | 'run.started' | 'run.completed' | 'run.failed'
+  | 'run.queued' | 'run.started' | 'run.completed' | 'run.failed'
   | 'step.started' | 'step.finished'
   | 'message.start' | 'message.delta' | 'message.end'
   | 'tool.requested' | 'tool.started' | 'tool.output' | 'tool.completed' | 'tool.failed'

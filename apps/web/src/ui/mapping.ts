@@ -39,12 +39,26 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
     switch (event.type) {
       case 'message.delta': case 'message.start': case 'message.end': case 'state.snapshot': case 'state.delta':
         break; // user-facing text is rendered in chat; state snapshots are not activity.
-      case 'run.started':
-        {
+      case 'run.queued': {
+        const item = put(event, 'agent', 'queued', 'Queued', typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically');
+        item.key = `agent:${event.runId || 'session'}`;
+        break;
+      }
+      case 'run.started': {
+        const runKey = `agent:${event.runId || 'session'}`;
+        const existing = rows.find((row) => row.key === runKey);
+        if (existing) {
+          existing.state = 'running';
+          existing.title = 'Starting work';
+          existing.summary = undefined;
+          existing.sequence = event.sequence || existing.sequence;
+          existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
+        } else {
           const item = put(event, 'agent', 'running', 'Starting work');
-          item.key = `agent:${event.runId || 'session'}`;
+          item.key = runKey;
         }
         break;
+      }
       case 'activity.started': case 'activity.progress': {
         const runKey = `agent:${event.runId || 'session'}`;
         const existing = rows.find((r) => r.key === runKey);

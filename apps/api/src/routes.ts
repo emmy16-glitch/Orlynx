@@ -7,7 +7,7 @@ import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, c
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
-import { cancelRun, currentRuns, startRun } from './agents.js';
+import { cancelRun, currentRuns, promoteNextQueuedRun, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
@@ -257,9 +257,23 @@ router.post('/sessions/:id/messages', async (req, res) => {
       : (store.db.messages[s.id] || []);
     const dup = existingMessages.find((m: { id: string }) => m.id === clientId);
     if (dup) {
-      const run = durableStorageConfigured()
-        ? (await controlPlaneRepository().listTasks(s.id)).slice(-1)[0] || null
-        : (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
+      let run: any = null;
+      if (durableStorageConfigured()) {
+        const task = (await controlPlaneRepository().listTasks(s.id)).find((item) => item.messageId === clientId);
+        if (task) run = {
+          id: task.runId || task.id,
+          sessionId: task.sessionId,
+          engine: 'opencode',
+          state: task.state,
+          model: task.modelId,
+          mode: task.mode,
+          activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state,
+          startedAt: task.createdAt,
+          finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined,
+        };
+      } else {
+        run = (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
+      }
       console.info(`[orlynx] sid=${s.id} duplicate message ignored clientId=${clientId}`);
       return res.json({ message: dup, run, deduplicated: true });
     }
@@ -282,6 +296,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
       ...(mode ? { mode: String(mode) as 'build' | 'plan' | 'ask' } : {}),
       // Temporary elevation: full access for this task only, expires with the run.
       ...(fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
+      messageId: msg.id,
     });
   }
   catch (error) {
@@ -292,12 +307,12 @@ router.post('/sessions/:id/messages', async (req, res) => {
     const detail = error instanceof Error ? error.message : '';
     const visible = kind === 'permission'
       ? detail
-      : /already running/i.test(detail)
-        ? 'Orlynx AI is already working on this project. Cancel the current task or wait for it to finish.'
+      : kind === 'queue_full'
+        ? detail
         : /not ready|unavailable|interrupted|timed out/i.test(detail)
           ? 'Orlynx AI is reconnecting to this workspace. Try again in a moment.'
           : 'Orlynx AI could not accept this task.';
-    return res.status(kind === 'permission' ? 403 : /already running/i.test(detail) ? 409 : 503).json({ error: visible });
+    return res.status(kind === 'permission' ? 403 : kind === 'queue_full' ? 429 : 503).json({ error: visible });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
@@ -512,10 +527,23 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
   if (!ownedSession(req, String(sessionId))) return res.status(404).json({ error: 'session not found' });
   console.info(`[orlynx] sid=${sessionId} cancel run=${req.params.runId}`);
   if (durableStorageConfigured()) {
-    const repository = controlPlaneRepository(); const task = (await repository.listTasks(String(sessionId))).find((item) => item.runId === req.params.runId);
+    const repository = controlPlaneRepository();
+    const task = (await repository.listTasks(String(sessionId))).find((item) => item.runId === req.params.runId);
     if (!task) return res.status(404).json({ error: 'run not found' });
-    if (task.state === 'running') { await queueBridgeCommand(task.workspaceId, 'agent.cancel', { taskId: task.id }, 30_000); task.state = 'cancelled'; task.updatedAt = new Date().toISOString(); await repository.putTask(task); emit(task.sessionId, 'run.failed', { cancelled: true }, task.runId); }
-    return res.json({ id: task.runId, sessionId: task.sessionId, state: task.state, engine: 'opencode', startedAt: task.createdAt, finishedAt: task.updatedAt });
+    if (task.state === 'running') {
+      try { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id, runId: task.runId }, 15_000); }
+      catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
+    }
+    if (task.state === 'running' || task.state === 'queued') {
+      task.state = 'cancelled';
+      task.updatedAt = new Date().toISOString();
+      await repository.putTask(task);
+      const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
+      if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
+      emit(task.sessionId, 'run.failed', { cancelled: true, taskId: task.id }, task.runId);
+      await promoteNextQueuedRun(task.sessionId).catch(() => null);
+    }
+    return res.json({ id: task.runId, sessionId: task.sessionId, state: task.state, engine: 'opencode', model: task.modelId, mode: task.mode, startedAt: task.createdAt, finishedAt: task.updatedAt });
   }
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
 });
@@ -525,7 +553,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   if (durableStorageConfigured()) {
     const tasks = await controlPlaneRepository().listTasks(req.params.id);
-    return res.json(tasks.map((task) => ({ id: task.runId || task.id, sessionId: task.sessionId, engine: 'opencode', state: task.state, activity: task.state === 'running' ? 'Working' : task.state === 'completed' ? 'Ready for review' : task.state, startedAt: task.createdAt, finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined })));
+    return res.json(tasks.map((task) => ({ id: task.runId || task.id, sessionId: task.sessionId, engine: 'opencode', state: task.state, model: task.modelId, mode: task.mode, activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state === 'completed' ? 'Ready for review' : task.state, startedAt: task.createdAt, finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined })));
   }
   res.json(currentRuns(req.params.id));
 });

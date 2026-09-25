@@ -22,6 +22,19 @@ describe('normalized agent activity presentation', () => {
     assert.ok(rows.every((row) => !/reasoning|thinking/i.test(row.title)));
   });
 
+  it('keeps one activity row as an admitted prompt moves from queued to running', () => {
+    const rows = toActivities([
+      event(1, 'run.queued', { position: 1 }),
+      event(2, 'run.started'),
+      event(3, 'activity.progress', { text: 'Reading files' }),
+      event(4, 'run.completed', { summary: 'Ready for review' }),
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].category, 'agent');
+    assert.equal(rows[0].state, 'success');
+    assert.equal(rows[0].title, 'Inspecting the repository');
+  });
+
   it('turns test receipts into counts and human-first failures while retaining raw output by reference', () => {
     const raw = '4 failed\n22 passed\n0 skipped\n✕ Duplicate message created';
     const [result] = toActivities([event(1, 'receipt.created', { cmd: 'npm test', code: 1, out: raw })]);

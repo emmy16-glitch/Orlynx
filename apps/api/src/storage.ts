@@ -57,6 +57,7 @@ export interface ControlPlaneRepository {
   putTask(value: TaskRecord): Promise<void>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
   getTask(id: string): Promise<TaskRecord | null>;
+  claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
   putWorkspace(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
@@ -90,6 +91,12 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS sessions (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), installation_id bigint, project text NOT NULL, owner text, branch text NOT NULL, mode text NOT NULL, workspace_id text, checkpoint jsonb, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS messages (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, role text NOT NULL, text text NOT NULL, created_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS tasks (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, workspace_id text NOT NULL, run_id text, state text NOT NULL, prompt text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS message_id text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS model_id text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mode text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS temp_permission text`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
   `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, opencode_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
@@ -132,6 +139,23 @@ function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
     bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'], openCodeState: row.opencode_state as WorkspaceRecord['openCodeState'],
     connectionId: row.connection_id ? String(row.connection_id) : undefined, repoRoot: row.repo_root ? String(row.repo_root) : undefined,
     failureCode: row.failure_code ? String(row.failure_code) : undefined, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+  };
+}
+
+function mapTask(row: Record<string, unknown>): TaskRecord {
+  return {
+    id: String(row.id),
+    sessionId: String(row.session_id),
+    workspaceId: String(row.workspace_id),
+    runId: row.run_id ? String(row.run_id) : undefined,
+    messageId: row.message_id ? String(row.message_id) : undefined,
+    state: row.state as TaskRecord['state'],
+    prompt: String(row.prompt),
+    modelId: row.model_id ? String(row.model_id) : undefined,
+    mode: row.mode ? row.mode as TaskRecord['mode'] : undefined,
+    tempPermission: row.temp_permission ? row.temp_permission as TaskRecord['tempPermission'] : undefined,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   };
 }
 
@@ -207,9 +231,37 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async putMessage(v: ChatMessage) { await this.initialize(); await this.sql`INSERT INTO messages (id,session_id,role,text,created_at) VALUES (${v.id},${v.sessionId},${v.role},${v.text},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async deleteMessage(id: string, sessionId: string) { await this.initialize(); await this.sql`DELETE FROM messages WHERE id=${id} AND session_id=${sessionId}`; }
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
-  async putTask(v: TaskRecord) { await this.initialize(); await this.sql`INSERT INTO tasks (id,session_id,workspace_id,run_id,state,prompt,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.runId || null},${v.state},${v.prompt},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,state=EXCLUDED.state,updated_at=EXCLUDED.updated_at`; }
-  async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), workspaceId: String(r.workspace_id), runId: r.run_id ? String(r.run_id) : undefined, state: r.state as TaskRecord['state'], prompt: String(r.prompt), createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) })); }
-  async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? { id: String(r.id), sessionId: String(r.session_id), workspaceId: String(r.workspace_id), runId: r.run_id ? String(r.run_id) : undefined, state: r.state as TaskRecord['state'], prompt: String(r.prompt), createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) } : null; }
+  async putTask(v: TaskRecord) {
+    await this.initialize();
+    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,run_id,message_id,state,prompt,model_id,mode,temp_permission,created_at,updated_at)
+      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.tempPermission || null},${v.createdAt},${v.updatedAt})
+      ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,temp_permission=EXCLUDED.temp_permission,updated_at=EXCLUDED.updated_at`;
+  }
+  async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
+  async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }
+  async claimNextQueuedTask(sessionId: string) {
+    await this.initialize();
+    const row = rows<Record<string, unknown>>(await this.sql`
+      WITH candidate AS (
+        SELECT queued.id
+        FROM tasks queued
+        WHERE queued.session_id=${sessionId}
+          AND queued.state='queued'
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks active
+            WHERE active.session_id=${sessionId} AND active.state='running'
+          )
+        ORDER BY queued.created_at, queued.id
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE tasks
+      SET state='running', updated_at=now()
+      WHERE id IN (SELECT id FROM candidate)
+      RETURNING *
+    `)[0];
+    return row ? mapTask(row) : null;
+  }
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
     await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,repository_id,branch,state,bridge_state,opencode_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.openCodeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET codespace_name=EXCLUDED.codespace_name,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,opencode_state=EXCLUDED.opencode_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
