@@ -29,6 +29,7 @@ const LAST_SESSION = 'orlynx:lastSession';
 const RECENTS = 'orlynx:recentProjects';
 const THEME = 'orlynx:theme';
 const PENDING_REPO = 'orlynx:pendingRepository';
+const PENDING_CLOUD_RETRY = 'orlynx:pendingCloudRetry';
 const sessionKey = (project: string) => `orlynx:projectSession:${project}`;
 const seqKey = (sessionId: string) => `orlynx:seq:${sessionId}`;
 const draftKey = (sessionId: string) => `orlynx:draft:${sessionId}`;
@@ -308,6 +309,17 @@ export default function ProductionApp() {
                 sessionStorage.removeItem(PENDING_REPO);
                 await openRepository(pendingRepo);
               }
+
+              const pendingCloud = sessionStorage.getItem(PENDING_CLOUD_RETRY);
+              if (pendingCloud) {
+                const pendingResponse = await fetch(`/v1/sessions/${encodeURIComponent(pendingCloud)}`);
+                if (pendingResponse.ok) {
+                  await openSession(await pendingResponse.json());
+                  await startCloud(false, pendingCloud);
+                } else {
+                  sessionStorage.removeItem(PENDING_CLOUD_RETRY);
+                }
+              }
             } else {
               setGithubNotice({ tone: 'ok', text: 'GitHub connected. Choose a repository to open.' });
             }
@@ -480,10 +492,15 @@ export default function ProductionApp() {
   }
 
   async function openManageRepositories() {
-    // GitHub-native consent: add/remove repos or switch all/selected there,
-    // then come back and refresh. No new Orlynx connection is needed.
+    // GitHub-native consent happens on GitHub. Keep Orlynx open so returning
+    // from the GitHub tab can refresh permissions and continue automatically.
     manageOpenedAt.current = Date.now();
-    window.open('/v1/github/manage', '_blank', 'noopener,noreferrer');
+    if (cloudIssue === 'permissions' && session?.id) {
+      try { sessionStorage.setItem(PENDING_CLOUD_RETRY, session.id); } catch {}
+      setGithubNotice({ tone: 'neutral', text: 'GitHub opened in another tab. Approve the requested access there, then return to Orlynx. We will continue automatically.' });
+    }
+    const opened = window.open('/v1/github/manage', 'orlynx-github-access', 'noopener,noreferrer');
+    if (!opened) window.location.assign('/v1/github/manage');
   }
 
   // When the user returns from the GitHub management tab, refresh access
@@ -496,7 +513,7 @@ export default function ProductionApp() {
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, []);
+  }, [session?.id, cloudIssue]);
 
   async function refreshAfterManage() {
     setSyncingGithub(true); setSyncStep('Fetching repositories'); setError('');
@@ -517,6 +534,25 @@ export default function ProductionApp() {
         else setGithubNotice({ tone: 'ok', text: 'Repository access refreshed.' });
       } else {
         await refreshIntegrations();
+      }
+
+      if (cloudIssue === 'permissions' && session?.id) {
+        const permissionStatus = await j<any>(await fetch('/v1/github/status'));
+        const appCaps = permissionStatus.appCapabilities || {};
+        if (!appCaps.codespaces || !appCaps.codespacesLifecycle) {
+          setGithubNotice({ tone: 'fail', text: 'The Orlynx GitHub App itself still needs Codespaces permissions enabled by the app owner. Repository approval alone cannot start the workspace yet.' });
+          return;
+        }
+        if (!permissionStatus.permissionStatus?.workspaceReady) {
+          setGithubNotice({ tone: 'neutral', text: 'GitHub is still waiting for the requested Codespaces permission update to be approved. Finish the approval on GitHub, then return here.' });
+          return;
+        }
+
+        // Installation permissions are now approved. Refresh the user-scoped
+        // GitHub authorization so the Codespaces API receives the new grant.
+        try { sessionStorage.setItem(PENDING_CLOUD_RETRY, session.id); } catch {}
+        window.location.assign('/v1/github/reauthorize');
+        return;
       }
     } catch (error: any) { setError(error.message || 'GitHub repositories could not be refreshed.'); }
     finally { setSyncingGithub(false); setSyncStep(''); }
@@ -576,18 +612,19 @@ export default function ProductionApp() {
     finally { setSending(false); }
   }
 
-  async function startCloud(reconnect = false) {
-    if (!session || cloudBusy) return;
+  async function startCloud(reconnect = false, targetSessionId?: string) {
+    const sessionId = targetSessionId || session?.id;
+    if (!sessionId || cloudBusy) return;
     setCloudBusy(true); setError(''); setCloudIssue(null);
     try {
-      let workspace = await j<any>(await fetch(`/v1/sessions/${session.id}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
+      let workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
       const deadline = Date.now() + 15 * 60_000;
       while (workspace?.state !== 'ready' && workspace?.state !== 'failed' && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const details = await j<any>(await fetch(`/v1/sessions/${session.id}`));
+        const details = await j<any>(await fetch(`/v1/sessions/${sessionId}`));
         workspace = details.workspace; setSession(details); currentSessionRef.current = details;
         if (workspace?.state === 'creating' || workspace?.state === 'starting') {
-          workspace = await j<any>(await fetch(`/v1/sessions/${session.id}/cloud`, { method: 'POST' }));
+          workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud`, { method: 'POST' }));
         }
       }
       if (workspace?.state !== 'ready') {
@@ -598,16 +635,18 @@ export default function ProductionApp() {
         throw next;
       }
       setCloudIssue(null);
-      await refreshSession(session.id);
+      try { sessionStorage.removeItem(PENDING_CLOUD_RETRY); } catch {}
+      await refreshSession(sessionId);
     } catch (error: any) {
       if (error?.code === 'CODESPACES_PERMISSION_REQUIRED' || /Codespaces.*(permission|approval)/i.test(String(error?.message || ''))) {
         setCloudIssue('permissions');
         setError('');
+        try { sessionStorage.setItem(PENDING_CLOUD_RETRY, sessionId); } catch {}
       } else {
         setCloudIssue('failed');
         setError(error.message || (reconnect ? 'Workspace connection interrupted.' : "The workspace couldn't start."));
       }
-      try { await refreshSession(session.id); } catch {}
+      try { await refreshSession(sessionId); } catch {}
     } finally { setCloudBusy(false); }
   }
 
@@ -745,7 +784,7 @@ export default function ProductionApp() {
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
                 {workspacePreparing && <CloudTransition state={session.workspace.state === 'creating' || session.workspace.state === 'starting' || session.workspace.state === 'bootstrapping' ? 'preparing' : 'connecting'} />}
-                {cloudIssue === 'permissions' && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Orlynx can read this repository, but GitHub has not approved the Codespaces permission needed to create its development workspace. Your conversation is safe.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
+                {cloudIssue === 'permissions' && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access. GitHub opens in another tab; when you return, Orlynx refreshes the permission, renews authorization, and retries the workspace automatically.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
                 {cloudIssue === 'failed' && session.workspace?.state === 'failed' && <AgentErrorCard title="Workspace couldn't start." hint="Your conversation is preserved. You can retry without reopening the project." onRetry={() => startCloud()} />}
                 {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
