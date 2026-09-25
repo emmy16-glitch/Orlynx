@@ -328,6 +328,7 @@ export default function ProductionApp() {
           } finally {
             setSyncStep('');
             setSyncingGithub(false);
+            setRestoring(false);
           }
         })();
       }
@@ -372,7 +373,9 @@ export default function ProductionApp() {
       }
       setRestoring(false);
     };
-    boot();
+    // OAuth recovery owns the screen until its pending repository/workspace
+    // action completes. Restoring the last session in parallel overwrites it.
+    if (callback !== 'connected') void boot();
     const onOnline = () => { setOnline(true); retryAttemptRef.current = 0; if (currentSessionRef.current) connectEvents(currentSessionRef.current.id); };
     const onOffline = () => { setOnline(false); setStreamStatus('offline'); sourceRef.current?.close(); };
     const onVisible = () => {
@@ -511,8 +514,16 @@ export default function ProductionApp() {
       manageOpenedAt.current = 0;
       void refreshAfterManage();
     };
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    // Mobile browsers sometimes discard the original tab while GitHub is
+    // open. Resume the saved approval flow when that tab is recreated.
+    if (sessionStorage.getItem(PENDING_CLOUD_RETRY) && !new URLSearchParams(window.location.search).has('github')) {
+      manageOpenedAt.current = Date.now();
+      onFocus();
+    }
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); };
   }, [session?.id, cloudIssue]);
 
   async function refreshAfterManage() {
@@ -550,8 +561,12 @@ export default function ProductionApp() {
 
         // Installation permissions are now approved. Refresh the user-scoped
         // GitHub authorization so the Codespaces API receives the new grant.
-        try { sessionStorage.setItem(PENDING_CLOUD_RETRY, session.id); } catch {}
-        window.location.assign('/v1/github/reauthorize');
+        const pendingSession = sessionStorage.getItem(PENDING_CLOUD_RETRY);
+        if (pendingSession) {
+          window.location.assign('/v1/github/reauthorize');
+        } else {
+          setGithubNotice({ tone: 'ok', text: 'GitHub access refreshed. Your repositories are ready.' });
+        }
         return;
       }
     } catch (error: any) { setError(error.message || 'GitHub repositories could not be refreshed.'); }
@@ -784,7 +799,7 @@ export default function ProductionApp() {
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
                 {workspacePreparing && <CloudTransition state={session.workspace.state === 'creating' || session.workspace.state === 'starting' || session.workspace.state === 'bootstrapping' ? 'preparing' : 'connecting'} />}
-                {cloudIssue === 'permissions' && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access. GitHub opens in another tab; when you return, Orlynx refreshes the permission, renews authorization, and retries the workspace automatically.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
+                {cloudIssue === 'permissions' && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
                 {cloudIssue === 'failed' && session.workspace?.state === 'failed' && <AgentErrorCard title="Workspace couldn't start." hint="Your conversation is preserved. You can retry without reopening the project." onRetry={() => startCloud()} />}
                 {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
