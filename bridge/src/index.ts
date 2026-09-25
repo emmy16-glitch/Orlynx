@@ -65,22 +65,25 @@ function terminalLineAllowed(line: string): boolean {
   return commandAllowed(command, args);
 }
 
-async function openCodeHealth(): Promise<'ready' | 'unavailable'> {
+async function openCodeHealth(): Promise<'ready' | 'unauthorized' | 'unavailable'> {
   try {
     const auth = Buffer.from(`opencode:${OPENCODE_PASSWORD}`).toString('base64');
     const response = await fetch(`http://127.0.0.1:${OPENCODE_PORT}/global/health`, { headers: { Authorization: `Basic ${auth}` }, signal: AbortSignal.timeout(2_000) });
+    if (response.status === 401 || response.status === 403) return 'unauthorized';
     if (!response.ok) return 'unavailable';
     const body = await response.json() as { healthy?: boolean };
     return body.healthy ? 'ready' : 'unavailable';
   } catch { return 'unavailable'; }
 }
-async function startOpenCode(): Promise<'ready' | 'failed'> {
-  if (await openCodeHealth() === 'ready') return 'ready';
-  if (spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return 'failed';
+async function startOpenCode(): Promise<{ state: 'ready' | 'failed'; reason?: string }> {
+  const initialHealth = await openCodeHealth();
+  if (initialHealth === 'ready') return { state: 'ready' };
+  if (initialHealth === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+  if (spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return { state: 'failed', reason: 'binary_unavailable' };
   const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], { cwd: REPO_ROOT, detached: true, stdio: 'ignore', env: cleanEnvironment({ OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD, ...(OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}) }) });
   child.unref();
-  for (let attempt = 0; attempt < 30; attempt++) { await new Promise((resolve) => setTimeout(resolve, 1_000)); if (await openCodeHealth() === 'ready') return 'ready'; }
-  return 'failed';
+  for (let attempt = 0; attempt < 30; attempt++) { await new Promise((resolve) => setTimeout(resolve, 1_000)); const health = await openCodeHealth(); if (health === 'ready') return { state: 'ready' }; if (health === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' }; }
+  return { state: 'failed', reason: 'startup_timeout' };
 }
 async function opencodeRequest(payload: Record<string, unknown>) {
   const method = String(payload.method || 'GET').toUpperCase();
@@ -204,7 +207,7 @@ function connect(delay = 0): void {
       if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.0.1', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'opencode'] })); return; }
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
-        if (message.kind === 'AUTHENTICATED') { const openCode = await openCodeStartup; if (ws.readyState !== WebSocket.OPEN) return; ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, openCode: { state: openCode === 'ready' ? 'ready' : 'failed' } })); heartbeat ||= setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { openCode } } })); }, 15_000); }
+        if (message.kind === 'AUTHENTICATED') { const openCode = await openCodeStartup; if (ws.readyState !== WebSocket.OPEN) return; ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, openCode })); heartbeat ||= setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { openCode: openCode.state } } })); }, 15_000); }
         return;
       }
       if (message.kind !== 'COMMAND' || !message.commandId) return;

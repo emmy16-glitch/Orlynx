@@ -35,9 +35,16 @@ if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node
 if ! command -v opencode >/dev/null 2>&1; then npm install -g opencode-ai@latest --no-audit --no-fund >/dev/null; fi
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
+# Reuse the password of an OpenCode server left running in this Codespace.
+existing_password=""
+if test -f "$runtime/workspace.env"; then existing_password="$(sed -n 's/^OPENCODE_SERVER_PASSWORD=//p' "$runtime/workspace.env" | tail -n1)"; fi
 : > "$runtime/workspace.env"
 chmod 600 "$runtime/workspace.env"
 for item in ${env}; do printf '%s\\n' "$item" | base64 -d >> "$runtime/workspace.env"; printf '\\n' >> "$runtime/workspace.env"; done
+if test -n "$existing_password"; then
+  sed -i '/^OPENCODE_SERVER_PASSWORD=/d' "$runtime/workspace.env"
+  printf 'OPENCODE_SERVER_PASSWORD=%s\\n' "$existing_password" >> "$runtime/workspace.env"
+fi
 printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a

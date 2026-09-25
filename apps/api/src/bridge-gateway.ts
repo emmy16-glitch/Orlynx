@@ -5,7 +5,7 @@ import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridg
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string; reason?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
@@ -23,7 +23,9 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   const openCodeState = detail.openCode?.state as typeof current.openCodeState | undefined;
   const ready = state === 'ready' && openCodeState === 'ready';
   const startupFailed = state === 'ready' && openCodeState === 'failed';
-  await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: startupFailed || current.state === 'failed' ? 'failed' : ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, failureCode: startupFailed ? 'OpenCode did not start in the Codespace.' : current.failureCode, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
+  const reason = detail.openCode?.reason;
+  const failureCode = reason === 'existing_server_auth_mismatch' ? 'OpenCode is running with an older workspace password.' : reason === 'binary_unavailable' ? 'OpenCode could not run in the Codespace.' : 'OpenCode did not start in the Codespace.';
+  await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: startupFailed || current.state === 'failed' ? 'failed' : ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, failureCode: startupFailed ? failureCode : current.failureCode, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
   if (ready) await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, type: 'workspace.ready', timestamp: new Date().toISOString(), payload: { provider: 'github-codespaces' } });
 }
 
@@ -63,7 +65,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'READY') {
-        console.info(`[bridge] agent reported OpenCode ${message.openCode?.state === 'ready' ? 'ready' : 'unavailable'}`);
+        console.info(`[bridge] agent reported OpenCode ${message.openCode?.state === 'ready' ? 'ready' : 'unavailable'}: ${['existing_server_auth_mismatch', 'binary_unavailable', 'startup_timeout'].includes(message.openCode?.reason || '') ? message.openCode?.reason : 'none'}`);
         await persistBridgeState(claims, 'ready', message);
 
         // Attachments can be uploaded before a cloud workspace exists. Once
