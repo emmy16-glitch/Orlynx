@@ -48,10 +48,27 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'activity.started': case 'activity.progress': {
         const runKey = `agent:${event.runId || 'session'}`;
         const existing = rows.find((r) => r.key === runKey);
-        const title = humanActivity(str(p.text));
-        if (existing) { existing.title = title; existing.state = 'running'; existing.sequence = event.sequence || existing.sequence; existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef; }
-        else {
-          const item = put(event, 'agent', 'running', title);
+        const retrying = p.sourceType === 'opencode.retry';
+        const title = retrying ? 'AI provider busy — retrying' : humanActivity(str(p.text));
+        const summary = retrying
+          ? [str(p.text), typeof p.attempt === 'number' ? `attempt ${Number(p.attempt) + 1}` : ''].filter(Boolean).join(' · ')
+          : undefined;
+        const evidence = retrying
+          ? {
+              ...(str(p.provider) ? { provider: str(p.provider) } : {}),
+              ...(typeof p.nextAt === 'number' ? { nextAt: Number(p.nextAt) } : {}),
+            }
+          : undefined;
+        if (existing) {
+          existing.title = title;
+          existing.state = 'running';
+          existing.summary = summary || existing.summary;
+          existing.evidence = evidence ? { ...(existing.evidence || {}), ...evidence } : existing.evidence;
+          existing.sequence = event.sequence || existing.sequence;
+          existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
+          existing.collapsible = Boolean(existing.evidence || existing.rawOutput);
+        } else {
+          const item = put(event, 'agent', 'running', title, summary, evidence);
           item.key = runKey;
         }
         break;
@@ -202,6 +219,13 @@ function waitingTitle(tool: string, command: string): string {
   return 'Action is queued';
 }
 function friendlyFailure(raw: string): string | undefined {
+  if (/temporarily rate limiting requests/i.test(raw)) return 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.';
+  if (/reached its quota|available credits/i.test(raw)) return 'The selected AI provider has reached its quota or available credits.';
+  if (/provider connection needs to be refreshed/i.test(raw)) return 'The AI provider connection needs to be refreshed.';
+  if (/selected model is not currently available/i.test(raw)) return 'The selected model is not currently available. Choose another model and try again.';
+  if (/AI workspace connection was interrupted/i.test(raw)) return 'The AI workspace connection was interrupted. Reconnect and try again.';
+  if (/previous AI task stopped responding/i.test(raw)) return 'The previous AI task stopped responding and was released. You can try again.';
+  if (/current access level does not allow/i.test(raw)) return 'The current access level does not allow this task.';
   if (/timeout|timed out/i.test(raw)) return 'The command timed out. The process may still be running.';
   if (/ECONNREFUSED|curl.*exit code 7|curl:\s*\(7\)/i.test(raw)) return 'The service health check could not connect.';
   if (/duplicate.message|duplicate message/i.test(raw)) return 'Duplicate-message handling needs attention.';
