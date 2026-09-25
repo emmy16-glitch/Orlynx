@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workspaceNeedsSshRebuild, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
@@ -35,4 +36,17 @@ test('authenticated transient bridge closes trigger self-healing', () => {
   assert.equal(shouldRecoverTransientBridgeClose(true, 1012), true);
   assert.equal(shouldRecoverTransientBridgeClose(false, 1006), false);
   assert.equal(shouldRecoverTransientBridgeClose(true, 1008), false);
+});
+
+
+test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke-tests it', () => {
+  for (const relative of ['../src/runtime-worker.ts', '../../../runtime-worker/src/index.ts']) {
+    const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
+    assert.match(source, /opencode-linux-x64-baseline/);
+    assert.match(source, /opencode-linux-arm64/);
+    assert.match(source, /\/proc\/cpuinfo/);
+    assert.match(source, /opencode-version\.txt/);
+    assert.match(source, /--version/);
+    assert.match(source, /OPENCODE_BIN=%s/);
+  }
 });
