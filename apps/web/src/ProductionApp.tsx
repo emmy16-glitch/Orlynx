@@ -859,9 +859,9 @@ export default function ProductionApp() {
                   <h2>{!aiAccountConnected ? 'Connect AI' : ai.model ? 'What should we work on?' : 'Choose your model'}</h2>
                   <p>{aiAccountConnected
                     ? ai.model
-                      ? `Chat about ${session.project.split('/').pop()} immediately. Orlynx uses GitHub directly and only starts a development environment when a task needs runtime execution.`
-                      : 'Choose the model you want to use for this conversation. No development environment is required for normal chat.'
-                    : 'Connect an AI account once, then continue working in this repository from the same conversation.'}</p>
+                      ? `Ready with ${ai.model.displayName}.`
+                      : 'Pick a model to start.'
+                    : 'Connect OpenCode to start.'}</p>
                   <div className="setup-actions">
                     {!aiAccountConnected && <Button onClick={() => setShowConnectAI(true)}>Connect OpenCode <Icon name="arrow" /></Button>}
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
@@ -1024,7 +1024,7 @@ function ConnectAiSheet({ models, providers, modelError, search, setSearch, onRe
   }
 
   return <div className="sheet-backdrop" onClick={onClose}><div className="sheet ai-sheet" role="dialog" aria-modal="true" aria-label="Orlynx AI" onClick={(e) => e.stopPropagation()}>
-    <div className="sheet-heading"><div><p className="eyebrow">ORLYNX AI</p><h2>{connected ? 'Choose a model' : 'Connect AI'}</h2><p className="screen-subtitle">{connected ? 'Choose exactly which model Orlynx should use in this conversation. Normal chat does not require a development environment.' : 'Connect your OpenCode account once, then choose a model for your Orlynx conversations.'}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></div>
+    <div className="sheet-heading"><div><p className="eyebrow">ORLYNX AI</p><h2>{connected ? 'Choose a model' : 'Connect AI'}</h2><p className="screen-subtitle">{connected ? 'Pick a model and start chatting.' : 'Connect OpenCode to continue.'}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></div>
 
     {sheetError && <div className="screen-alert tone-fail ai-sheet-alert" role="alert"><span>{sheetError}</span></div>}
     {connectedNotice && <div className="screen-alert tone-ok ai-sheet-alert" role="status"><span>{connectedNotice}</span></div>}
@@ -1044,7 +1044,7 @@ function ConnectAiSheet({ models, providers, modelError, search, setSearch, onRe
     </section> : <>
       <section className="ai-connected-card"><div className="ai-provider-lockup"><span className="ai-provider-mark connected"><Icon name="check" /></span><span><b>OpenCode</b><small>Connected to your Orlynx account</small></span><Badge tone="ok">Connected</Badge></div></section>
       {available.length > 6 && <label className="search-field"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 100).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.providerName} · {m.family}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait"><Icon name="agents" /><div><b>{modelError ? 'Models could not be loaded' : 'Model list unavailable'}</b><p>{modelError || 'Refresh the OpenCode model catalog. You do not need to start a workspace.'}</p><Button tone="ghost" onClick={() => void onRefresh()}>Refresh models</Button></div></div>}
+      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 100).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.family}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
       <div className="ai-sheet-footer"><button className="text-button danger-text" onClick={disconnectOpenCode} disabled={busy}>Disconnect OpenCode</button></div>
     </>}
   </div></div>;

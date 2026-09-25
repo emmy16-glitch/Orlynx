@@ -30,16 +30,26 @@ export async function openCodeAccountKey(userId: string): Promise<string> {
   return decryptCredential(row.credential);
 }
 
-export async function listZenModels(userId: string, force = false): Promise<AIModel[]> {
-  const cached = modelCache.get(userId);
+export async function listZenModels(_userId?: string, force = false): Promise<AIModel[]> {
+  const cacheKey = 'public';
+  const cached = modelCache.get(cacheKey);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.models;
-  const key = await openCodeAccountKey(userId);
-  const response = await fetch(`${ZEN}/models`, {
-    headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (response.status === 401 || response.status === 403) throw new Error('Your OpenCode connection needs to be refreshed.');
-  if (!response.ok) throw new Error(`OpenCode model list is temporarily unavailable (HTTP ${response.status}).`);
+
+  let response: Response;
+  try {
+    response = await fetch(`${ZEN}/models`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(4_000),
+    });
+  } catch {
+    if (cached?.models?.length) return cached.models;
+    throw new Error('The OpenCode model catalog could not be reached.');
+  }
+  if (!response.ok) {
+    if (cached?.models?.length) return cached.models;
+    throw new Error(`The OpenCode model catalog returned HTTP ${response.status}.`);
+  }
+
   const body = await response.json() as { data?: unknown[]; models?: unknown[] };
   const rows = Array.isArray(body.data) ? body.data : Array.isArray(body.models) ? body.models : [];
   const seen = new Set<string>();
@@ -61,7 +71,7 @@ export async function listZenModels(userId: string, force = false): Promise<AIMo
     });
   }
   models.sort((a,b)=>a.displayName.localeCompare(b.displayName));
-  modelCache.set(userId, { expiresAt: Date.now() + 60_000, models });
+  modelCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, models });
   return models;
 }
 
