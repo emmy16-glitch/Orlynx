@@ -28,6 +28,7 @@ export interface TaskOptions {
 }
 
 const staleTaskGraceMs = 15_000;
+const queuedTaskTimeoutMs = Math.max(60_000, Number(process.env.ORLYNX_QUEUED_TASK_TIMEOUT_MS || 15 * 60_000));
 const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
@@ -39,6 +40,16 @@ export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?
   return Boolean(workspace && workspace.state === 'ready' && workspace.bridgeState === 'ready');
 }
 
+export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()): boolean {
+  if ((task.plane || 'workspace') !== 'workspace') return false;
+  const created = Date.parse(task.createdAt);
+  if (!Number.isFinite(created)) return false;
+  if (task.state === 'queued') return created + queuedTaskTimeoutMs <= now;
+  if (task.state !== 'running') return false;
+  const updated = Date.parse(task.updatedAt);
+  return Number.isFinite(updated) && updated - created >= queuedTaskTimeoutMs;
+}
+
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
@@ -47,6 +58,34 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   let changed = false;
 
   for (const task of tasks) {
+    if (delayedWorkspaceTaskExpired(task, now)) {
+      const wasRunning = task.state === 'running';
+      task.state = 'cancelled';
+      task.updatedAt = nowIso;
+      await repository.putTask(task);
+      changed = true;
+
+      const run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+      if (run && (run.state === 'running' || run.state === 'queued')) {
+        run.state = 'cancelled';
+        run.finishedAt = nowIso;
+        run.errorKind = 'engine';
+      }
+
+      if (wasRunning && task.workspaceId && task.workspaceId !== 'direct') {
+        void queueBridgeCommand(task.workspaceId, 'agent.cancel', { taskId: task.id }, 15_000).catch(() => {});
+      }
+
+      emit(sessionId, 'run.failed', {
+        taskId: task.id,
+        error: 'This delayed Build task expired before the development environment was ready. Send it again if you still want it to run.',
+        errorKind: 'engine',
+        recoverable: true,
+        cancelled: true,
+      }, task.runId);
+      continue;
+    }
+
     if (task.state !== 'running') continue;
     const touched = Date.parse(task.updatedAt || task.createdAt);
     if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
@@ -254,7 +293,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
   }
 
-  const task = await repository.claimNextQueuedTask(sessionId);
+  const task = await repository.claimQueuedTask(sessionId, nextQueued.id);
   if (!task) return null;
 
   let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
