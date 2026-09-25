@@ -61,6 +61,22 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
   }
 }
 
+export async function markWorkspaceConnectionLost(workspaceId: string): Promise<WorkspaceRecord | null> {
+  const repository = controlPlaneRepository();
+  const workspace = await repository.getWorkspace(workspaceId);
+  if (!workspace) return null;
+  const next: WorkspaceRecord = {
+    ...workspace,
+    state: 'connecting',
+    bridgeState: 'disconnected',
+    openCodeState: 'unavailable',
+    connectionId: undefined,
+    updatedAt: new Date().toISOString(),
+  };
+  await repository.putWorkspace(next);
+  return next;
+}
+
 export async function stopWorkspace(sessionId: string): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   const workspace = await repository.getWorkspaceBySession(sessionId);

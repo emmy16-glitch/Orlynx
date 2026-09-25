@@ -102,6 +102,8 @@ export default function ProductionApp() {
   const manageOpenedAt = useRef(0);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudIssue, setCloudIssue] = useState<'permissions' | 'failed' | null>(null);
+  const [workspaceReadNotice, setWorkspaceReadNotice] = useState('');
+  const workspaceReconnectRef = useRef(new Set<string>());
   const [previewPorts, setPreviewPorts] = useState<any[]>([]);
 
   async function connectGitHub() {
@@ -150,6 +152,26 @@ export default function ProductionApp() {
     } catch { /* AI status stays fail-closed; composer shows unavailable */ }
   }, []);
 
+  async function reconnectStaleWorkspace(id: string) {
+    if (workspaceReconnectRef.current.has(id)) return;
+    workspaceReconnectRef.current.add(id);
+    setWorkspaceReadNotice('Cloud workspace connection was interrupted. Showing the GitHub version while Orlynx reconnects.');
+    try {
+      const response = await fetch(`/v1/sessions/${id}/cloud/reconnect`, { method: 'POST' });
+      if (response.ok) {
+        setWorkspaceReadNotice('Reconnecting cloud workspace…');
+        refreshIntegrations().catch(() => {});
+      } else {
+        const body = await response.json().catch(() => ({}));
+        setWorkspaceReadNotice(String(body.error || 'Cloud workspace needs attention. GitHub files remain available.'));
+      }
+    } catch {
+      setWorkspaceReadNotice('Cloud workspace needs attention. GitHub files remain available.');
+    } finally {
+      window.setTimeout(() => workspaceReconnectRef.current.delete(id), 10_000);
+    }
+  }
+
   const refreshSession = useCallback(async (id: string) => {
     const [messageData, fileData, changeData, details, runData, attachmentData] = await Promise.all([
       j<any[]>(await fetch(`/v1/sessions/${id}/messages`)),
@@ -160,6 +182,8 @@ export default function ProductionApp() {
       j<any[]>(await fetch(`/v1/sessions/${id}/attachments`)),
     ]);
     setMessages(messageData); setFiles(fileData.files || []); setChanges(changeData); setAttachments(attachmentData);
+    if (fileData.warning) setWorkspaceReadNotice(String(fileData.warning));
+    if (fileData.workspaceStale) void reconnectStaleWorkspace(id);
     setLastRun(runData.slice(-1)[0] || null); runRef.current = runData.slice(-1)[0] || null;
     setSession(details); currentSessionRef.current = details;
     refreshIntegrations().catch(() => {});
@@ -180,7 +204,8 @@ export default function ProductionApp() {
       const terminalEvents = batch.filter((item) => item.payload?.sourceType === 'pty.output');
       if (terminalEvents.length) setTerminalOutput((previous) => `${previous}${terminalEvents.map((item) => String(item.payload?.data || '')).join('')}`.slice(-100_000));
       for (const item of batch) {
-        if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated'].includes(item.type)) refreshSession(sessionId).catch(() => {});
+        if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
+        if (item.type === 'workspace.ready') setWorkspaceReadNotice('');
         if (item.type === 'run.started') setLastRun({ id: item.runId, state: 'running', engine: 'opencode', startedAt: item.timestamp });
         if (!nearBottomRef.current) setNewActivity(true);
       }
@@ -602,7 +627,12 @@ export default function ProductionApp() {
 
   async function openFile(path: string) {
     if (!session) return;
-    try { setOpenedFile(await j<any>(await fetch(`/v1/sessions/${session.id}/file?path=${encodeURIComponent(path)}`))); }
+    try {
+      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/file?path=${encodeURIComponent(path)}`));
+      setOpenedFile(result);
+      if (result.warning) setWorkspaceReadNotice(String(result.warning));
+      if (result.workspaceStale) void reconnectStaleWorkspace(session.id);
+    }
     catch (error: any) { setError(error.message || 'File could not be read.'); }
   }
 
@@ -709,6 +739,7 @@ export default function ProductionApp() {
           <nav className="project-tabs" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => { setTab(id); setOpenedFile(null); }}><Icon name={icon} size={16} /><span>{label}</span></button>)}</nav>
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
+          {workspaceReadNotice && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
           {error && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
