@@ -2,6 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createBridgeToken, verifyBridgeToken } from '../src/bridge-auth.ts';
 import { decryptCredential, encryptCredential } from '../src/credentials.ts';
+import { readFileSync } from 'node:fs';
+
+it('keeps the Vercel route wildcard out of the file path query parameter', () => {
+  const config = JSON.parse(readFileSync(new URL('../../../vercel.json', import.meta.url), 'utf8'));
+  const apiRewrite = config.rewrites.find((rewrite) => rewrite.destination === '/api/index' && rewrite.source.startsWith('/v1/'));
+  assert.ok(apiRewrite, 'API rewrite must exist');
+  assert.doesNotMatch(apiRewrite.source, /:path(?:\*|\/|$)/, 'Vercel route matches must not overwrite ?path used by file and diff endpoints');
+});
 
 describe('execution-plane credentials', () => {
   it('binds short-lived bridge credentials to workspace, session, user, and connection', () => {

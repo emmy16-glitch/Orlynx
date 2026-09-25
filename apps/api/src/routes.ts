@@ -6,7 +6,7 @@ import { durableHistory, emit, subscribe } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { getWorkspace, markWorkspaceConnectionLost, prepareWorkspace, stopWorkspace } from './workspaces.js';
+import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -525,13 +525,12 @@ router.get('/sessions/:id/files', async (req, res) => {
     try {
       return res.json({ ...(await bridgeRequest(workspace.id, 'fs.list', { path: directory || '.' })), source: 'workspace' });
     } catch (error) {
-      console.warn(`[orlynx] sid=${s.id} workspace file listing interrupted workspace=${workspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-      await markWorkspaceConnectionLost(workspace.id).catch(() => {});
+      console.warn(`[orlynx] sid=${s.id} workspace file listing failed workspace=${workspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
       try {
         const snapshot = await githubFilesSnapshot(req, s, directory);
-        return res.json({ ...snapshot, workspaceStale: true, warning: 'Cloud workspace connection was interrupted. Showing the GitHub version while Orlynx reconnects.' });
+        return res.json({ ...snapshot, warning: 'Workspace files are temporarily unavailable. Showing the GitHub version.' });
       } catch {
-        return res.status(503).json({ error: 'Cloud workspace is reconnecting.', code: 'WORKSPACE_RECONNECTING', retryable: true });
+        return res.status(503).json({ error: 'Workspace files are temporarily unavailable.', code: 'WORKSPACE_FILES_UNAVAILABLE', retryable: true });
       }
     }
   }
@@ -548,13 +547,12 @@ router.get('/sessions/:id/file', async (req, res) => {
       try {
         return res.json({ ...(await bridgeRequest(workspace.id, 'fs.read', { path: filename })), source: 'workspace' });
       } catch (error) {
-        console.warn(`[orlynx] sid=${s.id} workspace file read interrupted workspace=${workspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-        await markWorkspaceConnectionLost(workspace.id).catch(() => {});
+        console.warn(`[orlynx] sid=${s.id} workspace file read failed workspace=${workspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
         try {
           const snapshot = await githubFileSnapshot(req, s, filename);
-          return res.json({ ...snapshot, workspaceStale: true, warning: 'Cloud workspace connection was interrupted. Showing the GitHub version while Orlynx reconnects.' });
+          return res.json({ ...snapshot, warning: 'Workspace file is temporarily unavailable. Showing the GitHub version.' });
         } catch {
-          return res.status(503).json({ error: 'Cloud workspace is reconnecting.', code: 'WORKSPACE_RECONNECTING', retryable: true });
+          return res.status(503).json({ error: 'Workspace file is temporarily unavailable.', code: 'WORKSPACE_FILE_UNAVAILABLE', retryable: true });
         }
       }
     }

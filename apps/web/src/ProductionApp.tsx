@@ -219,11 +219,6 @@ export default function ProductionApp() {
     sourceRef.current?.close();
     if (retryRef.current) clearTimeout(retryRef.current);
     const attempt = () => {
-      if (!navigator.onLine) {
-        setStreamStatus('offline');
-        retryRef.current = setTimeout(attempt, 3000);
-        return;
-      }
       const source = new EventSource(`/v1/sessions/${sessionId}/events?after=${seqRef.current}`);
       sourceRef.current = source;
       source.onopen = () => { retryAttemptRef.current = 0; setStreamStatus('live'); };
@@ -235,8 +230,7 @@ export default function ProductionApp() {
       };
       source.onerror = () => {
         source.close();
-        if (!navigator.onLine) { setStreamStatus('offline'); retryRef.current = setTimeout(attempt, 3000); return; }
-        setStreamStatus('reconnecting');
+        setStreamStatus(navigator.onLine ? 'reconnecting' : 'offline');
         const delays = [1000, 2000, 4000, 8000];
         const delay = delays[Math.min(retryAttemptRef.current, delays.length - 1)];
         retryAttemptRef.current += 1;
@@ -380,13 +374,13 @@ export default function ProductionApp() {
     const onOnline = () => { setOnline(true); retryAttemptRef.current = 0; if (currentSessionRef.current) connectEvents(currentSessionRef.current.id); };
     const onOffline = () => { setOnline(false); setStreamStatus('offline'); sourceRef.current?.close(); };
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine && currentSessionRef.current) {
+      if (document.visibilityState === 'visible' && currentSessionRef.current) {
         retryAttemptRef.current = 0;
         connectEvents(currentSessionRef.current.id);
-        refreshSession(currentSessionRef.current.id).catch(() => {});
+        refreshSession(currentSessionRef.current.id).then(() => setOnline(true)).catch(() => {});
       }
     };
-    const onFocus = () => { if (navigator.onLine && currentSessionRef.current && document.visibilityState === 'visible') onVisible(); };
+    const onFocus = () => { if (currentSessionRef.current && document.visibilityState === 'visible') onVisible(); };
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     window.addEventListener('focus', onFocus);
@@ -401,6 +395,26 @@ export default function ProductionApp() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [connectEvents, openSession, refreshIntegrations, refreshAi]);
+
+  // Android can keep navigator.onLine false after connectivity returns. A
+  // successful request to our API is a better signal than that browser hint.
+  useEffect(() => {
+    if (online) return;
+    let cancelled = false;
+    const probe = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const response = await fetch('/health', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+        if (response.ok && !cancelled) {
+          setOnline(true);
+          if (currentSessionRef.current) connectEvents(currentSessionRef.current.id);
+        }
+      } catch { /* the next probe checks again */ }
+    };
+    void probe();
+    const timer = window.setInterval(probe, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [online, connectEvents]);
 
   // A backgrounded mobile tab can outlive the request that started a Codespace.
   // Poll only the small session record until the agent reports ready or failed.
