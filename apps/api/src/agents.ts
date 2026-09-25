@@ -30,6 +30,11 @@ export interface TaskOptions {
 const staleTaskGraceMs = 15_000;
 const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
+export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
+  const queued = tasks.filter((item) => item.state === 'queued');
+  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+}
+
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
@@ -199,22 +204,50 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   if (!session) return null;
 
   const tasks = await reconcileDurableTasks(sessionId);
-  const nextQueued = tasks.find((item) => item.state === 'queued');
-  if (!nextQueued) return null;
+  const queued = tasks.filter((item) => item.state === 'queued');
+  if (!queued.length) return null;
 
   // Tasks admitted before the direct-chat plane existed were stored as
-  // workspace work by default. Reclassify safe conversational prompts so a
-  // legacy "Hello" does not force or block on a Codespace after deployment.
-  if ((nextQueued.plane || 'workspace') === 'workspace' && executionPlaneFor(nextQueued.prompt, nextQueued.mode || 'build') === 'direct') {
-    nextQueued.plane = 'direct';
-    nextQueued.workspaceId = 'direct';
-    nextQueued.updatedAt = new Date().toISOString();
-    await repository.putTask(nextQueued);
+  // workspace work by default. Reclassify every safe conversational prompt so
+  // one blocked workspace task cannot strand later chat behind it.
+  for (const task of queued) {
+    if ((task.plane || 'workspace') === 'workspace' && executionPlaneFor(task.prompt, task.mode || 'build') === 'direct') {
+      task.plane = 'direct';
+      task.workspaceId = 'direct';
+      task.updatedAt = new Date().toISOString();
+      await repository.putTask(task);
+    }
   }
+
+  // Conversational work does not depend on the development environment. Let it
+  // bypass a queued Build task while GitHub Codespaces is still starting.
+  const nextQueued = chooseNextQueuedTask(queued)!;
 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
-    if (!readyWorkspace || readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+    if (!readyWorkspace) return null;
+    if (readyWorkspace.state === 'failed') {
+      const now = new Date().toISOString();
+      nextQueued.state = 'failed';
+      nextQueued.updatedAt = now;
+      await repository.putTask(nextQueued);
+      const failedRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+      if (failedRun) {
+        failedRun.state = 'failed';
+        failedRun.activity = 'Development environment unavailable';
+        failedRun.finishedAt = now;
+        failedRun.errorKind = 'engine';
+      }
+      store.save();
+      emit(sessionId, 'run.failed', {
+        taskId: nextQueued.id,
+        error: readyWorkspace.failureCode || 'The development environment could not start. Your message is saved and can be retried.',
+        errorKind: 'engine',
+        recoverable: true,
+      }, nextQueued.runId);
+      return promoteNextQueuedRunInner(sessionId);
+    }
+    if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
   }
 
   const task = await repository.claimNextQueuedTask(sessionId);
