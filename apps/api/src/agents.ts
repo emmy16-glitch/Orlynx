@@ -9,6 +9,7 @@ import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planIn
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
+import { openCodeReadiness } from './opencode.js';
 
 export type Engine = 'opencode';
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
@@ -47,7 +48,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     provider = providerID;
     model = { providerID, modelID: rest.join('/') };
   }
-  const connection = await openCodeRuntime.status(project);
+  const connection = await openCodeReadiness(project);
   if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
   const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project);
   if (durableStorageConfigured()) {
