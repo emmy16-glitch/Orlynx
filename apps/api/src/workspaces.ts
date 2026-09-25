@@ -14,6 +14,15 @@ export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details/i.test(failureCode || '');
 }
 
+export function workspaceConnectionMatchesRevision(connectionId: string | undefined, revision: string): boolean {
+  return Boolean(connectionId?.startsWith(`bridge-${revision}-`));
+}
+
+export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'>): boolean {
+  if (workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
+  return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
+}
+
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
@@ -96,7 +105,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     // request can refresh only the private Orlynx bridge, without rebuilding
     // the Codespace or touching repository files.
     const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
-    if (workspace.state === 'ready' && workspace.bridgeState === 'ready' && !workspace.connectionId?.startsWith(bridgePrefix)) {
+    if (workspaceNeedsRuntimeRefresh(workspace)) {
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'agent.refresh',
         message: 'Updating the Orlynx workspace runtime…',
