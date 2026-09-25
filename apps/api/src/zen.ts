@@ -30,6 +30,20 @@ export async function openCodeAccountKey(userId: string): Promise<string> {
   return decryptCredential(row.credential);
 }
 
+function usesPublicFreeAccess(model: string): boolean {
+  const id = model.toLowerCase();
+  return id.endsWith('-free') ||
+    id.includes('-contributor-free') ||
+    id === 'big-pickle';
+}
+
+async function keyForModel(userId: string, model: string): Promise<string> {
+  // Match OpenCode CLI behavior: free models use the public provider key.
+  // A user's saved Zen credential is only needed for paid/account-backed models.
+  if (usesPublicFreeAccess(model)) return 'public';
+  return openCodeAccountKey(userId);
+}
+
 export async function listZenModels(_userId?: string, force = false): Promise<AIModel[]> {
   const cacheKey = 'public';
   const cached = modelCache.get(cacheKey);
@@ -189,8 +203,8 @@ export async function streamZenChat(input: {
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
 }): Promise<string> {
-  const key = await openCodeAccountKey(input.userId);
   const model = input.modelId.replace(/^opencode\//, '');
+  const key = await keyForModel(input.userId, model);
   if (!model) throw new Error('Choose a model before sending a message.');
 
   const preferred = preferredDialect(model);
@@ -209,6 +223,7 @@ export async function streamZenChat(input: {
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
+        'User-Agent': 'opencode/orlynx',
       };
       if (dialect === 'messages') headers['anthropic-version'] = '2023-06-01';
 
@@ -236,7 +251,9 @@ export async function streamZenChat(input: {
           await waitForRetry(delay, input.signal);
           continue;
         }
-        throw new Error(lastError);
+        throw new Error(usesPublicFreeAccess(model)
+          ? `The free OpenCode model ${model} is temporarily unavailable after 3 attempts. This is the public free route, not your paid quota.`
+          : lastError);
       }
 
       if (response.status === 401 || response.status === 403) {

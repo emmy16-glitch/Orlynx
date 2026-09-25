@@ -2228,3 +2228,100 @@ button, input, textarea, select { font: inherit; }
   .model-trigger { max-width: 44vw; }
   .is-workspace .mobile-project-nav { justify-content: center; gap: clamp(18px, 9vw, 54px); }
 }
+
+
+/* Chat polish: compact inline model selection and predictable message alignment. */
+.inline-model-picker {
+  min-width: 0;
+  max-width: min(48vw, 290px);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 6px;
+  background: var(--surface);
+  color: var(--foreground-muted);
+}
+.inline-model-picker select {
+  min-width: 0;
+  max-width: 250px;
+  min-height: 31px;
+  border: 0 !important;
+  padding: 3px 24px 3px 2px !important;
+  color: var(--foreground) !important;
+  background-color: transparent !important;
+  font-size: 11px !important;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.inline-model-picker select:focus {
+  outline: none;
+}
+.composer {
+  align-items: flex-end;
+}
+.composer-body {
+  gap: 7px;
+}
+.composer textarea {
+  min-height: 34px;
+  padding: 6px 7px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.composer-send.ox-btn {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 12px;
+  padding: 0;
+}
+.message-row {
+  width: 100%;
+  margin: 20px 0;
+}
+.user-message {
+  justify-content: flex-end;
+  padding-left: 72px;
+}
+.user-message .user-avatar {
+  order: 2;
+}
+.user-message .message-content {
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: min(78%, 620px);
+}
+.user-message .message-meta {
+  justify-content: flex-end;
+}
+.user-message .message-text {
+  line-height: 1.55;
+}
+.assistant-message {
+  padding-right: 54px;
+}
+.assistant-message .message-content {
+  max-width: 680px;
+}
+.assistant-message .message-text {
+  line-height: 1.62;
+}
+.live-reply-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+}
+@media (max-width: 620px) {
+  .user-message { padding-left: 34px; }
+  .user-message .message-content { max-width: 88%; }
+  .assistant-message { padding-right: 12px; }
+  .inline-model-picker { max-width: 52vw; }
+  .inline-model-picker select { max-width: 44vw; }
+  .composer-send.ox-btn { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+}
