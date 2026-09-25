@@ -4,12 +4,32 @@
   "outputDirectory": "apps/web/dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/bridge", "destination": "/api/bridge" },
-    { "source": "/v1/:apiRoute*", "destination": "/api/index" },
-    { "source": "/health", "destination": "/api/index" }
+    {
+      "source": "/bridge",
+      "destination": "/api/bridge"
+    },
+    {
+      "source": "/v1/:apiRoute*",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index"
+    }
   ],
   "functions": {
-    "api/index.mjs": { "maxDuration": 300 },
-    "api/bridge.mjs": { "maxDuration": 300 }
-  }
+    "api/index.mjs": {
+      "maxDuration": 300
+    },
+    "api/bridge.mjs": {
+      "maxDuration": 300
+    }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "https://orlynx.onrender.com",
+      "permanent": false
+    }
+  ]
 }
