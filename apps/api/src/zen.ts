@@ -24,7 +24,8 @@ export async function listZenModels(userId?: string, force = false): Promise<AIM
     return {
       id: `opencode/${model.id}`,
       providerId: 'opencode', providerName: 'OpenCode',
-      displayName: model.name + (free && !/free/i.test(model.name) ? ' · Free' : ''),
+      displayName: model.name,
+      free,
       family: model.family || 'OpenCode',
       connected: connected || free,
       status: connected || free ? 'available' : 'needs-connection',

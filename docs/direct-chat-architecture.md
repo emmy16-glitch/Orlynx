@@ -74,12 +74,12 @@ only a saved-credential HTTP 401 asks the user to reconnect.
 Each queued run receives its originating message ID and prompt. Later queued
 user messages cannot replace the current request. History is bounded. Greetings
 and general questions bypass repository reads. Repository-aware questions use
-limited README/package context cached for 60 seconds, scoped by user,
+up to three explicitly named text files, or limited README/package context, cached for 60 seconds, scoped by user,
 installation, repository and branch; the cache holds at most 32 entries.
 
 The actual SDK event stream feeds existing batched message deltas. No response
 is buffered completely and then animated. The existing task snapshot heartbeat
-persists partial text; closing the browser detaches SSE only. Explicit Cancel
+persists partial text; closing the browser detaches SSE only. Stale runs after process death retain their partial text and terminate with an interruption message instead of silently replaying an upstream request. Explicit Cancel
 aborts the provider request after marking the durable task cancelled. Request
 failure and abort are not successful completions.
 
@@ -113,3 +113,5 @@ Inspected upstream sources:
 - https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/auth/index.ts
 - https://github.com/anomalyco/models.dev/tree/dev/providers/opencode
 - https://opencode.ai/docs/zen/
+
+The bundled models.dev metadata is distributed under [its MIT license](models-dev-LICENSE.txt).

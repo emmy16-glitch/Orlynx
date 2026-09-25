@@ -38,7 +38,12 @@ async function safeFile(project: string, branch: string, path: string, installat
   } catch { return null; }
 }
 
-async function loadRepositoryContext(session: ProjectSession): Promise<string> {
+async function loadRepositoryContext(session: ProjectSession, paths: string[]): Promise<string> {
+  if (paths.length) {
+    const files = await Promise.all(paths.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
+    return [`Repository: ${session.project}`, `Branch: ${session.branch}`,
+      ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 55_000);
+  }
   let root: { name: string; dir: boolean }[] = [];
   try { root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId); } catch {}
   const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 120);
@@ -63,12 +68,14 @@ async function loadRepositoryContext(session: ProjectSession): Promise<string> {
   ].filter(Boolean).join('\n\n');
 }
 
-async function repositoryContext(session: ProjectSession & { userId: string }): Promise<string> {
-  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch]);
+async function repositoryContext(session: ProjectSession & { userId: string }, prompt: string): Promise<string> {
+  const paths = [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/g) || [])]
+    .filter((path) => !path.split('/').includes('..')).slice(0, 3);
+  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch, paths]);
   const existing = contextCache.get(key);
   if (existing && existing.expires > Date.now()) return existing.value;
   if (contextCache.size >= 32) contextCache.delete(contextCache.keys().next().value!);
-  const value = loadRepositoryContext(session);
+  const value = loadRepositoryContext(session, paths);
   contextCache.set(key, { expires: Date.now() + 60_000, value });
   void value.catch(() => contextCache.delete(key));
   return value;
@@ -100,7 +107,7 @@ export async function streamDirectRepositoryChat(input: {
     const contextStarted = performance.now();
     const needsContext = needsRepositoryContext(input.prompt);
     if (needsContext) input.onStatus?.('Reading repository…');
-    const context = needsContext ? await repositoryContext(input.session)
+    const context = needsContext ? await repositoryContext(input.session, input.prompt)
       : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
     controller.signal.throwIfAborted();
     timings.repoContextMs = performance.now() - contextStarted;

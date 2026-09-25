@@ -174,20 +174,17 @@ export default function ProductionApp() {
   }
 
   const refreshSession = useCallback(async (id: string) => {
-    const [messageData, fileData, changeData, details, runData, attachmentData] = await Promise.all([
-      j<any[]>(await fetch(`/v1/sessions/${id}/messages`)),
-      j<any>(await fetch(`/v1/sessions/${id}/files`)).catch(() => ({ files: [] })),
-      j<any[]>(await fetch(`/v1/sessions/${id}/changes`)),
-      j<any>(await fetch(`/v1/sessions/${id}`)),
-      j<any[]>(await fetch(`/v1/sessions/${id}/runs`)),
-      j<any[]>(await fetch(`/v1/sessions/${id}/attachments`)),
+    const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
+      fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
+      fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
+      fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
+      fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
+      fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
     ]);
-    setMessages(messageData); setFiles(fileData.files || []); setChanges(changeData); setAttachments(attachmentData);
-    if (fileData.warning) setWorkspaceReadNotice(String(fileData.warning));
-    if (fileData.workspaceStale) void reconnectStaleWorkspace(id);
+    setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
     const latestRun = runData.slice(-1)[0] || null;
     setLastRun(latestRun); runRef.current = latestRun;
-    if (latestRun?.state === 'running' && latestRun?.partialText) {
+    if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
       setDraftReply(String(latestRun.partialText));
       partialCutoffRef.current = Date.parse(latestRun.partialUpdatedAt || '') || 0;
     } else if (latestRun?.state !== 'running') {
@@ -724,6 +721,11 @@ export default function ProductionApp() {
     catch (error: any) { setError(error.message || 'The current task could not be stopped.'); }
   }
 
+  useEffect(() => {
+    if (tab !== 'files' || !session?.id) return;
+    void openFolder('');
+  }, [tab, session?.id]);
+
   async function openFolder(path: string) {
     if (!session) return; setFileBusy(true); setFolder(path); setOpenedFile(null);
     try { const result = await j<any>(await fetch(`/v1/sessions/${session.id}/files?path=${encodeURIComponent(path)}`)); setFiles(result.files || []); }
@@ -870,7 +872,7 @@ export default function ProductionApp() {
                   </div>
                 </div></div>}
                 {messages.map((message) => <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{message.text}</div></div></article>)}
-                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">Working</span></div><div className="message-text">{draftReply}<span className="stream-caret" /></div></div></article>}
+                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Working' : 'Partial response'}</span></div><div className="message-text">{draftReply}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
                 {!!events.length && <div className="workstream-wrap"><ActivityList activities={chatActivities(activities)} /></div>}
@@ -927,7 +929,7 @@ export default function ProductionApp() {
   value={composer}
   onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }}
   onKeyDown={(event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
       event.preventDefault();
       if (composer.trim() && !sending && aiAccountConnected && ai.model && online) void sendMessage();
     }
@@ -956,7 +958,7 @@ export default function ProductionApp() {
         disabled={!online || !aiModels.length}
       >
         {!ai.model && <option value="">{aiModels.length ? 'Choose model' : 'Loading models…'}</option>}
-        {aiModels.map((model: any) => <option key={model.id} value={model.id}>{model.displayName}{/-free$/i.test(model.id) || /-contributor-free$/i.test(model.id) || /\/big-pickle$/i.test(model.id) ? ' · Free' : ''}</option>)}
+        {aiModels.map((model: any) => <option key={model.id} value={model.id}>{model.displayName}{(model.free ?? (/-free$/i.test(model.id) || /\/big-pickle$/i.test(model.id))) && !/free/i.test(model.displayName) ? ' · Free' : ''}</option>)}
       </select>
     </label>
   : <button type="button" className="model-trigger" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><Icon name="agents" size={14} /><span>Connect AI</span></button>}<details className="composer-options"><summary aria-label="Chat options">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary><div className="composer-options-panel"><label>Mode<select aria-label="Mode" value={ai.mode || 'build'} onChange={(event) => setAiPrefs({ mode: event.target.value })} disabled={!online}><option value="build">Build</option><option value="plan">Plan</option><option value="ask">Ask</option></select></label><label>Access<select aria-label="Access level" value={ai.permission || 'ask-first'} onChange={(event) => { setTempFullAccess(false); setAiPrefs({ permission: event.target.value }); }} disabled={!online}><option value="full">Full project access</option><option value="ask-first">Ask first</option><option value="read-only">Read only</option></select></label></div></details></div>{ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}

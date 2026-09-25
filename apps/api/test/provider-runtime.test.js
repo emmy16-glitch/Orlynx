@@ -73,3 +73,44 @@ test('paid model receives the saved server-side credential', async (t) => {
   setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('saved-test-key') }) });
   assert.equal(await streamWithOfficialOpenCode({ ...input(), modelId: 'opencode/qwen3.8-max' }), 'OK');
 });
+
+test('Hello streams without repository/workspace requests and reload does not cancel it', async (t) => {
+  const { streamDirectRepositoryChat } = await import('../src/direct-chat.ts');
+  const { recoverInterruptedDirectRuns } = await import('../src/agents.ts');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let first;
+  const gotFirst = new Promise((resolve) => { first = resolve; });
+  const controller = new TextEncoder();
+  mockFetch(t, async (url) => {
+    assert.equal(String(url), 'https://opencode.ai/zen/v1/chat/completions');
+    return new Response(new ReadableStream({ async start(stream) {
+      stream.enqueue(controller.encode(frame('Hello')));
+      await gate;
+      stream.enqueue(controller.encode(frame('!') + frame('', 'stop') + 'data: [DONE]\n\n'));
+      stream.close();
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgresql://test:test@localhost/test';
+  t.after(() => { if (previous === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previous; });
+  const task = { id: 'task-reload', runId: 'run-reload', plane: 'direct', state: 'running', updatedAt: new Date(0).toISOString() };
+  let writes = 0;
+  setControlPlaneRepositoryForTests({
+    getProviderConnection: async () => null,
+    listMessages: async () => [{ id: 'hello-message', role: 'user', text: 'Hello' }],
+    listTasks: async () => [task],
+    putTask: async () => { writes++; },
+  });
+  const response = streamDirectRepositoryChat({
+    runId: task.runId, messageId: 'hello-message', prompt: 'Hello', modelId: 'opencode/big-pickle',
+    session: { id: 'reload-session', userId: 'test-user', projectId: 'p', project: 'owner/repo', branch: 'main' },
+    onDelta: () => first(),
+  });
+  await gotFirst;
+  await recoverInterruptedDirectRuns('reload-session');
+  assert.equal(writes, 0);
+  assert.equal(task.state, 'running');
+  release();
+  assert.equal(await response, 'Hello!');
+});

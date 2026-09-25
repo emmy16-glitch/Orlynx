@@ -14,6 +14,7 @@ import { ProviderRequestError } from './opencode-local.js';
 import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
 
 export type Engine = 'opencode';
+const executingDirectTasks = new Set<string>();
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
@@ -77,6 +78,7 @@ async function executeDirectTask(
   modelId: string,
 ): Promise<void> {
   if (!session) return;
+  executingDirectTasks.add(task.id);
   const repository = controlPlaneRepository();
   let visible = task.partialText || '';
   let pendingDelta = '';
@@ -96,7 +98,7 @@ async function executeDirectTask(
     flushTimer.unref?.();
   };
   const heartbeat = setInterval(() => {
-    if (task.state !== 'running') return;
+    if (task.state !== 'running' || run.state !== 'running') return;
     // Flush before snapshotting so reload recovery can use updatedAt as a
     // cutoff without replaying text already present in partialText.
     flushDelta();
@@ -116,6 +118,7 @@ async function executeDirectTask(
       modelId,
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onDelta: (delta) => {
+        if (run.state !== 'running') return;
         visible += delta;
         task.partialText = visible;
         pendingDelta += delta;
@@ -175,6 +178,7 @@ async function executeDirectTask(
     if (flushTimer) clearTimeout(flushTimer);
     flushDelta();
     clearInterval(heartbeat);
+    executingDirectTasks.delete(task.id);
     await promoteNextQueuedRun(session.id).catch(() => null);
   }
 }
@@ -334,19 +338,22 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 }
 
 export async function recoverInterruptedDirectRuns(sessionId: string): Promise<void> {
-  if (!durableStorageConfigured()) return;
+  if (!durableStorageConfigured() || promotions.has(sessionId)) return;
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
   let recovered = false;
   for (const task of tasks) {
-    if (task.plane !== 'direct' || task.state !== 'running' || !task.runId || hasDirectRun(task.runId)) continue;
-    task.state = 'queued';
-    task.partialText = undefined;
+    if (task.plane !== 'direct' || task.state !== 'running' || !task.runId || hasDirectRun(task.runId) || executingDirectTasks.has(task.id)) continue;
+    // Another instance or an in-flight startup may own a fresh heartbeat.
+    if (Date.now() - Date.parse(task.updatedAt) < 30_000) continue;
+    // After process death an upstream request cannot be resumed safely. Keep
+    // partial text and terminate once rather than silently billing/running twice.
+    task.state = 'failed';
     task.updatedAt = new Date().toISOString();
     await repository.putTask(task);
     const run = (store.db.runs[sessionId] || []).find((item) => item.id === task.runId);
-    if (run) { run.state = 'queued'; run.activity = 'Restoring response'; run.finishedAt = undefined; }
-    emit(sessionId, 'activity.progress', { taskId: task.id, sourceType: 'direct.recovery', text: 'Restoring the interrupted response…' }, task.runId);
+    if (run) { run.state = 'failed'; run.activity = 'Response interrupted'; run.finishedAt = task.updatedAt; }
+    emit(sessionId, 'run.failed', { taskId: task.id, error: 'The server restarted before this response finished. Your partial response is preserved. Send a new message to continue.', errorKind: 'engine', recoverable: true }, task.runId);
     recovered = true;
   }
   if (recovered) {
