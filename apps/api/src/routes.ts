@@ -17,7 +17,7 @@ import type { Request } from 'express';
 import crypto from 'node:crypto';
 import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
-import { bridgeRequest } from './bridge-rpc.js';
+import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 
 export const router = Router();
@@ -262,8 +262,6 @@ router.post('/sessions/:id/messages', async (req, res) => {
       return res.json({ message: dup, run, deduplicated: true });
     }
   }
-  const agent = await openCodeStatus(s.project);
-  if (!agent.connected) return res.status(503).json({ error: 'AI is not available for this workspace yet. No message was sent.' });
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
@@ -290,7 +288,14 @@ router.post('/sessions/:id/messages', async (req, res) => {
     if (durableStorageConfigured()) await controlPlaneRepository().deleteMessage(msg.id, s.id);
     const kind = (error as { errorKind?: string }).errorKind;
     const detail = error instanceof Error ? error.message : '';
-    return res.status(kind === 'permission' ? 403 : 503).json({ error: kind === 'permission' ? detail : 'Orlynx AI could not accept this task.' });
+    const visible = kind === 'permission'
+      ? detail
+      : /already running/i.test(detail)
+        ? 'Orlynx AI is already working on this project. Cancel the current task or wait for it to finish.'
+        : /not ready|unavailable|interrupted|timed out/i.test(detail)
+          ? 'Orlynx AI is reconnecting to this workspace. Try again in a moment.'
+          : 'Orlynx AI could not accept this task.';
+    return res.status(kind === 'permission' ? 403 : /already running/i.test(detail) ? 409 : 503).json({ error: visible });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
   res.json({ message: msg, run });
@@ -482,7 +487,7 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository(); const task = (await repository.listTasks(String(sessionId))).find((item) => item.runId === req.params.runId);
     if (!task) return res.status(404).json({ error: 'run not found' });
-    if (task.state === 'running') { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id }); task.state = 'cancelled'; task.updatedAt = new Date().toISOString(); await repository.putTask(task); emit(task.sessionId, 'run.failed', { cancelled: true }, task.runId); }
+    if (task.state === 'running') { await queueBridgeCommand(task.workspaceId, 'agent.cancel', { taskId: task.id }, 30_000); task.state = 'cancelled'; task.updatedAt = new Date().toISOString(); await repository.putTask(task); emit(task.sessionId, 'run.failed', { cancelled: true }, task.runId); }
     return res.json({ id: task.runId, sessionId: task.sessionId, state: task.state, engine: 'opencode', startedAt: task.createdAt, finishedAt: task.updatedAt });
   }
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
@@ -719,6 +724,29 @@ router.post('/changes/:changeId/push', async (req, res) => {
 });
 
 // unified AI layer (engine underneath, one experience on top)
+router.get('/ai/overview', async (req, res) => {
+  const sessionId = String(req.query.sessionId || '');
+  const s = sessionId ? ownedSession(req, sessionId) : undefined;
+  if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
+  try {
+    const userId = await requestUserId(req) || undefined;
+    const snapshot = await listProviderConnections(s?.project, userId);
+    const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
+    res.json({
+      state: status.state,
+      message: status.engineConnected ? status.message : 'AI is not available for this workspace yet.',
+      model: status.model,
+      mode: status.mode,
+      permission: status.permission,
+      providers: status.providers,
+      available: snapshot.engine.connected,
+      models: snapshot.models,
+      providerConnections: snapshot.providers,
+    });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'AI status is unavailable.' });
+  }
+});
 router.get('/ai/status', async (req, res) => {
   const sessionId = String(req.query.sessionId || '');
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
