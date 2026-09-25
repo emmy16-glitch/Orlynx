@@ -30,9 +30,10 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
 async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   let claims: BridgeClaims;
   try { claims = verifyBridgeToken(bearer(request)); }
-  catch { ws.close(1008, 'unauthorized'); return; }
+  catch { console.warn('[bridge] handshake rejected: credential'); ws.close(1008, 'unauthorized'); return; }
   try { await persistBridgeState(claims, 'connecting'); }
-  catch { ws.close(1008, 'workspace scope rejected'); return; }
+  catch { console.warn('[bridge] handshake rejected: workspace scope or storage'); ws.close(1008, 'workspace scope rejected'); return; }
+  console.info('[bridge] credential accepted');
 
   let active = true;
   let authenticatedHello = false;
@@ -53,12 +54,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     try { message = JSON.parse(String(raw)); } catch { ws.close(1003, 'invalid json'); return; }
     try {
       if (!authenticatedHello) {
-        if (message.kind !== 'HELLO' || message.workspaceId !== claims.workspaceId || message.sessionId !== claims.sessionId || message.userId !== claims.userId || message.connectionId !== claims.connectionId) { ws.close(1008, 'claim mismatch'); return; }
+        if (message.kind !== 'HELLO' || message.workspaceId !== claims.workspaceId || message.sessionId !== claims.sessionId || message.userId !== claims.userId || message.connectionId !== claims.connectionId) { console.warn('[bridge] hello rejected: claim mismatch'); ws.close(1008, 'claim mismatch'); return; }
         authenticatedHello = true;
+        console.info('[bridge] hello authenticated');
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
         return;
       }
       if (message.kind === 'READY') {
+        console.info(`[bridge] agent reported OpenCode ${message.openCode?.state === 'ready' ? 'ready' : 'unavailable'}`);
         await persistBridgeState(claims, 'ready', message);
 
         // Attachments can be uploaded before a cloud workspace exists. Once
@@ -109,9 +112,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         const eventType = allowed.has(message.event.type) ? message.event.type as 'message.delta' : 'activity.progress';
         await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, taskId: message.event.taskId, runId: message.event.runId, type: eventType, timestamp: new Date().toISOString(), payload: eventType === 'activity.progress' ? { sourceType: message.event.type, ...(message.event.payload || {}) } : message.event.payload || {} });
       }
-    } catch { ws.close(1011, 'persistence failed'); }
+    } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
-  ws.once('close', async () => { active = false; clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.once('close', async (code) => { console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`); active = false; clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
 }
 
 export const bridgeGatewayServer = http.createServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'WebSocket upgrade required.' })); });

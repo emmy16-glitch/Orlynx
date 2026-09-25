@@ -27,6 +27,8 @@ describe('execution-plane credentials', () => {
     const first = encryptCredential('github-user-token'); const second = encryptCredential('github-user-token');
     assert.notEqual(first, second);
     assert.equal(decryptCredential(first), 'github-user-token');
-    assert.throws(() => decryptCredential(`${first.slice(0, -1)}x`));
+    const pieces = first.split('.');
+    pieces[2] = `${pieces[2][0] === 'A' ? 'B' : 'A'}${pieces[2].slice(1)}`;
+    assert.throws(() => decryptCredential(pieces.join('.')));
   });
 });

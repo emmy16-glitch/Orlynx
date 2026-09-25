@@ -818,7 +818,7 @@ export default function ProductionApp() {
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
           {workspaceReadNotice && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
-          {error && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
+          {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
