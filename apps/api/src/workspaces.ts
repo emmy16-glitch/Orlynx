@@ -7,19 +7,48 @@ import { bootstrapWorkspace } from './runtime-worker.js';
 import { controlPlaneRepository } from './storage.js';
 
 const provider = new GitHubCodespacesProvider();
+const activePreparations = new Map<string, Promise<WorkspaceRecord>>();
 
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
 
-export async function prepareWorkspace(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+export async function ensureWorkspaceRecord(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
-  let workspace = await repository.getWorkspaceBySession(input.sessionId);
+  const existing = await repository.getWorkspaceBySession(input.sessionId);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const workspace: WorkspaceRecord = {
+    id: `ws_${uuid()}`,
+    sessionId: input.sessionId,
+    userId: input.userId,
+    projectId: input.projectId,
+    provider: 'github-codespaces',
+    repositoryId: input.repositoryId,
+    branch: input.branch,
+    state: 'creating',
+    bridgeState: 'disconnected',
+    openCodeState: 'not_installed',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await repository.putWorkspace(workspace);
+  return workspace;
+}
+
+export async function prepareWorkspace(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+  const running = activePreparations.get(input.sessionId);
+  if (running) return running;
+  const preparation = prepareWorkspaceOnce(input).finally(() => activePreparations.delete(input.sessionId));
+  activePreparations.set(input.sessionId, preparation);
+  return preparation;
+}
+
+async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+  const repository = controlPlaneRepository();
+  let workspace = await ensureWorkspaceRecord(input);
   try {
-    if (!workspace) {
-      const now = new Date().toISOString();
-      workspace = { id: `ws_${uuid()}`, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, provider: 'github-codespaces', repositoryId: input.repositoryId, branch: input.branch, state: 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', createdAt: now, updatedAt: now };
-      await repository.putWorkspace(workspace);
+    if (workspace.state === 'creating' && !workspace.codespaceName) {
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {

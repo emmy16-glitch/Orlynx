@@ -74,6 +74,12 @@ export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun 
 
   await reconcileDurableTasks(sessionId);
 
+  // Admission is intentionally independent from execution. A user can submit
+  // work while the Codespace is waking; the task stays queued until the bridge
+  // and OpenCode are genuinely ready.
+  const readyWorkspace = await repository.getWorkspaceBySession(sessionId);
+  if (!readyWorkspace || readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+
   while (true) {
     const task = await repository.claimNextQueuedTask(sessionId);
     if (!task) return null;
@@ -187,7 +193,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     const workspace = await repository.getWorkspaceBySession(sessionId);
-    if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
+    if (!workspace) throw new Error('The project workspace could not be initialized.');
     const durableTasks = await reconcileDurableTasks(sessionId);
     const queuedAhead = durableTasks.filter((item) => item.state === 'queued').length;
     if (queuedAhead >= maxQueuedTasks) {

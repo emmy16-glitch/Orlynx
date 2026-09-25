@@ -6,7 +6,7 @@ import { durableHistory, emit, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -289,6 +289,34 @@ router.post('/sessions/:id/messages', async (req, res) => {
     const durableSession = await repository.getSession(s.id);
     if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
   }
+  let automaticWorkspaceInput: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string } | undefined;
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    const durableSession = await repository.getSession(s.id);
+    if (!durableSession) return res.status(404).json({ error: 'session not found' });
+
+    let workspace = await repository.getWorkspaceBySession(s.id);
+    if (!workspace) {
+      const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
+      if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
+      workspace = await ensureWorkspaceRecord({
+        sessionId: s.id,
+        userId: durableSession.userId,
+        projectId: durableSession.projectId,
+        repositoryId: githubRepo.id,
+        branch: s.branch,
+      });
+    }
+
+    automaticWorkspaceInput = {
+      sessionId: s.id,
+      userId: durableSession.userId,
+      projectId: durableSession.projectId,
+      repositoryId: workspace.repositoryId,
+      branch: workspace.branch,
+    };
+  }
+
   console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
   let run;
   try {
@@ -316,7 +344,29 @@ router.post('/sessions/:id/messages', async (req, res) => {
     return res.status(kind === 'permission' ? 403 : kind === 'queue_full' ? 429 : 503).json({ error: visible });
   }
   console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
-  res.json({ message: msg, run });
+
+  if (automaticWorkspaceInput) {
+    const current = await getWorkspace(s.id);
+    if (!current || current.state !== 'ready' || current.bridgeState !== 'ready') {
+      emit(s.id, 'workspace.preparing', {
+        state: current?.state || 'creating',
+        automatic: true,
+        message: 'Your task is saved. Orlynx is starting the development environment.',
+      });
+      void prepareWorkspace(automaticWorkspaceInput)
+        .then(async (workspace) => {
+          if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
+            emit(s.id, 'workspace.ready', { workspaceId: workspace.id, automatic: true });
+            await promoteNextQueuedRun(s.id);
+          }
+        })
+        .catch((error) => {
+          console.warn(`[workspace] automatic preparation failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        });
+    }
+  }
+
+  res.json({ message: msg, run, workspaceStarting: Boolean(automaticWorkspaceInput && run.state === 'queued') });
 });
 
 router.get('/sessions/:id/messages', async (req, res) => {
