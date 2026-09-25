@@ -29,10 +29,11 @@ runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime"
 chmod 700 "$HOME/.orlynx" "$runtime"
 printf '%s' '${encoded(bridge)}' | base64 -d > "$runtime/index.js"
-printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
+printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0","opencode-ai":"1.18.32"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
 cd "$runtime"
-if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty"; then npm install --omit=dev --no-audit --no-fund >/dev/null; fi
-if ! command -v opencode >/dev/null 2>&1; then npm install -g opencode-ai@latest --no-audit --no-fund >/dev/null; fi
+if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty" || ! test -x "$runtime/node_modules/.bin/opencode"; then npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+opencode_bin="$runtime/node_modules/.bin/opencode"
+test -x "$opencode_bin"
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
 # Reuse the password of an OpenCode server left running in this Codespace.
@@ -46,6 +47,7 @@ if test -n "$existing_password"; then
   printf 'OPENCODE_SERVER_PASSWORD=%s\\n' "$existing_password" >> "$runtime/workspace.env"
 fi
 printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
+printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a
 . "$runtime/workspace.env"
