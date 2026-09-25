@@ -21,6 +21,44 @@ export interface TaskOptions {
   tempPermission?: PermissionProfile;
 }
 
+const staleTaskGraceMs = 15_000;
+
+async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
+  const repository = controlPlaneRepository();
+  const tasks = await repository.listTasks(sessionId);
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  let changed = false;
+
+  for (const task of tasks) {
+    if (task.state !== 'running' && task.state !== 'queued') continue;
+    const touched = Date.parse(task.updatedAt || task.createdAt);
+    if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
+
+    task.state = 'failed';
+    task.updatedAt = nowIso;
+    await repository.putTask(task);
+    changed = true;
+
+    const run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+    if (run && (run.state === 'running' || run.state === 'queued')) {
+      run.state = 'failed';
+      run.finishedAt = nowIso;
+      run.errorKind = 'engine';
+    }
+
+    emit(sessionId, 'run.failed', {
+      taskId: task.id,
+      error: 'The previous AI task stopped responding and was released so you can continue.',
+      errorKind: 'engine',
+      recoverable: true,
+    }, task.runId);
+  }
+
+  if (changed) store.save();
+  return changed ? repository.listTasks(sessionId) : tasks;
+}
+
 export function taskPermission(current: PermissionProfile, requested?: PermissionProfile): { permission: PermissionProfile; tempPermission?: PermissionProfile } {
   const tempPermission = current === 'ask-first' && requested === 'full' ? 'full' : undefined;
   return { permission: tempPermission || current, ...(tempPermission ? { tempPermission } : {}) };
@@ -28,7 +66,7 @@ export function taskPermission(current: PermissionProfile, requested?: Permissio
 
 export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
   if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
-  if ((store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
+  if (!durableStorageConfigured() && (store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
   if (durableStorageConfigured()) await hydrateSessionPrefs(sessionId, project);
   const gate = canPerform(sessionId, 'agent.task');
   if (!gate.allowed) {
@@ -55,7 +93,8 @@ export async function startRun(sessionId: string, project: string, userText: str
     const repository = controlPlaneRepository();
     const workspace = await repository.getWorkspaceBySession(sessionId);
     if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
-    if ((await repository.listTasks(sessionId)).some((item) => item.state === 'running' || item.state === 'queued')) throw new Error('An OpenCode task is already running in this project.');
+    const durableTasks = await reconcileDurableTasks(sessionId);
+    if (durableTasks.some((item) => item.state === 'running' || item.state === 'queued')) throw new Error('An OpenCode task is already running in this project.');
     const startedAt = new Date().toISOString();
     const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'running', activity: 'Starting work', startedAt };
     const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, state: 'running', prompt: userText, createdAt: startedAt, updatedAt: startedAt };
