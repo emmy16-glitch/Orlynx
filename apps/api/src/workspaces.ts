@@ -48,8 +48,9 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
       await repository.putWorkspace(workspace);
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
       await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
-      workspace = { ...workspace, state: 'connecting', openCodeState: 'starting', updatedAt: new Date().toISOString() };
-      await repository.putWorkspace(workspace);
+      // The bridge can report READY before bootstrap returns. Read its state;
+      // a post-bootstrap write would overwrite that newer READY transition.
+      workspace = (await repository.getWorkspace(workspace.id)) || workspace;
     }
     return (await repository.getWorkspace(workspace.id)) || workspace;
   } catch (error) {

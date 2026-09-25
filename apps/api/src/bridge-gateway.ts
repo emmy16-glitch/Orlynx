@@ -6,6 +6,7 @@ import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
@@ -16,6 +17,9 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   const repository = controlPlaneRepository();
   const current = await repository.getWorkspace(claims.workspaceId);
   if (!current || current.sessionId !== claims.sessionId || current.userId !== claims.userId) throw new Error('Workspace credential scope does not match durable state.');
+  // A prior socket may close after its replacement has authenticated. Never
+  // let that stale close (or a delayed READY) downgrade the new connection.
+  if (current.connectionId !== claims.connectionId) return;
   const openCodeState = detail.openCode?.state as typeof current.openCodeState | undefined;
   const ready = state === 'ready' && openCodeState === 'ready';
   await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
@@ -31,6 +35,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
   let active = true;
   let authenticatedHello = false;
+  activeSockets.set(claims.workspaceId, ws);
   const repository = controlPlaneRepository();
   const commands = setInterval(async () => {
     if (!active || !authenticatedHello || ws.readyState !== ws.OPEN) return;
@@ -105,7 +110,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
     } catch { ws.close(1011, 'persistence failed'); }
   });
-  ws.once('close', async () => { active = false; clearInterval(commands); clearInterval(credentials); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.once('close', async () => { active = false; clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
 }
 
 export const bridgeGatewayServer = http.createServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'WebSocket upgrade required.' })); });

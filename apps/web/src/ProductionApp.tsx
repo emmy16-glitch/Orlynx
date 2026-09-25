@@ -633,7 +633,7 @@ export default function ProductionApp() {
     setCloudBusy(true); setError(''); setCloudIssue(null);
     try {
       let workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
-      const deadline = Date.now() + 15 * 60_000;
+      const deadline = Date.now() + 3 * 60_000;
       while (workspace?.state !== 'ready' && workspace?.state !== 'failed' && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
         const details = await j<any>(await fetch(`/v1/sessions/${sessionId}`));
@@ -645,7 +645,7 @@ export default function ProductionApp() {
       if (workspace?.state !== 'ready') {
         const failure = String(workspace?.failureCode || '');
         const permission = /codespaces.*(permission|403|forbidden)|HTTP 403/i.test(failure);
-        const next = new Error(permission ? 'GitHub Codespaces access needs approval before this workspace can start.' : workspace?.state === 'failed' ? "The workspace couldn't start." : 'Workspace connection interrupted.') as Error & { code?: string };
+        const next = new Error(permission ? 'GitHub Codespaces access needs approval before this workspace can start.' : workspace?.state === 'failed' ? "The workspace couldn't start." : 'Workspace is taking longer than expected. Reconnect to continue.') as Error & { code?: string };
         next.code = permission ? 'CODESPACES_PERMISSION_REQUIRED' : 'WORKSPACE_START_FAILED';
         throw next;
       }
@@ -768,7 +768,8 @@ export default function ProductionApp() {
   const openCodeConnection = aiProviders.find((provider: any) => provider.id === 'opencode' && provider.state === 'connected');
   const aiAccountConnected = Boolean(openCodeConnection);
   const workspaceReady = session?.workspace?.state === 'ready';
-  const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state));
+  const workspaceDisconnected = session?.workspace?.state === 'connecting' && session.workspace.bridgeState === 'disconnected' && Boolean(session.workspace.connectionId);
+  const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state) && !workspaceDisconnected);
   const activities = useMemo(() => toActivities(events), [events]);
   const running = lastRun?.state === 'running' || lastRun?.state === 'queued' || activities.some((event) => event.state === 'running');
   const globalNav = [
@@ -804,19 +805,21 @@ export default function ProductionApp() {
                 {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
                   <p className="setup-kicker">{ai.state === 'ready' || ai.state === 'working' ? 'READY' : !aiAccountConnected ? 'STEP 1 OF 2' : workspaceReady ? 'ALMOST READY' : 'STEP 2 OF 2'}</p>
-                  <h2>{ai.state === 'ready' || ai.state === 'working' ? 'What should we work on?' : !aiAccountConnected ? 'Connect AI' : workspacePreparing ? 'Preparing your workspace…' : workspaceReady ? 'Choose a model to start' : 'Start your workspace'}</h2>
+                  <h2>{ai.state === 'ready' || ai.state === 'working' ? 'What should we work on?' : !aiAccountConnected ? 'Connect AI' : workspacePreparing ? 'Preparing your workspace…' : workspaceDisconnected ? 'Reconnect your workspace' : workspaceReady ? 'Choose a model to start' : 'Start your workspace'}</h2>
                   <p>{ai.state === 'ready' || ai.state === 'working'
                     ? `Ask Orlynx to inspect, change, test, or explain anything in ${session.project.split('/').pop()}.`
                     : !aiAccountConnected
                       ? 'Connect an AI account to start working in this repository. Your conversation stays in Orlynx.'
                       : workspacePreparing
                         ? 'Orlynx is preparing the development environment. You can stay on this screen.'
+                        : workspaceDisconnected
+                          ? 'The Codespace is still available. Reconnect its agent to continue in this conversation.'
                         : workspaceReady
                           ? 'AI is connected. Choose a model for this conversation.'
                           : 'AI is connected. Start a private development workspace when Orlynx needs to run code, tests, terminal commands, or previews.'}</p>
                   <div className="setup-actions">
                     {!aiAccountConnected && <Button onClick={() => setShowConnectAI(true)}>Connect OpenCode <Icon name="arrow" /></Button>}
-                    {aiAccountConnected && !workspaceReady && !workspacePreparing && integration.workspace?.cloudAvailable && <Button onClick={() => startCloud()} disabled={cloudBusy}><Icon name="cloud" />{cloudBusy ? 'Preparing workspace…' : 'Start workspace'}</Button>}
+                    {aiAccountConnected && !workspaceReady && !workspacePreparing && integration.workspace?.cloudAvailable && <Button onClick={() => startCloud(workspaceDisconnected)} disabled={cloudBusy}><Icon name="cloud" />{cloudBusy ? 'Preparing workspace…' : workspaceDisconnected ? 'Reconnect workspace' : 'Start workspace'}</Button>}
                     {workspaceReady && ai.state !== 'ready' && ai.state !== 'working' && <Button onClick={() => { void refreshAi(session.id); setShowConnectAI(true); }}>Choose model <Icon name="arrow" /></Button>}
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
                   </div>

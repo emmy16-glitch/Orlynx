@@ -24,7 +24,7 @@ runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime" && chmod 700 "$HOME/.orlynx" "$runtime"
 printf '%s' '${encoded(bridge)}' | base64 -d > "$runtime/index.js"
 printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
-cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null
+if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty"; then cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null; fi
 if ! command -v opencode >/dev/null 2>&1; then npm install -g opencode-ai@latest --no-audit --no-fund >/dev/null; fi
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
