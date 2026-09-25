@@ -1,0 +1,28 @@
+name: Direct chat validation
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Temporary repair-branch bootstrap. The generated lockfile is retrieved
+      # and committed before merging; normal CI remains npm ci only.
+      - name: Resolve production dependency lock
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provider-package-lock
+          path: package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run verify:provider-runtime --workspace=@orlynx/api

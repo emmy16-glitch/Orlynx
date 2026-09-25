@@ -10,6 +10,7 @@ import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { openCodeReadiness } from './opencode.js';
+import { ProviderRequestError } from './opencode-local.js';
 import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
 
 export type Engine = 'opencode';
@@ -108,6 +109,9 @@ async function executeDirectTask(
   try {
     const responseText = await streamDirectRepositoryChat({
       runId: run.id,
+      messageId: task.messageId,
+      prompt: task.prompt,
+      acceptedAt: task.createdAt,
       session,
       modelId,
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
@@ -121,7 +125,7 @@ async function executeDirectTask(
     });
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
     flushDelta();
-    if (task.state === 'cancelled') return;
+    if (task.state === 'cancelled' || run.state === 'cancelled') return;
 
     const now = new Date().toISOString();
     task.state = 'completed';
@@ -138,10 +142,12 @@ async function executeDirectTask(
     emit(session.id, 'run.completed', { taskId: task.id, summary: 'Response completed.' }, run.id);
     emit(session.id, 'activity.completed', { taskId: task.id, text: 'Response completed' }, run.id);
   } catch (error) {
-    if (task.state === 'cancelled') return;
+    if (task.state === 'cancelled' || run.state === 'cancelled') return;
     const now = new Date().toISOString();
     const detail = error instanceof Error ? error.message : 'Direct chat failed.';
-    const errorKind = classifyError(detail);
+    const errorKind = error instanceof ProviderRequestError
+      ? error.statusCode === 429 ? 'rate_limit' : error.statusCode === 401 && !error.publicAccess ? 'auth' : 'engine'
+      : classifyError(detail);
     console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
     task.state = 'failed';
     task.updatedAt = now;
@@ -173,7 +179,16 @@ async function executeDirectTask(
   }
 }
 
-export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun | null> {
+const promotions = new Map<string, Promise<AgentRun | null>>();
+export function promoteNextQueuedRun(sessionId: string): Promise<AgentRun | null> {
+  const existing = promotions.get(sessionId);
+  if (existing) return existing;
+  const pending = promoteNextQueuedRunInner(sessionId).finally(() => promotions.delete(sessionId));
+  promotions.set(sessionId, pending);
+  return pending;
+}
+
+async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | null> {
   if (!durableStorageConfigured()) return null;
   const repository = controlPlaneRepository();
   const session = await repository.getSession(sessionId);
@@ -265,7 +280,7 @@ export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun 
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
     if (task.plane === 'direct') {
-      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Reading repository from GitHub' }, run.id);
+      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Thinking…' }, run.id);
       void executeDirectTask(session, task, run, modelId);
       return run;
     }
@@ -314,7 +329,7 @@ export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun 
     }
     store.save();
     emit(sessionId, 'run.failed', { taskId: task.id, error: detail, errorKind, recoverable: errorKind === 'engine' || errorKind === 'rate_limit' }, task.runId);
-    return promoteNextQueuedRun(sessionId);
+    return promoteNextQueuedRunInner(sessionId);
   }
 }
 

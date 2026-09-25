@@ -19,14 +19,6 @@ cp "/tmp/orlynx-gh/${ARCHIVE}/bin/gh" .render-bin/gh
 chmod +x .render-bin/gh
 .render-bin/gh --version
 
-# Direct chat uses the same lightweight AI SDK provider layer that OpenCode
-# uses internally. Do not install or spawn the full OpenCode CLI in the API
-# process; it exceeds the free Render instance's CPU/RAM budget.
-rm -rf .render-opencode .render-ai
-rm -f .render-bin/opencode
-npm install --prefix .render-ai --omit=dev --no-audit --no-fund \
-  "ai@6.0.168" \
-  "@ai-sdk/openai-compatible@2.0.41" \
-  "@ai-sdk/openai@3.0.88" \
-  "@ai-sdk/anthropic@3.0.111" \
-  "@ai-sdk/google@3.0.73"
+# Verify the actual compiled provider imports through normal Node resolution.
+# Dependencies come exclusively from npm ci and the committed lockfile.
+npm run verify:provider-runtime --workspace=@orlynx/api

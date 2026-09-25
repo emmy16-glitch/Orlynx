@@ -153,3 +153,5 @@ encryption and bridge signing. Secrets must remain server-side.
 - [UI architecture](docs/orlynx-ui-architecture.md)
 - [Responsive behavior](docs/orlynx-responsive-behavior.md)
 - [End-to-end verification](docs/end-to-end-verification.md)
+
+See [direct chat architecture](docs/direct-chat-architecture.md) for provider dependencies, model routing, authentication, streaming and production verification.

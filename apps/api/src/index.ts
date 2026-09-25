@@ -15,7 +15,7 @@ if (githubAppConfigured()) {
   console.log(`[orlynx-api] GitHub App is NOT fully configured (missing: ${missing.join(', ') || 'invalid ORLYNX_PUBLIC_URL'}). GitHub routes fail closed until server secrets are set.`);
 }
 
-warmOpenCodeProviderLayer();
+await warmOpenCodeProviderLayer();
 
 const server = http.createServer(app);
 attachBridgeGateway(server);

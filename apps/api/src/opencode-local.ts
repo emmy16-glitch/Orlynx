@@ -1,187 +1,132 @@
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { openCodeAccountKey } from './zen.js';
+import { createHash } from 'node:crypto';
+import type { LanguageModel, ModelMessage } from 'ai';
+import { savedOpenCodeAccountKey } from './zen.js';
+import { openCodeCatalog, resolveAuth, resolveModel } from './opencode-catalog.js';
 
-type ModelProviderConfig = {
-  npm?: string;
-  api?: string;
-  shape?: 'responses' | 'completions';
-  headers?: Record<string, string>;
-};
+const providers = new Map<string, { expires: number; language: Promise<LanguageModel> }>();
+const MAX_PROVIDERS = 64;
 
-type CatalogModel = {
-  id: string;
-  name?: string;
-  cost?: { input?: number; output?: number };
-  provider?: ModelProviderConfig;
-};
-
-type CatalogProvider = {
-  id: string;
-  npm: string;
-  api?: string;
-  models: Record<string, CatalogModel>;
-};
-
-const require = createRequire(import.meta.url);
-const AI_ROOT = path.join(process.cwd(), '.render-ai');
-const moduleCache = new Map<string, Promise<any>>();
-let catalogPromise: Promise<CatalogProvider> | undefined;
-
-function isFree(model: CatalogModel): boolean {
-  return Number(model.cost?.input ?? -1) === 0 && Number(model.cost?.output ?? -1) === 0;
-}
-
-function fallbackNpm(modelId: string): string {
-  const id = modelId.toLowerCase();
-  if (/^(gpt-|o[134]-|muse-|grok-)/.test(id)) return '@ai-sdk/openai';
-  if (/^(claude-|qwen3\.[5-8]-)/.test(id)) return '@ai-sdk/anthropic';
-  if (/^(gemini-|gemma-)/.test(id)) return '@ai-sdk/google';
-  return '@ai-sdk/openai-compatible';
-}
-
-async function importAiPackage(name: string): Promise<any> {
-  let pending = moduleCache.get(name);
-  if (!pending) {
-    pending = (async () => {
-      const resolved = require.resolve(name, { paths: [AI_ROOT, process.cwd()] });
-      return import(pathToFileURL(resolved).href);
-    })();
-    moduleCache.set(name, pending);
+async function initialize(npm: string, baseURL: string, apiKey: string, id: string): Promise<LanguageModel> {
+  const options = { name: 'opencode', baseURL, apiKey };
+  switch (npm) {
+    case '@ai-sdk/openai':
+      return (await import('@ai-sdk/openai')).createOpenAI(options).languageModel(id);
+    case '@ai-sdk/anthropic':
+      return (await import('@ai-sdk/anthropic')).createAnthropic(options).languageModel(id);
+    case '@ai-sdk/google':
+      return (await import('@ai-sdk/google')).createGoogleGenerativeAI(options).languageModel(id);
+    case '@ai-sdk/openai-compatible':
+      return (await import('@ai-sdk/openai-compatible')).createOpenAICompatible({ ...options, includeUsage: true }).languageModel(id);
+    default:
+      throw new Error(`The selected model requires provider package ${npm}, which is not installed in Orlynx.`);
   }
-  return pending;
 }
 
-async function openCodeCatalog(): Promise<CatalogProvider> {
-  if (!catalogPromise) {
-    catalogPromise = (async () => {
-      const response = await fetch('https://models.dev/api.json', {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
-      const providers = await response.json() as Record<string, CatalogProvider>;
-      const provider = providers.opencode;
-      if (!provider?.models) throw new Error('OpenCode provider metadata is unavailable from models.dev.');
-      return provider;
-    })().catch((error) => {
-      catalogPromise = undefined;
-      throw error;
-    });
-  }
-  return catalogPromise;
+export async function verifyProviderRuntime(): Promise<void> {
+  // Literal imports are resolved through real API production dependencies. This
+  // runs against compiled JS in CI and Render, not just against TypeScript.
+  await Promise.all([
+    import('ai'), import('@ai-sdk/openai'), import('@ai-sdk/openai-compatible'),
+    import('@ai-sdk/anthropic'), import('@ai-sdk/google'),
+  ]);
 }
 
-export function warmOpenCodeProviderLayer(): void {
-  void Promise.all([
-    openCodeCatalog(),
-    importAiPackage('ai'),
-    importAiPackage('@ai-sdk/openai-compatible'),
-    importAiPackage('@ai-sdk/openai'),
-    importAiPackage('@ai-sdk/anthropic'),
-    importAiPackage('@ai-sdk/google'),
-  ]).catch(() => {});
+export async function warmOpenCodeProviderLayer(): Promise<void> {
+  openCodeCatalog();
+  await verifyProviderRuntime();
 }
 
-async function languageModel(input: { userId: string; modelId: string }) {
-  const id = input.modelId.replace(/^opencode\//, '');
-  let provider: CatalogProvider | undefined;
-  let model: CatalogModel | undefined;
-
-  try {
-    provider = await openCodeCatalog();
-    model = provider.models[id];
-  } catch {
-    // The live catalog is a routing aid, not a hard dependency. OpenCode Zen's
-    // default provider is OpenAI-compatible, so retain a safe fallback.
+export class ProviderRequestError extends Error {
+  constructor(message: string, readonly statusCode?: number, readonly publicAccess = false) {
+    super(message);
+    this.name = 'ProviderRequestError';
   }
+}
 
-  const npm = model?.provider?.npm || provider?.npm || fallbackNpm(id);
-  const baseURL = model?.provider?.api || provider?.api || 'https://opencode.ai/zen/v1';
-  const free = model ? isFree(model) : /-free$|-contributor-free$|^big-pickle$/i.test(id);
-  const apiKey = free ? 'public' : await openCodeAccountKey(input.userId);
-  const headers = model?.provider?.headers || {};
-
-  let sdk: any;
-  if (npm === '@ai-sdk/openai') {
-    const mod = await importAiPackage('@ai-sdk/openai');
-    sdk = mod.createOpenAI({ name: 'opencode', baseURL, apiKey, headers });
-  } else if (npm === '@ai-sdk/anthropic') {
-    const mod = await importAiPackage('@ai-sdk/anthropic');
-    sdk = mod.createAnthropic({ name: 'opencode', baseURL, apiKey, headers });
-  } else if (npm === '@ai-sdk/google') {
-    const mod = await importAiPackage('@ai-sdk/google');
-    sdk = mod.createGoogleGenerativeAI({ name: 'opencode', baseURL, apiKey, headers });
-  } else if (npm === '@ai-sdk/openai-compatible') {
-    const mod = await importAiPackage('@ai-sdk/openai-compatible');
-    sdk = mod.createOpenAICompatible({
-      name: 'opencode',
-      baseURL,
-      apiKey,
-      headers,
-      includeUsage: true,
-    });
-  } else {
-    throw new Error(`OpenCode model ${id} uses unsupported provider package ${npm}.`);
-  }
-
-  const language = typeof sdk.languageModel === 'function'
-    ? sdk.languageModel(id)
-    : typeof sdk === 'function'
-      ? sdk(id)
-      : undefined;
-  if (!language) throw new Error(`OpenCode could not initialize model ${id}.`);
-  return { language, free, id };
+function safeProviderError(error: unknown, publicAccess: boolean): ProviderRequestError {
+  const status = typeof error === 'object' && error !== null && 'statusCode' in error
+    ? Number(error.statusCode) : undefined;
+  const validStatus = status && Number.isFinite(status) ? status : undefined;
+  // Provider errors may embed request bodies or headers; never send those into
+  // the event ledger/browser/logs. Retain only the numeric upstream status.
+  const message = validStatus === 429 ? 'The selected model is temporarily rate limited (HTTP 429).'
+    : validStatus === 401 && !publicAccess ? 'OpenCode rejected the saved credential (HTTP 401). Reconnect OpenCode.'
+    : validStatus === 401 || validStatus === 403 ? `OpenCode rejected ${publicAccess ? 'public access' : 'this request'} (HTTP ${validStatus}).`
+    : validStatus === 404 ? 'The selected model is temporarily unavailable (HTTP 404).'
+    : validStatus ? `The model provider returned HTTP ${validStatus}.`
+    : 'The connection to the model failed or timed out. Try again.';
+  return new ProviderRequestError(message, validStatus, publicAccess);
 }
 
 export async function streamWithOfficialOpenCode(input: {
   runtimeKey: string;
+  requestId?: string;
   userId: string;
   modelId: string;
   system: string;
-  prompt: string;
+  messages: { role: 'user' | 'assistant'; content: string }[];
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
+  onTiming?: (stage: string, ms: number) => void;
 }): Promise<string> {
+  input.signal.throwIfAborted();
+  const started = performance.now();
+  const resolved = resolveModel(openCodeCatalog(), input.modelId);
+  const auth = resolveAuth(resolved.free, await savedOpenCodeAccountKey(input.userId));
+  input.signal.throwIfAborted();
+  // Scope cached clients to user + credential fingerprint. Rotation cannot reuse
+  // the old client. Never log this fingerprint or the credential.
+  const fingerprint = createHash('sha256').update(auth.apiKey).digest('hex');
+  const cacheKey = JSON.stringify([input.userId, fingerprint, resolved.npm, resolved.baseURL, resolved.id]);
+  let cached = providers.get(cacheKey);
+  if (!cached || cached.expires < Date.now()) {
+    if (providers.size >= MAX_PROVIDERS) providers.delete(providers.keys().next().value!);
+    const language = initialize(resolved.npm, resolved.baseURL, auth.apiKey, resolved.id);
+    cached = { expires: Date.now() + 10 * 60_000, language };
+    providers.set(cacheKey, cached);
+    void language.catch(() => providers.delete(cacheKey));
+  }
+  const [{ streamText }, model] = await Promise.all([import('ai'), cached.language]);
+  input.signal.throwIfAborted();
+  input.onTiming?.('providerInitMs', performance.now() - started);
   input.onStatus?.('Thinking…');
-  const [{ streamText }, resolved] = await Promise.all([
-    importAiPackage('ai'),
-    languageModel({ userId: input.userId, modelId: input.modelId }),
-  ]);
-
+  const requested = performance.now();
+  input.onTiming?.('modelRequestStartedMs', requested - started);
+  const signal = AbortSignal.any([input.signal, AbortSignal.timeout(5 * 60_000)]);
   let full = '';
+  let first = true;
   try {
     const result = streamText({
-      model: resolved.language,
+      model,
       system: input.system,
-      prompt: input.prompt,
-      abortSignal: input.signal,
+      messages: input.messages as ModelMessage[],
+      abortSignal: signal,
       maxRetries: 2,
+      maxOutputTokens: Math.min(resolved.model.limit?.output || 8192, 8192),
+      // Text-only direct chat uses the provider defaults for reasoning. No
+      // guessed model-name switches or forced high reasoning budgets.
+      providerOptions: resolved.npm === '@ai-sdk/openai'
+        ? { openai: { store: false, promptCacheKey: input.runtimeKey } } : undefined,
+      headers: { 'x-opencode-session': input.runtimeKey, 'x-opencode-request': input.requestId || input.runtimeKey, 'x-opencode-client': 'orlynx', 'User-Agent': 'orlynx/1.0' },
     });
-
-    for await (const delta of result.textStream) {
-      if (!delta) continue;
-      full += delta;
-      input.onDelta(delta);
+    for await (const part of result.fullStream) {
+      input.signal.throwIfAborted();
+      if (part.type === 'error') throw part.error;
+      if (part.type === 'abort') throw signal.reason || new Error('Aborted');
+      if (part.type !== 'text-delta' || !part.text) continue;
+      if (first) { first = false; input.onTiming?.('timeToFirstTokenMs', performance.now() - requested); }
+      full += part.text;
+      input.onDelta(part.text);
     }
-
-    if (!full.trim()) {
-      const finalText = String(await result.text || '');
-      if (finalText) {
-        full = finalText;
-        input.onDelta(finalText);
-      }
-    }
+    input.signal.throwIfAborted();
+    if (!full.trim()) throw new ProviderRequestError('The selected model returned no visible text.', undefined, auth.publicAccess);
+    return full;
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    if (resolved.free && /403|forbidden|unauthorized/i.test(detail)) {
-      throw new Error(`OpenCode rejected the public route for ${resolved.id}. The model is free, so this is not a paid-account quota or credential error. ${detail}`);
-    }
-    throw error;
+    if (input.signal.aborted) throw input.signal.reason;
+    if (error instanceof ProviderRequestError) throw error;
+    throw safeProviderError(error, auth.publicAccess);
+  } finally {
+    input.onTiming?.('providerTotalMs', performance.now() - started);
   }
-
-  if (!full.trim()) throw new Error('OpenCode completed without returning visible text.');
-  return full;
 }

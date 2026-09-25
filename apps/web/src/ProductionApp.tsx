@@ -3,7 +3,7 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
-import { toActivities } from './ui/mapping';
+import { toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -662,9 +662,11 @@ export default function ProductionApp() {
     } catch (error: any) { setError(error.message || 'AI preference could not be saved.'); }
   }
 
+  const submittingRef = useRef(false);
   async function sendMessage() {
-    if (!session || !composer.trim() || sending || !online) return;
+    if (!session || !composer.trim() || submittingRef.current || sending || !online) return;
     if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return; }
+    submittingRef.current = true;
     setSending(true); setError('');
     const text = composer.trim(); const clientId = uid();
     try {
@@ -674,7 +676,7 @@ export default function ProductionApp() {
       if (result.plane === 'direct') setWorkspaceReadNotice('');
       await refreshSession(session.id);
     } catch (error: any) { setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI')); }
-    finally { setSending(false); }
+    finally { submittingRef.current = false; setSending(false); }
   }
 
   async function startCloud(reconnect = false, targetSessionId?: string) {
@@ -871,7 +873,7 @@ export default function ProductionApp() {
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">Working</span></div><div className="message-text">{draftReply}<span className="stream-caret" /></div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!events.length && <div className="workstream-wrap"><ActivityList activities={activities.filter((item: any) => item.state !== 'fail')} /></div>}
+                {!!events.length && <div className="workstream-wrap"><ActivityList activities={chatActivities(activities)} /></div>}
                 {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
                 {lastRun?.state === 'completed' && lastRun?.model && <p className="run-receipt">Completed with {lastRun.model}</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {

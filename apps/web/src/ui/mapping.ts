@@ -310,3 +310,8 @@ export function runTone(state: string): { tone: 'work' | 'ok' | 'fail' | 'wait' 
 }
 
 export { toState };
+
+/** The conversation owns one current error card; the ledger keeps history. */
+export function chatActivities(items: ActivityItem[]): ActivityItem[] {
+  return items.filter((item) => item.state !== 'failed' && item.category !== 'error');
+}
