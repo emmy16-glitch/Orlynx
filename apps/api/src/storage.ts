@@ -58,6 +58,7 @@ export interface ControlPlaneRepository {
   listTasks(sessionId: string): Promise<TaskRecord[]>;
   getTask(id: string): Promise<TaskRecord | null>;
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
+  claimQueuedTask(sessionId: string, taskId: string): Promise<TaskRecord | null>;
   putWorkspace(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
@@ -265,6 +266,22 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       SET state='running', updated_at=now()
       WHERE id IN (SELECT id FROM candidate)
       RETURNING *
+    `)[0];
+    return row ? mapTask(row) : null;
+  }
+  async claimQueuedTask(sessionId: string, taskId: string) {
+    await this.initialize();
+    const row = rows<Record<string, unknown>>(await this.sql`
+      UPDATE tasks queued
+      SET state='running', updated_at=now()
+      WHERE queued.id=${taskId}
+        AND queued.session_id=${sessionId}
+        AND queued.state='queued'
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks active
+          WHERE active.session_id=${sessionId} AND active.state='running'
+        )
+      RETURNING queued.*
     `)[0];
     return row ? mapTask(row) : null;
   }
