@@ -136,6 +136,36 @@ test('runtime 403 preserves status and is not classified as paid quota or expire
   });
 });
 
+test('legacy title-only OpenCode sessions are not reused', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  let creates = 0;
+  mockFetch(t, async (url, init = {}) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) {
+      return Response.json([{ id: 'legacy-session', title: 'Orlynx test-session' }]);
+    }
+    if (value === 'https://runtime.test/session') {
+      creates++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.metadata.orlynxConversationId, 'test-session');
+      return Response.json({ id: 'clean-session', metadata: body.metadata });
+    }
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'clean-session', field: 'text', delta: 'Clean' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'clean-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/clean-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  assert.equal(await streamWithOfficialOpenCode(input()), 'Clean');
+  assert.equal(creates, 1);
+});
+
 test('free runtime reuses one OpenCode session and sends only the newest user turn', async (t) => {
   configureRuntime(t);
   const encoder = new TextEncoder();

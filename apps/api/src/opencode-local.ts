@@ -131,8 +131,11 @@ async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal
   const title = `Orlynx ${runtimeKey}`;
   const query = new URLSearchParams({ search: title, limit: '20' });
   const sessions = await runtimeJson<any[]>(`/session?${query.toString()}`, { signal }, 10_000).catch(() => []);
+  // Only sessions created by the clean session-based adapter are safe to
+  // recover. Older title-only sessions may contain the legacy flattened
+  // "Conversation so far" prompt and must not be reused.
   const existing = sessions.find((session) =>
-    session?.metadata?.orlynxConversationId === runtimeKey || session?.title === title
+    session?.metadata?.orlynxConversationId === runtimeKey
   );
   const sessionID = String(existing?.id || '');
   if (sessionID) {
