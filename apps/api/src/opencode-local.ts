@@ -5,6 +5,12 @@ import { openCodeCatalog, resolveAuth, resolveModel } from './opencode-catalog.j
 
 const providers = new Map<string, { expires: number; language: Promise<LanguageModel> }>();
 const MAX_PROVIDERS = 64;
+const runtimeSessions = new Map<string, string>();
+const MAX_RUNTIME_SESSIONS = 256;
+
+export function resetOpenCodeRuntimeSessionsForTests(): void {
+  runtimeSessions.clear();
+}
 
 async function initialize(npm: string, baseURL: string, apiKey: string, id: string): Promise<LanguageModel> {
   const options = { name: 'opencode', baseURL, apiKey };
@@ -118,6 +124,41 @@ async function runtimeJson<T>(pathname: string, init: RequestInit = {}, timeoutM
   return response.json() as Promise<T>;
 }
 
+async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal): Promise<string> {
+  const cached = runtimeSessions.get(runtimeKey);
+  if (cached) return cached;
+
+  const title = `Orlynx ${runtimeKey}`;
+  const query = new URLSearchParams({ search: title, limit: '20' });
+  const sessions = await runtimeJson<any[]>(`/session?${query.toString()}`, { signal }, 10_000).catch(() => []);
+  const existing = sessions.find((session) =>
+    session?.metadata?.orlynxConversationId === runtimeKey || session?.title === title
+  );
+  const sessionID = String(existing?.id || '');
+  if (sessionID) {
+    if (runtimeSessions.size >= MAX_RUNTIME_SESSIONS) runtimeSessions.delete(runtimeSessions.keys().next().value!);
+    runtimeSessions.set(runtimeKey, sessionID);
+    return sessionID;
+  }
+
+  const created = await runtimeJson<any>('/session', {
+    method: 'POST',
+    body: JSON.stringify({
+      title,
+      metadata: {
+        orlynxConversationId: runtimeKey,
+        source: 'orlynx-direct-chat',
+      },
+    }),
+    signal,
+  });
+  const createdID = String(created?.id || '');
+  if (!createdID) throw new ProviderRequestError('OpenCode runtime did not create a session.', 502, true);
+  if (runtimeSessions.size >= MAX_RUNTIME_SESSIONS) runtimeSessions.delete(runtimeSessions.keys().next().value!);
+  runtimeSessions.set(runtimeKey, createdID);
+  return createdID;
+}
+
 async function streamFreeModelThroughOpenCodeRuntime(input: {
   runtimeKey: string;
   requestId?: string;
@@ -133,14 +174,7 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   input.signal.throwIfAborted();
   input.onStatus?.('Thinking…');
 
-  const created = await runtimeJson<any>('/session', {
-    method: 'POST',
-    body: JSON.stringify({ title: `Orlynx ${input.runtimeKey}` }),
-    signal: input.signal,
-  });
-  const sessionID = String(created?.id || '');
-  if (!sessionID) throw new ProviderRequestError('OpenCode runtime did not create a session.', 502, true);
-
+  const sessionID = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);
   input.onTiming?.('providerInitMs', performance.now() - started);
 
   const eventResponse = await runtimeFetch('/event', {
@@ -151,24 +185,25 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     throw new ProviderRequestError(`OpenCode event stream returned HTTP ${eventResponse.status}.`, eventResponse.status, true);
   }
 
-  const transcript = input.messages
-    .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'User'}: ${message.content}`)
-    .join('\n\n');
-  const prompt = transcript
-    ? `Conversation so far:\n\n${transcript}\n\nRespond naturally to the latest user message. Do not repeat the transcript.`
-    : 'Respond naturally to the user.';
+  const prompt = [...input.messages].reverse().find((message) => message.role === 'user')?.content.trim() || '';
+  if (!prompt) throw new ProviderRequestError('No user message was available for this turn.', 400, true);
 
   const requested = performance.now();
-  await runtimeJson<void>(`/session/${encodeURIComponent(sessionID)}/prompt_async`, {
-    method: 'POST',
-    body: JSON.stringify({
-      model: { providerID: 'opencode', modelID: input.modelId.replace(/^opencode\//, '') },
-      agent: 'plan',
-      system: input.system,
-      parts: [{ type: 'text', text: prompt }],
-    }),
-    signal: input.signal,
-  }, 30_000);
+  try {
+    await runtimeJson<void>(`/session/${encodeURIComponent(sessionID)}/prompt_async`, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: { providerID: 'opencode', modelID: input.modelId.replace(/^opencode\//, '') },
+        agent: 'plan',
+        system: input.system,
+        parts: [{ type: 'text', text: prompt }],
+      }),
+      signal: input.signal,
+    }, 30_000);
+  } catch (error) {
+    if (error instanceof ProviderRequestError && error.statusCode === 404) runtimeSessions.delete(input.runtimeKey);
+    throw error;
+  }
   input.onTiming?.('modelRequestStartedMs', performance.now() - started);
 
   const abortRemote = () => {

@@ -48,6 +48,13 @@ function repoUpdatedLabel(value?: string) {
   return `Updated ${new Date(stamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
 }
 
+function visibleChatText(role: string, text: string): string {
+  if (role !== 'assistant') return text;
+  const marker = 'Respond naturally to the latest user message. Do not repeat the transcript.';
+  const index = text.lastIndexOf(marker);
+  return index >= 0 ? text.slice(index + marker.length).trim() : text;
+}
+
 export default function ProductionApp() {
   const [page, setPage] = useState<Page>('welcome');
   const [tab, setTab] = useState<Tab>('chat');
@@ -874,6 +881,15 @@ export default function ProductionApp() {
   const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
   const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
   const activities = useMemo(() => toActivities(events), [events]);
+  const currentChatActivities = useMemo(() => {
+    if (!lastRun?.id) return [];
+    const current = chatActivities(activities).filter((item: any) => item.runId === lastRun.id);
+    if (lastRun.plane === 'direct') {
+      if (draftReply || lastRun.state === 'completed') return [];
+      return current.filter((item: any) => item.state === 'running' || item.state === 'waiting' || item.state === 'queued');
+    }
+    return current;
+  }, [activities, draftReply, lastRun?.id, lastRun?.plane, lastRun?.state]);
   const running = lastRun?.state === 'running' || activities.some((event) => event.state === 'running');
   const globalNav = [
     ['home', 'Home', 'home'], ['projects', 'Projects', 'folder'], ['settings', 'Settings', 'settings'],
@@ -919,13 +935,13 @@ export default function ProductionApp() {
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
                   </div>
                 </div></div>}
-                {messages.map((message) => <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{message.text}</div></div></article>)}
-                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Working' : 'Partial response'}</span></div><div className="message-text">{draftReply}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
+                {messages.map((message) => <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text)}</div></div></article>)}
+                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{draftReply}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!events.length && <div className="workstream-wrap"><ActivityList activities={chatActivities(activities)} /></div>}
+                {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} /></div>
                 {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
-                {lastRun?.state === 'completed' && lastRun?.model && <p className="run-receipt">Completed with {lastRun.model}</p>}
+                {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
                   const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota|OpenCode/i.test(String(failure?.summary || ''));
