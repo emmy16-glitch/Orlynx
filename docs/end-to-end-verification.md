@@ -108,3 +108,14 @@ backend exists.
 
 Additional agent runtimes are also not claimed as implemented. OpenCode is the
 production runtime behind the adapter boundary.
+
+
+## AI session routing regression
+
+For a restored durable project session, verify that model/status requests stay bound to that exact session workspace:
+
+- open the same repository in more than one historical session;
+- restore the newest session in a fresh browser/serverless invocation;
+- confirm the model picker loads through `/v1/ai/overview?sessionId=...` without a transient `session not found` state;
+- select a model through `/v1/ai/session/:id` and confirm it persists;
+- send a task and confirm readiness/model discovery uses that session's workspace rather than another workspace for the same repository.
