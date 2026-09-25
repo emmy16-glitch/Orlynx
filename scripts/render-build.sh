@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-npm ci
+npm ci --include=dev
 npm run build
 
 GH_VERSION="${GH_VERSION:-2.80.0}"
