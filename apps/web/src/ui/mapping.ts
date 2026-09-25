@@ -246,7 +246,7 @@ function friendlyFailure(raw: string): string | undefined {
   if (/AI workspace connection was interrupted/i.test(raw)) return 'The AI workspace connection was interrupted. Reconnect and try again.';
   if (/previous AI task stopped responding/i.test(raw)) return 'The previous AI task stopped responding and was released. You can try again.';
   if (/current access level does not allow/i.test(raw)) return 'The current access level does not allow this task.';
-  if (/timeout|timed out/i.test(raw)) return 'The request timed out. Try again.';
+  if (/timeout|timed out/i.test(raw)) return 'The command timed out. The process may still be running.';
   if (/ECONNREFUSED|curl.*exit code 7|curl:\s*\(7\)/i.test(raw)) return 'The service health check could not connect.';
   if (/duplicate.message|duplicate message/i.test(raw)) return 'Duplicate-message handling needs attention.';
   if (/selected model finished without returning visible text/i.test(raw)) return 'The model returned no visible response. Try again or choose another model.';
