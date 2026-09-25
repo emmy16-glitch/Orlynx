@@ -56,8 +56,7 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'run.queued': {
         const buildWorkspace = p.mode === 'build' && p.plane === 'workspace';
         const title = buildWorkspace ? 'Waiting to start Build task' : p.mode === 'plan' ? 'Waiting to start planning' : 'Queued';
-        const item = put(event, 'agent', 'queued', title, typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically',
-          { ...(str(p.mode) ? { mode: str(p.mode) } : {}), ...(str(p.plane) ? { plane: str(p.plane) } : {}) });
+        const item = put(event, 'agent', 'queued', title, typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically');
         item.key = `agent:${event.runId || 'session'}`;
         break;
       }
@@ -216,8 +215,7 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'workspace.preparing': case 'workspace.reconnecting': {
         const message = str(p.message);
         put(event, 'cloud', 'running', event.type === 'workspace.preparing' ? 'Preparing workspace' : 'Reconnecting to workspace',
-          message && !/^Preparing workspace/i.test(message) ? message : undefined,
-          { ...(str(p.stage) ? { stage: str(p.stage) } : {}) });
+          message && !/^Preparing workspace/i.test(message) ? message : undefined);
         break;
       }
       case 'workspace.ready': {
