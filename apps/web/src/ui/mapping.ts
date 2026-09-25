@@ -15,11 +15,13 @@ const compact = (value: string, max = 96): string => {
 function toolEvidence(p: Record<string, unknown>, tool: string, command: string): Record<string, unknown> {
   const title = str(p.title);
   const path = str(p.path);
+  const code = str(p.code);
   return {
     ...(tool ? { tool } : {}),
     ...(title ? { toolTitle: title } : {}),
     ...(command ? { command } : {}),
     ...(path ? { path } : {}),
+    ...(code ? { code } : {}),
   };
 }
 
@@ -186,10 +188,10 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         item.state = 'success';
         item.title = 'Code changes ready';
         item.summary = `${typeof p.count === 'number' ? p.count : files.length} file${(typeof p.count === 'number' ? p.count : files.length) === 1 ? '' : 's'} changed`;
-        item.evidence = { files, ...(str(p.changeId) ? { changeId: str(p.changeId) } : {}) };
+        item.evidence = files.length ? { files, ...(str(p.changeId) ? { changeId: str(p.changeId) } : {}) } : undefined;
         item.rawRef = event.eventId ? `event:${event.eventId}` : item.rawRef;
         item.sequence = event.sequence || item.sequence;
-        item.collapsible = true;
+        item.collapsible = files.length > 0;
         break;
       }
       case 'receipt.created': {
