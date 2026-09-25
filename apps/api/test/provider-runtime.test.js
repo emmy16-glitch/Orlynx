@@ -33,10 +33,16 @@ function runtimeAuth(init) {
   return new Headers(init?.headers).get('authorization');
 }
 
-function mockFetch(t, handler) {
+function mockFetch(t, handler, healthHandler) {
   const original = globalThis.fetch;
-  globalThis.fetch = async (url, init) => String(url).includes('models.dev')
-    ? Response.json({ opencode: snapshot }) : handler(url, init);
+  globalThis.fetch = async (url, init) => {
+    const value = String(url);
+    if (value.includes('models.dev')) return Response.json({ opencode: snapshot });
+    if (value === 'https://runtime.test/global/health') {
+      return healthHandler ? healthHandler(url, init) : Response.json({ healthy: true, version: 'test' });
+    }
+    return handler(url, init);
+  };
   setControlPlaneRepositoryForTests({ getProviderConnection: async () => null });
   t.after(() => { globalThis.fetch = original; setControlPlaneRepositoryForTests(undefined); });
 }
@@ -136,6 +142,95 @@ test('runtime 403 preserves status and is not classified as paid quota or expire
   });
 });
 
+test('sleeping free runtime is awaited before the chat session is created', async (t) => {
+  configureRuntime(t);
+  const previousPoll = process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+  process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = '0';
+  t.after(() => {
+    if (previousPoll === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+    else process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = previousPoll;
+  });
+
+  const encoder = new TextEncoder();
+  let healthCalls = 0;
+  const statuses = [];
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'awake-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'awake-session', field: 'text', delta: 'Awake' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'awake-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/awake-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  }, async () => {
+    healthCalls++;
+    return healthCalls === 1
+      ? new Response('starting', { status: 502 })
+      : Response.json({ healthy: true, version: 'test' });
+  });
+
+  assert.equal(await streamWithOfficialOpenCode({ ...input(), onStatus: (value) => statuses.push(value) }), 'Awake');
+  assert.equal(healthCalls, 2);
+  assert.ok(statuses.includes('Starting AI runtime…'));
+});
+
+test('lost cached OpenCode session is recreated with durable conversation context', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  let createCount = 0;
+  let secondTurn = false;
+  let restoredSystem = '';
+
+  mockFetch(t, async (url, init = {}) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') {
+      createCount++;
+      return Response.json({ id: createCount === 1 ? 'first-session' : 'recovered-session' });
+    }
+    if (value === 'https://runtime.test/session/first-session') {
+      secondTurn = true;
+      return new Response('gone', { status: 404 });
+    }
+    if (value === 'https://runtime.test/event') {
+      const id = secondTurn ? 'recovered-session' : 'first-session';
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: id, field: 'text', delta: 'OK' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: id, status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/first-session/prompt_async') return new Response(null, { status: 204 });
+    if (value === 'https://runtime.test/session/recovered-session/prompt_async') {
+      restoredSystem = JSON.parse(init.body).system;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  const base = input();
+  await streamWithOfficialOpenCode({ ...base, messages: [{ role: 'user', content: 'First question' }] });
+  await streamWithOfficialOpenCode({
+    ...base,
+    messages: [
+      { role: 'user', content: 'First question' },
+      { role: 'assistant', content: 'First answer' },
+      { role: 'user', content: 'Second question' },
+    ],
+  });
+
+  assert.equal(createCount, 2);
+  assert.match(restoredSystem, /orlynx_durable_history_json/);
+  assert.match(restoredSystem, /First question/);
+  assert.match(restoredSystem, /First answer/);
+  assert.doesNotMatch(restoredSystem, /Second question/);
+});
+
 test('legacy title-only OpenCode sessions are not reused', async (t) => {
   configureRuntime(t);
   const encoder = new TextEncoder();
@@ -178,6 +273,7 @@ test('free runtime reuses one OpenCode session and sends only the newest user tu
       creates++;
       return Response.json({ id: 'shared-session' });
     }
+    if (value === 'https://runtime.test/session/shared-session') return Response.json({ id: 'shared-session' });
     if (value === 'https://runtime.test/event') {
       return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'shared-session', field: 'text', delta: 'OK' })));
