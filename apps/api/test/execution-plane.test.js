@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionPlaneFor } from '../src/direct-chat.ts';
-import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
+import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, workspaceOpenCodePublicAccess } from '../src/agents.ts';
 
 test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
@@ -53,4 +53,11 @@ test('stale delayed Build work expires instead of executing much later', () => {
   assert.equal(delayedWorkspaceTaskExpired(oldQueued, now), true);
   assert.equal(delayedWorkspaceTaskExpired(recentlyQueued, now), false);
   assert.equal(delayedWorkspaceTaskExpired(delayedRunning, now), true);
+});
+
+
+test('free OpenCode workspace models use public auth instead of a saved account key', () => {
+  assert.equal(workspaceOpenCodePublicAccess('opencode/muse-spark-1.3-contributor-free'), true);
+  assert.equal(workspaceOpenCodePublicAccess('opencode/muse-spark-1.3'), false);
+  assert.equal(workspaceOpenCodePublicAccess('anthropic/claude-sonnet-4'), undefined);
 });

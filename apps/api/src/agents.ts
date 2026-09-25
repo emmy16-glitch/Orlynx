@@ -11,6 +11,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { openCodeReadiness } from './opencode.js';
 import { ProviderRequestError } from './opencode-local.js';
+import { openCodeCatalog, resolveModel } from './opencode-catalog.js';
 import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
 
 export type Engine = 'opencode';
@@ -38,6 +39,12 @@ export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefine
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
   return Boolean(workspace && workspace.state === 'ready' && workspace.bridgeState === 'ready');
+}
+
+export function workspaceOpenCodePublicAccess(modelId: string): boolean | undefined {
+  if (!modelId.toLowerCase().startsWith('opencode/')) return undefined;
+  try { return resolveModel(openCodeCatalog(), modelId).free; }
+  catch { return undefined; }
 }
 
 export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()): boolean {
@@ -320,6 +327,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
     const provider = providerID;
     const model = { providerID, modelID: rest.join('/') };
+    const openCodePublicAccess = workspaceOpenCodePublicAccess(modelId);
     const startedAt = new Date().toISOString();
 
     if (!run) {
@@ -389,7 +397,16 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       task.prompt,
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getEngineSession(sessionId);
-    await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
+    await queueBridgeCommand(workspace.id, 'agent.run', {
+      taskId: task.id,
+      runId: run.id,
+      sessionId,
+      engineSessionId,
+      text: guardedText,
+      model,
+      agent: resolvedAgent.agent,
+      ...(openCodePublicAccess !== undefined ? { openCodePublicAccess } : {}),
+    }, timeoutMs);
     return run;
   } catch (error) {
     const now = new Date().toISOString();

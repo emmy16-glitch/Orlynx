@@ -26,6 +26,8 @@ const terminals = new Map<string, PtyState>();
 const completed = new Map<string, CommandReply>();
 const inFlight = new Map<string, InFlightCommand>();
 const activeAgents = new Map<string, string>();
+type OpenCodeAuthMode = 'public' | 'account';
+let openCodeAuthMode: OpenCodeAuthMode | undefined;
 try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, CommandReply>)) completed.set(id, value); } catch {}
 function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
@@ -117,22 +119,67 @@ function stopStaleOpenCode(): boolean {
   }
   return stopped;
 }
-async function startOpenCode(): Promise<{ state: 'ready' | 'failed'; reason?: string }> {
+async function waitForOpenCodeToStop(): Promise<boolean> {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (await openCodeHealth() === 'unavailable') return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return (await openCodeHealth()) === 'unavailable';
+}
+
+async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRestart = false): Promise<{ state: 'ready' | 'failed'; reason?: string }> {
+  if (forceRestart) {
+    stopStaleOpenCode();
+    if (!(await waitForOpenCodeToStop())) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+    openCodeAuthMode = undefined;
+  }
+
   const initialHealth = await openCodeHealth();
   if (initialHealth === 'ready') return { state: 'ready' };
   if (initialHealth === 'unauthorized') {
     if (!stopStaleOpenCode()) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      if (await openCodeHealth() === 'unavailable') break;
-    }
-    if (await openCodeHealth() !== 'unavailable') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+    if (!(await waitForOpenCodeToStop())) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
   }
+  if (useAccountKey && !OPENCODE_API_KEY) return { state: 'failed', reason: 'account_key_unavailable' };
   if (spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return { state: 'failed', reason: 'binary_unavailable' };
-  const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], { cwd: REPO_ROOT, detached: true, stdio: 'ignore', env: cleanEnvironment({ OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD, ...(OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}) }) });
+
+  const child = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], {
+    cwd: REPO_ROOT,
+    detached: true,
+    stdio: 'ignore',
+    env: cleanEnvironment({
+      OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD,
+      ...(useAccountKey && OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}),
+    }),
+  });
   child.unref();
-  for (let attempt = 0; attempt < 30; attempt++) { await new Promise((resolve) => setTimeout(resolve, 1_000)); const health = await openCodeHealth(); if (health === 'ready') return { state: 'ready' }; if (health === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' }; }
+
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const health = await openCodeHealth();
+    if (health === 'ready') {
+      openCodeAuthMode = useAccountKey ? 'account' : 'public';
+      return { state: 'ready' };
+    }
+    if (health === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
+  }
   return { state: 'failed', reason: 'startup_timeout' };
+}
+
+async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
+  const desired: OpenCodeAuthMode = publicAccess ? 'public' : 'account';
+  if (desired === 'account' && !OPENCODE_API_KEY) {
+    throw new Error('Connect your OpenCode account before using this paid model.');
+  }
+  if (openCodeAuthMode === desired && await openCodeHealth() === 'ready') return false;
+
+  const started = await startOpenCode(desired === 'account', true);
+  if (started.state !== 'ready') {
+    throw new Error(started.reason === 'account_key_unavailable'
+      ? 'Connect your OpenCode account before using this paid model.'
+      : 'OpenCode could not switch authentication mode in the Codespace.');
+  }
+  return true;
 }
 async function opencodeRequest(payload: Record<string, unknown>) {
   const method = String(payload.method || 'GET').toUpperCase();
@@ -226,6 +273,10 @@ function assistantText(message: { parts?: Array<Record<string, any>> } | undefin
 async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
   let engineSessionId = String(payload.engineSessionId || '');
+  if (typeof payload.openCodePublicAccess === 'boolean') {
+    const restarted = await ensureOpenCodeAuthMode(payload.openCodePublicAccess);
+    if (restarted) engineSessionId = '';
+  }
   if (!engineSessionId) {
     const created = await opencodeRequest({ path: '/session', method: 'POST', body: { title: `Orlynx ${String(payload.sessionId || '')}` } }) as { body?: { id?: string } };
     engineSessionId = String(created.body?.id || ''); if (!engineSessionId) throw new Error('OpenCode did not create a session.');

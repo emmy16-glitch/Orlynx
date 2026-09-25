@@ -6,9 +6,15 @@ import { spawn } from 'node:child_process';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 type Values = { bridgeToken: string; connectionId: string; openCodePassword: string };
 const bridgeBundle = fileURLToPath(new URL('../../../bridge/dist/index.js', import.meta.url));
+let cachedBridgeRevision = '';
+export function bridgeRuntimeRevision(): string {
+  if (!cachedBridgeRevision) cachedBridgeRevision = createHash('sha256').update(fs.readFileSync(bridgeBundle)).digest('hex').slice(0, 12);
+  return cachedBridgeRevision;
+}
 function encoded(value: string): string { return Buffer.from(value).toString('base64'); }
 function sandboxCredentials() {
   return process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID
