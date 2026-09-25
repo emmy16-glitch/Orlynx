@@ -46,12 +46,12 @@ opencode_libc=""
 if test -f /etc/alpine-release || (ldd --version 2>&1 || true) | grep -qi musl; then opencode_libc="-musl"; fi
 if test "$opencode_arch" = "x64"; then
   if grep -qi -m1 '\\<avx2\\>' /proc/cpuinfo 2>/dev/null; then
-    opencode_pkg="opencode-linux-x64${opencode_libc}"
+    opencode_pkg="opencode-linux-x64\${opencode_libc}"
   else
-    opencode_pkg="opencode-linux-x64-baseline${opencode_libc}"
+    opencode_pkg="opencode-linux-x64-baseline\${opencode_libc}"
   fi
 else
-  opencode_pkg="opencode-linux-arm64${opencode_libc}"
+  opencode_pkg="opencode-linux-arm64\${opencode_libc}"
 fi
 install_native_opencode() {
   package="$1"
@@ -65,7 +65,7 @@ install_native_opencode() {
 opencode_bin="$(install_native_opencode "$opencode_pkg")"
 if ! "$opencode_bin" --version >"$runtime/opencode-version.txt" 2>"$runtime/opencode-version.err"; then
   if test "$opencode_arch" = "x64" && ! printf '%s' "$opencode_pkg" | grep -q -- '-baseline'; then
-    opencode_pkg="opencode-linux-x64-baseline${opencode_libc}"
+    opencode_pkg="opencode-linux-x64-baseline\${opencode_libc}"
     opencode_bin="$(install_native_opencode "$opencode_pkg")"
   fi
 fi
