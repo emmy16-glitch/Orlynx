@@ -195,13 +195,14 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
 
 function connect(delay = 0): void {
   setTimeout(async () => {
-    const openCode = await startOpenCode(); const ws = new WebSocket(CONTROL, { headers: { Authorization: `Bearer ${token}` } }); let heartbeat: NodeJS.Timeout | undefined;
+    const openCodeStartup = startOpenCode();
+    const ws = new WebSocket(CONTROL, { headers: { Authorization: `Bearer ${token}` } }); let heartbeat: NodeJS.Timeout | undefined;
     ws.on('open', () => ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.0.0', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'opencode'] })));
     ws.on('message', async (raw) => {
       let message: { kind: string; token?: string; commandId?: string; type?: string; payload?: Record<string, unknown> }; try { message = JSON.parse(String(raw)); } catch { return; }
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
-        if (message.kind === 'AUTHENTICATED') { ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, openCode: { state: openCode === 'ready' ? 'ready' : 'failed' } })); heartbeat ||= setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { openCode: 'ready' } } })); }, 15_000); }
+        if (message.kind === 'AUTHENTICATED') { const openCode = await openCodeStartup; if (ws.readyState !== WebSocket.OPEN) return; ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, openCode: { state: openCode === 'ready' ? 'ready' : 'failed' } })); heartbeat ||= setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { openCode } } })); }, 15_000); }
         return;
       }
       if (message.kind !== 'COMMAND' || !message.commandId) return;

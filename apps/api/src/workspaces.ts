@@ -42,7 +42,9 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
         await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
     }
-    if (workspace.state === 'connecting' && workspace.bridgeState !== 'ready' && !workspace.connectionId) {
+    const connectionAge = Date.now() - Date.parse(workspace.updatedAt);
+    const staleBridge = Boolean(workspace.connectionId && workspace.bridgeState === 'disconnected' && connectionAge > 30_000);
+    if (workspace.state === 'connecting' && workspace.bridgeState !== 'ready' && (!workspace.connectionId || staleBridge)) {
       const connectionId = uuid();
       workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);

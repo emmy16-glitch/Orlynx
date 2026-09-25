@@ -22,7 +22,8 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   if (current.connectionId !== claims.connectionId) return;
   const openCodeState = detail.openCode?.state as typeof current.openCodeState | undefined;
   const ready = state === 'ready' && openCodeState === 'ready';
-  await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
+  const startupFailed = state === 'ready' && openCodeState === 'failed';
+  await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: startupFailed || current.state === 'failed' ? 'failed' : ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, failureCode: startupFailed ? 'OpenCode did not start in the Codespace.' : current.failureCode, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
   if (ready) await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, type: 'workspace.ready', timestamp: new Date().toISOString(), payload: { provider: 'github-codespaces' } });
 }
 

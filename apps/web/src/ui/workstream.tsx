@@ -51,10 +51,10 @@ export function CloudTransition({ state }: { state?: string }) {
   return (
     <Card aria-label={`Cloud status: ${state || 'repository'}`}>
       <div className="ox-row">
-        {steps.map((s, i) => (
+        {steps.slice(0, idx + 1).map((s, i) => (
           <React.Fragment key={s}>
             <Badge tone={i < idx ? 'ok' : i === idx ? 'work' : 'neutral'}>{s}</Badge>
-            {i < steps.length - 1 && <span aria-hidden>→</span>}
+            {i < idx && <span aria-hidden>→</span>}
           </React.Fragment>
         ))}
       </div>

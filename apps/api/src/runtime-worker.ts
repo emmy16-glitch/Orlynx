@@ -35,6 +35,8 @@ if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/de
 set -a; . "$runtime/workspace.env"; set +a
 nohup node "$runtime/index.js" >"$runtime/bridge.log" 2>&1 </dev/null &
 printf '%s' "$!" > "$runtime/bridge.pid"
+sleep 2
+kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null || { echo "Orlynx bridge exited during startup" >&2; exit 1; }
 `;
 }
 
