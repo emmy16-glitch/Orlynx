@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import type { WorkspaceRecord } from '@orlynx/shared';
 import { createBridgeToken } from './bridge-auth.js';
 import { GitHubCodespacesProvider } from './github-codespaces.js';
-import { bootstrapWorkspace } from './runtime-worker.js';
+import { bootstrapWorkspace, bridgeRuntimeRevision } from './runtime-worker.js';
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 
@@ -91,6 +91,27 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       await repository.putWorkspace(workspace);
     }
 
+    // A bridge bundle can change while a Codespace remains alive for hours.
+    // Encode the current bundle fingerprint in connectionId so the next Build
+    // request can refresh only the private Orlynx bridge, without rebuilding
+    // the Codespace or touching repository files.
+    const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
+    if (workspace.state === 'ready' && workspace.bridgeState === 'ready' && !workspace.connectionId?.startsWith(bridgePrefix)) {
+      emit(input.sessionId, 'workspace.preparing', {
+        stage: 'agent.refresh',
+        message: 'Updating the Orlynx workspace runtime…',
+      });
+      workspace = {
+        ...workspace,
+        state: 'connecting',
+        bridgeState: 'disconnected',
+        openCodeState: 'unavailable',
+        connectionId: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await repository.putWorkspace(workspace);
+    }
+
     // A host restart or hung SSH bootstrap must not strand a session forever.
     // Once a bootstrap has been silent for long enough, safely re-enter the
     // connecting path so the existing Codespace can be bootstrapped again.
@@ -146,7 +167,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     const connectionAge = Date.now() - Date.parse(workspace.updatedAt);
     const staleBridge = Boolean(workspace.connectionId && workspace.bridgeState === 'disconnected' && connectionAge > 30_000);
     if (workspace.state === 'connecting' && workspace.bridgeState !== 'ready' && (!workspace.connectionId || staleBridge)) {
-      const connectionId = uuid();
+      const connectionId = `${bridgePrefix}${uuid()}`;
       workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
