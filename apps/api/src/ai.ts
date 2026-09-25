@@ -8,7 +8,7 @@ import { dataDir, store } from './store.js';
 import { openCodeStatus } from './opencode.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { encryptCredential } from './credentials.js';
-import { listZenModels } from './zen.js';
+import { listZenModels, savedOpenCodeAccountKey } from './zen.js';
 
 export const MODES = AGENT_MODES;
 export const PERMISSIONS = PERMISSION_PROFILES;
@@ -127,17 +127,38 @@ export async function listProviderConnections(project = '', userId?: string, ses
     openCodeStatus(project || undefined, sessionId),
     durableStorageConfigured() && userId ? controlPlaneRepository().listProviderConnections(userId) : Promise.resolve([]),
   ]);
-  const durableIds = durableRows.filter((row) => row.state === 'connected').map((row) => row.provider);
+  const durableOpenCodeRow = durableRows.find((row) => row.provider === 'opencode' && row.state === 'connected');
+  let openCodeCredentialUsable = false;
+  let openCodeCredentialBroken = false;
+  if (durableOpenCodeRow && userId) {
+    try {
+      openCodeCredentialUsable = Boolean(await savedOpenCodeAccountKey(userId));
+    } catch {
+      openCodeCredentialBroken = true;
+    }
+  }
+
+  const durableIds = durableRows
+    .filter((row) => row.state === 'connected' && (row.provider !== 'opencode' || openCodeCredentialUsable))
+    .map((row) => row.provider);
+  const durableStoredIds = durableRows.filter((row) => row.state === 'connected').map((row) => row.provider);
   const locallyStored = Object.keys(localSecrets.keys);
-  const accountIds = new Set([...durableIds, ...locallyStored]);
+  const accountIds = new Set([...durableStoredIds, ...locallyStored]);
 
   let zenModels: AIModel[] = [];
   if (durableStorageConfigured()) {
-    // The bundled OpenCode catalog is usable without account identity.
-    // Free models must remain visible even if GitHub/user lookup is briefly
-    // unavailable; userId is only needed to unlock account-backed models.
-    try { zenModels = await listZenModels(userId); }
-    catch { zenModels = []; }
+    try {
+      // Always load the bundled public catalog first. Only upgrade paid models
+      // to available when the stored OpenCode credential is actually decryptable.
+      zenModels = await listZenModels();
+      if (openCodeCredentialUsable) {
+        zenModels = zenModels.map((model) => model.providerId === 'opencode' && !model.free
+          ? { ...model, connected: true, status: 'available' as const }
+          : model);
+      }
+    } catch {
+      zenModels = [];
+    }
   }
 
   let engineModels: AIModel[] = [];
@@ -169,6 +190,15 @@ export async function listProviderConnections(project = '', userId?: string, ses
     const engineConnected = rows.some((m) => m.connected) || connectedIds.some((c) => c.toLowerCase() === id.toLowerCase());
     const durableConnected = durableIds.includes(id);
     const hasLocalKey = Boolean(localSecrets.keys[id]);
+    if (id === 'opencode' && openCodeCredentialBroken) {
+      return {
+        id,
+        name: providerDisplayName(id),
+        state: 'key-stored',
+        modelsAvailable: rows.filter((m)=>m.status === 'available').length,
+        message: 'Saved OpenCode connection needs to be reconnected. Free models remain available.',
+      };
+    }
     if (engineConnected || durableConnected) return {
       id,
       name: providerDisplayName(id),
@@ -402,7 +432,7 @@ export function classifyError(message: string): 'rate_limit' | 'quota' | 'auth' 
   if (/429|rate.?limit|too many requests/.test(text)) return 'rate_limit';
   if (/quota|insufficient|credit|balance|billing|payment/.test(text)) return 'quota';
   if (/model.*(not found|unavailable|unknown)|unknown model|free model.*not available|choose another free model/.test(text)) return 'model';
-  if (/401|unauthorized|invalid.*(key|token)|expired|forbidden/.test(text)) return 'auth';
+  if (/401|unauthorized|invalid.*(key|token)|expired|forbidden|decrypt|unable to authenticate data/.test(text)) return 'auth';
   if (/could not reach|unavailable|offline|econn|timeout|timed out/.test(text)) return 'engine';
   if (/read only|permission|denied|approval/.test(text)) return 'permission';
   return 'unknown';

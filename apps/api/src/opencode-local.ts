@@ -73,7 +73,17 @@ export async function streamWithOfficialOpenCode(input: {
   input.signal.throwIfAborted();
   const started = performance.now();
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
-  const auth = resolveAuth(resolved.free, await savedOpenCodeAccountKey(input.userId));
+  let savedKey: string | undefined;
+  if (!resolved.free) {
+    try {
+      savedKey = await savedOpenCodeAccountKey(input.userId);
+    } catch {
+      throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
+    }
+  }
+  // Free models are deliberately independent from stored account credentials.
+  // A stale/rotated encryption key must never block the public free route.
+  const auth = resolveAuth(resolved.free, savedKey);
   input.signal.throwIfAborted();
   // Scope cached clients to user + credential fingerprint. Rotation cannot reuse
   // the old client. Never log this fingerprint or the credential.
