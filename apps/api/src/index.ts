@@ -19,4 +19,18 @@ await warmOpenCodeProviderLayer();
 
 const server = http.createServer(app);
 attachBridgeGateway(server);
-server.listen(PORT, '0.0.0.0', () => console.log(`[orlynx-api] listening on http://0.0.0.0:${PORT}`));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[orlynx-api] listening on http://0.0.0.0:${PORT}`);
+  void (async () => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${PORT}/v1/ai/catalog`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      const body = await response.json().catch(() => ({})) as { models?: unknown[]; error?: string };
+      console.log(`[startup-smoke] ai-catalog status=${response.status} models=${Array.isArray(body.models) ? body.models.length : 0}${body.error ? ` error=${body.error}` : ''}`);
+    } catch (error) {
+      console.warn(`[startup-smoke] ai-catalog failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  })();
+});
