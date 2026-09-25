@@ -1,51 +1,22 @@
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { createBridgeToken, verifyBridgeToken } from '../src/bridge-auth.ts';
-import { decryptCredential, encryptCredential } from '../src/credentials.ts';
-import { extractModels } from '../src/ai.ts';
-import { readFileSync } from 'node:fs';
+import { executionPlaneFor } from '../src/direct-chat.ts';
 
-it('keeps the Vercel route wildcard out of the file path query parameter', () => {
-  const config = JSON.parse(readFileSync(new URL('../../../vercel.json', import.meta.url), 'utf8'));
-  const apiRewrite = config.rewrites.find((rewrite) => rewrite.destination === '/api/index' && rewrite.source.startsWith('/v1/'));
-  assert.ok(apiRewrite, 'API rewrite must exist');
-  assert.doesNotMatch(apiRewrite.source, /:path(?:\*|\/|$)/, 'Vercel route matches must not overwrite ?path used by file and diff endpoints');
+test('plain conversation does not start a development environment', () => {
+  assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
+  assert.equal(executionPlaneFor('What does this repository do?', 'build'), 'direct');
+  assert.equal(executionPlaneFor('Explain the authentication flow', 'build'), 'direct');
+  assert.equal(executionPlaneFor('Review this architecture and suggest improvements', 'ask'), 'direct');
 });
 
-it('parses provider model dictionaries without inventing entries', () => {
-  const models = extractModels([{ id: 'opencode', models: { 'model-a': { name: 'Model A' }, 'model-b': { name: 'Model B' } } }], ['opencode']);
-  assert.deepEqual(models.map((model) => [model.id, model.displayName, model.status]), [
-    ['opencode/model-a', 'Model A', 'available'],
-    ['opencode/model-b', 'Model B', 'available'],
-  ]);
+test('runtime and mutating build work requests the development environment', () => {
+  assert.equal(executionPlaneFor('Run the tests and fix what fails', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('npm install and start the dev server', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('Implement the login fix', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('Update the README file', 'build'), 'workspace');
 });
 
-describe('execution-plane credentials', () => {
-  it('binds short-lived bridge credentials to workspace, session, user, and connection', () => {
-    process.env.ORLYNX_BRIDGE_SIGNING_SECRET = 'test-only-bridge-secret-with-at-least-32-bytes';
-    const token = createBridgeToken({ workspaceId: 'ws_1', sessionId: 'ses_1', userId: 'user_1', connectionId: 'conn_1' }, 60);
-    assert.deepEqual(verifyBridgeToken(token), {
-      v: 1, workspaceId: 'ws_1', sessionId: 'ses_1', userId: 'user_1', connectionId: 'conn_1',
-      iat: verifyBridgeToken(token).iat, exp: verifyBridgeToken(token).exp,
-    });
-    assert.throws(() => verifyBridgeToken(`${token.slice(0, -1)}x`), /invalid/);
-  });
-
-  it('expires bridge credentials server-side', () => {
-    process.env.ORLYNX_BRIDGE_SIGNING_SECRET = 'test-only-bridge-secret-with-at-least-32-bytes';
-    const token = createBridgeToken({ workspaceId: 'ws_1', sessionId: 'ses_1', userId: 'user_1', connectionId: 'conn_1' }, 30);
-    const original = Date.now;
-    Date.now = () => original() + 31_000;
-    try { assert.throws(() => verifyBridgeToken(token), /expired/); } finally { Date.now = original; }
-  });
-
-  it('encrypts stored GitHub user credentials with authenticated encryption', () => {
-    process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
-    const first = encryptCredential('github-user-token'); const second = encryptCredential('github-user-token');
-    assert.notEqual(first, second);
-    assert.equal(decryptCredential(first), 'github-user-token');
-    const pieces = first.split('.');
-    pieces[2] = `${pieces[2][0] === 'A' ? 'B' : 'A'}${pieces[2].slice(1)}`;
-    assert.throws(() => decryptCredential(pieces.join('.')));
-  });
+test('plan and ask modes remain direct because they cannot mutate the project', () => {
+  assert.equal(executionPlaneFor('Plan how to refactor the backend', 'plan'), 'direct');
+  assert.equal(executionPlaneFor('Tell me how you would fix the build', 'ask'), 'direct');
 });

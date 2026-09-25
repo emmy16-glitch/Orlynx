@@ -132,6 +132,7 @@ export default function ProductionApp() {
   const pendingRef = useRef<any[]>([]);
   const rafRef = useRef<number | null>(null);
   const runRef = useRef<any>(null);
+  const partialCutoffRef = useRef(0);
   const ptyRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
   const repoLoadAttempt = useRef(false);
@@ -184,7 +185,15 @@ export default function ProductionApp() {
     setMessages(messageData); setFiles(fileData.files || []); setChanges(changeData); setAttachments(attachmentData);
     if (fileData.warning) setWorkspaceReadNotice(String(fileData.warning));
     if (fileData.workspaceStale) void reconnectStaleWorkspace(id);
-    setLastRun(runData.slice(-1)[0] || null); runRef.current = runData.slice(-1)[0] || null;
+    const latestRun = runData.slice(-1)[0] || null;
+    setLastRun(latestRun); runRef.current = latestRun;
+    if (latestRun?.state === 'running' && latestRun?.partialText) {
+      setDraftReply(String(latestRun.partialText));
+      partialCutoffRef.current = Date.parse(latestRun.partialUpdatedAt || '') || 0;
+    } else if (latestRun?.state !== 'running') {
+      setDraftReply('');
+      partialCutoffRef.current = 0;
+    }
     setSession(details); currentSessionRef.current = details;
     refreshIntegrations().catch(() => {});
     refreshAi(id).catch(() => {});
@@ -199,14 +208,19 @@ export default function ProductionApp() {
       rafRef.current = null;
       const batch = pendingRef.current.splice(0);
       setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-300));
-      const textEvents = batch.filter((item) => item.type === 'message.delta');
+      const textEvents = batch.filter((item) => item.type === 'message.delta' && (Date.parse(item.timestamp || '') || 0) > partialCutoffRef.current);
       if (textEvents.length) setDraftReply((previous) => previous + textEvents.map((item) => String(item.payload?.delta || '')).join(''));
       const terminalEvents = batch.filter((item) => item.payload?.sourceType === 'pty.output');
       if (terminalEvents.length) setTerminalOutput((previous) => `${previous}${terminalEvents.map((item) => String(item.payload?.data || '')).join('')}`.slice(-100_000));
       for (const item of batch) {
         if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
+        if (item.type === 'workspace.preparing' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
         if (item.type === 'workspace.ready') setWorkspaceReadNotice('');
-        if (item.type === 'run.started') setLastRun({ id: item.runId, state: 'running', engine: 'opencode', startedAt: item.timestamp });
+        if (item.type === 'run.started') {
+          setDraftReply('');
+          partialCutoffRef.current = 0;
+          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: 'opencode', startedAt: item.timestamp });
+        }
         if (!nearBottomRef.current) setNewActivity(true);
       }
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
@@ -650,12 +664,14 @@ export default function ProductionApp() {
 
   async function sendMessage() {
     if (!session || !composer.trim() || sending || !online) return;
+    if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return; }
     setSending(true); setError('');
     const text = composer.trim(); const clientId = uid();
     try {
-      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, fullAccessForThisTask: tempFullAccess }) }));
+      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: tempFullAccess }) }));
       setComposer(''); setDraftReply(''); setTempFullAccess(false); try { localStorage.removeItem(draftKey(session.id)); } catch {}
       setLastRun(result.run); runRef.current = result.run;
+      if (result.plane === 'direct') setWorkspaceReadNotice('');
       await refreshSession(session.id);
     } catch (error: any) { setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI')); }
     finally { setSending(false); }
@@ -770,14 +786,13 @@ export default function ProductionApp() {
     finally { setBusyChange(null); }
   }
 
-  async function pushChange(change: any) {
+  async function pushChange(change: any, strategy: 'direct' | 'pull-request' = 'direct') {
     setBusyChange(change.id); setError('');
-    const safeReview = ['main', 'master'].includes(session?.branch);
     try {
       await j(await fetch(`/v1/changes/${change.id}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(safeReview ? { strategy: 'pull-request', title: `Orlynx: ${commitMessage.trim() || 'reviewed changes'}` } : {}),
+        body: JSON.stringify({ strategy, ...(strategy === 'pull-request' ? { title: `Orlynx: ${commitMessage.trim() || 'reviewed changes'}` } : {}) }),
       }));
       setPushReview(null);
       await refreshSession(session.id);
@@ -830,22 +845,22 @@ export default function ProductionApp() {
           <nav className="project-tabs" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => { setTab(id); setOpenedFile(null); }}><Icon name={icon} size={16} /><span>{label}</span></button>)}</nav>
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
-          {workspaceReadNotice && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
+          {workspaceReadNotice && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
           {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
-                {workspacePreparing && <div className="screen-alert" role="status"><span><b>Starting development environment…</b> {lastRun?.state === 'queued' ? 'Your task is saved and will start automatically.' : 'You can keep chatting or browse the project while Orlynx connects.'}</span></div>}
-                {cloudIssue === 'permissions' && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
-                {cloudIssue === 'failed' && session.workspace?.state === 'failed' && <AgentErrorCard title="Workspace couldn't start." hint={session.workspace?.failureCode?.startsWith('OpenCode') ? session.workspace.failureCode : "Your conversation is preserved. You can retry without reopening the project."} onRetry={() => startCloud()} />}
-                {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
+                {workspacePreparing && (cloudBusy || lastRun?.plane === 'workspace') && <div className="screen-alert" role="status"><span><b>Development environment</b> {workspaceReadNotice || (lastRun?.state === 'queued' ? 'This task needs runtime tools. Your message is saved and will start automatically.' : 'Starting only for the work that needs it…')}</span></div>}
+                {cloudIssue === 'permissions' && (cloudBusy || lastRun?.plane === 'workspace') && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
+                {cloudIssue === 'failed' && session.workspace?.state === 'failed' && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace couldn't start." hint={session.workspace?.failureCode?.startsWith('OpenCode') ? session.workspace.failureCode : "Your conversation is preserved. You can retry without reopening the project."} onRetry={() => startCloud()} />}
+                {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
-                  <p className="setup-kicker">{aiAccountConnected ? 'READY TO CHAT' : 'CONNECT AI'}</p>
-                  <h2>{aiAccountConnected ? 'What should we work on?' : 'Connect AI'}</h2>
+                  <p className="setup-kicker">{!aiAccountConnected ? 'CONNECT AI' : ai.model ? 'READY TO CHAT' : 'CHOOSE MODEL'}</p>
+                  <h2>{!aiAccountConnected ? 'Connect AI' : ai.model ? 'What should we work on?' : 'Choose your model'}</h2>
                   <p>{aiAccountConnected
-                    ? workspaceReady
-                      ? `Ask Orlynx to inspect, change, test, or explain anything in ${session.project.split('/').pop()}.`
-                      : 'Send your task now. Orlynx will save it immediately and start the development environment automatically when code access is needed.'
+                    ? ai.model
+                      ? `Chat about ${session.project.split('/').pop()} immediately. Orlynx uses GitHub directly and only starts a development environment when a task needs runtime execution.`
+                      : 'Choose the model you want to use for this conversation. No development environment is required for normal chat.'
                     : 'Connect an AI account once, then continue working in this repository from the same conversation.'}</p>
                   <div className="setup-actions">
                     {!aiAccountConnected && <Button onClick={() => setShowConnectAI(true)}>Connect OpenCode <Icon name="arrow" /></Button>}
@@ -857,7 +872,7 @@ export default function ProductionApp() {
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
                 {!!events.length && <div className="workstream-wrap"><ActivityList activities={activities} /></div>}
-                {lastRun?.state === 'queued' && <p className="run-receipt">{workspaceReady ? 'Queued · Orlynx will start this automatically.' : 'Task saved · starting the development environment automatically.'}</p>}
+                {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
                 {lastRun?.state === 'completed' && lastRun?.model && <p className="run-receipt">Completed with {lastRun.model}</p>}
                 {lastRun?.state === 'failed' && <AgentErrorCard title={lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' ? 'The AI provider could not continue this request.' : lastRun?.errorKind === 'auth' ? 'The AI connection expired or was rejected.' : lastRun?.errorKind === 'model' ? 'The selected model is unavailable.' : 'Orlynx AI could not complete this task.'} hint={lastRun?.errorKind === 'rate_limit' ? 'Usage limit reached. Choose another model or retry shortly.' : lastRun?.errorKind === 'quota' ? 'Quota or billing issue on the provider account.' : lastRun?.errorKind === 'auth' ? 'Reconnect the provider, then continue in this same chat.' : 'The repository and local changes remain available.'} onRetry={() => refreshSession(session.id)} />}
               </section>}
@@ -881,7 +896,7 @@ export default function ProductionApp() {
                     {change.reviewState === 'pending' && <AgentApprovalCard title="Approve these changes" detail="Review the exact files above before continuing." busy={busyChange === change.id} onApprove={() => reviewChange(change)} />}
                     {change.reviewState === 'approved' && <div className="commit-form premium"><div><h2>Ready to commit changes</h2><p>Write the message that will appear in Git history.</p></div><label>Commit message<input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this change" /></label><div className="commit-branch"><span>Push to branch</span><b><Icon name="branch" />{session.branch}</b></div><Button disabled={!commitMessage.trim() || busyChange === change.id} onClick={() => commitChange(change)}>{busyChange === change.id ? 'Committing…' : 'Create commit'}</Button></div>}
                     {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to publish changes</h2><p>{change.files.length} files are committed and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} /><div className="commit-branch"><span>{['main', 'master'].includes(session.branch) ? 'Review target' : 'Push to branch'}</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review publish</Button></div>}
-                    {pushReview?.id === change.id && <div className="push-confirm"><b>{['main', 'master'].includes(session.branch) ? `Create a review branch and pull request to ${session.branch}?` : `Push ${change.files.length} files to ${session.project} · ${session.branch}?`}</b><p>{['main', 'master'].includes(session.branch) ? 'Orlynx will not push directly to the default branch. It will publish an isolated branch and open a pull request for review.' : 'This publishes the approved commit to GitHub.'}</p><div className="action-row"><Button tone="ghost" onClick={() => setPushReview(null)}>Cancel</Button><Button onClick={() => pushChange(change)} disabled={busyChange === change.id}>{['main', 'master'].includes(session.branch) ? 'Approve & create PR' : 'Approve & push'}</Button></div></div>}
+                    {pushReview?.id === change.id && <div className="push-confirm"><b>Publish ${change.files.length} changed files to ${session.project}?</b><p>{['main', 'master'].includes(session.branch) ? `Choose whether to push the approved commit directly to ${session.branch} or publish it through a pull request.` : `This publishes the approved commit to ${session.branch}.`}</p><div className="action-row"><Button tone="ghost" onClick={() => setPushReview(null)}>Cancel</Button>{['main', 'master'].includes(session.branch) && <Button tone="ghost" onClick={() => pushChange(change, 'pull-request')} disabled={busyChange === change.id}>Create PR</Button>}<Button onClick={() => pushChange(change, 'direct')} disabled={busyChange === change.id}>{['main', 'master'].includes(session.branch) ? `Push to ${session.branch}` : 'Approve & push'}</Button></div></div>}
                   </section>)}
                 </>}
               </section>}
@@ -891,8 +906,8 @@ export default function ProductionApp() {
             <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : 'No model selected'}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); setNewActivity(false); }}>↓ New activity</Button></div>}
-              {tab === 'chat' && <form className="composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea value={composer} onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }} placeholder={!online ? 'Offline — draft saved' : aiAccountConnected ? `Ask Orlynx anything about this repository…` : 'Connect AI to start'} aria-label="Message Orlynx AI" disabled={!aiAccountConnected || !online} /><div className="composer-controls"><button type="button" className="model-trigger" onClick={() => { void refreshAi(session.id); setShowConnectAI(true); }} aria-label="Choose AI model"><Icon name="agents" size={14} /><span>{ai.model?.displayName || (aiAccountConnected ? 'Auto model' : 'Connect AI')}</span><Icon name="chevron" size={12} /></button><details className="composer-options"><summary aria-label="Chat options">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary><div className="composer-options-panel"><label>Mode<select aria-label="Mode" value={ai.mode || 'build'} onChange={(event) => setAiPrefs({ mode: event.target.value })} disabled={!online}><option value="build">Build</option><option value="plan">Plan</option><option value="ask">Ask</option></select></label><label>Access<select aria-label="Access level" value={ai.permission || 'ask-first'} onChange={(event) => { setTempFullAccess(false); setAiPrefs({ permission: event.target.value }); }} disabled={!online}><option value="full">Full project access</option><option value="ask-first">Ask first</option><option value="read-only">Read only</option></select></label></div></details></div>{ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
-          {showConnectAI && <ConnectAiSheet models={aiModels} providers={aiProviders} modelError={aiModelError} search={modelSearch} setSearch={setModelSearch} workspaceReady={workspaceReady} onStartWorkspace={() => { setShowConnectAI(false); void startCloud(); }} onRefresh={async () => { await refreshAi(session.id); }} onSelectModel={(id) => { setShowConnectAI(false); setAiPrefs({ modelId: id }); }} onClose={() => setShowConnectAI(false)} />}
+              {tab === 'chat' && <form className="composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea value={composer} onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }} placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected ? 'Connect AI to start' : !ai.model ? 'Choose a model to start' : `Ask Orlynx anything about this repository…`} aria-label="Message Orlynx AI" disabled={!aiAccountConnected || !ai.model || !online} /><div className="composer-controls"><button type="button" className="model-trigger" onClick={() => { void refreshAi(session.id); setShowConnectAI(true); }} aria-label="Choose AI model"><Icon name="agents" size={14} /><span>{ai.model?.displayName || (aiAccountConnected ? 'Choose model' : 'Connect AI')}</span><Icon name="chevron" size={12} /></button><details className="composer-options"><summary aria-label="Chat options">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary><div className="composer-options-panel"><label>Mode<select aria-label="Mode" value={ai.mode || 'build'} onChange={(event) => setAiPrefs({ mode: event.target.value })} disabled={!online}><option value="build">Build</option><option value="plan">Plan</option><option value="ask">Ask</option></select></label><label>Access<select aria-label="Access level" value={ai.permission || 'ask-first'} onChange={(event) => { setTempFullAccess(false); setAiPrefs({ permission: event.target.value }); }} disabled={!online}><option value="full">Full project access</option><option value="ask-first">Ask first</option><option value="read-only">Read only</option></select></label></div></details></div>{ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
+          {showConnectAI && <ConnectAiSheet models={aiModels} providers={aiProviders} modelError={aiModelError} search={modelSearch} setSearch={setModelSearch} onRefresh={async () => { await refreshAi(session.id); }} onSelectModel={(id) => { const chosen = aiModels.find((model: any) => model.id === id); if (chosen) setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' })); setShowConnectAI(false); void setAiPrefs({ modelId: id }); }} onClose={() => setShowConnectAI(false)} />}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
@@ -969,9 +984,9 @@ export default function ProductionApp() {
   );
 }
 
-function ConnectAiSheet({ models, providers, modelError, search, setSearch, workspaceReady, onStartWorkspace, onRefresh, onSelectModel, onClose }: {
-  models: any[]; providers: any[]; modelError: string; search: string; setSearch: (v: string) => void; workspaceReady: boolean;
-  onStartWorkspace: () => void; onRefresh: () => Promise<void>; onSelectModel: (id: string) => void; onClose: () => void;
+function ConnectAiSheet({ models, providers, modelError, search, setSearch, onRefresh, onSelectModel, onClose }: {
+  models: any[]; providers: any[]; modelError: string; search: string; setSearch: (v: string) => void;
+  onRefresh: () => Promise<void>; onSelectModel: (id: string) => void; onClose: () => void;
 }) {
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1009,7 +1024,7 @@ function ConnectAiSheet({ models, providers, modelError, search, setSearch, work
   }
 
   return <div className="sheet-backdrop" onClick={onClose}><div className="sheet ai-sheet" role="dialog" aria-modal="true" aria-label="Orlynx AI" onClick={(e) => e.stopPropagation()}>
-    <div className="sheet-heading"><div><p className="eyebrow">ORLYNX AI</p><h2>{connected ? (available.length ? 'Choose a model' : 'AI connected') : 'Connect AI'}</h2><p className="screen-subtitle">{connected ? (workspaceReady ? 'Choose the model Orlynx should use in this conversation.' : 'Your account is connected. Start the workspace to load its models.') : 'Connect your OpenCode account once, then use it inside your Orlynx workspaces.'}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></div>
+    <div className="sheet-heading"><div><p className="eyebrow">ORLYNX AI</p><h2>{connected ? 'Choose a model' : 'Connect AI'}</h2><p className="screen-subtitle">{connected ? 'Choose exactly which model Orlynx should use in this conversation. Normal chat does not require a development environment.' : 'Connect your OpenCode account once, then choose a model for your Orlynx conversations.'}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></div>
 
     {sheetError && <div className="screen-alert tone-fail ai-sheet-alert" role="alert"><span>{sheetError}</span></div>}
     {connectedNotice && <div className="screen-alert tone-ok ai-sheet-alert" role="status"><span>{connectedNotice}</span></div>}
@@ -1027,9 +1042,9 @@ function ConnectAiSheet({ models, providers, modelError, search, setSearch, work
       </form>
       <p className="ai-privacy-note"><Icon name="shield" />Your key is never shown again after it is saved.</p>
     </section> : <>
-      <section className="ai-connected-card"><div className="ai-provider-lockup"><span className="ai-provider-mark connected"><Icon name="check" /></span><span><b>OpenCode</b><small>{workspaceReady ? 'Connected to this Orlynx workspace' : 'Connected to your Orlynx account'}</small></span><Badge tone="ok">Connected</Badge></div></section>
+      <section className="ai-connected-card"><div className="ai-provider-lockup"><span className="ai-provider-mark connected"><Icon name="check" /></span><span><b>OpenCode</b><small>Connected to your Orlynx account</small></span><Badge tone="ok">Connected</Badge></div></section>
       {available.length > 6 && <label className="search-field"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 50).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.providerName}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait"><Icon name="cloud" /><div><b>{modelError ? 'Models could not be loaded' : workspaceReady ? 'No models available yet' : 'Models load when the workspace starts'}</b><p>{modelError || (workspaceReady ? 'Check your OpenCode connection, then refresh the models.' : 'Start the workspace here to load models, then pick one from the chat model button.')}</p>{!workspaceReady && <Button onClick={onStartWorkspace}>Start workspace</Button>}{workspaceReady && <Button tone="ghost" onClick={() => void onRefresh()}>Refresh models</Button>}</div></div>}
+      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 100).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.providerName} · {m.family}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait"><Icon name="agents" /><div><b>{modelError ? 'Models could not be loaded' : 'Model list unavailable'}</b><p>{modelError || 'Refresh the OpenCode model catalog. You do not need to start a workspace.'}</p><Button tone="ghost" onClick={() => void onRefresh()}>Refresh models</Button></div></div>}
       <div className="ai-sheet-footer"><button className="text-button danger-text" onClick={disconnectOpenCode} disabled={busy}>Disconnect OpenCode</button></div>
     </>}
   </div></div>;

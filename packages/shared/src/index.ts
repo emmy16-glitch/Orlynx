@@ -76,6 +76,7 @@ export interface AgentRun {
   id: string;
   sessionId: string;
   engine: 'opencode';
+  plane?: 'direct' | 'workspace';
   provider?: string;
   model?: string;
   mode?: AgentMode;
@@ -111,6 +112,7 @@ export interface TaskRecord {
   id: string;
   sessionId: string;
   workspaceId: string;
+  plane?: 'direct' | 'workspace';
   runId?: string;
   messageId?: string;
   state: RunState;
@@ -119,6 +121,7 @@ export interface TaskRecord {
   mode?: AgentMode;
   permission?: PermissionProfile;
   tempPermission?: PermissionProfile;
+  partialText?: string;
   createdAt: string;
   updatedAt: string;
 }

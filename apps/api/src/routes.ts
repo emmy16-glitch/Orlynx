@@ -7,7 +7,7 @@ import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, c
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { ensureWorkspaceRecord, getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
-import { cancelRun, currentRuns, promoteNextQueuedRun, startRun } from './agents.js';
+import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
@@ -19,6 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
+import { cancelDirectRun, executionPlaneFor } from './direct-chat.js';
 
 export const router = Router();
 
@@ -251,6 +252,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
+
   if (clientId) {
     const existingMessages = durableStorageConfigured()
       ? await controlPlaneRepository().listMessages(s.id)
@@ -264,13 +266,15 @@ router.post('/sessions/:id/messages', async (req, res) => {
           id: task.runId || task.id,
           sessionId: task.sessionId,
           engine: 'opencode',
+          plane: task.plane || 'workspace',
           state: task.state,
           model: task.modelId,
           mode: task.mode,
           permission: task.permission,
+          partialText: task.partialText,
           activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state,
           startedAt: task.createdAt,
-          finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined,
+          finishedAt: ['completed','failed','cancelled'].includes(task.state) ? task.updatedAt : undefined,
         };
       } else {
         run = (store.db.runs[s.id] || []).filter((r) => r.sessionId === s.id).slice(-1)[0] || null;
@@ -279,79 +283,88 @@ router.post('/sessions/:id/messages', async (req, res) => {
       return res.json({ message: dup, run, deduplicated: true });
     }
   }
+
+  const prefs = durableStorageConfigured()
+    ? await hydrateSessionPrefs(s.id, s.project)
+    : getSessionPrefs(s.id, s.project);
+  const effectiveMode = (mode ? String(mode) : prefs.mode) as 'build' | 'plan' | 'ask';
+  const plane = executionPlaneFor(String(text), effectiveMode);
+  const selectedModel = modelId ? String(modelId) : prefs.modelId;
+  if (!selectedModel) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
+
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
-  s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0, 200), branch: s.branch, updatedAt: new Date().toISOString() };
+  s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
   store.save();
+
+  let workspaceId: string | undefined;
+  let automaticWorkspaceInput: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string } | undefined;
+
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     await repository.putMessage(msg);
     const durableSession = await repository.getSession(s.id);
-    if (durableSession) await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
-  }
-  let automaticWorkspaceInput: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string } | undefined;
-  if (durableStorageConfigured()) {
-    const repository = controlPlaneRepository();
-    const durableSession = await repository.getSession(s.id);
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
+    await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
 
-    let workspace = await repository.getWorkspaceBySession(s.id);
-    if (!workspace) {
-      const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
-      if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
-      workspace = await ensureWorkspaceRecord({
+    if (plane === 'workspace') {
+      let workspace = await repository.getWorkspaceBySession(s.id);
+      if (!workspace) {
+        const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
+        if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
+        workspace = await ensureWorkspaceRecord({
+          sessionId: s.id,
+          userId: durableSession.userId,
+          projectId: durableSession.projectId,
+          repositoryId: githubRepo.id,
+          branch: s.branch,
+        });
+      }
+      workspaceId = workspace.id;
+      automaticWorkspaceInput = {
         sessionId: s.id,
         userId: durableSession.userId,
         projectId: durableSession.projectId,
-        repositoryId: githubRepo.id,
-        branch: s.branch,
-      });
+        repositoryId: workspace.repositoryId,
+        branch: workspace.branch,
+      };
     }
-
-    automaticWorkspaceInput = {
-      sessionId: s.id,
-      userId: durableSession.userId,
-      projectId: durableSession.projectId,
-      repositoryId: workspace.repositoryId,
-      branch: workspace.branch,
-    };
   }
 
-  console.info(`[orlynx] sid=${s.id} message received len=${String(text).length}`);
+  console.info(`[orlynx] sid=${s.id} message received plane=${plane} len=${String(text).length}`);
   let run;
   try {
     run = await startRun(s.id, s.project, text, 'opencode', {
-      ...(modelId ? { modelId: String(modelId) } : {}),
-      ...(mode ? { mode: String(mode) as 'build' | 'plan' | 'ask' } : {}),
-      // Temporary elevation: full access for this task only, expires with the run.
+      modelId: selectedModel,
+      mode: effectiveMode,
+      plane,
+      ...(workspaceId ? { workspaceId } : {}),
       ...(fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
       messageId: msg.id,
     });
-  }
-  catch (error) {
+  } catch (error) {
     store.db.messages[s.id] = (store.db.messages[s.id] || []).filter((message) => message.id !== msg.id);
     store.save();
     if (durableStorageConfigured()) await controlPlaneRepository().deleteMessage(msg.id, s.id);
     const kind = (error as { errorKind?: string }).errorKind;
     const detail = error instanceof Error ? error.message : '';
-    const visible = kind === 'permission'
+    const visible = kind === 'permission' || kind === 'model' || kind === 'queue_full'
       ? detail
-      : kind === 'queue_full'
-        ? detail
-        : /not ready|unavailable|interrupted|timed out/i.test(detail)
-          ? 'Orlynx AI is reconnecting to this workspace. Try again in a moment.'
-          : 'Orlynx AI could not accept this task.';
-    return res.status(kind === 'permission' ? 403 : kind === 'queue_full' ? 429 : 503).json({ error: visible });
+      : plane === 'workspace' && /not ready|unavailable|interrupted|timed out/i.test(detail)
+        ? 'The development environment needs attention. Your message was not lost.'
+        : 'Orlynx AI could not accept this message.';
+    return res.status(kind === 'permission' ? 403 : kind === 'queue_full' ? 429 : kind === 'model' ? 409 : 503).json({ error: visible });
   }
-  console.info(`[orlynx] sid=${s.id} run=${run.id} state=${run.state}`);
 
-  if (automaticWorkspaceInput) {
+  console.info(`[orlynx] sid=${s.id} run=${run.id} plane=${run.plane || plane} state=${run.state}`);
+
+  if (automaticWorkspaceInput && run.plane === 'workspace') {
     const current = await getWorkspace(s.id);
     if (!current || current.state !== 'ready' || current.bridgeState !== 'ready') {
       emit(s.id, 'workspace.preparing', {
         state: current?.state || 'creating',
         automatic: true,
-        message: 'Your task is saved. Orlynx is starting the development environment.',
+        message: 'Starting the development environment for this task.',
       });
       void prepareWorkspace(automaticWorkspaceInput)
         .then(async (workspace) => {
@@ -366,9 +379,13 @@ router.post('/sessions/:id/messages', async (req, res) => {
     }
   }
 
-  res.json({ message: msg, run, workspaceStarting: Boolean(automaticWorkspaceInput && run.state === 'queued') });
+  res.json({
+    message: msg,
+    run,
+    plane,
+    workspaceStarting: Boolean(plane === 'workspace' && automaticWorkspaceInput && run.state === 'queued'),
+  });
 });
-
 router.get('/sessions/:id/messages', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(durableStorageConfigured() ? await controlPlaneRepository().listMessages(req.params.id) : store.db.messages[req.params.id] || []);
@@ -482,33 +499,64 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     const permissionCheck = await githubConnectionStatus(requestInstallationId(req));
     if (permissionCheck.permissionStatus && !permissionCheck.permissionStatus.workspaceReady) {
       return res.status(409).json({
-        error: 'Approve the pending GitHub permission update before starting this workspace.',
+        error: 'Approve the pending GitHub permission update before starting this development environment.',
         code: 'GITHUB_PERMISSION_UPDATE_REQUIRED',
         missingPermissions: permissionCheck.permissionStatus.missingWorkspace,
         retryable: true,
       });
     }
-    const durable = await controlPlaneRepository().getSession(s.id);
+
+    const repository = controlPlaneRepository();
+    const durable = await repository.getSession(s.id);
     const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
     if (!durable || !githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
-    const workspace = await prepareWorkspace({ sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch });
-    s.mode = 'cloud'; s.workspaceId = workspace.id; s.updatedAt = new Date().toISOString(); store.save();
-    await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
-    emit(s.id, workspace.state === 'ready' ? 'workspace.ready' : 'workspace.preparing', { state: workspace.state, bridge: workspace.bridgeState, openCode: workspace.openCodeState });
-    await recordAudit(req, s.id, 'workspace.start', 'accepted', { workspaceId: workspace.id, state: workspace.state, provider: workspace.provider });
-    return res.status(workspace.state === 'ready' ? 200 : 202).json(workspace);
+
+    const current = await ensureWorkspaceRecord({
+      sessionId: s.id,
+      userId: durable.userId,
+      projectId: durable.projectId,
+      repositoryId: githubRepo.id,
+      branch: s.branch,
+    });
+
+    s.mode = 'cloud';
+    s.workspaceId = current.id;
+    s.updatedAt = new Date().toISOString();
+    store.save();
+    await repository.putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
+
+    emit(s.id, 'workspace.preparing', {
+      state: current.state,
+      stage: 'accepted',
+      message: current.codespaceName ? 'Waking the existing development environment…' : 'Starting a development environment only for this task…',
+    });
+    void prepareWorkspace({
+      sessionId: s.id,
+      userId: durable.userId,
+      projectId: durable.projectId,
+      repositoryId: githubRepo.id,
+      branch: s.branch,
+    }).then(async (workspace) => {
+      if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
+        await promoteNextQueuedRun(s.id);
+      }
+    }).catch((error) => {
+      console.warn(`[workspace] background start failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+    });
+
+    await recordAudit(req, s.id, 'workspace.start', 'accepted', { workspaceId: current.id, state: current.state, provider: current.provider });
+    return res.status(current.state === 'ready' ? 200 : 202).json(current);
   } catch (error) {
-    const diagnostic = error instanceof Error ? error.message : 'Workspace start failed.';
+    const diagnostic = error instanceof Error ? error.message : 'Development environment start failed.';
     const permission = /codespaces.*(permission|403|forbidden)|HTTP 403/i.test(diagnostic);
     return res.status(permission ? 409 : 502).json({
-      error: permission ? 'GitHub Codespaces access needs approval before this workspace can start.' : "Cloud workspace couldn't start.",
+      error: permission ? 'GitHub Codespaces access needs approval before this development environment can start.' : "Development environment couldn't start.",
       code: permission ? 'CODESPACES_PERMISSION_REQUIRED' : 'WORKSPACE_START_FAILED',
       retryable: true,
       diagnostic,
     });
   }
 });
-
 router.post('/sessions/:id/cloud/stop', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
@@ -582,8 +630,12 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
     const task = (await repository.listTasks(String(sessionId))).find((item) => item.runId === req.params.runId);
     if (!task) return res.status(404).json({ error: 'run not found' });
     if (task.state === 'running') {
-      try { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id, runId: task.runId }, 15_000); }
-      catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
+      if (task.plane === 'direct') {
+        cancelDirectRun(task.runId || req.params.runId);
+      } else {
+        try { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id, runId: task.runId }, 15_000); }
+        catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
+      }
     }
     if (task.state === 'running' || task.state === 'queued') {
       task.state = 'cancelled';
@@ -594,7 +646,7 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
       emit(task.sessionId, 'run.failed', { cancelled: true, taskId: task.id }, task.runId);
       await promoteNextQueuedRun(task.sessionId).catch(() => null);
     }
-    return res.json({ id: task.runId, sessionId: task.sessionId, state: task.state, engine: 'opencode', model: task.modelId, mode: task.mode, startedAt: task.createdAt, finishedAt: task.updatedAt });
+    return res.json({ id: task.runId, sessionId: task.sessionId, plane: task.plane || 'workspace', state: task.state, engine: 'opencode', model: task.modelId, mode: task.mode, startedAt: task.createdAt, finishedAt: task.updatedAt });
   }
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
 });
@@ -603,8 +655,27 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
 router.get('/sessions/:id/runs', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   if (durableStorageConfigured()) {
+    await recoverInterruptedDirectRuns(req.params.id);
     const tasks = await controlPlaneRepository().listTasks(req.params.id);
-    return res.json(tasks.map((task) => ({ id: task.runId || task.id, sessionId: task.sessionId, engine: 'opencode', state: task.state, model: task.modelId, mode: task.mode, permission: task.permission, activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state === 'completed' ? 'Ready for review' : task.state, startedAt: task.createdAt, finishedAt: ['completed', 'failed', 'cancelled'].includes(task.state) ? task.updatedAt : undefined })));
+    return res.json(tasks.map((task) => ({
+      id: task.runId || task.id,
+      sessionId: task.sessionId,
+      engine: 'opencode',
+      plane: task.plane || 'workspace',
+      state: task.state,
+      model: task.modelId,
+      mode: task.mode,
+      permission: task.permission,
+      partialText: task.partialText,
+      partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
+      activity: task.state === 'running'
+        ? (task.plane === 'direct' ? 'Streaming response' : 'Working')
+        : task.state === 'queued'
+          ? (task.plane === 'direct' ? 'Waiting to respond' : 'Waiting for development environment')
+          : task.state === 'completed' ? 'Ready' : task.state,
+      startedAt: task.createdAt,
+      finishedAt: ['completed','failed','cancelled'].includes(task.state) ? task.updatedAt : undefined,
+    })));
   }
   res.json(currentRuns(req.params.id));
 });
@@ -772,7 +843,10 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
       const explicitStrategy = String(req.body?.strategy || '');
       const originalBranch = session.branch;
-      const publishAsPullRequest = explicitStrategy === 'pull-request' || ['main', 'master'].includes(originalBranch);
+      if (['main', 'master'].includes(originalBranch) && !['direct', 'pull-request'].includes(explicitStrategy)) {
+        return res.status(400).json({ error: 'Choose whether to push directly to the default branch or create a pull request.' });
+      }
+      const publishAsPullRequest = explicitStrategy === 'pull-request';
       let publishedBranch = originalBranch;
       let pullRequest: { number: number; url: string } | undefined;
 
@@ -840,12 +914,12 @@ router.get('/ai/overview', async (req, res) => {
     const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
     res.json({
       state: status.state,
-      message: status.engineConnected ? status.message : 'AI is not available for this workspace yet.',
+      message: status.message,
       model: status.model,
       mode: status.mode,
       permission: status.permission,
       providers: status.providers,
-      available: snapshot.engine.connected,
+      available: snapshot.models.some((model) => model.status === 'available'),
       models: snapshot.models,
       providerConnections: snapshot.providers,
     });
@@ -859,7 +933,7 @@ router.get('/ai/status', async (req, res) => {
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
   try {
     const status = await aiStatus(sessionId || undefined, s?.project, await requestUserId(req) || undefined);
-    res.json({ state: status.state, message: status.engineConnected ? status.message : 'AI is not available for this workspace yet.', model: status.model, mode: status.mode, permission: status.permission, providers: status.providers });
+    res.json({ state: status.state, message: status.message, model: status.model, mode: status.mode, permission: status.permission, providers: status.providers });
   }
   catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'AI status is unavailable.' }); }
 });
@@ -868,7 +942,7 @@ router.get('/ai/providers', async (req, res) => {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
     const sessionId = String(req.query.sessionId || '');
     const { engine, providers, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
-    res.json({ available: engine.connected, providers, connectedModels: models.filter((m) => m.status === 'available').length });
+    res.json({ available: models.some((m) => m.status === 'available'), providers, connectedModels: models.filter((m) => m.status === 'available').length });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Provider list is unavailable.' }); }
 });
 router.get('/ai/models', async (req, res) => {
@@ -876,7 +950,7 @@ router.get('/ai/models', async (req, res) => {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
     const sessionId = String(req.query.sessionId || '');
     const { engine, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
-    res.json({ available: engine.connected, models });
+    res.json({ available: models.some((m) => m.status === 'available'), models });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
 });
 router.post('/ai/providers/connect-key', async (req, res) => {
@@ -1130,7 +1204,13 @@ router.get('/integrations/status', async (req, res) => {
   const installationId = installationIdFor(req);
   const requestedSession = String(req.query.sessionId || '');
   const session = requestedSession ? ownedSession(req, requestedSession) : undefined;
-  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(installationId), openCodeStatus(session?.project, requestedSession || undefined), githubPlatformHealth()]);
+  const userId = await requestUserId(req);
+  const [connection, opencode, platform, directAi] = await Promise.all([
+    githubConnectionStatus(installationId),
+    openCodeStatus(session?.project, requestedSession || undefined),
+    githubPlatformHealth(),
+    userId ? controlPlaneRepository().getProviderConnection(userId, 'opencode') : Promise.resolve(null),
+  ]);
   const health = connection.connected || connection.needsAttention
     ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
@@ -1159,7 +1239,7 @@ router.get('/integrations/status', async (req, res) => {
       },
     },
     githubAvailable: platform.configured && platform.healthy,
-    ai: { available: opencode.connected },
+    ai: { available: opencode.connected || directAi?.state === 'connected' },
     workspace: { terminalAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', cloudAvailable: infrastructure && connection.userAuthorizationState === 'established', previewAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', state: workspace?.state || 'not_created' },
   });
 });

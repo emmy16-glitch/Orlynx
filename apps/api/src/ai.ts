@@ -8,6 +8,7 @@ import { dataDir, store } from './store.js';
 import { openCodeStatus } from './opencode.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { encryptCredential } from './credentials.js';
+import { listZenModels } from './zen.js';
 
 export const MODES = AGENT_MODES;
 export const PERMISSIONS = PERMISSION_PROFILES;
@@ -121,35 +122,44 @@ export interface ProviderConnection {
 }
 
 export async function listProviderConnections(project = '', userId?: string, sessionId?: string): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
-  const status = await openCodeStatus(project || undefined, sessionId);
   const localSecrets = durableStorageConfigured() ? { providers: {}, keys: {} } as Secrets : readSecrets();
-  const durableRows = durableStorageConfigured() && userId ? await controlPlaneRepository().listProviderConnections(userId) : [];
+  const [status, durableRows] = await Promise.all([
+    openCodeStatus(project || undefined, sessionId),
+    durableStorageConfigured() && userId ? controlPlaneRepository().listProviderConnections(userId) : Promise.resolve([]),
+  ]);
   const durableIds = durableRows.filter((row) => row.state === 'connected').map((row) => row.provider);
   const locallyStored = Object.keys(localSecrets.keys);
   const accountIds = new Set([...durableIds, ...locallyStored]);
 
-  if (!status.configured || !status.connected) {
-    const providers: ProviderConnection[] = [...accountIds].map((id) => ({
-      id,
-      name: providerDisplayName(id),
-      state: durableIds.includes(id) ? 'connected' as const : 'key-stored' as const,
-      modelsAvailable: 0,
-      keyEnding: localSecrets.keys[id] ? maskKey(localSecrets.keys[id]) : undefined,
-      message: durableIds.includes(id)
-        ? 'Connected to Orlynx. Start the workspace to load this provider in OpenCode.'
-        : 'Credential is saved, but the AI engine is not ready yet.',
-    }));
-    return { engine: { connected: false, message: status.message }, providers, models: [] };
+  let zenModels: AIModel[] = [];
+  if (durableStorageConfigured() && userId && durableIds.includes('opencode')) {
+    try { zenModels = await listZenModels(userId); }
+    catch { zenModels = []; }
   }
 
-  const { providersAll, connectedIds } = await catalog(status);
-  const models = extractModels(providersAll, connectedIds);
+  let engineModels: AIModel[] = [];
+  let connectedIds: string[] = [];
+  if (status.configured && status.connected) {
+    const catalogSnapshot = await catalog(status);
+    connectedIds = catalogSnapshot.connectedIds;
+    engineModels = extractModels(catalogSnapshot.providersAll, connectedIds);
+  }
+
+  const modelMap = new Map<string, AIModel>();
+  for (const model of [...zenModels, ...engineModels]) {
+    const key = model.id.toLowerCase();
+    const current = modelMap.get(key);
+    if (!current || model.status === 'available') modelMap.set(key, model);
+  }
+  const models = [...modelMap.values()].sort((a,b)=>a.displayName.localeCompare(b.displayName));
+
   const byProvider = new Map<string, AIModel[]>();
   for (const model of models) {
     const rows = byProvider.get(model.providerId) || [];
     rows.push(model);
     byProvider.set(model.providerId, rows);
   }
+
   const ids = new Set([...byProvider.keys(), ...accountIds]);
   const providers: ProviderConnection[] = [...ids].map((id) => {
     const rows = byProvider.get(id) || [];
@@ -160,15 +170,31 @@ export async function listProviderConnections(project = '', userId?: string, ses
       id,
       name: providerDisplayName(id),
       state: 'connected',
-      modelsAvailable: rows.length,
+      modelsAvailable: rows.filter((m)=>m.status === 'available').length,
       keyEnding: hasLocalKey ? maskKey(localSecrets.keys[id]) : undefined,
-      message: engineConnected ? 'Connected and ready.' : 'Connected. Restart or reconnect the workspace to refresh available models.',
+      message: rows.length
+        ? status.connected
+          ? 'Connected for chat and development work.'
+          : 'Connected and ready for direct chat. The development environment starts only when needed.'
+        : 'Connected, but the model catalog could not be loaded yet.',
     };
-    if (hasLocalKey) return { id, name: providerDisplayName(id), state: 'key-stored', modelsAvailable: 0, keyEnding: maskKey(localSecrets.keys[id]), message: 'Credential is saved, but OpenCode has not loaded it yet.' };
+    if (hasLocalKey) return { id, name: providerDisplayName(id), state: 'key-stored', modelsAvailable: 0, keyEnding: maskKey(localSecrets.keys[id]), message: 'Credential is saved, but the account still needs attention.' };
     return { id, name: providerDisplayName(id), state: 'not-connected', modelsAvailable: rows.length, message: 'Not connected.' };
   });
-  providers.sort((a, b) => a.name.localeCompare(b.name));
-  return { engine: { connected: true, message: status.message }, providers, models };
+  providers.sort((a,b)=>a.name.localeCompare(b.name));
+
+  return {
+    engine: {
+      connected: Boolean(status.connected),
+      message: status.connected
+        ? status.message
+        : zenModels.length
+          ? 'Direct chat is ready. A development environment will start only for execution work.'
+          : status.message,
+    },
+    providers,
+    models,
+  };
 }
 
 export function supportedProviderIds(): string[] {
@@ -209,7 +235,7 @@ export async function connectProviderKey(providerId: string, apiKey: string, use
       createdAt: now,
       updatedAt: now,
     });
-    return { id, name: providerDisplayName(id), state: 'connected', modelsAvailable: 0, message: 'Connected to Orlynx. Start or reconnect the workspace to load your OpenCode models.' };
+    return { id, name: providerDisplayName(id), state: 'connected', modelsAvailable: 0, message: 'Connected to Orlynx. Your model list is available directly; a development environment starts only when needed.' };
   }
 
   const secrets = readSecrets();
@@ -397,19 +423,33 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
       ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => r.state === 'running' || r.state === 'queued')
       : (store.db.runs[sessionId] || []).some((r) => r.state === 'running')
     : false;
-  if (!engine.connected) {
-    return { state: 'error', engine: 'OpenCode', engineConnected: false, message: engine.message, mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: 0 } };
+  const available = models.filter((m)=>m.status === 'available');
+  const connectedProviders = providers.filter((p)=>p.state === 'connected').length;
+  const selected = prefs.modelId ? models.find((m)=>m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
+
+  if (!connectedProviders) {
+    return { state: 'disconnected', engine: 'OpenCode', engineConnected: engine.connected, message: 'Connect an AI account to start chatting.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: providers.length } };
   }
-  const available = models.filter((m) => m.status === 'available');
-  const model = prefs.modelId ? models.find((m) => m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
-  const keyStoredOnly = providers.some((p) => p.state === 'key-stored');
   if (!available.length) {
-    return { state: keyStoredOnly ? 'needs_attention' : 'disconnected', engine: 'OpenCode', engineConnected: true, message: keyStoredOnly ? 'A stored key has not been picked up by the engine yet.' : 'Connect an AI account to start working.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: models.length } };
+    return { state: 'needs_attention', engine: 'OpenCode', engineConnected: engine.connected, message: 'Your AI account is connected, but its model list is unavailable. Refresh models and try again.', mode: prefs.mode, permission: prefs.permission, providers: { connected: connectedProviders, total: providers.length } };
   }
-  const effectiveModel = model && model.status === 'available' ? model : available[0];
-  if (running) return { state: 'working', engine: 'OpenCode', engineConnected: true, message: 'Working.', model: effectiveModel, mode: prefs.mode, permission: prefs.permission, providers: { connected: 1, total: models.length } };
-  if (prefs.modelId && (!model || model.status !== 'available')) {
-    return { state: 'needs_attention', engine: 'OpenCode', engineConnected: true, message: 'The selected model is not available. Choose another model to continue.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 1, total: models.length } };
+  if (!prefs.modelId) {
+    return { state: 'needs_attention', engine: 'OpenCode', engineConnected: engine.connected, message: 'Choose a model for this conversation.', mode: prefs.mode, permission: prefs.permission, providers: { connected: connectedProviders, total: providers.length } };
   }
-  return { state: 'ready', engine: 'OpenCode', engineConnected: true, message: 'Ready.', model: effectiveModel, mode: prefs.mode, permission: prefs.permission, providers: { connected: 1, total: models.length } };
+  if (!selected || selected.status !== 'available') {
+    return { state: 'needs_attention', engine: 'OpenCode', engineConnected: engine.connected, message: 'The selected model is not available. Choose another model.', mode: prefs.mode, permission: prefs.permission, providers: { connected: connectedProviders, total: providers.length } };
+  }
+  if (running) {
+    return { state: 'working', engine: 'OpenCode', engineConnected: engine.connected, message: 'Working.', model: selected, mode: prefs.mode, permission: prefs.permission, providers: { connected: connectedProviders, total: providers.length } };
+  }
+  return {
+    state: 'ready',
+    engine: 'OpenCode',
+    engineConnected: engine.connected,
+    message: engine.connected ? 'Ready.' : 'Ready for direct chat. Development environment starts only when needed.',
+    model: selected,
+    mode: prefs.mode,
+    permission: prefs.permission,
+    providers: { connected: connectedProviders, total: providers.length },
+  };
 }

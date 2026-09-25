@@ -10,6 +10,7 @@ import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { openCodeReadiness } from './opencode.js';
+import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
 
 export type Engine = 'opencode';
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
@@ -20,6 +21,8 @@ export interface TaskOptions {
   mode?: AgentMode;
   tempPermission?: PermissionProfile;
   messageId?: string;
+  plane?: ExecutionPlane;
+  workspaceId?: string;
 }
 
 const staleTaskGraceMs = 15_000;
@@ -66,105 +69,273 @@ export function taskPermission(current: PermissionProfile, requested?: Permissio
   return { permission: tempPermission || current, ...(tempPermission ? { tempPermission } : {}) };
 }
 
+async function executeDirectTask(
+  session: Awaited<ReturnType<ReturnType<typeof controlPlaneRepository>['getSession']>>,
+  task: TaskRecord,
+  run: AgentRun,
+  modelId: string,
+): Promise<void> {
+  if (!session) return;
+  const repository = controlPlaneRepository();
+  let visible = task.partialText || '';
+  let pendingDelta = '';
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushDelta = () => {
+    if (!pendingDelta) return;
+    const delta = pendingDelta;
+    pendingDelta = '';
+    emit(session.id, 'message.delta', { delta }, run.id);
+  };
+  const scheduleFlush = () => {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      flushDelta();
+    }, 80);
+    flushTimer.unref?.();
+  };
+  const heartbeat = setInterval(() => {
+    if (task.state !== 'running') return;
+    // Flush before snapshotting so reload recovery can use updatedAt as a
+    // cutoff without replaying text already present in partialText.
+    flushDelta();
+    task.partialText = visible;
+    task.updatedAt = new Date().toISOString();
+    void repository.putTask(task).catch(() => {});
+  }, 1000);
+  heartbeat.unref?.();
+
+  try {
+    const responseText = await streamDirectRepositoryChat({
+      runId: run.id,
+      session,
+      modelId,
+      onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
+      onDelta: (delta) => {
+        visible += delta;
+        task.partialText = visible;
+        pendingDelta += delta;
+        if (pendingDelta.length >= 240) flushDelta();
+        else scheduleFlush();
+      },
+    });
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
+    flushDelta();
+    if (task.state === 'cancelled') return;
+
+    const now = new Date().toISOString();
+    task.state = 'completed';
+    task.partialText = responseText;
+    task.updatedAt = now;
+    await repository.putTask(task);
+    await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, createdAt: now });
+
+    run.state = 'completed';
+    run.activity = 'Ready';
+    run.finishedAt = now;
+    store.save();
+    emit(session.id, 'message.end', { taskId: task.id }, run.id);
+    emit(session.id, 'run.completed', { taskId: task.id, summary: 'Response completed.' }, run.id);
+    emit(session.id, 'activity.completed', { taskId: task.id, text: 'Response completed' }, run.id);
+  } catch (error) {
+    if (task.state === 'cancelled') return;
+    const now = new Date().toISOString();
+    const detail = error instanceof Error ? error.message : 'Direct chat failed.';
+    const errorKind = classifyError(detail);
+    task.state = 'failed';
+    task.updatedAt = now;
+    await repository.putTask(task);
+    run.state = 'failed';
+    run.activity = 'Needs attention';
+    run.finishedAt = now;
+    run.errorKind = errorKind;
+    store.save();
+    emit(session.id, 'run.failed', {
+      taskId: task.id,
+      error: errorKind === 'rate_limit'
+        ? 'The selected model is temporarily rate limited. Try again shortly.'
+        : errorKind === 'quota'
+          ? 'The OpenCode account has reached its available quota or credits.'
+          : errorKind === 'auth'
+            ? 'Reconnect your OpenCode account and try again.'
+            : errorKind === 'model'
+              ? 'That model is not available right now. Choose another model.'
+              : detail,
+      errorKind,
+      retryable: errorKind === 'rate_limit' || errorKind === 'engine',
+    }, run.id);
+  } finally {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushDelta();
+    clearInterval(heartbeat);
+    await promoteNextQueuedRun(session.id).catch(() => null);
+  }
+}
+
 export async function promoteNextQueuedRun(sessionId: string): Promise<AgentRun | null> {
   if (!durableStorageConfigured()) return null;
   const repository = controlPlaneRepository();
   const session = await repository.getSession(sessionId);
   if (!session) return null;
 
-  await reconcileDurableTasks(sessionId);
+  const tasks = await reconcileDurableTasks(sessionId);
+  const nextQueued = tasks.find((item) => item.state === 'queued');
+  if (!nextQueued) return null;
 
-  // Admission is intentionally independent from execution. A user can submit
-  // work while the Codespace is waking; the task stays queued until the bridge
-  // and OpenCode are genuinely ready.
-  const readyWorkspace = await repository.getWorkspaceBySession(sessionId);
-  if (!readyWorkspace || readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+  // Tasks admitted before the direct-chat plane existed were stored as
+  // workspace work by default. Reclassify safe conversational prompts so a
+  // legacy "Hello" does not force or block on a Codespace after deployment.
+  if ((nextQueued.plane || 'workspace') === 'workspace' && executionPlaneFor(nextQueued.prompt, nextQueued.mode || 'build') === 'direct') {
+    nextQueued.plane = 'direct';
+    nextQueued.workspaceId = 'direct';
+    nextQueued.updatedAt = new Date().toISOString();
+    await repository.putTask(nextQueued);
+  }
 
-  while (true) {
-    const task = await repository.claimNextQueuedTask(sessionId);
-    if (!task) return null;
+  if ((nextQueued.plane || 'workspace') === 'workspace') {
+    const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
+    if (!readyWorkspace || readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+  }
 
-    let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
-    try {
-      await hydrateSessionPrefs(sessionId, session.project);
-      const gate = canPerform(sessionId, 'agent.task');
-      if (!gate.allowed) {
-        const error = new Error(gate.reason || 'This task is blocked by the project access level.');
-        (error as { errorKind?: string }).errorKind = 'permission';
-        throw error;
-      }
-      const prefs = getSessionPrefs(sessionId, session.project);
-      const mode = task.mode || prefs.mode;
-      const { permission, tempPermission } = taskPermission(task.permission || prefs.permission, task.tempPermission);
-      const modelId = task.modelId || prefs.modelId;
-      let model: { providerID: string; modelID: string } | undefined;
-      let provider: string | undefined;
-      if (modelId) {
-        const [providerID, ...rest] = modelId.split('/');
-        if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
-        provider = providerID;
-        model = { providerID, modelID: rest.join('/') };
-      }
+  const task = await repository.claimNextQueuedTask(sessionId);
+  if (!task) return null;
 
-      const workspace = await repository.getWorkspace(task.workspaceId);
-      if (!workspace || workspace.state !== 'ready') throw new Error('A ready cloud workspace is required.');
-      const connection = await openCodeReadiness(session.project, sessionId);
-      if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable for this workspace.');
-      const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), session.project, sessionId);
-
-      const startedAt = new Date().toISOString();
-      if (!run) {
-        const runId = task.runId || `run_${uuid().slice(0, 8)}`;
-        run = { id: runId, sessionId, engine: 'opencode', provider, model: modelId, mode, permission, tempPermission, state: 'running', activity: 'Starting work', startedAt };
-        task.runId = runId;
-        (store.db.runs[sessionId] ||= []).push(run);
-        await repository.putTask(task);
-      } else {
-        run.provider = provider;
-        run.model = modelId;
-        run.mode = mode;
-        run.permission = permission;
-        run.tempPermission = tempPermission;
-        run.state = 'running';
-        run.activity = 'Starting work';
-        run.startedAt = startedAt;
-        run.finishedAt = undefined;
-        run.errorKind = undefined;
-      }
-      store.save();
-
-      emit(sessionId, 'run.started', { taskId: task.id, engine: 'opencode', provider, model: modelId, mode, permission }, run.id);
-      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Starting work' }, run.id);
-      if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note }, run.id);
-
-      const guardedText = [
-        permission !== 'full' ? readOnlyInstruction() : '',
-        mode === 'plan' ? planInstruction() : '',
-        mode === 'ask' ? readOnlyInstruction() : '',
-        task.prompt,
-      ].filter(Boolean).join('\n\n');
-      const engineSessionId = await repository.getEngineSession(sessionId);
-      await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
-      return run;
-    } catch (error) {
-      const now = new Date().toISOString();
-      const detail = error instanceof Error ? error.message : 'Orlynx AI could not start this queued task.';
-      const errorKind = (error as { errorKind?: AgentRun['errorKind'] }).errorKind || classifyError(detail);
-      task.state = 'failed';
-      task.updatedAt = now;
-      await repository.putTask(task);
-      if (!run && task.runId) {
-        run = { id: task.runId, sessionId, engine: 'opencode', state: 'failed', activity: 'Work needs attention', startedAt: task.createdAt, finishedAt: now, errorKind };
-        (store.db.runs[sessionId] ||= []).push(run);
-      } else if (run) {
-        run.state = 'failed';
-        run.activity = 'Work needs attention';
-        run.finishedAt = now;
-        run.errorKind = errorKind;
-      }
-      store.save();
-      emit(sessionId, 'run.failed', { taskId: task.id, error: detail, errorKind, recoverable: errorKind === 'engine' || errorKind === 'rate_limit' }, task.runId);
+  let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+  try {
+    await hydrateSessionPrefs(sessionId, session.project);
+    const gate = canPerform(sessionId, 'agent.task');
+    if (!gate.allowed) {
+      const error = new Error(gate.reason || 'This task is blocked by the project access level.');
+      (error as { errorKind?: string }).errorKind = 'permission';
+      throw error;
     }
+
+    const prefs = getSessionPrefs(sessionId, session.project);
+    const mode = task.mode || prefs.mode;
+    const { permission, tempPermission } = taskPermission(task.permission || prefs.permission, task.tempPermission);
+    const modelId = task.modelId || prefs.modelId;
+    if (!modelId) {
+      const error = new Error('Choose a model before sending a message.');
+      (error as { errorKind?: string }).errorKind = 'model';
+      throw error;
+    }
+
+    const [providerID, ...rest] = modelId.split('/');
+    if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
+    const provider = providerID;
+    const model = { providerID, modelID: rest.join('/') };
+    const startedAt = new Date().toISOString();
+
+    if (!run) {
+      const runId = task.runId || `run_${uuid().slice(0,8)}`;
+      run = {
+        id: runId,
+        sessionId,
+        engine: 'opencode',
+        plane: task.plane || 'workspace',
+        provider,
+        model: modelId,
+        mode,
+        permission,
+        tempPermission,
+        state: 'running',
+        activity: task.plane === 'direct' ? 'Starting response' : 'Starting work',
+        startedAt,
+      };
+      task.runId = runId;
+      (store.db.runs[sessionId] ||= []).push(run);
+      await repository.putTask(task);
+    } else {
+      run.plane = task.plane || 'workspace';
+      run.provider = provider;
+      run.model = modelId;
+      run.mode = mode;
+      run.permission = permission;
+      run.tempPermission = tempPermission;
+      run.state = 'running';
+      run.activity = task.plane === 'direct' ? 'Starting response' : 'Starting work';
+      run.startedAt = startedAt;
+      run.finishedAt = undefined;
+      run.errorKind = undefined;
+    }
+    store.save();
+
+    emit(sessionId, 'run.started', { taskId: task.id, plane: task.plane || 'workspace', engine: 'opencode', provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
+
+    if (task.plane === 'direct') {
+      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Reading repository from GitHub' }, run.id);
+      void executeDirectTask(session, task, run, modelId);
+      return run;
+    }
+
+    const workspace = await repository.getWorkspace(task.workspaceId);
+    if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
+      task.state = 'queued';
+      task.updatedAt = new Date().toISOString();
+      await repository.putTask(task);
+      run.state = 'queued';
+      run.activity = 'Waiting for development environment';
+      store.save();
+      return run;
+    }
+
+    const connection = await openCodeReadiness(session.project, sessionId);
+    if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable for this workspace.');
+    const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), session.project, sessionId);
+    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Development environment ready' }, run.id);
+    if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note }, run.id);
+
+    const guardedText = [
+      permission !== 'full' ? readOnlyInstruction() : '',
+      mode === 'plan' ? planInstruction() : '',
+      mode === 'ask' ? readOnlyInstruction() : '',
+      task.prompt,
+    ].filter(Boolean).join('\n\n');
+    const engineSessionId = await repository.getEngineSession(sessionId);
+    await queueBridgeCommand(workspace.id, 'agent.run', { taskId: task.id, runId: run.id, sessionId, engineSessionId, text: guardedText, model, agent: resolvedAgent.agent }, timeoutMs);
+    return run;
+  } catch (error) {
+    const now = new Date().toISOString();
+    const detail = error instanceof Error ? error.message : 'Orlynx AI could not start this queued task.';
+    const errorKind = (error as { errorKind?: AgentRun['errorKind'] }).errorKind || classifyError(detail);
+    task.state = 'failed';
+    task.updatedAt = now;
+    await repository.putTask(task);
+    if (!run && task.runId) {
+      run = { id: task.runId, sessionId, engine: 'opencode', plane: task.plane || 'workspace', state: 'failed', activity: 'Needs attention', startedAt: task.createdAt, finishedAt: now, errorKind };
+      (store.db.runs[sessionId] ||= []).push(run);
+    } else if (run) {
+      run.state = 'failed';
+      run.activity = 'Needs attention';
+      run.finishedAt = now;
+      run.errorKind = errorKind;
+    }
+    store.save();
+    emit(sessionId, 'run.failed', { taskId: task.id, error: detail, errorKind, recoverable: errorKind === 'engine' || errorKind === 'rate_limit' }, task.runId);
+    return promoteNextQueuedRun(sessionId);
+  }
+}
+
+export async function recoverInterruptedDirectRuns(sessionId: string): Promise<void> {
+  if (!durableStorageConfigured()) return;
+  const repository = controlPlaneRepository();
+  const tasks = await repository.listTasks(sessionId);
+  let recovered = false;
+  for (const task of tasks) {
+    if (task.plane !== 'direct' || task.state !== 'running' || !task.runId || hasDirectRun(task.runId)) continue;
+    task.state = 'queued';
+    task.partialText = undefined;
+    task.updatedAt = new Date().toISOString();
+    await repository.putTask(task);
+    const run = (store.db.runs[sessionId] || []).find((item) => item.id === task.runId);
+    if (run) { run.state = 'queued'; run.activity = 'Restoring response'; run.finishedAt = undefined; }
+    emit(sessionId, 'activity.progress', { taskId: task.id, sourceType: 'direct.recovery', text: 'Restoring the interrupted response…' }, task.runId);
+    recovered = true;
+  }
+  if (recovered) {
+    store.save();
+    await promoteNextQueuedRun(sessionId).catch(() => null);
   }
 }
 
@@ -192,8 +363,8 @@ export async function startRun(sessionId: string, project: string, userText: str
   }
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
-    const workspace = await repository.getWorkspaceBySession(sessionId);
-    if (!workspace) throw new Error('The project workspace could not be initialized.');
+    const plane = options.plane || 'workspace';
+    if (plane === 'workspace' && !options.workspaceId) throw new Error('The development environment could not be initialized.');
     const durableTasks = await reconcileDurableTasks(sessionId);
     const queuedAhead = durableTasks.filter((item) => item.state === 'queued').length;
     if (queuedAhead >= maxQueuedTasks) {
@@ -202,12 +373,40 @@ export async function startRun(sessionId: string, project: string, userText: str
       throw error;
     }
     const admittedAt = new Date().toISOString();
-    const run: AgentRun = { id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId, mode, permission, tempPermission, state: 'queued', activity: 'Queued', startedAt: admittedAt };
-    const task: TaskRecord = { id: `task_${uuid()}`, sessionId, workspaceId: workspace.id, runId: run.id, messageId: options.messageId, state: 'queued', prompt: userText, modelId, mode, permission: prefs.permission, tempPermission: options.tempPermission, createdAt: admittedAt, updatedAt: admittedAt };
+    const run: AgentRun = {
+      id: `run_${uuid().slice(0,8)}`,
+      sessionId,
+      engine,
+      plane,
+      provider,
+      model: modelId,
+      mode,
+      permission,
+      tempPermission,
+      state: 'queued',
+      activity: plane === 'direct' ? 'Queued for response' : 'Queued for development environment',
+      startedAt: admittedAt,
+    };
+    const task: TaskRecord = {
+      id: `task_${uuid()}`,
+      sessionId,
+      workspaceId: plane === 'direct' ? 'direct' : options.workspaceId!,
+      plane,
+      runId: run.id,
+      messageId: options.messageId,
+      state: 'queued',
+      prompt: userText,
+      modelId,
+      mode,
+      permission: prefs.permission,
+      tempPermission: options.tempPermission,
+      createdAt: admittedAt,
+      updatedAt: admittedAt,
+    };
     (store.db.runs[sessionId] ||= []).push(run);
     store.save();
     await repository.putTask(task);
-    emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, engine, provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, plane, engine, provider, model: modelId, mode, permission }, run.id);
     const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
     return promoted?.id === run.id ? promoted : run;
   }
@@ -350,6 +549,7 @@ async function captureDiff(sessionId: string, project: string, runId: string, op
 export async function cancelRun(sessionId: string, runId: string) {
   const run = (store.db.runs[sessionId] || []).find((item) => item.id === runId);
   if (!run || run.state !== 'running') return run;
+  if (run.plane === 'direct') cancelDirectRun(runId);
   const active = activeOpenCodeSessions.get(runId);
   if (active) {
     active.cancelled = true;

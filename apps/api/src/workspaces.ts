@@ -5,6 +5,7 @@ import { createBridgeToken } from './bridge-auth.js';
 import { GitHubCodespacesProvider } from './github-codespaces.js';
 import { bootstrapWorkspace } from './runtime-worker.js';
 import { controlPlaneRepository } from './storage.js';
+import { emit } from './events.js';
 
 const provider = new GitHubCodespacesProvider();
 const activePreparations = new Map<string, Promise<WorkspaceRecord>>();
@@ -49,6 +50,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
   let workspace = await ensureWorkspaceRecord(input);
   try {
     if (workspace.state === 'creating' && !workspace.codespaceName) {
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting a development environment on GitHub…' });
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {
@@ -62,7 +64,11 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         : await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     }
-    if (workspace.state === 'stopped') { workspace = { ...(await provider.start(workspace)), state: 'starting' }; await repository.putWorkspace(workspace); }
+    if (workspace.state === 'stopped') {
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.start', message: 'Waking the existing GitHub Codespace…' });
+      workspace = { ...(await provider.start(workspace)), state: 'starting' };
+      await repository.putWorkspace(workspace);
+    }
 
     // A host restart or hung SSH bootstrap must not strand a session forever.
     // Once a bootstrap has been silent for long enough, safely re-enter the
@@ -82,11 +88,35 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
-      const deadline = Date.now() + 45_000;
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.wait', message: 'Waiting for GitHub to finish starting the Codespace…' });
+      const deadline = Date.now() + Math.max(90_000, Number(process.env.ORLYNX_CODESPACE_READY_TIMEOUT_MS || 4 * 60_000));
+      let lastState = workspace.state;
+      let lastProgressAt = 0;
       while (Date.now() < deadline) {
-        workspace = await provider.get(workspace); await repository.putWorkspace(workspace);
+        workspace = await provider.get(workspace);
+        await repository.putWorkspace(workspace);
+        if (workspace.state !== lastState) {
+          lastState = workspace.state;
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'codespace.state',
+            state: workspace.state,
+            message: workspace.state === 'connecting'
+              ? 'Codespace is online. Connecting Orlynx…'
+              : workspace.state === 'failed'
+                ? 'GitHub could not start the Codespace.'
+                : 'GitHub is preparing the Codespace…',
+          });
+        }
         if (workspace.state === 'connecting' || workspace.state === 'failed') break;
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        if (Date.now() - lastProgressAt > 15_000) {
+          lastProgressAt = Date.now();
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'codespace.wait',
+            state: workspace.state,
+            message: 'GitHub is still preparing the development environment. Your task is saved and Orlynx will continue automatically.',
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
       }
     }
     const connectionAge = Date.now() - Date.parse(workspace.updatedAt);
@@ -96,6 +126,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
+      emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: 'Connecting Orlynx to the development environment…' });
       console.info(`[workspace] bootstrapping session=${workspace.sessionId} workspace=${workspace.id} codespace=${workspace.codespaceName || 'unknown'}`);
       await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
       console.info(`[workspace] bootstrap command completed session=${workspace.sessionId} workspace=${workspace.id}`);
@@ -103,11 +134,20 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       // a post-bootstrap write would overwrite that newer READY transition.
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
     }
-    return (await repository.getWorkspace(workspace.id)) || workspace;
+    const finalWorkspace = (await repository.getWorkspace(workspace.id)) || workspace;
+    if (finalWorkspace.state === 'ready' && finalWorkspace.bridgeState === 'ready') {
+      emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Development environment ready.' });
+    }
+    return finalWorkspace;
   } catch (error) {
     if (workspace) {
       workspace = { ...workspace, state: 'failed', bridgeState: 'disconnected', openCodeState: workspace.openCodeState === 'starting' ? 'failed' : workspace.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
+      emit(input.sessionId, 'workspace.preparing', {
+        stage: 'failed',
+        state: 'failed',
+        message: error instanceof Error ? error.message : 'Development environment could not start.',
+      });
     }
     throw error;
   }
