@@ -142,7 +142,13 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
     if (!(await waitForOpenCodeToStop())) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
   }
   if (useAccountKey && !OPENCODE_API_KEY) return { state: 'failed', reason: 'account_key_unavailable' };
-  if (spawnSync(OPENCODE_BIN, ['--version'], { encoding: 'utf8', timeout: 5_000 }).status !== 0) return { state: 'failed', reason: 'binary_unavailable' };
+  const binaryProbe = spawnSync(OPENCODE_BIN, ['--version'], { encoding: 'utf8', timeout: 5_000 });
+  if (binaryProbe.status !== 0) {
+    const signal = binaryProbe.signal ? String(binaryProbe.signal) : 'none';
+    const status = typeof binaryProbe.status === 'number' ? String(binaryProbe.status) : 'none';
+    console.error(`[bridge] OpenCode binary probe failed status=${status} signal=${signal}`);
+    return { state: 'failed', reason: 'binary_unavailable' };
+  }
 
   const child = spawn(OPENCODE_BIN, ['serve', '--hostname', '127.0.0.1', '--port', String(OPENCODE_PORT)], {
     cwd: REPO_ROOT,
