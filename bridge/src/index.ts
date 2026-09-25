@@ -117,7 +117,21 @@ async function opencodeRequest(payload: Record<string, unknown>) {
   const response = await fetch(url, { method, headers: { Authorization: `Basic ${auth}`, Accept: 'application/json', 'Content-Type': 'application/json', 'x-opencode-directory': REPO_ROOT }, body: payload.body === undefined || method === 'GET' ? undefined : JSON.stringify(payload.body), signal: AbortSignal.timeout(Number(payload.timeoutMs || 120_000)) });
   const text = await response.text();
   if (!response.ok) throw new Error(`OpenCode request failed (HTTP ${response.status}): ${text.slice(0, 1000)}`);
-  return { status: response.status, body: text ? JSON.parse(text) : null };
+  const body = text ? JSON.parse(text) : null;
+  if (pathname === '/provider' && body && typeof body === 'object') {
+    // OpenCode includes full model metadata for many providers; sending that
+    // catalog over the workspace socket can exceed its 1 MiB frame limit.
+    // The picker needs only the connected providers' model IDs and names.
+    const connected = Array.isArray(body.connected) ? body.connected.map(String) : [];
+    const ids = new Set(connected.map((id: string) => id.toLowerCase()));
+    const all = Array.isArray(body.all) ? body.all.filter((provider: any) => ids.has(String(provider?.id || '').toLowerCase())).map((provider: any) => ({
+      id: String(provider.id),
+      name: String(provider.name || provider.id),
+      models: Object.entries(provider.models || {}).map(([id, model]) => ({ id, name: String((model as { name?: string })?.name || id) })),
+    })) : [];
+    return { status: response.status, body: { connected, all } };
+  }
+  return { status: response.status, body };
 }
 function bridgeEvent(ws: WebSocket, type: string, payload: Record<string, unknown>, taskId?: string, runId?: string) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type, payload, taskId, runId } }));

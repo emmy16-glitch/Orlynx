@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createBridgeToken, verifyBridgeToken } from '../src/bridge-auth.ts';
 import { decryptCredential, encryptCredential } from '../src/credentials.ts';
+import { extractModels } from '../src/ai.ts';
 import { readFileSync } from 'node:fs';
 
 it('keeps the Vercel route wildcard out of the file path query parameter', () => {
@@ -9,6 +10,14 @@ it('keeps the Vercel route wildcard out of the file path query parameter', () =>
   const apiRewrite = config.rewrites.find((rewrite) => rewrite.destination === '/api/index' && rewrite.source.startsWith('/v1/'));
   assert.ok(apiRewrite, 'API rewrite must exist');
   assert.doesNotMatch(apiRewrite.source, /:path(?:\*|\/|$)/, 'Vercel route matches must not overwrite ?path used by file and diff endpoints');
+});
+
+it('parses provider model dictionaries without inventing entries', () => {
+  const models = extractModels([{ id: 'opencode', models: { 'model-a': { name: 'Model A' }, 'model-b': { name: 'Model B' } } }], ['opencode']);
+  assert.deepEqual(models.map((model) => [model.id, model.displayName, model.status]), [
+    ['opencode/model-a', 'Model A', 'available'],
+    ['opencode/model-b', 'Model B', 'available'],
+  ]);
 });
 
 describe('execution-plane credentials', () => {

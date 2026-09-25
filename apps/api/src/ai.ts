@@ -63,8 +63,7 @@ function familyOf(modelId: string, providerId: string): string {
 
 interface RawCatalog { agents: Record<string, any>[]; providersAll: any[]; connectedIds: string[] }
 
-async function catalog(project = ''): Promise<RawCatalog> {
-  const status = await openCodeStatus(project || undefined);
+async function catalog(status: Awaited<ReturnType<typeof openCodeStatus>>): Promise<RawCatalog> {
   const agents = Array.isArray(status.agents) ? status.agents : [];
   const rawProviders: unknown = status.providers;
   let providersAll: any[] = [];
@@ -76,14 +75,16 @@ async function catalog(project = ''): Promise<RawCatalog> {
   return { agents, providersAll, connectedIds };
 }
 
-function extractModels(providersAll: any[], connectedIds: string[]): AIModel[] {
+export function extractModels(providersAll: any[], connectedIds: string[]): AIModel[] {
   const models: AIModel[] = [];
   const connectedSet = new Set(connectedIds.map((id) => id.toLowerCase()));
   for (const provider of providersAll) {
     if (!provider || typeof provider !== 'object') continue;
     const providerId = String(provider.id || provider.provider || provider.name || '');
     if (!providerId) continue;
-    const list = Array.isArray(provider.models) ? provider.models : Array.isArray(provider.all) ? provider.all : [];
+    const list = Array.isArray(provider.models) ? provider.models : provider.models && typeof provider.models === 'object'
+      ? Object.entries(provider.models).map(([id, model]) => ({ id, name: (model as { name?: string })?.name || id }))
+      : Array.isArray(provider.all) ? provider.all : [];
     const connected = connectedSet.has(providerId.toLowerCase());
     for (const entry of list) {
       const id = String(typeof entry === 'string' ? entry : entry?.id || entry?.model || entry?.name || '');
@@ -141,7 +142,7 @@ export async function listProviderConnections(project = '', userId?: string): Pr
     return { engine: { connected: false, message: status.message }, providers, models: [] };
   }
 
-  const { providersAll, connectedIds } = await catalog(project);
+  const { providersAll, connectedIds } = await catalog(status);
   const models = extractModels(providersAll, connectedIds);
   const byProvider = new Map<string, AIModel[]>();
   for (const model of models) {
@@ -315,7 +316,7 @@ export async function resolveAgentForMode(mode: AgentMode, configuredAgent: stri
   if (mode === 'build') return configuredAgent ? { agent: configuredAgent } : {};
   const wanted = MODE_AGENT[mode];
   try {
-    const { agents } = await catalog(project);
+    const { agents } = await catalog(await openCodeStatus(project || undefined));
     const names = agents.map((a) => String(a?.name || a?.id || '').toLowerCase());
     if (names.includes(wanted)) return { agent: wanted };
     return { agent: configuredAgent || undefined, note: `The engine does not offer a ${wanted} agent, so this task uses the default agent with ${mode} instructions instead.` };
@@ -388,14 +389,14 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? await hydrateSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models } = await listProviderConnections(project, userId);
+  const { engine, models, providers } = await listProviderConnections(project, userId);
   const running = sessionId ? (store.db.runs[sessionId] || []).some((r) => r.state === 'running') : false;
   if (!engine.connected) {
     return { state: 'error', engine: 'OpenCode', engineConnected: false, message: engine.message, mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: 0 } };
   }
   const available = models.filter((m) => m.status === 'available');
   const model = prefs.modelId ? models.find((m) => m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
-  const keyStoredOnly = (await listProviderConnections(project, userId)).providers.some((p) => p.state === 'key-stored');
+  const keyStoredOnly = providers.some((p) => p.state === 'key-stored');
   if (!available.length) {
     return { state: keyStoredOnly ? 'needs_attention' : 'disconnected', engine: 'OpenCode', engineConnected: true, message: keyStoredOnly ? 'A stored key has not been picked up by the engine yet.' : 'Connect an AI account to start working.', mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: models.length } };
   }

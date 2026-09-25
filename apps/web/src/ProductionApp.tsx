@@ -93,6 +93,7 @@ export default function ProductionApp() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [ai, setAi] = useState<any>({ state: 'disconnected', mode: 'build', permission: 'ask-first', providers: { connected: 0, total: 0 } });
   const [aiModels, setAiModels] = useState<any[]>([]);
+  const [aiModelError, setAiModelError] = useState('');
   const [aiProviders, setAiProviders] = useState<any[]>([]);
   const [showConnectAI, setShowConnectAI] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
@@ -146,12 +147,13 @@ export default function ProductionApp() {
     try {
       const [status, models, providers] = await Promise.all([
         j<any>(await fetch(`/v1/ai/status${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)),
-        j<any>(await fetch(`/v1/ai/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)).catch(() => ({ models: [] })),
+        j<any>(await fetch(`/v1/ai/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)),
         j<any>(await fetch(`/v1/ai/providers${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)).catch(() => ({ providers: [], supported: [] })),
       ]);
+      setAiModelError('');
       setAi(status); setAiModels(models.models || []);
       setAiProviders(providers.providers || []);
-    } catch { /* AI status stays fail-closed; composer shows unavailable */ }
+    } catch (error: any) { setAiModelError(error?.message || 'Models could not be loaded. Try again.'); }
   }, []);
 
   async function reconnectStaleWorkspace(id: string) {
@@ -446,6 +448,7 @@ export default function ProductionApp() {
     }
     setAi({ state: 'disconnected', mode: 'build', permission: 'ask-first', providers: { connected: 0, total: 0 } });
     setAiModels([]);
+    setAiModelError('');
     setAiProviders([]);
   }, [integration.github?.connected, refreshAi]);
 
@@ -902,7 +905,7 @@ export default function ProductionApp() {
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {tab === 'chat' && <form className="composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea value={composer} onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }} placeholder={!online ? 'Offline — draft saved' : ai.state === 'ready' || ai.state === 'working' ? `Ask Orlynx anything about this repository…` : !aiAccountConnected ? 'Connect AI to start' : !workspaceReady ? 'Start the workspace to use Orlynx AI' : 'Choose a model to continue'} aria-label="Message Orlynx AI" disabled={(ai.state !== 'ready' && ai.state !== 'working') || !online} /><div className="composer-controls"><button type="button" className="model-trigger" onClick={() => { void refreshAi(session.id); setShowConnectAI(true); }} aria-label="Choose AI model"><Icon name="agents" size={14} /><span>{ai.model?.displayName || (workspaceReady ? 'Choose model' : aiAccountConnected ? 'Model after workspace' : 'Connect AI')}</span><Icon name="chevron" size={12} /></button><details className="composer-options"><summary aria-label="Chat options">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary><div className="composer-options-panel"><label>Mode<select aria-label="Mode" value={ai.mode || 'build'} onChange={(event) => setAiPrefs({ mode: event.target.value })} disabled={!online}><option value="build">Build</option><option value="plan">Plan</option><option value="ask">Ask</option></select></label><label>Access<select aria-label="Access level" value={ai.permission || 'ask-first'} onChange={(event) => { setTempFullAccess(false); setAiPrefs({ permission: event.target.value }); }} disabled={!online}><option value="full">Full project access</option><option value="ask-first">Ask first</option><option value="read-only">Read only</option></select></label></div></details></div>{ai.permission === 'ask-first' && (ai.state === 'ready') && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{running && workspaceReady ? <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button> : <Button type="submit" disabled={!composer.trim() || sending || (ai.state !== 'ready' && ai.state !== 'working') || !online} aria-label="Send task"><Icon name="send" /></Button>}</form>}
-          {showConnectAI && <ConnectAiSheet models={aiModels} providers={aiProviders} search={modelSearch} setSearch={setModelSearch} workspaceReady={workspaceReady} onStartWorkspace={() => { setShowConnectAI(false); void startCloud(); }} onRefresh={async () => { await refreshAi(session.id); }} onSelectModel={(id) => { setShowConnectAI(false); setAiPrefs({ modelId: id }); }} onClose={() => setShowConnectAI(false)} />}
+          {showConnectAI && <ConnectAiSheet models={aiModels} providers={aiProviders} modelError={aiModelError} search={modelSearch} setSearch={setModelSearch} workspaceReady={workspaceReady} onStartWorkspace={() => { setShowConnectAI(false); void startCloud(); }} onRefresh={async () => { await refreshAi(session.id); }} onSelectModel={(id) => { setShowConnectAI(false); setAiPrefs({ modelId: id }); }} onClose={() => setShowConnectAI(false)} />}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
@@ -979,8 +982,8 @@ export default function ProductionApp() {
   );
 }
 
-function ConnectAiSheet({ models, providers, search, setSearch, workspaceReady, onStartWorkspace, onRefresh, onSelectModel, onClose }: {
-  models: any[]; providers: any[]; search: string; setSearch: (v: string) => void; workspaceReady: boolean;
+function ConnectAiSheet({ models, providers, modelError, search, setSearch, workspaceReady, onStartWorkspace, onRefresh, onSelectModel, onClose }: {
+  models: any[]; providers: any[]; modelError: string; search: string; setSearch: (v: string) => void; workspaceReady: boolean;
   onStartWorkspace: () => void; onRefresh: () => Promise<void>; onSelectModel: (id: string) => void; onClose: () => void;
 }) {
   const [apiKey, setApiKey] = useState('');
@@ -1039,7 +1042,7 @@ function ConnectAiSheet({ models, providers, search, setSearch, workspaceReady, 
     </section> : <>
       <section className="ai-connected-card"><div className="ai-provider-lockup"><span className="ai-provider-mark connected"><Icon name="check" /></span><span><b>OpenCode</b><small>{workspaceReady ? 'Connected to this Orlynx workspace' : 'Connected to your Orlynx account'}</small></span><Badge tone="ok">Connected</Badge></div></section>
       {available.length > 6 && <label className="search-field"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 50).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.providerName}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait"><Icon name="cloud" /><div><b>{workspaceReady ? 'Loading available models…' : 'Models load when the workspace starts'}</b><p>{workspaceReady ? 'OpenCode is connected. Refresh this panel in a moment if models do not appear.' : 'Start the workspace here to load models, then pick one from the chat model button.'}</p>{!workspaceReady && <Button onClick={onStartWorkspace}>Start workspace</Button>}{workspaceReady && <Button tone="ghost" onClick={() => void onRefresh()}>Refresh models</Button>}</div></div>}
+      {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 50).map((m: any) => <button key={m.id} className="project-list-row" onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.providerName}</small></span><Icon name="chevron" /></button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait"><Icon name="cloud" /><div><b>{modelError ? 'Models could not be loaded' : workspaceReady ? 'No models available yet' : 'Models load when the workspace starts'}</b><p>{modelError || (workspaceReady ? 'Check your OpenCode connection, then refresh the models.' : 'Start the workspace here to load models, then pick one from the chat model button.')}</p>{!workspaceReady && <Button onClick={onStartWorkspace}>Start workspace</Button>}{workspaceReady && <Button tone="ghost" onClick={() => void onRefresh()}>Refresh models</Button>}</div></div>}
       <div className="ai-sheet-footer"><button className="text-button danger-text" onClick={disconnectOpenCode} disabled={busy}>Disconnect OpenCode</button></div>
     </>}
   </div></div>;

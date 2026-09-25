@@ -119,11 +119,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
   ws.once('close', async (code) => { console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`); active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.on('error', (error) => { console.warn(`[bridge] socket error: ${error.message}`); ws.close(); });
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
 }
 
 export const bridgeGatewayServer = http.createServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'WebSocket upgrade required.' })); });
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+// Existing workspaces can still send OpenCode's full provider catalog until
+// they reconnect with the compact bridge. Accept that bounded legacy reply.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 bridgeGatewayServer.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url || '/', 'http://localhost').pathname;
   if (pathname !== '/bridge' && pathname !== '/v1/bridge') { socket.destroy(); return; }
