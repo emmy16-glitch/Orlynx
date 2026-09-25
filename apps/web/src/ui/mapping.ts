@@ -8,6 +8,20 @@ export interface ActivityItem extends ActivityEvent { key: string; }
 type RuntimeEvent = Omit<Partial<OrlynxEvent>, 'type'> & { type: string; payload?: Record<string, unknown> };
 const toState = (s: ActivityLifecycle): ActivityState => s === 'success' ? 'done' : s === 'running' ? 'active' : s === 'queued' || s === 'waiting' ? 'todo' : 'fail';
 const str = (v: unknown): string => typeof v === 'string' ? v : '';
+const compact = (value: string, max = 96): string => {
+  const oneLine = value.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+};
+function toolEvidence(p: Record<string, unknown>, tool: string, command: string): Record<string, unknown> {
+  const title = str(p.title);
+  const path = str(p.path);
+  return {
+    ...(tool ? { tool } : {}),
+    ...(title ? { toolTitle: title } : {}),
+    ...(command ? { command } : {}),
+    ...(path ? { path } : {}),
+  };
+}
 
 /** Normalize, correlate, and group the session event ledger into stable visible rows. */
 export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
@@ -40,7 +54,10 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'message.delta': case 'message.start': case 'message.end': case 'state.snapshot': case 'state.delta':
         break; // user-facing text is rendered in chat; state snapshots are not activity.
       case 'run.queued': {
-        const item = put(event, 'agent', 'queued', 'Queued', typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically');
+        const buildWorkspace = p.mode === 'build' && p.plane === 'workspace';
+        const title = buildWorkspace ? 'Waiting to start Build task' : p.mode === 'plan' ? 'Waiting to start planning' : 'Queued';
+        const item = put(event, 'agent', 'queued', title, typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically',
+          { ...(str(p.mode) ? { mode: str(p.mode) } : {}), ...(str(p.plane) ? { plane: str(p.plane) } : {}) });
         item.key = `agent:${event.runId || 'session'}`;
         break;
       }
@@ -92,13 +109,15 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         if (current) { current.state = 'success'; current.sequence = event.sequence || current.sequence; }
         break;
       }
-      case 'tool.requested':
-        put(event, classifyTool(tool, command), 'waiting', waitingTitle(tool, command));
+      case 'tool.requested': {
+        const category = classifyTool(tool, command);
+        put(event, category, 'waiting', waitingTitle(tool, command), command ? compact(command, 120) : undefined, toolEvidence(p, tool, command));
         break;
+      }
       case 'tool.started': {
         const category = classifyTool(tool, command);
-        const item = put(event, category, 'running', titleFor(category, tool, command), undefined,
-          { tool, command: command || undefined, path: str(p.path) || undefined });
+        const item = put(event, category, 'running', titleFor(category, tool, command, str(p.title)), undefined,
+          toolEvidence(p, tool, command));
         activeTools.set(activeKey, item);
         break;
       }
@@ -116,7 +135,12 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
           item.sequence = event.sequence || item.sequence;
           item.rawRef = event.eventId ? `event:${event.eventId}` : item.rawRef;
           item.summary = event.type === 'tool.failed' ? friendlyFailure(str(p.error || p.message)) : item.summary;
-          item.evidence = { ...(item.evidence || {}), ...(typeof p.exitCode === 'number' ? { exitCode: p.exitCode } : {}), ...(typeof p.files === 'number' ? { filesChanged: p.files } : {}) };
+          item.evidence = {
+            ...(item.evidence || {}),
+            ...toolEvidence(p, tool, command),
+            ...(typeof p.exitCode === 'number' ? { exitCode: p.exitCode } : {}),
+            ...(typeof p.files === 'number' ? { filesChanged: p.files } : {}),
+          };
           item.rawOutput = str(p.out || p.stderr || p.error || p.message) || item.rawOutput;
           item.collapsible = true;
         }
@@ -142,6 +166,33 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         item.collapsible = true;
         break;
       }
+      case 'changes.updated': {
+        const incoming = Array.isArray(p.files) ? p.files as Array<Record<string, unknown>> : [];
+        const files = incoming.flatMap((file) => {
+          const path = str(file.path);
+          if (!path) return [];
+          const action = str(file.action);
+          return [{
+            path,
+            action: action === 'create' || action === 'delete' ? action : 'modify',
+            ...(str(file.diff) ? { diff: str(file.diff) } : {}),
+          }];
+        });
+        const runKey = event.runId || 'session';
+        let item = rows.find((row) => row.key === `files:${runKey}`);
+        if (!item) {
+          item = put(event, 'file', 'success', 'Code changes ready');
+          item.key = `files:${runKey}`;
+        }
+        item.state = 'success';
+        item.title = 'Code changes ready';
+        item.summary = `${typeof p.count === 'number' ? p.count : files.length} file${(typeof p.count === 'number' ? p.count : files.length) === 1 ? '' : 's'} changed`;
+        item.evidence = { files, ...(str(p.changeId) ? { changeId: str(p.changeId) } : {}) };
+        item.rawRef = event.eventId ? `event:${event.eventId}` : item.rawRef;
+        item.sequence = event.sequence || item.sequence;
+        item.collapsible = true;
+        break;
+      }
       case 'receipt.created': {
         const result = normalizeReceipt(event, p);
         const prior = [...rows].reverse().find((row) => row.category === result.category &&
@@ -162,9 +213,13 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         }
         break;
       }
-      case 'workspace.preparing': case 'workspace.reconnecting':
-        put(event, 'cloud', 'running', event.type === 'workspace.preparing' ? 'Preparing workspace' : 'Reconnecting to workspace');
+      case 'workspace.preparing': case 'workspace.reconnecting': {
+        const message = str(p.message);
+        put(event, 'cloud', 'running', event.type === 'workspace.preparing' ? 'Preparing workspace' : 'Reconnecting to workspace',
+          message && !/^Preparing workspace/i.test(message) ? message : undefined,
+          { ...(str(p.stage) ? { stage: str(p.stage) } : {}) });
         break;
+      }
       case 'workspace.ready': {
         const pending = [...rows].reverse().find((r) => r.category === 'cloud' && r.state === 'running');
         if (pending) { pending.state = 'success'; pending.title = 'Development environment ready'; pending.sequence = event.sequence || pending.sequence; }
@@ -227,19 +282,26 @@ function classifyTool(tool: string, command: string): ActivityCategory {
   if (/patch|edit|write|file/.test(name)) return 'file';
   return 'command';
 }
-function titleFor(category: ActivityCategory, tool: string, command: string): string {
+function titleFor(category: ActivityCategory, tool: string, command: string, observedTitle = ''): string {
   if (category === 'test') return 'Running tests';
   if (category === 'build') return 'Building the project';
-  if (category === 'search') return 'Inspecting the repository';
-  if (category === 'file') return 'Updating files';
-  if (category === 'git') return 'Updating repository';
+  if (category === 'search') return str(observedTitle) && !/^read|search|list$/i.test(observedTitle) ? compact(observedTitle, 88) : 'Inspecting the repository';
+  if (category === 'file') return str(observedTitle) && !/^edit|write|patch$/i.test(observedTitle) ? compact(observedTitle, 88) : 'Updating files';
+  if (category === 'git') return /status|log|diff|show|branch/i.test(command) ? 'Inspecting Git state' : 'Updating repository';
   if (/health|curl/i.test(command)) return 'Checking service health';
-  return tool === 'exec' || /shell|command/i.test(tool) ? 'Running a command' : `Working with ${tool || 'the project'}`;
+  if (command) return 'Running command';
+  return observedTitle && observedTitle !== tool ? compact(observedTitle, 88)
+    : tool === 'exec' || /bash|shell|command|terminal/i.test(tool) ? 'Running command' : `Working with ${tool || 'the project'}`;
 }
 function waitingTitle(tool: string, command: string): string {
-  if (/test/i.test(`${tool} ${command}`)) return 'Tests are queued';
-  if (/build|tsc/i.test(`${tool} ${command}`)) return 'Build is queued';
-  return 'Action is queued';
+  const text = `${tool} ${command}`;
+  if (/test|vitest|jest|pytest/i.test(text)) return 'Waiting to run tests';
+  if (/build|tsc|compile/i.test(text)) return 'Waiting to build the project';
+  if (/git/i.test(text)) return 'Waiting to run Git command';
+  if (/read|search|inspect|list/i.test(text)) return 'Waiting to inspect the repository';
+  if (/patch|edit|write|file/i.test(text)) return 'Waiting to update files';
+  if (command) return 'Waiting to run command';
+  return 'Waiting for the previous action';
 }
 function friendlyFailure(raw: string): string | undefined {
   if (/OpenCode runtime.*(?:HTTP\s+(?:502|503|504)|unavailable|did not become ready|could not start)/i.test(raw)) return 'The AI runtime could not start. Your message is saved — try again.';
