@@ -19,14 +19,40 @@ const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
 
 type Command = { kind: 'COMMAND'; commandId: string; type: string; payload?: Record<string, unknown> };
+type CommandReply = { ok: boolean; result?: Record<string, unknown>; error?: string };
+type InFlightCommand = { sockets: Set<WebSocket>; promise: Promise<CommandReply> };
 type PtyState = { terminal: pty.IPty; pending: string };
 const terminals = new Map<string, PtyState>();
-const completed = new Map<string, { ok: boolean; result?: Record<string, unknown>; error?: string }>();
+const completed = new Map<string, CommandReply>();
+const inFlight = new Map<string, InFlightCommand>();
 const activeAgents = new Map<string, string>();
-try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, { ok: boolean; result?: Record<string, unknown>; error?: string }>)) completed.set(id, value); } catch {}
-function remember(id: string, value: { ok: boolean; result?: Record<string, unknown>; error?: string }) {
+try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, CommandReply>)) completed.set(id, value); } catch {}
+function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
   try { fs.writeFileSync(`${COMMAND_JOURNAL}.tmp`, JSON.stringify(Object.fromEntries(completed)), { mode: 0o600 }); fs.renameSync(`${COMMAND_JOURNAL}.tmp`, COMMAND_JOURNAL); } catch {}
+}
+function sendCommandReply(ws: WebSocket, commandId: string, reply: CommandReply): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ kind: 'RESULT', commandId, ...reply })); } catch { /* a replacement socket will receive the durable retry */ }
+}
+function runCommandOnce(command: Command, ws: WebSocket): void {
+  const prior = completed.get(command.commandId);
+  if (prior) { sendCommandReply(ws, command.commandId, prior); return; }
+  const existing = inFlight.get(command.commandId);
+  if (existing) { existing.sockets.add(ws); return; }
+
+  const sockets = new Set<WebSocket>([ws]);
+  const promise = (async (): Promise<CommandReply> => {
+    let reply: CommandReply;
+    try { reply = { ok: true, result: await execute(command, ws) }; }
+    catch (error) { reply = { ok: false, error: error instanceof Error ? error.message.slice(0, 2000) : 'Command failed.' }; }
+    remember(command.commandId, reply);
+    const active = inFlight.get(command.commandId);
+    if (active) for (const target of active.sockets) sendCommandReply(target, command.commandId, reply);
+    return reply;
+  })().finally(() => { inFlight.delete(command.commandId); });
+  inFlight.set(command.commandId, { sockets, promise });
+  void promise;
 }
 
 function safePath(relative = '.'): string {
@@ -248,9 +274,7 @@ function connect(delay = 0): void {
         return;
       }
       if (message.kind !== 'COMMAND' || !message.commandId) return;
-      const prior = completed.get(message.commandId); if (prior) { ws.send(JSON.stringify({ kind: 'RESULT', commandId: message.commandId, ...prior })); return; }
-      try { const result = await execute(message as Command, ws); const reply = { ok: true, result }; remember(message.commandId, reply); ws.send(JSON.stringify({ kind: 'RESULT', commandId: message.commandId, ...reply })); }
-      catch (error) { const reply = { ok: false, error: error instanceof Error ? error.message.slice(0, 2000) : 'Command failed.' }; remember(message.commandId, reply); ws.send(JSON.stringify({ kind: 'RESULT', commandId: message.commandId, ...reply })); }
+      runCommandOnce(message as Command, ws);
     });
     ws.on('close', () => { if (heartbeat) clearInterval(heartbeat); connect(Math.min(delay ? delay * 2 : 1_000, 30_000)); }); ws.on('error', () => ws.close());
   }, delay);
