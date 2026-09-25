@@ -186,14 +186,17 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'run.failed': {
         for (const row of rows) if (row.runId === event.runId && row.state === 'running') row.state = p.cancelled ? 'cancelled' : 'failed';
         const agentRow = [...rows].reverse().find((row) => row.runId === event.runId && row.category === 'agent');
+        const failureText = str(p.error || p.message);
+        const runtimeUnavailable = /OpenCode runtime.*(?:HTTP\s+(?:502|503|504)|unavailable|did not become ready|could not start)/i.test(failureText);
         const title = p.cancelled
           ? 'Work stopped'
+          : runtimeUnavailable ? 'AI runtime unavailable'
           : p.errorKind === 'rate_limit' ? 'Model is busy'
           : p.errorKind === 'auth' ? 'Reconnect OpenCode'
           : p.errorKind === 'model' ? 'Model unavailable'
           : p.errorKind === 'quota' ? 'OpenCode quota reached'
           : 'Work needs attention';
-        const summary = friendlyFailure(str(p.error || p.message));
+        const summary = friendlyFailure(failureText);
         if (agentRow) { agentRow.state = p.cancelled ? 'cancelled' : 'failed'; agentRow.title = title; agentRow.summary = summary; }
         else put(event, p.cancelled ? 'agent' : 'error', p.cancelled ? 'cancelled' : 'failed', title, summary);
         break;
@@ -239,6 +242,7 @@ function waitingTitle(tool: string, command: string): string {
   return 'Action is queued';
 }
 function friendlyFailure(raw: string): string | undefined {
+  if (/OpenCode runtime.*(?:HTTP\s+(?:502|503|504)|unavailable|did not become ready|could not start)/i.test(raw)) return 'The AI runtime could not start. Your message is saved — try again.';
   if (/FreeUsageLimitError|temporarily rate limit|rate.?limit exceeded|too many requests/i.test(raw)) return 'This model is temporarily rate limited by OpenCode. Orlynx already retried it; try again shortly or choose another model.';
   if (/reached its quota|available quota|available credits|billing|payment/i.test(raw)) return 'The OpenCode account has reached its quota or available credits.';
   if (/free model.*not available.*Orlynx|public third-party route|choose another free model/i.test(raw)) return 'That free model is restricted on OpenCode’s side for third-party clients. Choose another free model.';

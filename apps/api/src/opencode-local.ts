@@ -7,6 +7,9 @@ const providers = new Map<string, { expires: number; language: Promise<LanguageM
 const MAX_PROVIDERS = 64;
 const runtimeSessions = new Map<string, string>();
 const MAX_RUNTIME_SESSIONS = 256;
+const TRANSIENT_RUNTIME_STATUSES = new Set([502, 503, 504]);
+const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 75_000;
+const DEFAULT_RUNTIME_WAKE_POLL_MS = 2_000;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
@@ -108,25 +111,105 @@ async function runtimeFetch(
   });
 }
 
+function runtimeError(status: number, prefix = 'OpenCode runtime'): ProviderRequestError {
+  const message = status === 401
+    ? `${prefix} authentication failed (HTTP 401).`
+    : status === 403
+      ? `${prefix} rejected the request (HTTP 403).`
+      : `${prefix} returned HTTP ${status}.`;
+  return new ProviderRequestError(message, status, true);
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function waitForRuntimeReady(
+  signal: AbortSignal,
+  onStatus?: (message: string) => void,
+  onTiming?: (stage: string, ms: number) => void,
+): Promise<void> {
+  const started = performance.now();
+  const configuredTimeout = Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS || DEFAULT_RUNTIME_WAKE_TIMEOUT_MS);
+  const configuredPoll = Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS || DEFAULT_RUNTIME_WAKE_POLL_MS);
+  const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(5_000, configuredTimeout) : DEFAULT_RUNTIME_WAKE_TIMEOUT_MS;
+  const pollMs = Number.isFinite(configuredPoll) ? Math.max(0, configuredPoll) : DEFAULT_RUNTIME_WAKE_POLL_MS;
+  let announced = false;
+  let lastStatus: number | undefined;
+
+  while (performance.now() - started < timeoutMs) {
+    signal.throwIfAborted();
+    try {
+      const response = await runtimeFetch('/global/health', {
+        headers: { Accept: 'application/json' },
+        signal,
+      }, Math.min(12_000, timeoutMs));
+      if (response.ok) {
+        onTiming?.('runtimeReadyMs', performance.now() - started);
+        return;
+      }
+      lastStatus = response.status;
+      if (!TRANSIENT_RUNTIME_STATUSES.has(response.status)) throw runtimeError(response.status);
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      if (error instanceof ProviderRequestError && error.statusCode && !TRANSIENT_RUNTIME_STATUSES.has(error.statusCode)) {
+        throw error;
+      }
+    }
+
+    if (!announced) {
+      announced = true;
+      onStatus?.('Starting AI runtime…');
+    }
+    await wait(pollMs, signal);
+  }
+
+  throw new ProviderRequestError(
+    lastStatus
+      ? `OpenCode runtime remained unavailable (HTTP ${lastStatus}).`
+      : 'OpenCode runtime did not become ready in time.',
+    lastStatus || 503,
+    true,
+  );
+}
+
 async function runtimeJson<T>(pathname: string, init: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
   const response = await runtimeFetch(pathname, init, timeoutMs);
   if (!response.ok) {
     // Do not forward remote response bodies: they may contain provider,
     // request, or authentication diagnostics that belong only in the runtime.
-    const message = response.status === 401
-      ? 'OpenCode runtime authentication failed (HTTP 401).'
-      : response.status === 403
-        ? 'OpenCode runtime rejected the request (HTTP 403).'
-        : `OpenCode runtime returned HTTP ${response.status}.`;
-    throw new ProviderRequestError(message, response.status, true);
+    throw runtimeError(response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal): Promise<string> {
+async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal): Promise<{ id: string; fresh: boolean }> {
   const cached = runtimeSessions.get(runtimeKey);
-  if (cached) return cached;
+  if (cached) {
+    try {
+      await runtimeJson<any>(`/session/${encodeURIComponent(cached)}`, { signal }, 10_000);
+      return { id: cached, fresh: false };
+    } catch (error) {
+      if (!(error instanceof ProviderRequestError) || error.statusCode !== 404) throw error;
+      runtimeSessions.delete(runtimeKey);
+    }
+  }
 
   const title = `Orlynx ${runtimeKey}`;
   const query = new URLSearchParams({ search: title, limit: '20' });
@@ -141,7 +224,7 @@ async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal
   if (sessionID) {
     if (runtimeSessions.size >= MAX_RUNTIME_SESSIONS) runtimeSessions.delete(runtimeSessions.keys().next().value!);
     runtimeSessions.set(runtimeKey, sessionID);
-    return sessionID;
+    return { id: sessionID, fresh: false };
   }
 
   const created = await runtimeJson<any>('/session', {
@@ -159,7 +242,18 @@ async function getOrCreateRuntimeSession(runtimeKey: string, signal: AbortSignal
   if (!createdID) throw new ProviderRequestError('OpenCode runtime did not create a session.', 502, true);
   if (runtimeSessions.size >= MAX_RUNTIME_SESSIONS) runtimeSessions.delete(runtimeSessions.keys().next().value!);
   runtimeSessions.set(runtimeKey, createdID);
-  return createdID;
+  return { id: createdID, fresh: true };
+}
+
+function recoveryHistory(messages: { role: 'user' | 'assistant'; content: string }[]): string {
+  const previous = messages.slice(0, -1).slice(-12)
+    .map((message) => ({ role: message.role, content: message.content.slice(-8_000) }));
+  if (!previous.length) return '';
+  return [
+    'The OpenCode runtime session was recreated, so restore conversational continuity from this private Orlynx history.',
+    'Treat this as hidden context only. Do not quote, expose, summarize, or mention this wrapper unless the user explicitly asks about prior conversation content.',
+    `<orlynx_durable_history_json>${JSON.stringify(previous)}</orlynx_durable_history_json>`,
+  ].join('\n');
 }
 
 async function streamFreeModelThroughOpenCodeRuntime(input: {
@@ -175,9 +269,14 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
 }): Promise<string> {
   const started = performance.now();
   input.signal.throwIfAborted();
+  await waitForRuntimeReady(input.signal, input.onStatus, input.onTiming);
   input.onStatus?.('Thinking…');
 
-  const sessionID = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);
+  let session = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);
+  let sessionID = session.id;
+  let turnSystem = session.fresh
+    ? [input.system, recoveryHistory(input.messages)].filter(Boolean).join('\n\n')
+    : input.system;
   input.onTiming?.('providerInitMs', performance.now() - started);
 
   const eventResponse = await runtimeFetch('/event', {
@@ -192,20 +291,34 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   if (!prompt) throw new ProviderRequestError('No user message was available for this turn.', 400, true);
 
   const requested = performance.now();
-  try {
-    await runtimeJson<void>(`/session/${encodeURIComponent(sessionID)}/prompt_async`, {
+  const submitPrompt = (targetSessionID: string, system: string) => runtimeJson<void>(
+    `/session/${encodeURIComponent(targetSessionID)}/prompt_async`,
+    {
       method: 'POST',
       body: JSON.stringify({
+        ...(input.requestId ? { messageID: input.requestId } : {}),
         model: { providerID: 'opencode', modelID: input.modelId.replace(/^opencode\//, '') },
         agent: 'plan',
-        system: input.system,
+        system,
         parts: [{ type: 'text', text: prompt }],
       }),
       signal: input.signal,
-    }, 30_000);
+    },
+    30_000,
+  );
+
+  try {
+    await submitPrompt(sessionID, turnSystem);
   } catch (error) {
-    if (error instanceof ProviderRequestError && error.statusCode === 404) runtimeSessions.delete(input.runtimeKey);
-    throw error;
+    if (!(error instanceof ProviderRequestError) || error.statusCode !== 404) throw error;
+    // A 404 means the cached OpenCode session disappeared before the prompt was
+    // admitted (for example after a free Render runtime restart). Recreate it
+    // once and restore context from Orlynx's durable conversation store.
+    runtimeSessions.delete(input.runtimeKey);
+    session = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);
+    sessionID = session.id;
+    turnSystem = [input.system, recoveryHistory(input.messages)].filter(Boolean).join('\n\n');
+    await submitPrompt(sessionID, turnSystem);
   }
   input.onTiming?.('modelRequestStartedMs', performance.now() - started);
 
