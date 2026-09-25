@@ -34,6 +34,24 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
       await repository.putWorkspace(workspace);
     }
     if (workspace.state === 'stopped') { workspace = { ...(await provider.start(workspace)), state: 'starting' }; await repository.putWorkspace(workspace); }
+
+    // A host restart or hung SSH bootstrap must not strand a session forever.
+    // Once a bootstrap has been silent for long enough, safely re-enter the
+    // connecting path so the existing Codespace can be bootstrapped again.
+    const workspaceAge = Date.now() - Date.parse(workspace.updatedAt);
+    if (workspace.state === 'bootstrapping' && workspace.bridgeState !== 'ready' && workspaceAge > 120_000) {
+      console.warn(`[workspace] recovering stale bootstrap session=${workspace.sessionId} workspace=${workspace.id} ageMs=${workspaceAge}`);
+      workspace = {
+        ...workspace,
+        state: 'connecting',
+        bridgeState: 'disconnected',
+        openCodeState: 'unavailable',
+        connectionId: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await repository.putWorkspace(workspace);
+    }
+
     if (['creating', 'starting'].includes(workspace.state)) {
       const deadline = Date.now() + 45_000;
       while (Date.now() < deadline) {
@@ -49,7 +67,9 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
       workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
+      console.info(`[workspace] bootstrapping session=${workspace.sessionId} workspace=${workspace.id} codespace=${workspace.codespaceName || 'unknown'}`);
       await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
+      console.info(`[workspace] bootstrap command completed session=${workspace.sessionId} workspace=${workspace.id}`);
       // The bridge can report READY before bootstrap returns. Read its state;
       // a post-bootstrap write would overwrite that newer READY transition.
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
