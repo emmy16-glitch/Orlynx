@@ -17,33 +17,58 @@ export function CloudStatus({ state }: { state?: string }) {
   return <Badge tone="fail">Cloud {state}</Badge>;
 }
 
-export function TaskActivityRow({ item }: { item: ActivityItem }) {
-  const [showEvidence, setShowEvidence] = React.useState(false);
+export type ActivityDetailMode = 'summary' | 'code';
+
+export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = false }: { item: ActivityItem; detailMode?: ActivityDetailMode; isCurrent?: boolean }) {
+  const [showEvidence, setShowEvidence] = React.useState(detailMode === 'code');
   const [showRaw, setShowRaw] = React.useState(false);
+  React.useEffect(() => {
+    if (detailMode === 'code') setShowEvidence(true);
+  }, [detailMode, item.id]);
+
   const { title, summary, evidence, rawOutput, category, state } = item;
   const uiState = toState(state);
-  const files = Array.isArray(evidence?.files) ? evidence.files as { path: string; action?: string }[] : [];
+  const files = Array.isArray(evidence?.files) ? evidence.files as { path: string; action?: string; diff?: string }[] : [];
   const failures = Array.isArray(evidence?.failures) ? evidence.failures as string[] : [];
   const command = typeof evidence?.command === 'string' ? evidence.command : '';
+  const path = typeof evidence?.path === 'string' ? evidence.path : '';
+  const toolTitle = typeof evidence?.toolTitle === 'string' ? evidence.toolTitle : '';
   const hasEvidence = Boolean(evidence && Object.keys(evidence).length);
+  const detailsVisible = detailMode === 'code' || showEvidence;
+  const technical = Boolean(command || path || files.length || failures.length || rawOutput || typeof evidence?.exitCode === 'number');
+
+  const details = detailsVisible && (hasEvidence || rawOutput) ? <div className={`ox-evidence ${detailMode === 'code' ? 'ox-evidence-code' : ''}`}>
+    {toolTitle && detailMode === 'code' && toolTitle !== title && <div className="ox-code-caption">{toolTitle}</div>}
+    {command && <div className="ox-code-block">
+      <span className="ox-code-label">Command</span>
+      <pre className="ox-command" aria-label="Command"><span aria-hidden>$ </span>{command}</pre>
+    </div>}
+    {path && <div className="ox-code-path"><span className="ox-code-label">Path</span><code>{path}</code></div>}
+    {typeof evidence?.exitCode === 'number' && <div className="small">Exit code {evidence.exitCode}</div>}
+    {typeof evidence?.passed === 'number' && <div className="small">{evidence.passed} passed{typeof evidence.failed === 'number' ? ` · ${evidence.failed} failed` : ''}{typeof evidence.skipped === 'number' ? ` · ${evidence.skipped} skipped` : ''}</div>}
+    {files.length > 0 && <div className="ox-code-files">
+      <span className="ox-code-label">Files</span>
+      <ul className="ox-file-list">{files.map((file) => <li key={file.path}><span aria-hidden>{file.action === 'delete' ? '−' : file.action === 'create' ? '+' : '~'}</span> <code>{file.path}</code></li>)}</ul>
+      {files.filter((file) => Boolean(file.diff)).map((file, index) => <details className="ox-inline-diff" key={`diff:${file.path}`} open={detailMode === 'code' && index === 0}>
+        <summary>{file.path} <span>{file.action || 'modify'}</span></summary>
+        <pre aria-label={`Diff for ${file.path}`}>{file.diff}</pre>
+      </details>)}
+    </div>}
+    {failures.length > 0 && <ul className="ox-failure-list">{failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>}
+    {rawOutput && <div className="ox-raw">
+      <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>
+      {showRaw && <pre aria-label="Raw command output">{rawOutput}</pre>}
+    </div>}
+  </div> : null;
+
   return (
-    <div className="ox-activity" data-state={uiState}>
-      <span className="mark" aria-hidden>{uiState === 'done' ? <Icon name="check" /> : uiState === 'fail' ? <Icon name="x" /> : uiState === 'active' ? <Icon name="dot" /> : <Icon name="ring" />}</span>
+    <div className="ox-activity" data-state={uiState} data-current={isCurrent ? 'true' : undefined}>
+      <span className="mark" aria-hidden>{uiState === 'done' ? <Icon name="check" /> : uiState === 'fail' ? <Icon name="x" /> : uiState === 'active' && isCurrent ? <Icon name="dot" /> : <Icon name="ring" />}</span>
       <div className="ox-activity-content">
-        <div>{title}</div>
+        <div className="ox-activity-title"><span>{title}</span>{isCurrent && <span className="ox-current-label">Current</span>}</div>
         {summary && <div className="small">{summary}</div>}
-        {(hasEvidence || rawOutput) && <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showEvidence} onClick={() => setShowEvidence((v) => !v)}>{showEvidence ? 'Hide details' : category === 'file' ? 'View files' : category === 'test' ? 'View results' : category === 'approval' ? 'Review request' : 'View details'}</Button>}
-        {showEvidence && <div className="ox-evidence">
-          {command && <div><span className="small">Command</span><code className="ox-command">{command}</code></div>}
-          {typeof evidence?.exitCode === 'number' && <div className="small">Exit code {evidence.exitCode}</div>}
-          {typeof evidence?.passed === 'number' && <div className="small">{evidence.passed} passed{typeof evidence.failed === 'number' ? ` · ${evidence.failed} failed` : ''}{typeof evidence.skipped === 'number' ? ` · ${evidence.skipped} skipped` : ''}</div>}
-          {files.length > 0 && <ul className="ox-file-list">{files.map((f) => <li key={f.path}><span aria-hidden>{f.action === 'delete' ? '−' : f.action === 'create' ? '+' : '~'}</span> {f.path}</li>)}</ul>}
-          {failures.length > 0 && <ul className="ox-failure-list">{failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>}
-          {rawOutput && <div className="ox-raw">
-            <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((v) => !v)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>
-            {showRaw && <pre aria-label="Raw command output">{rawOutput}</pre>}
-          </div>}
-        </div>}
+        {detailMode === 'summary' && (hasEvidence || rawOutput) && <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showEvidence} onClick={() => setShowEvidence((value) => !value)}>{showEvidence ? 'Hide details' : category === 'file' ? 'View files' : category === 'test' ? 'View results' : category === 'approval' ? 'Review request' : technical ? 'View code & details' : 'View details'}</Button>}
+        {details}
       </div>
     </div>
   );
