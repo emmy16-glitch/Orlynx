@@ -80,7 +80,7 @@ type Dialect = 'chat' | 'responses' | 'messages';
 function preferredDialect(model: string): Dialect {
   const id = model.toLowerCase();
   if (/^(gpt-|o[134]-|grok-4|grok-build|muse-)/.test(id)) return 'responses';
-  if (/^(claude-|qwen3\.[67]-)/.test(id)) return 'messages';
+  if (/^(claude-|qwen3\.[5-8]-)/.test(id)) return 'messages';
   return 'chat';
 }
 
@@ -156,6 +156,30 @@ function retryableRouteFailure(status: number, text: string): boolean {
   return [400,404,405,422].includes(status) && /route|endpoint|unsupported|not supported|model.*provider|invalid request/i.test(text);
 }
 
+function providerBusy(status: number, text: string): boolean {
+  return status === 408 || status === 429 || status >= 500 ||
+    /FreeUsageLimitError|rate.?limit|too many requests|temporarily unavailable|overloaded|capacity/i.test(text);
+}
+
+function retryAfterMs(header: string | null, attempt: number): number {
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(15_000, Math.max(500, seconds * 1000));
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) return Math.min(15_000, Math.max(500, date - Date.now()));
+  }
+  return Math.min(8_000, 1000 * (2 ** attempt));
+}
+
+async function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Cancelled.');
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const abort = () => { clearTimeout(timer); reject(signal?.reason instanceof Error ? signal.reason : new Error('Cancelled.')); };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export async function streamZenChat(input: {
   userId: string;
   modelId: string;
@@ -172,33 +196,63 @@ export async function streamZenChat(input: {
   const preferred = preferredDialect(model);
   const attempts: Dialect[] = [preferred, ...(['chat','responses','messages'] as Dialect[]).filter((item) => item !== preferred)];
   let lastError = '';
+
   for (const dialect of attempts) {
-    input.onStatus?.(`Connecting to ${model}…`);
-    const combinedSignal = input.signal
-      ? AbortSignal.any([input.signal, AbortSignal.timeout(10 * 60_000)])
-      : AbortSignal.timeout(10 * 60_000);
-    const headers: Record<string,string> = {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    };
-    if (dialect === 'messages') headers['anthropic-version'] = '2023-06-01';
-    const response = await fetch(endpoint(dialect), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody(dialect, model, input.system, input.messages)),
-      signal: combinedSignal,
-    });
-    if (!response.ok) {
+    let tryAnotherDialect = false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      input.onStatus?.(attempt === 0 ? `Connecting to ${model}…` : `Retrying ${model}…`);
+      const combinedSignal = input.signal
+        ? AbortSignal.any([input.signal, AbortSignal.timeout(10 * 60_000)])
+        : AbortSignal.timeout(10 * 60_000);
+      const headers: Record<string,string> = {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      };
+      if (dialect === 'messages') headers['anthropic-version'] = '2023-06-01';
+
+      const response = await fetch(endpoint(dialect), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody(dialect, model, input.system, input.messages)),
+        signal: combinedSignal,
+      });
+
+      if (response.ok) {
+        input.onStatus?.('Streaming response…');
+        const text = await readStreamingText(response, input.onDelta);
+        if (!text.trim()) throw new Error('The selected model finished without returning visible text.');
+        return text;
+      }
+
       const detail = await response.text().catch(() => '');
-      lastError = `OpenCode ${model} request failed (HTTP ${response.status})${detail ? `: ${detail.slice(0,500)}` : ''}`;
-      if (retryableRouteFailure(response.status, detail)) continue;
+      lastError = `OpenCode ${model} request failed (HTTP ${response.status})${detail ? `: ${detail.slice(0,700)}` : ''}`;
+
+      if (providerBusy(response.status, detail)) {
+        if (attempt < 2) {
+          const delay = retryAfterMs(response.headers.get('retry-after'), attempt);
+          input.onStatus?.(`Model busy — retrying in ${Math.max(1, Math.ceil(delay / 1000))}s · attempt ${attempt + 2} of 3`);
+          await waitForRetry(delay, input.signal);
+          continue;
+        }
+        throw new Error(lastError);
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`OpenCode rejected the saved account credential (HTTP ${response.status}). Reconnect OpenCode and try again.`);
+      }
+
+      if (retryableRouteFailure(response.status, detail)) {
+        tryAnotherDialect = true;
+        break;
+      }
+
       throw new Error(lastError);
     }
-    input.onStatus?.('Streaming response…');
-    const text = await readStreamingText(response, input.onDelta);
-    if (!text.trim()) throw new Error('The selected model finished without returning visible text.');
-    return text;
+
+    if (tryAnotherDialect) continue;
   }
+
   throw new Error(lastError || 'The selected OpenCode model could not be reached.');
 }

@@ -186,7 +186,13 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'run.failed': {
         for (const row of rows) if (row.runId === event.runId && row.state === 'running') row.state = p.cancelled ? 'cancelled' : 'failed';
         const agentRow = [...rows].reverse().find((row) => row.runId === event.runId && row.category === 'agent');
-        const title = p.cancelled ? 'Work stopped' : 'Work needs attention';
+        const title = p.cancelled
+          ? 'Work stopped'
+          : p.errorKind === 'rate_limit' ? 'Model is busy'
+          : p.errorKind === 'auth' ? 'Reconnect OpenCode'
+          : p.errorKind === 'model' ? 'Model unavailable'
+          : p.errorKind === 'quota' ? 'OpenCode quota reached'
+          : 'Work needs attention';
         const summary = friendlyFailure(str(p.error || p.message));
         if (agentRow) { agentRow.state = p.cancelled ? 'cancelled' : 'failed'; agentRow.title = title; agentRow.summary = summary; }
         else put(event, p.cancelled ? 'agent' : 'error', p.cancelled ? 'cancelled' : 'failed', title, summary);
@@ -233,17 +239,18 @@ function waitingTitle(tool: string, command: string): string {
   return 'Action is queued';
 }
 function friendlyFailure(raw: string): string | undefined {
-  if (/temporarily rate limiting requests/i.test(raw)) return 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.';
-  if (/reached its quota|available credits/i.test(raw)) return 'The selected AI provider has reached its quota or available credits.';
-  if (/provider connection needs to be refreshed/i.test(raw)) return 'The AI provider connection needs to be refreshed.';
-  if (/selected model is not currently available/i.test(raw)) return 'The selected model is not currently available. Choose another model and try again.';
+  if (/FreeUsageLimitError|temporarily rate limit|rate.?limit exceeded|too many requests/i.test(raw)) return 'This model is temporarily rate limited by OpenCode. Orlynx already retried it; try again shortly or choose another model.';
+  if (/reached its quota|available quota|available credits|billing|payment/i.test(raw)) return 'The OpenCode account has reached its quota or available credits.';
+  if (/Reconnect your OpenCode account|credential.*rejected|HTTP 401|HTTP 403|provider connection needs to be refreshed/i.test(raw)) return 'OpenCode rejected the saved connection. Reconnect OpenCode, then continue in this same chat.';
+  if (/model.*not available|selected model is not currently available|unknown model/i.test(raw)) return 'The selected model is not available right now. Choose another model and try again.';
   if (/AI workspace connection was interrupted/i.test(raw)) return 'The AI workspace connection was interrupted. Reconnect and try again.';
   if (/previous AI task stopped responding/i.test(raw)) return 'The previous AI task stopped responding and was released. You can try again.';
   if (/current access level does not allow/i.test(raw)) return 'The current access level does not allow this task.';
-  if (/timeout|timed out/i.test(raw)) return 'The command timed out. The process may still be running.';
+  if (/timeout|timed out/i.test(raw)) return 'The request timed out. Try again.';
   if (/ECONNREFUSED|curl.*exit code 7|curl:\s*\(7\)/i.test(raw)) return 'The service health check could not connect.';
   if (/duplicate.message|duplicate message/i.test(raw)) return 'Duplicate-message handling needs attention.';
-  return raw ? 'The action could not be completed.' : undefined;
+  if (/selected model finished without returning visible text/i.test(raw)) return 'The model returned no visible response. Try again or choose another model.';
+  return raw ? raw.replace(/^OpenCode\s+/i, '').slice(0, 280) : undefined;
 }
 function humanApproval(p: Record<string, unknown>): string {
   const count = Number(p.files || p.count || 0);

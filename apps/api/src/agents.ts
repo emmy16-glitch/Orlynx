@@ -142,6 +142,7 @@ async function executeDirectTask(
     const now = new Date().toISOString();
     const detail = error instanceof Error ? error.message : 'Direct chat failed.';
     const errorKind = classifyError(detail);
+    console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
     task.state = 'failed';
     task.updatedAt = now;
     await repository.putTask(task);
