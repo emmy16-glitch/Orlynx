@@ -48,9 +48,9 @@ export async function startRun(sessionId: string, project: string, userText: str
     provider = providerID;
     model = { providerID, modelID: rest.join('/') };
   }
-  const connection = await openCodeReadiness(project);
+  const connection = await openCodeReadiness(project, sessionId);
   if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
-  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project);
+  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project, sessionId);
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     const workspace = await repository.getWorkspaceBySession(sessionId);
