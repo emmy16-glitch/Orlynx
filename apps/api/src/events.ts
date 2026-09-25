@@ -30,6 +30,7 @@ export function emit(sessionId: string, type: EventType, payload: Record<string,
     const queued = (durableQueues.get(sessionId) || Promise.resolve()).then(async () => {
       const evt = await controlPlaneRepository().appendEvent(pending);
       subscribers.get(sessionId)?.forEach((res) => res.write(`id: ${evt.sequence}\ndata: ${JSON.stringify(evt)}\n\n`));
+      eventSubscribers.get(sessionId)?.forEach((listener) => listener(evt));
     }).catch(() => { /* request paths surface storage health separately */ });
     durableQueues.set(sessionId, queued);
     return { ...pending, sequence: 0 };
@@ -54,6 +55,7 @@ export function emit(sessionId: string, type: EventType, payload: Record<string,
   subscribers.get(sessionId)?.forEach((res) => {
     res.write(`id: ${evt.sequence}\ndata: ${JSON.stringify(evt)}\n\n`);
   });
+  eventSubscribers.get(sessionId)?.forEach((listener) => listener(evt));
   return evt;
 }
 
@@ -73,4 +75,19 @@ export function subscribe(sessionId: string, w: Writer): () => void {
   if (!set) { set = new Set(); subscribers.set(sessionId, set); }
   set.add(w);
   return () => { set!.delete(w); };
+}
+
+// Durable streams can receive freshly persisted events immediately without
+// repeatedly querying Postgres. A slower database catch-up remains the safety
+// net for restarts or events produced by another process.
+type EventListener = (event: OrlynxEvent) => void;
+const eventSubscribers = new Map<string, Set<EventListener>>();
+export function subscribeEvents(sessionId: string, listener: EventListener): () => void {
+  let set = eventSubscribers.get(sessionId);
+  if (!set) { set = new Set(); eventSubscribers.set(sessionId, set); }
+  set.add(listener);
+  return () => {
+    set!.delete(listener);
+    if (!set!.size) eventSubscribers.delete(sessionId);
+  };
 }
