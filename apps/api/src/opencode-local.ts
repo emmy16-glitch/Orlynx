@@ -296,7 +296,6 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     {
       method: 'POST',
       body: JSON.stringify({
-        ...(input.requestId ? { messageID: input.requestId } : {}),
         model: { providerID: 'opencode', modelID: input.modelId.replace(/^opencode\//, '') },
         agent: 'plan',
         system,
