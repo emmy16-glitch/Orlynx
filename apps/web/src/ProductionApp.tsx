@@ -638,7 +638,7 @@ export default function ProductionApp() {
       try { sessionStorage.removeItem(PENDING_CLOUD_RETRY); } catch {}
       await refreshSession(sessionId);
     } catch (error: any) {
-      if (error?.code === 'CODESPACES_PERMISSION_REQUIRED' || /Codespaces.*(permission|approval)/i.test(String(error?.message || ''))) {
+      if (error?.code === 'CODESPACES_PERMISSION_REQUIRED' || error?.code === 'GITHUB_PERMISSION_UPDATE_REQUIRED' || /Codespaces.*(permission|approval)/i.test(String(error?.message || ''))) {
         setCloudIssue('permissions');
         setError('');
         try { sessionStorage.setItem(PENDING_CLOUD_RETRY, sessionId); } catch {}
