@@ -10,7 +10,7 @@ fallback. When a real integration is unavailable Orlynx fails closed.
 
 ## Quick start
 
-Requirements: Node.js 20+ and npm.
+Requirements: Node.js 24 and npm.
 
 ```sh
 npm install
