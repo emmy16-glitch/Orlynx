@@ -23,6 +23,14 @@ ephemeral Vercel Sandbox uses authenticated `gh codespace ssh` to install
 OpenCode and the compiled bridge in `~/.orlynx/runtime`, then terminates. It
 writes nothing into the repository and needs no additional hosting account.
 
+The bootstrap installs the pinned native OpenCode package for the Codespace
+architecture/libc directly instead of relying on the `opencode-ai` npm
+launcher. On Linux x64 it checks AVX2 support and selects the baseline package
+when required; if the AVX2 build fails its smoke test it falls back to baseline.
+Bootstrap is not considered successful until the selected native binary passes
+`opencode --version`. The verified absolute binary path is written to
+`OPENCODE_BIN` for the bridge.
+
 The separately deployable `runtime-worker/Dockerfile` is the non-Vercel/local
 alternative. Deploy it on persistent compute with:
 
