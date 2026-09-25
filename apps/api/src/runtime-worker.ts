@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 
 type Values = { bridgeToken: string; connectionId: string; openCodePassword: string };
 const bridgeBundle = fileURLToPath(new URL('../../../bridge/dist/index.js', import.meta.url));
+const OPENCODE_VERSION = '1.18.32';
 let cachedBridgeRevision = '';
 export function bridgeRuntimeRevision(): string {
   if (!cachedBridgeRevision) cachedBridgeRevision = createHash('sha256').update(fs.readFileSync(bridgeBundle)).digest('hex').slice(0, 12);
@@ -30,10 +31,49 @@ function bootstrapScript(workspace: WorkspaceRecord, values: Values, bridgeUrl: 
 runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime" && chmod 700 "$HOME/.orlynx" "$runtime"
 printf '%s' '${encoded(bridge)}' | base64 -d > "$runtime/index.js"
-printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0","opencode-ai":"1.18.32"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
-if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty" || ! test -x "$runtime/node_modules/.bin/opencode"; then cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null; fi
-opencode_bin="$runtime/node_modules/.bin/opencode"
-test -x "$opencode_bin"
+printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
+if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty"; then cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+
+# Install the exact native OpenCode binary instead of the opencode-ai launcher.
+# The launcher can cache an AVX2 build on x64 machines that require the baseline binary.
+machine="$(uname -m)"
+case "$machine" in
+  x86_64|amd64) opencode_arch="x64" ;;
+  aarch64|arm64) opencode_arch="arm64" ;;
+  *) echo "Unsupported Codespace architecture for OpenCode: $machine" >&2; exit 1 ;;
+esac
+opencode_libc=""
+if test -f /etc/alpine-release || (ldd --version 2>&1 || true) | grep -qi musl; then opencode_libc="-musl"; fi
+if test "$opencode_arch" = "x64"; then
+  if grep -qi -m1 '\\<avx2\\>' /proc/cpuinfo 2>/dev/null; then
+    opencode_pkg="opencode-linux-x64\${opencode_libc}"
+  else
+    opencode_pkg="opencode-linux-x64-baseline\${opencode_libc}"
+  fi
+else
+  opencode_pkg="opencode-linux-arm64\${opencode_libc}"
+fi
+install_native_opencode() {
+  package="$1"
+  binary="$runtime/node_modules/$package/bin/opencode"
+  if ! test -x "$binary"; then
+    cd "$runtime" && npm install --no-save --omit=dev --no-audit --no-fund "$package@${OPENCODE_VERSION}" >/dev/null
+  fi
+  test -x "$binary"
+  printf '%s' "$binary"
+}
+opencode_bin="$(install_native_opencode "$opencode_pkg")"
+if ! "$opencode_bin" --version >"$runtime/opencode-version.txt" 2>"$runtime/opencode-version.err"; then
+  if test "$opencode_arch" = "x64" && ! printf '%s' "$opencode_pkg" | grep -q -- '-baseline'; then
+    opencode_pkg="opencode-linux-x64-baseline\${opencode_libc}"
+    opencode_bin="$(install_native_opencode "$opencode_pkg")"
+  fi
+fi
+if ! "$opencode_bin" --version >"$runtime/opencode-version.txt" 2>"$runtime/opencode-version.err"; then
+  echo "OpenCode native binary failed its startup smoke test ($opencode_pkg)." >&2
+  tail -c 1000 "$runtime/opencode-version.err" >&2 || true
+  exit 1
+fi
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
 # Reuse the password of an OpenCode server left running in this Codespace.
