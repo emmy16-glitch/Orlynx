@@ -6,7 +6,7 @@ import { durableHistory, emit, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { ensureWorkspaceRecord, getWorkspace, prepareWorkspace, stopWorkspace } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, prepareWorkspace, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -320,6 +320,23 @@ router.post('/sessions/:id/messages', async (req, res) => {
           branch: s.branch,
         });
       }
+      if (workspaceNeedsRuntimeRefresh(workspace)) {
+        workspace = {
+          ...workspace,
+          state: 'connecting',
+          bridgeState: 'disconnected',
+          openCodeState: 'unavailable',
+          connectionId: undefined,
+          updatedAt: new Date().toISOString(),
+        };
+        await repository.putWorkspace(workspace);
+        emit(s.id, 'workspace.preparing', {
+          stage: 'agent.refresh',
+          automatic: true,
+          message: 'Updating the Orlynx workspace runtime before starting this task…',
+        });
+      }
+
       workspaceId = workspace.id;
       automaticWorkspaceInput = {
         sessionId: s.id,
