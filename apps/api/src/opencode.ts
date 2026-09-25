@@ -44,7 +44,7 @@ async function request<T>(project: string, apiPath: string, init: RequestInit = 
     const session = Object.values(store.db.sessions).find((item) => item.project === project);
     if (!session) throw new Error('No project session is available for this OpenCode request.');
     const workspace = await controlPlaneRepository().getWorkspaceBySession(session.id);
-    if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready' || workspace.openCodeState !== 'ready') throw new Error('OpenCode is not ready in this workspace.');
+    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') throw new Error('OpenCode is not ready in this workspace.');
     const result = await bridgeRequest<{ status: number; body: T }>(workspace.id, 'opencode.request', { path: apiPath.split('?')[0], method: init.method || 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined, timeoutMs: requestTimeout() });
     return result.body;
   }
@@ -69,18 +69,40 @@ async function request<T>(project: string, apiPath: string, init: RequestInit = 
   return await response.json() as T;
 }
 
+export async function openCodeReadiness(project?: string): Promise<{ connected: boolean; message: string }> {
+  if (durableStorageConfigured()) {
+    if (!project) return { connected: false, message: 'Open a project with a ready cloud workspace to use AI.' };
+    const session = Object.values(store.db.sessions).find((item) => item.project === project);
+    const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
+    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') {
+      return { connected: false, message: 'AI is not ready in this cloud workspace.' };
+    }
+    try {
+      const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
+      return health.openCode === 'ready'
+        ? { connected: true, message: 'OpenCode in this workspace is ready.' }
+        : { connected: false, message: 'AI is not ready in this cloud workspace.' };
+    } catch {
+      return { connected: false, message: 'Workspace connection interrupted.' };
+    }
+  }
+  const status = await openCodeStatus(project);
+  return { connected: status.connected, message: status.message };
+}
+
 export async function openCodeStatus(project?: string) {
   if (durableStorageConfigured()) {
     if (!project) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = Object.values(store.db.sessions).find((item) => item.project === project);
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
-    if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready' || workspace.openCodeState !== 'ready') return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'AI is not ready in this cloud workspace.' };
+    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'AI is not ready in this cloud workspace.' };
     try {
       const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
       if (health.openCode !== 'ready') throw new Error('OpenCode is unhealthy.');
-      let agents: Record<string, any>[] = []; let providerData: any = { all: [], connected: [] };
-      try { agents = await request(project, '/agent'); } catch {}
-      try { providerData = await request(project, '/provider'); } catch {}
+      const [agents, providerData] = await Promise.all([
+        request<Record<string, any>[]>(project, '/agent').catch(() => []),
+        request<any>(project, '/provider').catch(() => ({ all: [], connected: [] })),
+      ]);
       return { configured: true, connected: true, url: null, directory: workspace.repoRoot, agents, providers: Array.isArray(providerData) ? providerData : providerData.all || [], connectedProviders: providerData.connected || [], message: 'OpenCode in this workspace is ready.' };
     } catch { return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'Workspace connection interrupted.' }; }
   }
