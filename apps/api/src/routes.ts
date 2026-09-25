@@ -373,8 +373,11 @@ router.post('/sessions/:id/messages', async (req, res) => {
             await promoteNextQueuedRun(s.id);
           }
         })
-        .catch((error) => {
+        .catch(async (error) => {
           console.warn(`[workspace] automatic preparation failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+          await promoteNextQueuedRun(s.id).catch((promotionError) => {
+            console.warn(`[workspace] queue recovery failed session=${s.id}: ${promotionError instanceof Error ? promotionError.message : 'unknown error'}`);
+          });
         });
     }
   }
