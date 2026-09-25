@@ -7,6 +7,7 @@ import { decryptCredential } from './credentials.js';
 import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
+import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose } from './workspaces.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string; reason?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
@@ -202,11 +203,33 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials);
     if (activeSockets.get(claims.workspaceId) !== ws) return;
     activeSockets.delete(claims.workspaceId);
-    // Vercel periodically recycles long-lived function sockets. The Codespace
-    // reconnects automatically, so an authenticated transport close must not
-    // turn a healthy workspace into a false "disconnected" state.
-    if (authenticatedHello && [1001, 1006, 1012].includes(code)) {
-      console.info('[bridge] transient transport close; preserving ready workspace state');
+    // A transient socket close may reconnect by itself. Give the bridge a short
+    // grace window; if no replacement socket arrives, mark the transport lost
+    // and re-bootstrap the existing Codespace automatically. Keeping a dead
+    // socket marked "ready" strands queued Build work indefinitely.
+    if (shouldRecoverTransientBridgeClose(authenticatedHello, code)) {
+      console.info('[bridge] transient transport close; waiting briefly for reconnect');
+      const recovery = setTimeout(async () => {
+        if (activeSockets.has(claims.workspaceId)) return;
+        try {
+          const current = await repository.getWorkspace(claims.workspaceId);
+          if (!current || current.connectionId !== claims.connectionId) return;
+          const lost = await markWorkspaceConnectionLost(claims.workspaceId);
+          if (!lost) return;
+          console.warn(`[bridge] transient close did not recover; re-bootstrapping workspace=${claims.workspaceId}`);
+          await prepareWorkspace({
+            sessionId: lost.sessionId,
+            userId: lost.userId,
+            projectId: lost.projectId,
+            repositoryId: lost.repositoryId,
+            branch: lost.branch,
+          });
+          await promoteNextQueuedRun(lost.sessionId);
+        } catch (error) {
+          console.warn(`[bridge] automatic transport recovery failed workspace=${claims.workspaceId}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        }
+      }, 5_000);
+      recovery.unref?.();
       return;
     }
     try { await persistBridgeState(claims, 'disconnected'); } catch {}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workspaceNeedsSshRebuild, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending } from '../src/workspaces.ts';
+import { workspaceNeedsSshRebuild, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
@@ -26,4 +26,13 @@ test('workspace readiness requires both authenticated bridge and healthy OpenCod
   assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'ready', openCodeState: 'ready' }), true);
   assert.equal(workspaceFullyReady({ state: 'connecting', bridgeState: 'ready', openCodeState: 'starting' }), false);
   assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'connecting', openCodeState: 'ready' }), false);
+});
+
+
+test('authenticated transient bridge closes trigger self-healing', () => {
+  assert.equal(shouldRecoverTransientBridgeClose(true, 1006), true);
+  assert.equal(shouldRecoverTransientBridgeClose(true, 1001), true);
+  assert.equal(shouldRecoverTransientBridgeClose(true, 1012), true);
+  assert.equal(shouldRecoverTransientBridgeClose(false, 1006), false);
+  assert.equal(shouldRecoverTransientBridgeClose(true, 1008), false);
 });

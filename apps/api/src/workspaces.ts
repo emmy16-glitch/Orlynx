@@ -34,6 +34,10 @@ export function workspaceStartupPending(workspace: Pick<WorkspaceRecord, 'state'
     || ['installing', 'starting'].includes(workspace.openCodeState);
 }
 
+export function shouldRecoverTransientBridgeClose(authenticated: boolean, code: number): boolean {
+  return authenticated && [1001, 1006, 1012].includes(code);
+}
+
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }

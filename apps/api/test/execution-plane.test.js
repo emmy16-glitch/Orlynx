@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executionPlaneFor } from '../src/direct-chat.ts';
+import { executionPlaneFor, executionPlaneWithExistingWorkspace } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, workspaceOpenCodePublicAccess } from '../src/agents.ts';
+
+test('existing project workspace is reused for conversational turns', () => {
+  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Hello', 'build'), true), 'workspace');
+  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Explain this repo', 'ask'), true), 'workspace');
+  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Hello', 'build'), false), 'direct');
+});
 
 test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
