@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridge-auth.js';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
+import { classifyError } from './ai.js';
 
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string; reason?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
@@ -118,15 +119,45 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed. Review the result.' } });
           } else {
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.failed', timestamp: now, payload: { error: 'Orlynx AI could not complete this task.' } });
+            const detail = String(message.error || message.result?.error || 'OpenCode could not complete the task.');
+            const errorKind = classifyError(detail);
+            const error = errorKind === 'rate_limit'
+              ? 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.'
+              : errorKind === 'quota'
+                ? 'The selected AI provider has reached its quota or available credits. Check that provider account or choose another model.'
+                : errorKind === 'auth'
+                  ? 'The AI provider connection needs to be refreshed before this model can be used.'
+                  : errorKind === 'model'
+                    ? 'The selected model is not currently available. Choose another model and try again.'
+                    : errorKind === 'permission'
+                      ? 'This task needs permission that the current access level does not allow.'
+                      : errorKind === 'engine'
+                        ? 'The AI workspace connection was interrupted. Reconnect the workspace and try again.'
+                        : 'Orlynx AI could not complete this task.';
+            await repository.appendEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'run.failed',
+              timestamp: now,
+              payload: {
+                error,
+                errorKind,
+                retryable: errorKind === 'rate_limit' || errorKind === 'engine',
+              },
+            });
           }
         }
         return;
       }
       if (message.kind === 'EVENT' && message.event?.type) {
         if (message.event.type === 'heartbeat') return;
-        const allowed = new Set(['message.delta', 'tool.started', 'tool.output', 'tool.completed', 'tool.failed', 'activity.progress']);
-        const eventType = allowed.has(message.event.type) ? message.event.type as 'message.delta' : 'activity.progress';
+        const allowed = new Set(['message.delta', 'tool.requested', 'tool.started', 'tool.output', 'tool.completed', 'tool.failed', 'activity.progress']);
+        const eventType = allowed.has(message.event.type)
+          ? message.event.type as 'message.delta' | 'tool.requested' | 'tool.started' | 'tool.output' | 'tool.completed' | 'tool.failed' | 'activity.progress'
+          : 'activity.progress';
         await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, taskId: message.event.taskId, runId: message.event.runId, type: eventType, timestamp: new Date().toISOString(), payload: eventType === 'activity.progress' ? { sourceType: message.event.type, ...(message.event.payload || {}) } : message.event.payload || {} });
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
