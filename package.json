@@ -20,6 +20,6 @@
     "e2e": "npm run e2e --workspace=@orlynx/api"
   },
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   }
 }
