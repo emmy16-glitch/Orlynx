@@ -100,9 +100,11 @@ router.use(async (req, res, next) => {
   }
   return requireSession(req, res, async () => {
     if (durableStorageConfigured()) {
-      const match = req.path.match(/^\/sessions\/([^/]+)/);
-      if (match && !store.db.sessions[match[1]]) {
-        const session = await controlPlaneRepository().getSession(match[1]);
+      const pathMatch = req.path.match(/^\/sessions\/([^/]+)/) || req.path.match(/^\/ai\/session\/([^/]+)/);
+      const querySessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+      const sessionId = pathMatch?.[1] || querySessionId;
+      if (sessionId && !store.db.sessions[sessionId]) {
+        const session = await controlPlaneRepository().getSession(sessionId);
         if (session?.installationId === requestInstallationId(req)) store.db.sessions[session.id] = session;
       }
     }
@@ -730,7 +732,7 @@ router.get('/ai/overview', async (req, res) => {
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
   try {
     const userId = await requestUserId(req) || undefined;
-    const snapshot = await listProviderConnections(s?.project, userId);
+    const snapshot = await listProviderConnections(s?.project, userId, sessionId || undefined);
     const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
     res.json({
       state: status.state,
@@ -760,14 +762,16 @@ router.get('/ai/status', async (req, res) => {
 router.get('/ai/providers', async (req, res) => {
   try {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
-    const { engine, providers, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined);
+    const sessionId = String(req.query.sessionId || '');
+    const { engine, providers, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
     res.json({ available: engine.connected, providers, connectedModels: models.filter((m) => m.status === 'available').length });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Provider list is unavailable.' }); }
 });
 router.get('/ai/models', async (req, res) => {
   try {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
-    const { engine, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined);
+    const sessionId = String(req.query.sessionId || '');
+    const { engine, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
     res.json({ available: engine.connected, models });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
 });
@@ -1022,7 +1026,7 @@ router.get('/integrations/status', async (req, res) => {
   const installationId = installationIdFor(req);
   const requestedSession = String(req.query.sessionId || '');
   const session = requestedSession ? ownedSession(req, requestedSession) : undefined;
-  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(installationId), openCodeStatus(session?.project), githubPlatformHealth()]);
+  const [connection, opencode, platform] = await Promise.all([githubConnectionStatus(installationId), openCodeStatus(session?.project, requestedSession || undefined), githubPlatformHealth()]);
   const health = connection.connected || connection.needsAttention
     ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
