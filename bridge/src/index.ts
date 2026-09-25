@@ -359,18 +359,21 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     const title = String(state.title || input.description || part.tool || 'Tool').slice(0, 240);
     const commandCandidate = input.command ?? input.cmd ?? input.script ?? input.shell;
     const pathCandidate = input.filePath ?? input.path ?? input.file ?? input.filename;
+    const codeCandidate = input.patch ?? input.diff ?? input.content ?? input.newString ?? input.newText;
     const command = typeof commandCandidate === 'string'
       ? commandCandidate
       : /bash|shell|exec|terminal/i.test(toolName) && title && title !== toolName
         ? title
         : '';
     const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
+    const code = typeof codeCandidate === 'string' ? codeCandidate : '';
     const common = {
       tool: toolName,
       callId: id,
       title,
       ...(command ? { command: command.slice(0, 1_200) } : {}),
       ...(filePath ? { path: filePath.slice(0, 800) } : {}),
+      ...(code ? { code: code.slice(0, 8_000) } : {}),
     };
     if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
     else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
