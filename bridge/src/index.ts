@@ -346,7 +346,35 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     const marker = `${status}:${String(state.time?.end || '')}:${String(state.output || state.error || '').length}`;
     if (toolStates.get(id) === marker) return;
     toolStates.set(id, marker);
-    const common = { tool: String(part.tool || 'tool'), callId: id, title: String(state.title || part.tool || 'Tool') };
+
+    // OpenCode tool parts carry observable inputs in state.input/part.input.
+    // Preserve only small, user-verifiable execution metadata — never hidden
+    // reasoning — so Build mode can show the command/file being worked on.
+    const input = state.input && typeof state.input === 'object'
+      ? state.input as Record<string, any>
+      : part.input && typeof part.input === 'object'
+        ? part.input as Record<string, any>
+        : {};
+    const toolName = String(part.tool || 'tool');
+    const title = String(state.title || input.description || part.tool || 'Tool').slice(0, 240);
+    const commandCandidate = input.command ?? input.cmd ?? input.script ?? input.shell;
+    const pathCandidate = input.filePath ?? input.path ?? input.file ?? input.filename;
+    const codeCandidate = input.patch ?? input.diff ?? input.content ?? input.newString ?? input.newText;
+    const command = typeof commandCandidate === 'string'
+      ? commandCandidate
+      : /bash|shell|exec|terminal/i.test(toolName) && title && title !== toolName
+        ? title
+        : '';
+    const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
+    const code = typeof codeCandidate === 'string' ? codeCandidate : '';
+    const common = {
+      tool: toolName,
+      callId: id,
+      title,
+      ...(command ? { command: command.slice(0, 1_200) } : {}),
+      ...(filePath ? { path: filePath.slice(0, 800) } : {}),
+      ...(code ? { code: code.slice(0, 8_000) } : {}),
+    };
     if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
     else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
     else if (status === 'completed') bridgeEvent(ws, 'tool.completed', { ...common, out: String(state.output || '').slice(0, 8_000) }, taskId, runId);

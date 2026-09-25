@@ -11,12 +11,16 @@ stream and displayed progressively through `AgentWorkStream` and
 The default work stream answers: **What is happening? What changed? Did it work?
 Does it need me?** A user may drill down when they need proof or diagnostics:
 
-1. **Human summary (default):** e.g. “Running API tests”, “4 integration tests
-   failed”, “Updated 3 files”, “API health check could not connect”.
-2. **Structured evidence (one action):** counts, failure names, changed paths,
-   command, exit code, and user-facing error context.
-3. **Raw output (a second explicit action):** stdout/stderr, stack fragments, and
-   test transcript, shown in a bounded, independently scrollable region.
+1. **Human summary:** e.g. “Running API tests”, “4 integration tests failed”,
+   “Updated 3 files”, “API health check could not connect”.
+2. **Structured code/execution evidence:** command, path, changed files, bounded
+   edit snippets/final diffs, counts, exit code, and user-facing error context.
+   The user can choose **Summary** (evidence on demand) or **Code** (evidence
+   opened automatically). The browser remembers that choice; Build defaults to
+   Code when no preference exists.
+3. **Raw output:** stdout/stderr, stack fragments, and test transcript remain a
+   separate explicit disclosure even in Code mode, shown in a bounded,
+   independently scrollable region.
 
 Provider tool names and payload shapes are not rendered as chat content. Message
 deltas are conversation text, not activity cards. Private chain-of-thought is never
@@ -57,9 +61,9 @@ does not change the session/run truth owned by the API.
 | Runtime input | Normalized presentation |
 | --- | --- |
 | `run.started`, `activity.started`, `activity.progress` | One stable run action row; later observable progress updates that row. Reasoning-like wording is translated to action-oriented copy. |
-| `tool.started` → completed/failed/output | One correlated tool activity (call ID where supplied, otherwise run/tool identity); command, test, build, search, file, and Git actions receive product language. |
+| `tool.started` → completed/failed/output | One correlated tool activity (call ID where supplied, otherwise run/tool identity); observable command/path/edit input is retained in bounded evidence while command, test, build, search, file, and Git actions receive product language. |
 | `receipt.created` | Command/test/build/health-check result, exit status, parsed counts and failure names, with raw receipt behind details. |
-| repeated `file.changed` | One “Updated files” row with deduplicated paths and create/modify/delete evidence. |
+| `changes.updated` / repeated `file.changed` | One code-change row with deduplicated paths and create/modify/delete evidence; workspace results may include bounded exact diff snippets while the complete reviewable diff stays in Changes. |
 | workspace lifecycle | Preparing/reconnecting/ready/stopped language; provider and port mechanics stay hidden. |
 | approval lifecycle | A waiting-for-approval summary, resolved in place when available. |
 | `run.completed` / `run.failed` | Closes running rows for that run and presents completion, cancellation, or attention state. |
@@ -95,7 +99,8 @@ call IDs and structured receipts for the best reconciliation.
 `LiveActivityPill` provides a compact status in the sticky header: Idle, Working,
 Waiting for you, Waiting for approval, Paused, Reconnecting, Completed, or Failed.
 It can be opened to see the current action. Stop is available while a run is active.
-The current in-progress row is emphasized; completed history is visually muted and
+Exactly one latest in-progress/waiting row is emphasized as the current step;
+older activity remains visible but visually quieter. Completed history is muted and
 bounded. Work does not expose internal “thinking” events.
 
 Meaningful milestones use a polite, atomic screen-reader status: failure, test or
@@ -171,6 +176,6 @@ rotation, and keyboard interactions remains a manual/device validation item.
 ✓ Ready for review
 ```
 
-Commands, cURL transcripts, process output, and implementation details are not
-the default conversation surface. Structured evidence is available in one action;
-raw diagnostics require a second explicit action.
+Summary mode keeps commands and implementation evidence one action away. Code
+mode reveals observable commands, paths, edit snippets and final diff evidence
+inline while preserving raw diagnostics as a separate explicit action.

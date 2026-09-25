@@ -101,11 +101,20 @@ OpenCode is an implementation detail and belongs only in advanced diagnostics/se
 
 ## Activity
 
-Main conversation shows observable work, not private reasoning.
+Main conversation shows observable work, not private reasoning. Build mode is deliberately transparent: the user should be able to follow commands, files, patches, tests and resulting state without opening a separate IDE.
 
-Layer 1: concise human progress.
-Layer 2: structured evidence.
-Layer 3: raw output behind progressive disclosure.
+The activity stream has two remembered presentation modes:
+
+- **Summary** — concise human progress with details on demand.
+- **Code** — automatically reveals observable command/file/code evidence while work runs. Build uses this as the fresh-user default; Plan and Ask stay summary-first unless the user has chosen otherwise.
+
+Both modes keep the same evidence hierarchy:
+
+Layer 1: concise human progress and one clearly emphasized current step.
+Layer 2: structured execution evidence — command, path, changed files, bounded code/diff snippets, exit/test results.
+Layer 3: raw stdout/stderr behind explicit progressive disclosure.
+
+Queue labels must describe what is waiting when Orlynx knows it (for example, waiting to run tests or a Git command) rather than using generic “Action is queued” copy. Completed history is visually quieter than the one current step. Technical detail is evidence of observable work; private reasoning is never shown.
 
 ## Interaction states
 

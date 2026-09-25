@@ -3,6 +3,7 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
+import { ActivityDetailToggle, useActivityDetailMode } from './ui/workstream';
 import { toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -939,7 +940,7 @@ export default function ProductionApp() {
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{draftReply}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} /></div>}
+                {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
                 {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
                 {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
@@ -1204,10 +1205,18 @@ function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 
   </section>;
 }
 
-function ActivityList({ activities }: { activities: any[] }) {
+function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?: string }) {
   const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? activities.slice(-50) : activities.slice(-5);
-  return <div className="card"><div className="ox-stream">{visible.map((item) => <TaskActivityRow key={item.key} item={item} />)}</div>{activities.length > 5 && <Button tone="ghost" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show recent activity' : 'Show earlier activity'}</Button>}</div>;
+  const [detailMode, setDetailMode] = useActivityDetailMode(agentMode === 'build' ? 'code' : 'summary');
+  const currentIndex = activities.reduce((current: number, item: any, index: number) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
+  const startAt = expanded ? 0 : Math.max(0, Math.min(activities.length - 7, currentIndex >= 0 ? currentIndex - 3 : activities.length - 7));
+  const visible = expanded ? activities.slice(-50) : activities.slice(startAt, Math.max(startAt + 7, currentIndex + 1));
+  const hidden = Math.max(0, activities.length - visible.length);
+  return <div className="card">
+    <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
+    <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
+    {(hidden > 0 || expanded) && <Button tone="ghost" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show recent activity' : `Show ${hidden} earlier updates`}</Button>}
+  </div>;
 }
 
 function CodeViewer({ file, onBack }: { file: { path: string; content: string }; onBack: () => void }) {

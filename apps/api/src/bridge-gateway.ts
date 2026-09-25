@@ -127,7 +127,29 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             if (message.result?.engineSessionId) await repository.putEngineSession(claims.sessionId, String(message.result.engineSessionId));
             const rawDiff = Array.isArray(message.result?.diff) ? message.result.diff as Array<Record<string, unknown>> : [];
             const files = rawDiff.flatMap((item) => { const file = String(item.file || item.path || ''); if (!file || file.startsWith('/') || file.split('/').includes('..')) return []; return [{ path: file, action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const, before: typeof item.before === 'string' ? item.before : undefined, after: typeof item.after === 'string' ? item.after : undefined, diff: typeof item.diff === 'string' ? item.diff : undefined }]; });
-            if (files.length) await repository.putChangeSet({ id: `chg_${uuid()}`, sessionId: claims.sessionId, runId, baseSha: String(message.result?.head || ''), files, reviewState: 'pending', createdAt: now });
+            if (files.length) {
+              const changeId = `chg_${uuid()}`;
+              await repository.putChangeSet({ id: changeId, sessionId: claims.sessionId, runId, baseSha: String(message.result?.head || ''), files, reviewState: 'pending', createdAt: now });
+              // Keep activity payloads bounded while still showing developers the
+              // actual patch that OpenCode produced. Full diffs remain in Changes.
+              let remainingDiffChars = 24_000;
+              const activityFiles = files.slice(0, 20).map((file) => {
+                const source = file.diff || file.after || file.before || '';
+                const diff = source && remainingDiffChars > 0 ? source.slice(0, Math.min(remainingDiffChars, 8_000)) : '';
+                remainingDiffChars -= diff.length;
+                return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
+              });
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'changes.updated',
+                timestamp: now,
+                payload: { changeId, count: files.length, files: activityFiles },
+              });
+            }
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed. Review the result.' } });
           } else {

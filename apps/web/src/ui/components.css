@@ -32,9 +32,29 @@
 .ox-activity[data-state="fail"] .mark { color: var(--agent-failed); border-color: var(--agent-failed); }
 .ox-activity:not([data-state="active"]):not([data-state="fail"]) { color: var(--foreground-muted); }
 .ox-activity-content { min-width: 0; flex: 1; }
+.ox-activity-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 650; }
+.ox-current-label { flex: none; font-size: var(--text-meta); font-weight: 650; color: var(--agent-working); }
+.ox-activity[data-current="true"] { margin: 2px -8px; padding: 10px 8px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--agent-working) 6%, transparent); }
+.ox-activity[data-state="active"]:not([data-current="true"]) .mark { animation: none; color: var(--foreground-subtle); border-color: var(--border); }
+.ox-workstream-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.ox-activity-mode { display: inline-flex; align-items: center; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-hover); }
+.ox-activity-mode button { min-height: 32px; border: 0; border-radius: var(--radius-pill); padding: 4px 11px; background: transparent; color: var(--foreground-muted); font: inherit; font-size: var(--text-meta); font-weight: 650; cursor: pointer; }
+.ox-activity-mode button.selected { background: var(--surface); color: var(--foreground); box-shadow: var(--shadow-1); }
+.ox-activity-mode button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .ox-detail-toggle { min-height: var(--touch-min); padding: 4px 8px; margin: 2px 0; font-size: var(--text-meta); }
 .ox-evidence { margin: 4px 0 4px 2px; padding: 10px 12px; border-left: 1px solid var(--border-strong); color: var(--foreground); overflow-wrap: anywhere; }
-.ox-command { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: var(--text-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ox-evidence-code { margin-top: 8px; border: 1px solid var(--border); border-left: 2px solid var(--border-strong); border-radius: var(--radius-md); background: var(--background-elevated); }
+.ox-code-label { display: block; margin-bottom: 4px; color: var(--foreground-subtle); font-size: var(--text-meta); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.ox-code-caption { margin-bottom: 8px; color: var(--foreground-muted); font-size: var(--text-meta); }
+.ox-code-block + .ox-code-path, .ox-code-path + .small, .ox-code-files { margin-top: 10px; }
+.ox-code-path code { font-family: var(--font-mono); font-size: var(--text-code); overflow-wrap: anywhere; }
+.ox-code-preview { margin-top: 10px; }
+.ox-code-preview pre { margin: 0; padding: 10px; max-height: 280px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-family: var(--font-mono); font-size: var(--text-code); line-height: 1.55; white-space: pre; }
+.ox-command { display: block; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-code); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ox-inline-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
+.ox-inline-diff summary { cursor: pointer; padding: 8px 10px; font-family: var(--font-mono); font-size: var(--text-code); display: flex; justify-content: space-between; gap: 10px; }
+.ox-inline-diff summary span { color: var(--foreground-subtle); font-family: var(--font-sans); font-size: var(--text-meta); }
+.ox-inline-diff pre { margin: 0; padding: 10px; max-height: 320px; overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--border); background: var(--background); font-family: var(--font-mono); font-size: var(--text-code); line-height: 1.55; white-space: pre; }
 .ox-file-list, .ox-failure-list { margin: 6px 0; padding-left: 20px; font-size: var(--text-meta); }
 .ox-file-list li, .ox-failure-list li { padding: 3px 0; overflow-wrap: anywhere; }
 .ox-file-list li span { color: var(--agent-success); font-weight: 700; }
@@ -73,7 +93,10 @@
   .ox-live { width: 100%; justify-content: flex-start; }
   .ox-live-task { flex: 1; max-width: none; }
   .ox-activity { gap: 8px; padding: 6px 0; }
+  .ox-activity[data-current="true"] { margin-inline: -4px; padding-inline: 4px; }
+  .ox-workstream-toolbar { align-items: flex-start; }
   .ox-evidence { padding: 8px; }
+  .ox-inline-diff pre { max-height: min(42vh, 300px); }
   .ox-raw pre { max-height: min(35vh, 220px); }
 }
 

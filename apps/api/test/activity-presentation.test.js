@@ -35,6 +35,34 @@ describe('normalized agent activity presentation', () => {
     assert.equal(rows[0].title, 'Inspecting the repository');
   });
 
+  it('labels queued Build work and preserves observable command/path evidence', () => {
+    const queued = toActivities([event(1, 'run.queued', { position: 2, mode: 'build', plane: 'workspace' })])[0];
+    assert.equal(queued.title, 'Waiting to start Build task');
+    assert.equal(queued.summary, 'Position 2 · starts automatically');
+
+    const command = toActivities([
+      event(2, 'tool.started', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', title: 'git status', callId: 'cmd-1' }),
+      event(3, 'tool.completed', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', callId: 'cmd-1', out: '## main...origin/main' }),
+    ])[0];
+    assert.equal(command.category, 'git');
+    assert.equal(command.title, 'Inspecting Git state');
+    assert.equal(command.evidence?.command, 'git status -sb');
+    assert.equal(command.evidence?.path, '/workspaces/Echoo-main');
+    assert.equal(command.rawOutput, '## main...origin/main');
+  });
+
+  it('projects bounded code changes into inline diff evidence', () => {
+    const [row] = toActivities([event(1, 'changes.updated', {
+      changeId: 'chg-1',
+      count: 1,
+      files: [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }],
+    })]);
+    assert.equal(row.category, 'file');
+    assert.equal(row.title, 'Code changes ready');
+    assert.equal(row.summary, '1 file changed');
+    assert.deepEqual(row.evidence?.files, [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }]);
+  });
+
   it('turns test receipts into counts and human-first failures while retaining raw output by reference', () => {
     const raw = '4 failed\n22 passed\n0 skipped\n✕ Duplicate message created';
     const [result] = toActivities([event(1, 'receipt.created', { cmd: 'npm test', code: 1, out: raw })]);
@@ -94,6 +122,10 @@ describe('normalized agent activity presentation', () => {
     const stream = fs.readFileSync(new URL('../../web/src/ui/workstream.tsx', import.meta.url), 'utf8');
     assert.match(source, /View results/);
     assert.match(source, /Show raw output/);
+    assert.match(source, /ox-inline-diff/);
+    assert.match(stream, /Summary/);
+    assert.match(stream, /Code/);
+    assert.match(stream, /orlynx:activity-detail-mode/);
     assert.match(stream, /aria-live="polite"/);
     assert.match(stream, /statusLabel/);
   });
