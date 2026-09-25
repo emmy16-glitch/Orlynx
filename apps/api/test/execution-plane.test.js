@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionPlaneFor } from '../src/direct-chat.ts';
-import { chooseNextQueuedTask, workspaceCanAcceptTask } from '../src/agents.ts';
+import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
 
 test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
@@ -39,4 +39,18 @@ test('Build work waits while a workspace is failed or still starting', () => {
   assert.equal(workspaceCanAcceptTask({ state: 'starting', bridgeState: 'disconnected' }), false);
   assert.equal(workspaceCanAcceptTask({ state: 'ready', bridgeState: 'connecting' }), false);
   assert.equal(workspaceCanAcceptTask({ state: 'ready', bridgeState: 'ready' }), true);
+});
+
+
+test('stale delayed Build work expires instead of executing much later', () => {
+  const now = Date.parse('2026-09-25T19:00:00Z');
+  const oldQueued = {
+    id: 'old-queued', sessionId: 's', workspaceId: 'w', plane: 'workspace',
+    state: 'queued', prompt: 'install execution', createdAt: '2026-09-25T18:30:00Z', updatedAt: '2026-09-25T18:30:00Z'
+  };
+  const recentlyQueued = { ...oldQueued, id: 'recent', createdAt: '2026-09-25T18:50:00Z', updatedAt: '2026-09-25T18:50:00Z' };
+  const delayedRunning = { ...oldQueued, id: 'delayed-running', state: 'running', updatedAt: '2026-09-25T18:50:00Z' };
+  assert.equal(delayedWorkspaceTaskExpired(oldQueued, now), true);
+  assert.equal(delayedWorkspaceTaskExpired(recentlyQueued, now), false);
+  assert.equal(delayedWorkspaceTaskExpired(delayedRunning, now), true);
 });
