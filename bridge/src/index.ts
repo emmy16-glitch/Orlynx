@@ -162,6 +162,67 @@ async function opencodeRequest(payload: Record<string, unknown>) {
 function bridgeEvent(ws: WebSocket, type: string, payload: Record<string, unknown>, taskId?: string, runId?: string) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type, payload, taskId, runId } }));
 }
+
+type OpenCodeEvent = { type?: string; properties?: Record<string, any> };
+
+function openCodeHeaders(): Record<string, string> {
+  const auth = Buffer.from(`opencode:${OPENCODE_PASSWORD}`).toString('base64');
+  return {
+    Authorization: `Basic ${auth}`,
+    Accept: 'text/event-stream',
+    'x-opencode-directory': REPO_ROOT,
+  };
+}
+
+async function* openCodeEvents(signal: AbortSignal): AsyncGenerator<OpenCodeEvent> {
+  const url = new URL('/event', `http://127.0.0.1:${OPENCODE_PORT}`);
+  url.searchParams.set('directory', REPO_ROOT);
+  const response = await fetch(url, { headers: openCodeHeaders(), signal });
+  if (!response.ok || !response.body) throw new Error(`OpenCode event stream failed (HTTP ${response.status}).`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer = (buffer + decoder.decode(chunk.value, { stream: true })).replace(/\r\n/g, '\n');
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = frame
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n');
+        if (data) {
+          try {
+            const event = JSON.parse(data) as OpenCodeEvent;
+            if (event && typeof event === 'object') yield event;
+          } catch { /* ignore malformed/partial event frames */ }
+        }
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+  }
+}
+
+function openCodeErrorMessage(value: unknown): string {
+  if (!value || typeof value !== 'object') return typeof value === 'string' ? value : 'OpenCode reported that the task failed.';
+  const record = value as Record<string, any>;
+  const data = record.data && typeof record.data === 'object' ? record.data as Record<string, any> : undefined;
+  const message = String(data?.message || record.message || record.name || 'OpenCode reported that the task failed.');
+  const status = Number(data?.statusCode || 0);
+  return status > 0 ? `${message} (HTTP ${status})` : message;
+}
+
+function assistantText(message: { parts?: Array<Record<string, any>> } | undefined): string {
+  return (message?.parts || []).filter((part) => part.type === 'text' && !part.synthetic && !part.ignored).map((part) => String(part.text || '')).join('');
+}
 async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
   let engineSessionId = String(payload.engineSessionId || '');
@@ -169,32 +230,179 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     const created = await opencodeRequest({ path: '/session', method: 'POST', body: { title: `Orlynx ${String(payload.sessionId || '')}` } }) as { body?: { id?: string } };
     engineSessionId = String(created.body?.id || ''); if (!engineSessionId) throw new Error('OpenCode did not create a session.');
   }
+
   const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
-  const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] }; if (payload.model) body.model = payload.model; if (payload.agent) body.agent = payload.agent;
+  const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
+  if (payload.model) body.model = payload.model;
+  if (payload.agent) body.agent = payload.agent;
+
+  // OpenCode already exposes an event stream. Subscribe first so Orlynx does
+  // not have to poll the engine continuously just to discover new tokens.
+  const streamAbort = new AbortController();
+  let iterator: AsyncIterator<OpenCodeEvent> | undefined;
+  let nextEvent: Promise<IteratorResult<OpenCodeEvent>> | undefined;
+  try {
+    iterator = openCodeEvents(streamAbort.signal)[Symbol.asyncIterator]();
+    nextEvent = iterator.next();
+    const warm = await Promise.race([
+      nextEvent.then((value) => ({ kind: 'event' as const, value })).catch(() => ({ kind: 'failed' as const })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 1_500)),
+    ]);
+    if (warm.kind === 'event') {
+      nextEvent = warm.value.done ? undefined : iterator.next();
+    } else if (warm.kind === 'failed') {
+      nextEvent = undefined;
+    }
+    // On timeout, keep the original pending iterator.next(); it may still
+    // connect after the prompt starts. The fallback poll below guarantees progress.
+  } catch {
+    nextEvent = undefined;
+  }
+
   await opencodeRequest({ path: `/session/${engineSessionId}/prompt_async`, method: 'POST', body, timeoutMs: 120_000 });
   activeAgents.set(taskId, engineSessionId);
-  const deadline = Date.now() + 30 * 60_000; let visible = ''; let assistant: { info?: Record<string, any>; parts?: Array<Record<string, any>> } | undefined;
-  while (Date.now() < deadline) {
-    const messages = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
+
+  const deadline = Date.now() + 30 * 60_000;
+  let assistant: { info?: Record<string, any>; parts?: Array<Record<string, any>> } | undefined;
+  let visible = '';
+  let finished = false;
+  let lastRetryKey = '';
+  let streamFallbackNotified = false;
+  const textParts = new Map<string, string>();
+  const toolStates = new Map<string, string>();
+
+  const emitRetry = (status: Record<string, any>) => {
+    const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
+    if (key === lastRetryKey) return;
+    lastRetryKey = key;
+    bridgeEvent(ws, 'activity.progress', {
+      sourceType: 'opencode.retry',
+      text: String(status.message || 'Provider is temporarily unavailable. Retrying…'),
+      attempt: Number(status.attempt || 0),
+      nextAt: Number(status.next || 0),
+      provider: status.action?.provider ? String(status.action.provider) : undefined,
+      reason: status.action?.reason ? String(status.action.reason) : undefined,
+    }, taskId, runId);
+  };
+
+  const emitTool = (part: Record<string, any>) => {
+    const state = part.state && typeof part.state === 'object' ? part.state as Record<string, any> : {};
+    const status = String(state.status || '');
+    const id = String(part.callID || part.id || part.tool || '');
+    if (!id || !status) return;
+    const marker = `${status}:${String(state.time?.end || '')}:${String(state.output || state.error || '').length}`;
+    if (toolStates.get(id) === marker) return;
+    toolStates.set(id, marker);
+    const common = { tool: String(part.tool || 'tool'), callId: id, title: String(state.title || part.tool || 'Tool') };
+    if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
+    else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
+    else if (status === 'completed') bridgeEvent(ws, 'tool.completed', { ...common, out: String(state.output || '').slice(0, 8_000) }, taskId, runId);
+    else if (status === 'error') bridgeEvent(ws, 'tool.failed', { ...common, error: String(state.error || 'Tool failed.').slice(0, 2_000) }, taskId, runId);
+  };
+
+  const reconcile = async () => {
+    const [messages, status] = await Promise.all([
+      opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as Promise<{ body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> }>,
+      opencodeRequest({ path: '/session/status', method: 'GET' }) as Promise<{ body?: Record<string, Record<string, any>> }>,
+    ]);
     assistant = [...(messages.body || [])].reverse().find((message) => message.info?.role === 'assistant' && message.info?.id !== previousAssistant);
     if (assistant) {
-      const text = (assistant.parts || []).filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
-      if (text.startsWith(visible) && text.length > visible.length) { bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length) }, taskId, runId); visible = text; }
-      if (assistant.info?.error) throw new Error('OpenCode reported that the task failed.');
-      if (assistant.info?.time?.completed || (assistant.info?.finish && assistant.info.finish !== 'tool-calls')) break;
+      const text = assistantText(assistant);
+      if (text.startsWith(visible) && text.length > visible.length) {
+        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length) }, taskId, runId);
+        visible = text;
+      }
+      if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
     }
-    const status = await opencodeRequest({ path: '/session/status', method: 'GET' }) as { body?: Record<string, { type?: string }> };
-    if (assistant && status.body?.[engineSessionId]?.type === 'idle') break;
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    const current = status.body?.[engineSessionId] || {};
+    if (current.type === 'retry') emitRetry(current);
+    if (current.type === 'idle' && assistant) finished = true;
+  };
+
+  try {
+    while (Date.now() < deadline && !finished) {
+      if (nextEvent) {
+        const outcome = await Promise.race([
+          nextEvent.then((value) => ({ kind: 'event' as const, value })).catch((error) => ({ kind: 'stream-error' as const, error })),
+          new Promise<{ kind: 'tick' }>((resolve) => setTimeout(() => resolve({ kind: 'tick' }), 5_000)),
+        ]);
+
+        if (outcome.kind === 'event') {
+          if (outcome.value.done) {
+            nextEvent = undefined;
+          } else {
+            const event = outcome.value.value;
+            nextEvent = iterator?.next();
+            const properties = event.properties || {};
+            const sessionID = String(properties.sessionID || '');
+            if (sessionID && sessionID !== engineSessionId) continue;
+
+            if (event.type === 'message.part.updated') {
+              const part = properties.part && typeof properties.part === 'object' ? properties.part as Record<string, any> : undefined;
+              if (part?.messageID !== previousAssistant && part?.type === 'text' && !part.synthetic && !part.ignored) {
+                const id = String(part.id || part.messageID || 'text');
+                const current = String(part.text || '');
+                const before = textParts.get(id) || '';
+                if (current.startsWith(before) && current.length > before.length) {
+                  const delta = current.slice(before.length);
+                  bridgeEvent(ws, 'message.delta', { delta }, taskId, runId);
+                  visible += delta;
+                }
+                textParts.set(id, current);
+              } else if (part?.type === 'tool' && part?.messageID !== previousAssistant) {
+                emitTool(part);
+              }
+            } else if (event.type === 'session.status') {
+              const status = properties.status && typeof properties.status === 'object' ? properties.status as Record<string, any> : {};
+              if (status.type === 'retry') emitRetry(status);
+              if (status.type === 'idle') finished = true;
+            } else if (event.type === 'session.error') {
+              throw new Error(openCodeErrorMessage(properties.error));
+            } else if (event.type === 'message.updated') {
+              const info = properties.info && typeof properties.info === 'object' ? properties.info as Record<string, any> : {};
+              if (info.role === 'assistant' && info.id !== previousAssistant && info.error) throw new Error(openCodeErrorMessage(info.error));
+            }
+            continue;
+          }
+        } else if (outcome.kind === 'stream-error') {
+          nextEvent = undefined;
+        }
+
+        if (!nextEvent && !streamFallbackNotified) {
+          streamFallbackNotified = true;
+          bridgeEvent(ws, 'activity.progress', { sourceType: 'opencode.transport', text: 'Live engine stream interrupted; Orlynx is recovering from session state.' }, taskId, runId);
+        }
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
+
+      // Event delivery is primary. This slower snapshot poll is intentionally
+      // retained as a safety net, matching OpenCode's own transport strategy.
+      await reconcile();
+    }
+
+    if (!finished) {
+      await reconcile().catch(() => {});
+      if (!finished) throw new Error('OpenCode task timed out before the session returned to idle.');
+    }
+
+    const finalMessages = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
+    assistant = [...(finalMessages.body || [])].reverse().find((message) => message.info?.role === 'assistant' && message.info?.id !== previousAssistant);
+    if (!assistant) throw new Error('OpenCode finished without an assistant response.');
+    if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
+
+    const responseText = assistantText(assistant);
+    const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }) as { body?: Array<Record<string, unknown>> };
+    const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
+    return { engineSessionId, responseText, diff: diff.body || [], head: status.head };
+  } finally {
+    streamAbort.abort();
+    try { await iterator?.return?.(); } catch {}
+    activeAgents.delete(taskId);
   }
-  if (!assistant) throw new Error('OpenCode finished without an assistant response.');
-  const responseText = (assistant.parts || []).filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
-  const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }) as { body?: Array<Record<string, unknown>> };
-  const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
-  activeAgents.delete(taskId);
-  return { engineSessionId, responseText, diff: diff.body || [], head: status.head };
 }
+
 function listFiles(relative: string) {
   const target = safePath(relative);
   return fs.readdirSync(target, { withFileTypes: true }).filter((entry) => entry.name !== '.git').map((entry) => ({ name: entry.name, path: path.relative(REPO_ROOT, path.join(target, entry.name)), dir: entry.isDirectory(), size: entry.isFile() ? fs.statSync(path.join(target, entry.name)).size : undefined }));
