@@ -118,6 +118,9 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         }
         await new Promise((resolve) => setTimeout(resolve, 1_500));
       }
+      if (['creating', 'starting'].includes(workspace.state)) {
+        throw new Error('GitHub Codespace did not become ready before the startup timeout.');
+      }
     }
     const connectionAge = Date.now() - Date.parse(workspace.updatedAt);
     const staleBridge = Boolean(workspace.connectionId && workspace.bridgeState === 'disconnected' && connectionAge > 30_000);
@@ -134,11 +137,24 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       // a post-bootstrap write would overwrite that newer READY transition.
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
     }
-    const finalWorkspace = (await repository.getWorkspace(workspace.id)) || workspace;
+    let finalWorkspace = (await repository.getWorkspace(workspace.id)) || workspace;
+    if (finalWorkspace.state === 'bootstrapping' && finalWorkspace.bridgeState !== 'ready') {
+      const bridgeDeadline = Date.now() + Math.max(10_000, Number(process.env.ORLYNX_BRIDGE_READY_TIMEOUT_MS || 30_000));
+      while (Date.now() < bridgeDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        finalWorkspace = (await repository.getWorkspace(workspace.id)) || finalWorkspace;
+        if (finalWorkspace.state === 'ready' && finalWorkspace.bridgeState === 'ready') break;
+        if (finalWorkspace.state === 'failed') break;
+      }
+    }
     if (finalWorkspace.state === 'ready' && finalWorkspace.bridgeState === 'ready') {
       emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Development environment ready.' });
+      return finalWorkspace;
     }
-    return finalWorkspace;
+    if (finalWorkspace.state === 'failed') {
+      throw new Error(finalWorkspace.failureCode || 'The development environment failed to start.');
+    }
+    throw new Error('Orlynx could not connect to the development environment after the Codespace started.');
   } catch (error) {
     if (workspace) {
       workspace = { ...workspace, state: 'failed', bridgeState: 'disconnected', openCodeState: workspace.openCodeState === 'starting' ? 'failed' : workspace.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
