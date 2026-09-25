@@ -83,6 +83,7 @@ test('dedicated OpenCode runtime streams first delta before the response finishe
     if (value === 'https://runtime.test/session/oc-session/prompt_async') {
       const body = JSON.parse(init.body);
       assert.deepEqual(body.model, { providerID: 'opencode', modelID: 'big-pickle' });
+      assert.equal(body.messageID, undefined);
       assert.equal(body.parts[0].text, 'Hello');
       assert.doesNotMatch(body.parts[0].text, /Conversation so far|Respond naturally to the latest user message/);
       return new Response(null, { status: 204 });
