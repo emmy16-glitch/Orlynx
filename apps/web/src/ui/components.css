@@ -48,6 +48,8 @@
 .ox-code-caption { margin-bottom: 8px; color: var(--foreground-muted); font-size: var(--text-meta); }
 .ox-code-block + .ox-code-path, .ox-code-path + .small, .ox-code-files { margin-top: 10px; }
 .ox-code-path code { font-family: var(--font-mono); font-size: var(--text-code); overflow-wrap: anywhere; }
+.ox-code-preview { margin-top: 10px; }
+.ox-code-preview pre { margin: 0; padding: 10px; max-height: 280px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-family: var(--font-mono); font-size: var(--text-code); line-height: 1.55; white-space: pre; }
 .ox-command { display: block; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-code); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ox-inline-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
 .ox-inline-diff summary { cursor: pointer; padding: 8px 10px; font-family: var(--font-mono); font-size: var(--text-code); display: flex; justify-content: space-between; gap: 10px; }
