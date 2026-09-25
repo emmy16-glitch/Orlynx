@@ -125,6 +125,8 @@ The event presentation pipeline in `apps/web/src/ui/mapping.ts` turns low-level
 runtime output into summary → evidence → raw detail. Private model reasoning is not
 rendered.
 
+Production deployments are triggered from the `main` branch through the connected Vercel project.
+
 ## Production configuration
 
 See `.env.example` and [docs/vercel-production.md](docs/vercel-production.md).
