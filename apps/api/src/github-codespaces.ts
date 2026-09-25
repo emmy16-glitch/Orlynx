@@ -1,6 +1,7 @@
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import type { CreateWorkspaceInput, WorkspaceProvider } from './workspace-provider.js';
 import { githubUserAccessToken } from './github.js';
+import { spawn } from 'node:child_process';
 
 const API = 'https://api.github.com';
 type Codespace = {
@@ -158,6 +159,49 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       openCodeState: 'not_installed',
       createdAt: now,
       updatedAt: now,
+    };
+  }
+  async rebuild(workspace: WorkspaceRecord) {
+    if (!workspace.codespaceName) throw new Error('Workspace has no Codespace name.');
+    const token = await githubUserAccessToken(workspace.userId);
+    const timeoutMs = Math.max(60_000, Number(process.env.ORLYNX_CODESPACE_REBUILD_TIMEOUT_MS || 8 * 60_000));
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('gh', ['codespace', 'rebuild', '-c', workspace.codespaceName || ''], {
+        env: { ...process.env, GH_TOKEN: token },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        error ? reject(error) : resolve();
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        const detail = (stderr || stdout).trim().slice(-1200);
+        finish(new Error(`Codespace rebuild did not finish within ${Math.round(timeoutMs / 1000)} seconds${detail ? `: ${detail}` : '.'}`));
+      }, timeoutMs);
+      timer.unref?.();
+      child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-4000); });
+      child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4000); });
+      child.once('error', (error) => finish(error));
+      child.once('exit', (code, signal) => {
+        if (settled) return;
+        if (code === 0) finish();
+        else finish(new Error(`Codespace rebuild failed (${signal ? `signal ${signal}` : `exit ${code}`}): ${(stderr || stdout).trim().slice(-1600)}`));
+      });
+    });
+    return {
+      ...workspace,
+      state: 'starting' as const,
+      bridgeState: 'disconnected' as const,
+      openCodeState: 'not_installed' as const,
+      connectionId: undefined,
+      failureCode: undefined,
+      updatedAt: new Date().toISOString(),
     };
   }
   async start(workspace: WorkspaceRecord) {
