@@ -24,7 +24,8 @@ app.use(express.json({ limit: '2mb' }));
 // plane is ready; all normal product APIs remain unavailable until durable
 // storage exists.
 app.use((req, res, next) => {
-  if (process.env.VERCEL !== '1' || durableStorageConfigured()) return next();
+  const hostedProduction = process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1';
+  if (!hostedProduction || durableStorageConfigured()) return next();
   if (req.path === '/health' || req.path.startsWith('/v1/setup/github-app')) return next();
   return res.status(503).json({ error: 'Orlynx is temporarily unavailable.' });
 });
@@ -32,8 +33,9 @@ app.use((req, res, next) => {
 app.get('/health', async (_req, res) => {
   let database = false;
   if (durableStorageConfigured()) { try { await controlPlaneRepository().initialize(); database = true; } catch {} }
-  const ready = githubAppConfigured() && (database || process.env.VERCEL !== '1');
-  res.status(ready ? 200 : 503).json({ ok: ready, service: 'orlynx-api', time: new Date().toISOString(), ready, durableStorage: database, runtimeBootstrapConfigured: process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN), bridgeConfigured: Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET) });
+  const hostedProduction = process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1';
+  const ready = githubAppConfigured() && (!hostedProduction || database);
+  res.status(ready ? 200 : 503).json({ ok: ready, service: 'orlynx-api', time: new Date().toISOString(), ready, durableStorage: database, runtimeBootstrapConfigured: process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || process.env.ORLYNX_BOOTSTRAP_MODE === 'local' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN), bridgeConfigured: Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET) });
 });
 app.use('/v1', router);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

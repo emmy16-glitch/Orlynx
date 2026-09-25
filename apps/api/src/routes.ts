@@ -95,7 +95,7 @@ router.use(async (req, res, next) => {
     if (session?.installationId === installationId) store.db.sessions[session.id] = session;
   }
   if (publicEndpoint(req)) return next();
-  if (process.env.VERCEL === '1' && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
+  if ((process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1') && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
     return res.status(503).json({ error: 'This project is not ready to open yet. Please try again shortly.', code: 'STORAGE_REQUIRED' });
   }
   return requireSession(req, res, async () => {
@@ -1031,7 +1031,7 @@ router.get('/integrations/status', async (req, res) => {
     ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
   const workspace = session && durableStorageConfigured() ? await getWorkspace(session.id) : null;
-  const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
+  const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || process.env.ORLYNX_BOOTSTRAP_MODE === 'local' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
   const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
     github: {

@@ -149,13 +149,21 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
 }
 
-export const bridgeGatewayServer = http.createServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'WebSocket upgrade required.' })); });
 // Existing workspaces can still send OpenCode's full provider catalog until
 // they reconnect with the compact bridge. Accept that bounded legacy reply.
 const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
-bridgeGatewayServer.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url || '/', 'http://localhost').pathname;
-  if (pathname !== '/bridge' && pathname !== '/v1/bridge') { socket.destroy(); return; }
-  wss.handleUpgrade(request, socket, head, (ws) => { wss.emit('connection', ws, request); });
+
+export function attachBridgeGateway(server: http.Server): void {
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url || '/', 'http://localhost').pathname;
+    if (pathname !== '/bridge' && pathname !== '/v1/bridge') { socket.destroy(); return; }
+    wss.handleUpgrade(request, socket, head, (ws) => { wss.emit('connection', ws, request); });
+  });
+}
+
+export const bridgeGatewayServer = http.createServer((_req, res) => {
+  res.writeHead(426, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'WebSocket upgrade required.' }));
 });
+attachBridgeGateway(bridgeGatewayServer);
 wss.on('connection', (ws, request) => { void handleConnection(ws, request); });

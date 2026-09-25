@@ -2,6 +2,7 @@ import type { WorkspaceRecord } from '@orlynx/shared';
 import { githubUserAccessToken } from './github.js';
 import { Sandbox } from '@vercel/sandbox';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +63,23 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
   } finally { await sandbox.stop().catch(() => {}); }
 }
 
+
+async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
+  const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('gh', ['codespace', 'ssh', '-c', workspace.codespaceName || '', '--', 'bash', '-s'], {
+      env: { ...process.env, GH_TOKEN: githubUserToken },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4000); });
+    child.stdout.resume();
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Codespace bootstrap failed (exit ${code}): ${stderr}`)));
+    child.stdin.end(script);
+  });
+}
+
 export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Values): Promise<void> {
   const base = (process.env.ORLYNX_RUNTIME_WORKER_URL || '').replace(/\/$/, '');
   const workerToken = process.env.ORLYNX_RUNTIME_WORKER_TOKEN || '';
@@ -73,6 +91,7 @@ export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Val
     ? decryptCredential(openCodeConnection.credential)
     : '';
   const bridgeUrl = `${publicUrl.replace(/^https:/, 'wss:')}/bridge`;
+  if (!base && process.env.ORLYNX_BOOTSTRAP_MODE === 'local') return bootstrapWithLocalGh(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey);
   if (!base && (process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox')) return bootstrapWithSandbox(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey);
   if (!base.startsWith('https://') || !workerToken) throw new Error('Runtime bootstrap infrastructure is not configured.');
   const response = await fetch(`${base}/bootstrap`, { method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ codespaceName: workspace.codespaceName, githubUserToken, bridgeUrl, bridgeToken: values.bridgeToken, workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId: values.connectionId, openCodePassword: values.openCodePassword }), signal: AbortSignal.timeout(120_000) });

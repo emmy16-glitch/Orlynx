@@ -1,5 +1,7 @@
+import http from 'node:http';
 import { app } from './app.js';
 import { githubAppConfigured } from './github.js';
+import { attachBridgeGateway } from './bridge-gateway.js';
 
 const PORT = Number(process.env.PORT || 4000);
 
@@ -12,4 +14,6 @@ if (githubAppConfigured()) {
   console.log(`[orlynx-api] GitHub App is NOT fully configured (missing: ${missing.join(', ') || 'invalid ORLYNX_PUBLIC_URL'}). GitHub routes fail closed until server secrets are set.`);
 }
 
-app.listen(PORT, () => console.log(`[orlynx-api] listening on http://localhost:${PORT}`));
+const server = http.createServer(app);
+attachBridgeGateway(server);
+server.listen(PORT, '0.0.0.0', () => console.log(`[orlynx-api] listening on http://0.0.0.0:${PORT}`));
