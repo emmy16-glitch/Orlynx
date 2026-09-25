@@ -1,36 +1,138 @@
-import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
-import os from 'node:os';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { openCodeAccountKey } from './zen.js';
 
-const RUN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_LOCAL_OPENCODE_RUN_TIMEOUT_MS || 10 * 60_000));
+type ModelProviderConfig = {
+  npm?: string;
+  api?: string;
+  shape?: 'responses' | 'completions';
+  headers?: Record<string, string>;
+};
 
-function freeModel(modelId: string): boolean {
-  const id = modelId.replace(/^opencode\//, '').toLowerCase();
-  return id.endsWith('-free') || id.includes('-contributor-free') || id === 'big-pickle';
+type CatalogModel = {
+  id: string;
+  name?: string;
+  cost?: { input?: number; output?: number };
+  provider?: ModelProviderConfig;
+};
+
+type CatalogProvider = {
+  id: string;
+  npm: string;
+  api?: string;
+  models: Record<string, CatalogModel>;
+};
+
+const require = createRequire(import.meta.url);
+const AI_ROOT = path.join(process.cwd(), '.render-ai');
+const moduleCache = new Map<string, Promise<any>>();
+let catalogPromise: Promise<CatalogProvider> | undefined;
+
+function isFree(model: CatalogModel): boolean {
+  return Number(model.cost?.input ?? -1) === 0 && Number(model.cost?.output ?? -1) === 0;
 }
 
-function userScope(userId: string): string {
-  return crypto.createHash('sha256').update(userId).digest('hex').slice(0, 24);
+function fallbackNpm(modelId: string): string {
+  const id = modelId.toLowerCase();
+  if (/^(gpt-|o[134]-|muse-|grok-)/.test(id)) return '@ai-sdk/openai';
+  if (/^(claude-|qwen3\.[5-8]-)/.test(id)) return '@ai-sdk/anthropic';
+  if (/^(gemini-|gemma-)/.test(id)) return '@ai-sdk/google';
+  return '@ai-sdk/openai-compatible';
 }
 
-function eventError(event: any): string {
-  return String(
-    event?.error?.data?.message
-      || event?.error?.message
-      || event?.error?.name
-      || event?.message
-      || '',
-  ).trim();
+async function importAiPackage(name: string): Promise<any> {
+  let pending = moduleCache.get(name);
+  if (!pending) {
+    pending = (async () => {
+      const resolved = require.resolve(name, { paths: [AI_ROOT, process.cwd()] });
+      return import(pathToFileURL(resolved).href);
+    })();
+    moduleCache.set(name, pending);
+  }
+  return pending;
 }
 
-function textFromEvent(event: any): string {
-  if (event?.type !== 'text') return '';
-  const part = event?.part;
-  if (part?.type !== 'text') return '';
-  return typeof part.text === 'string' ? part.text : '';
+async function openCodeCatalog(): Promise<CatalogProvider> {
+  if (!catalogPromise) {
+    catalogPromise = (async () => {
+      const response = await fetch('https://models.dev/api.json', {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
+      const providers = await response.json() as Record<string, CatalogProvider>;
+      const provider = providers.opencode;
+      if (!provider?.models) throw new Error('OpenCode provider metadata is unavailable from models.dev.');
+      return provider;
+    })().catch((error) => {
+      catalogPromise = undefined;
+      throw error;
+    });
+  }
+  return catalogPromise;
+}
+
+export function warmOpenCodeProviderLayer(): void {
+  void Promise.all([
+    openCodeCatalog(),
+    importAiPackage('ai'),
+    importAiPackage('@ai-sdk/openai-compatible'),
+    importAiPackage('@ai-sdk/openai'),
+    importAiPackage('@ai-sdk/anthropic'),
+    importAiPackage('@ai-sdk/google'),
+  ]).catch(() => {});
+}
+
+async function languageModel(input: { userId: string; modelId: string }) {
+  const id = input.modelId.replace(/^opencode\//, '');
+  let provider: CatalogProvider | undefined;
+  let model: CatalogModel | undefined;
+
+  try {
+    provider = await openCodeCatalog();
+    model = provider.models[id];
+  } catch {
+    // The live catalog is a routing aid, not a hard dependency. OpenCode Zen's
+    // default provider is OpenAI-compatible, so retain a safe fallback.
+  }
+
+  const npm = model?.provider?.npm || provider?.npm || fallbackNpm(id);
+  const baseURL = model?.provider?.api || provider?.api || 'https://opencode.ai/zen/v1';
+  const free = model ? isFree(model) : /-free$|-contributor-free$|^big-pickle$/i.test(id);
+  const apiKey = free ? 'public' : await openCodeAccountKey(input.userId);
+  const headers = model?.provider?.headers || {};
+
+  let sdk: any;
+  if (npm === '@ai-sdk/openai') {
+    const mod = await importAiPackage('@ai-sdk/openai');
+    sdk = mod.createOpenAI({ name: 'opencode', baseURL, apiKey, headers });
+  } else if (npm === '@ai-sdk/anthropic') {
+    const mod = await importAiPackage('@ai-sdk/anthropic');
+    sdk = mod.createAnthropic({ name: 'opencode', baseURL, apiKey, headers });
+  } else if (npm === '@ai-sdk/google') {
+    const mod = await importAiPackage('@ai-sdk/google');
+    sdk = mod.createGoogleGenerativeAI({ name: 'opencode', baseURL, apiKey, headers });
+  } else if (npm === '@ai-sdk/openai-compatible') {
+    const mod = await importAiPackage('@ai-sdk/openai-compatible');
+    sdk = mod.createOpenAICompatible({
+      name: 'opencode',
+      baseURL,
+      apiKey,
+      headers,
+      includeUsage: true,
+    });
+  } else {
+    throw new Error(`OpenCode model ${id} uses unsupported provider package ${npm}.`);
+  }
+
+  const language = typeof sdk.languageModel === 'function'
+    ? sdk.languageModel(id)
+    : typeof sdk === 'function'
+      ? sdk(id)
+      : undefined;
+  if (!language) throw new Error(`OpenCode could not initialize model ${id}.`);
+  return { language, free, id };
 }
 
 export async function streamWithOfficialOpenCode(input: {
@@ -43,171 +145,43 @@ export async function streamWithOfficialOpenCode(input: {
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
 }): Promise<string> {
-  input.onStatus?.('Starting OpenCode…');
-
-  const scope = userScope(input.userId);
-  const root = path.join(os.tmpdir(), 'orlynx-opencode-run', scope);
-  const projectDir = path.join(root, 'project');
-  const dataDir = path.join(root, 'data');
-  const configDir = path.join(root, 'config');
-  const cacheDir = path.join(root, 'cache');
-  await Promise.all([
-    fs.mkdir(projectDir, { recursive: true }),
-    fs.mkdir(dataDir, { recursive: true }),
-    fs.mkdir(configDir, { recursive: true }),
-    fs.mkdir(cacheDir, { recursive: true }),
+  input.onStatus?.('Thinking…');
+  const [{ streamText }, resolved] = await Promise.all([
+    importAiPackage('ai'),
+    languageModel({ userId: input.userId, modelId: input.modelId }),
   ]);
 
-  const normalizedModel = input.modelId.startsWith('opencode/')
-    ? input.modelId
-    : `opencode/${input.modelId}`;
-
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    PWD: projectDir,
-    XDG_DATA_HOME: dataDir,
-    XDG_CONFIG_HOME: configDir,
-    XDG_CACHE_HOME: cacheDir,
-    OPENCODE_DISABLE_AUTOUPDATE: 'true',
-    NO_COLOR: '1',
-    CI: '1',
-  };
-
-  // OpenCode intentionally uses its own public-key path for free Zen models
-  // when no account auth is configured. Do not override that behavior.
-  if (!freeModel(normalizedModel)) {
-    const key = await openCodeAccountKey(input.userId);
-    env.OPENCODE_AUTH_CONTENT = JSON.stringify({
-      opencode: { type: 'api', key },
+  let full = '';
+  try {
+    const result = streamText({
+      model: resolved.language,
+      system: input.system,
+      prompt: input.prompt,
+      abortSignal: input.signal,
+      maxRetries: 2,
     });
-  } else {
-    delete env.OPENCODE_AUTH_CONTENT;
+
+    for await (const delta of result.textStream) {
+      if (!delta) continue;
+      full += delta;
+      input.onDelta(delta);
+    }
+
+    if (!full.trim()) {
+      const finalText = String(await result.text || '');
+      if (finalText) {
+        full = finalText;
+        input.onDelta(finalText);
+      }
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (resolved.free && /403|forbidden|unauthorized/i.test(detail)) {
+      throw new Error(`OpenCode rejected the public route for ${resolved.id}. The model is free, so this is not a paid-account quota or credential error. ${detail}`);
+    }
+    throw error;
   }
 
-  const combinedPrompt = [
-    input.system,
-    input.prompt,
-  ].filter(Boolean).join('\n\n');
-
-  const child = spawn('opencode', [
-    'run',
-    '--format', 'json',
-    '--model', normalizedModel,
-    '--agent', 'plan',
-    '--title', `Orlynx ${input.runtimeKey}`,
-    '--dir', projectDir,
-  ], {
-    cwd: projectDir,
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  let stdoutBuffer = '';
-  let stderrTail = '';
-  let full = '';
-  let parsedError = '';
-  let sawEvent = false;
-  let settled = false;
-
-  const timeout = setTimeout(() => {
-    if (settled || child.exitCode !== null) return;
-    child.kill('SIGTERM');
-    setTimeout(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }, 2_000).unref?.();
-  }, RUN_TIMEOUT_MS);
-  timeout.unref?.();
-
-  const abort = () => {
-    if (child.exitCode === null) {
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (child.exitCode === null) child.kill('SIGKILL');
-      }, 2_000).unref?.();
-    }
-  };
-  input.signal.addEventListener('abort', abort, { once: true });
-
-  const handleLine = (raw: string) => {
-    const line = raw.trim();
-    if (!line) return;
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      // JSON mode should normally keep stdout machine-readable. Preserve any
-      // unexpected text for diagnostics instead of showing it as model output.
-      stderrTail = (stderrTail + '\n' + line).slice(-8_000);
-      return;
-    }
-
-    sawEvent = true;
-    if (event.type === 'error') {
-      parsedError = eventError(event) || parsedError;
-      return;
-    }
-
-    if (event.type === 'tool_use') {
-      const tool = event?.part?.tool;
-      if (tool) input.onStatus?.(`OpenCode is using ${String(tool)}…`);
-      return;
-    }
-
-    if (event.type === 'step_start') {
-      input.onStatus?.('OpenCode is working…');
-      return;
-    }
-
-    const text = textFromEvent(event);
-    if (text) {
-      full += text;
-      input.onDelta(text);
-    }
-  };
-
-  child.stdout?.on('data', (chunk: Buffer | string) => {
-    if (!sawEvent) input.onStatus?.('OpenCode connected — generating response…');
-    stdoutBuffer += String(chunk);
-    let newline = stdoutBuffer.indexOf('\n');
-    while (newline >= 0) {
-      handleLine(stdoutBuffer.slice(0, newline));
-      stdoutBuffer = stdoutBuffer.slice(newline + 1);
-      newline = stdoutBuffer.indexOf('\n');
-    }
-  });
-
-  child.stderr?.on('data', (chunk: Buffer | string) => {
-    stderrTail = (stderrTail + String(chunk)).slice(-8_000);
-  });
-
-  const result = new Promise<string>((resolve, reject) => {
-    child.once('error', (error) => reject(error));
-    child.once('close', (code, signal) => {
-      settled = true;
-      clearTimeout(timeout);
-      input.signal.removeEventListener('abort', abort);
-      if (stdoutBuffer.trim()) handleLine(stdoutBuffer);
-
-      if (input.signal.aborted) {
-        reject(input.signal.reason instanceof Error ? input.signal.reason : new Error('Cancelled by user.'));
-        return;
-      }
-
-      if (full.trim()) {
-        resolve(full);
-        return;
-      }
-
-      const detail = parsedError || stderrTail.trim();
-      if (code !== 0) {
-        reject(new Error(detail || `OpenCode exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}.`));
-        return;
-      }
-
-      reject(new Error(detail || 'OpenCode completed without returning visible text.'));
-    });
-  });
-
-  child.stdin?.end(combinedPrompt);
-  return result;
+  if (!full.trim()) throw new Error('OpenCode completed without returning visible text.');
+  return full;
 }

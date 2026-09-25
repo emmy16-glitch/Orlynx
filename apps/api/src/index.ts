@@ -2,6 +2,7 @@ import http from 'node:http';
 import { app } from './app.js';
 import { githubAppConfigured } from './github.js';
 import { attachBridgeGateway } from './bridge-gateway.js';
+import { warmOpenCodeProviderLayer } from './opencode-local.js';
 
 const PORT = Number(process.env.PORT || 4000);
 
@@ -13,6 +14,8 @@ if (githubAppConfigured()) {
 } else {
   console.log(`[orlynx-api] GitHub App is NOT fully configured (missing: ${missing.join(', ') || 'invalid ORLYNX_PUBLIC_URL'}). GitHub routes fail closed until server secrets are set.`);
 }
+
+warmOpenCodeProviderLayer();
 
 const server = http.createServer(app);
 attachBridgeGateway(server);

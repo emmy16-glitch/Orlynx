@@ -27,13 +27,18 @@ async function repositoryContext(session: ProjectSession): Promise<string> {
   let root: { name: string; dir: boolean }[] = [];
   try { root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId); } catch {}
   const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 120);
-  const candidates = ['README.md','README','package.json','pyproject.toml','requirements.txt','Cargo.toml','go.mod','pom.xml','build.gradle','docker-compose.yml','compose.yml'];
+  const candidates = ['README.md','README','package.json','pyproject.toml','requirements.txt','Cargo.toml','go.mod','pom.xml','build.gradle','docker-compose.yml','compose.yml']
+    .filter((name) => root.some((item) => !item.dir && item.name.toLowerCase() === name.toLowerCase()))
+    .slice(0, 6);
+  const loaded = await Promise.all(candidates.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
   const snippets: string[] = [];
-  for (const name of candidates) {
-    if (!root.some((item) => !item.dir && item.name.toLowerCase() === name.toLowerCase())) continue;
-    const content = await safeFile(session.project, session.branch, name, session.installationId);
-    if (content) snippets.push(`--- ${name} ---\n${content}`);
-    if (snippets.join('\n').length > 55_000) break;
+  let used = 0;
+  for (const item of loaded) {
+    if (!item.content || used >= 55_000) continue;
+    const remaining = 55_000 - used;
+    const content = item.content.slice(0, remaining);
+    snippets.push(`--- ${item.name} ---\n${content}`);
+    used += content.length;
   }
   return [
     `Repository: ${session.project}`,
@@ -53,16 +58,18 @@ export async function streamDirectRepositoryChat(input: {
   const controller = new AbortController();
   active.set(input.runId, controller);
   try {
-    input.onStatus?.('Reading repository from GitHub…');
     const repository = controlPlaneRepository();
-    const [context, history] = await Promise.all([
-      repositoryContext(input.session),
-      repository.listMessages(input.session.id),
-    ]);
+    const history = await repository.listMessages(input.session.id);
     const turns = history.slice(-16).filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({
       role: message.role as 'user' | 'assistant',
       content: message.text,
     }));
+    const latestUser = [...turns].reverse().find((turn) => turn.role === 'user')?.content || '';
+    const casual = /^\s*(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks?|thank you)[!.?'\s]*$/i.test(latestUser);
+    if (!casual) input.onStatus?.('Reading repository…');
+    const context = casual
+      ? `Repository: ${input.session.project}\nBranch: ${input.session.branch}`
+      : await repositoryContext(input.session);
     const system = [
       'You are Orlynx AI, assisting inside a GitHub-native coding workspace.',
       'For this direct chat turn you can reason about the repository context supplied below, but you do not have a shell or mutable checkout.',
