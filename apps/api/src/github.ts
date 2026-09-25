@@ -368,6 +368,10 @@ export async function githubConnectionStatus(installationId?: number | null) {
   if (installationId && durableStorageConfigured()) {
     try { if (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId)) userAuthorizationState = 'established'; } catch {}
   }
+  let permissionStatus: Awaited<ReturnType<typeof githubInstallationPermissionStatus>> | null = null;
+  if (installationId && active.length) {
+    try { permissionStatus = await githubInstallationPermissionStatus(installationId); } catch {}
+  }
   return {
     configured: githubAppConfigured(),
     connected: githubAppConfigured() && active.length > 0,
@@ -384,6 +388,7 @@ export async function githubConnectionStatus(installationId?: number | null) {
     // User-scoped GitHub authorization (e.g. Codespaces) is not established by
     // the installation flow. Cloud stays fail-closed until that exists.
     userAuthorizationState,
+    permissionStatus,
   };
 }
 
@@ -428,7 +433,17 @@ export async function githubHealth(installationId?: number): Promise<{ healthy: 
   }
   try {
     const repos = await githubListRepos(installationId);
-    return { healthy: true, authorizedRepositories: repos.length, message: repos.length ? 'GitHub App is healthy.' : 'GitHub App is connected but no repositories are selected. Add repositories on GitHub.' };
+    const permissions = installationId ? await githubInstallationPermissionStatus(installationId) : null;
+    const pending = permissions && (!permissions.workspaceReady || !permissions.publishReady);
+    return {
+      healthy: !pending,
+      authorizedRepositories: repos.length,
+      message: pending
+        ? 'GitHub permission update is waiting for approval.'
+        : repos.length
+          ? 'GitHub App is healthy.'
+          : 'GitHub App is connected but no repositories are selected. Add repositories on GitHub.',
+    };
   } catch (error) {
     return { healthy: false, authorizedRepositories: 0, message: error instanceof Error ? error.message : 'GitHub verification failed.' };
   }
@@ -498,7 +513,7 @@ function githubHeaders(token: string, accept = 'application/vnd.github+json'): R
   return { Authorization: `Bearer ${token}`, Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' };
 }
 
-const tokenCache = new Map<number, { token: string; expiresAt: number }>();
+const tokenCache = new Map<number, { token: string; expiresAt: number; permissions: Record<string, string> }>();
 const repositoryCache = new Map<number, { repos: GitHubRepository[]; expiresAt: number }>();
 async function installationToken(installationId: number): Promise<string> {
   const cached = tokenCache.get(installationId);
@@ -508,10 +523,32 @@ async function installationToken(installationId: number): Promise<string> {
   if ((installation.status || 'active') === 'suspended') throw new Error('This GitHub installation is suspended. Ask an organization owner to unsuspend it, then reconnect.');
   const response = await fetch(`${API}/app/installations/${installationId}/access_tokens`, { method: 'POST', headers: githubHeaders(createAppJwt()), body: '{}' });
   if (!response.ok) throw new Error(`GitHub could not issue an installation token (HTTP ${response.status}).`);
-  const data = await response.json() as { token: string; expires_at: string };
-  const token = { token: data.token, expiresAt: Date.parse(data.expires_at) };
+  const data = await response.json() as { token: string; expires_at: string; permissions?: Record<string, string> };
+  const token = { token: data.token, expiresAt: Date.parse(data.expires_at), permissions: data.permissions || {} };
   tokenCache.set(installationId, token);
   return token.token;
+}
+
+export async function githubInstallationPermissionStatus(installationId: number): Promise<{
+  granted: Record<string, string>;
+  missingWorkspace: string[];
+  missingPublish: string[];
+  workspaceReady: boolean;
+  publishReady: boolean;
+}> {
+  await installationToken(installationId);
+  const granted = tokenCache.get(installationId)?.permissions || {};
+  const requiredWorkspace = ['contents', 'codespaces', 'codespaces_lifecycle_admin'];
+  const requiredPublish = ['contents', 'pull_requests'];
+  const missingWorkspace = requiredWorkspace.filter((permission) => granted[permission] !== 'write');
+  const missingPublish = requiredPublish.filter((permission) => granted[permission] !== 'write');
+  return {
+    granted,
+    missingWorkspace,
+    missingPublish,
+    workspaceReady: missingWorkspace.length === 0,
+    publishReady: missingPublish.length === 0,
+  };
 }
 
 function gitCredentialEnv(token: string): NodeJS.ProcessEnv {
