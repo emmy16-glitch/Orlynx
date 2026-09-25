@@ -6,7 +6,7 @@ import { durableHistory, emit, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { ensureWorkspaceRecord, getWorkspace, prepareWorkspace, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, prepareWorkspace, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -327,6 +327,24 @@ router.post('/sessions/:id/messages', async (req, res) => {
           branch: s.branch,
         });
       }
+
+      // Durable workspace state can outlive a dropped WebSocket. Verify the
+      // actual bridge transport before admitting work so a stale "ready" row
+      // becomes a recoverable connecting workspace instead of a stranded task.
+      if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
+        try {
+          const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health', {}, 3_000);
+          if (health.bridge !== 'ready' || health.openCode !== 'ready') throw new Error('workspace transport unhealthy');
+        } catch {
+          workspace = (await markWorkspaceConnectionLost(workspace.id)) || workspace;
+          emit(s.id, 'workspace.reconnecting', {
+            workspaceId: workspace.id,
+            automatic: true,
+            message: 'Reconnecting to the development environment…',
+          });
+        }
+      }
+
       if (workspaceNeedsRuntimeRefresh(workspace)) {
         workspace = {
           ...workspace,
