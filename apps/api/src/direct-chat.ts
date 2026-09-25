@@ -1,7 +1,7 @@
 import type { AgentMode, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
 import { githubRepositoryFile, githubRepositoryFiles } from './github.js';
-import { streamZenChat } from './zen.js';
+import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
 
@@ -71,11 +71,18 @@ export async function streamDirectRepositoryChat(input: {
       'Be concise, practical, and repository-aware.',
       context,
     ].join('\n\n');
-    return await streamZenChat({
+    const transcript = turns.map((turn) => `${turn.role === 'assistant' ? 'Assistant' : 'User'}: ${turn.content}`).join('\n\n');
+    const prompt = [
+      transcript ? 'Conversation so far:\n' + transcript : '',
+      'Respond to the latest user message above. Do not repeat the transcript.',
+    ].filter(Boolean).join('\n\n');
+
+    return await streamWithOfficialOpenCode({
+      runtimeKey: input.session.id,
       userId: input.session.userId,
       modelId: input.modelId,
       system,
-      messages: turns,
+      prompt,
       signal: controller.signal,
       onDelta: input.onDelta,
       onStatus: input.onStatus,

@@ -18,3 +18,10 @@ tar -xzf /tmp/orlynx-gh.tgz -C /tmp/orlynx-gh
 cp "/tmp/orlynx-gh/${ARCHIVE}/bin/gh" .render-bin/gh
 chmod +x .render-bin/gh
 .render-bin/gh --version
+
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.32}"
+rm -rf .render-opencode
+npm install --prefix .render-opencode --omit=dev --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
+ln -sf ../.render-opencode/node_modules/.bin/opencode .render-bin/opencode
+.render-bin/opencode --version
+\n

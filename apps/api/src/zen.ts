@@ -79,7 +79,7 @@ export async function listZenModels(_userId?: string, force = false): Promise<AI
   for (const item of rows) {
     const record = typeof item === 'string' ? { id: item } : item && typeof item === 'object' ? item as Record<string, unknown> : {};
     const rawId = String(record.id || record.model || '');
-    if (!rawId || seen.has(rawId) || unsupportedThirdPartyFree.has(rawId.toLowerCase())) continue;
+    if (!rawId || seen.has(rawId)) continue;
     seen.add(rawId);
     const display = String(record.name || record.display_name || record.displayName || titleCase(rawId));
     models.push({
