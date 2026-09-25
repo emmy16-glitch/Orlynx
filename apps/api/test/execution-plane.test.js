@@ -15,6 +15,10 @@ test('runtime and mutating build work requests the development environment', () 
   assert.equal(executionPlaneFor('npm install and start the dev server', 'build'), 'workspace');
   assert.equal(executionPlaneFor('Implement the login fix', 'build'), 'workspace');
   assert.equal(executionPlaneFor('Update the README file', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('run git status -sb', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('run it in codespace', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('git log --oneline -10', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('check the main repo and pull update', 'build'), 'workspace');
 });
 
 test('plan and ask modes remain direct because they cannot mutate the project', () => {
