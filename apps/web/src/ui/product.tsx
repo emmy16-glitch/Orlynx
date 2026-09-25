@@ -33,9 +33,10 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
   const command = typeof evidence?.command === 'string' ? evidence.command : '';
   const path = typeof evidence?.path === 'string' ? evidence.path : '';
   const toolTitle = typeof evidence?.toolTitle === 'string' ? evidence.toolTitle : '';
+  const codePreview = typeof evidence?.code === 'string' ? evidence.code : '';
   const hasEvidence = Boolean(evidence && Object.keys(evidence).length);
   const detailsVisible = detailMode === 'code' || showEvidence;
-  const technical = Boolean(command || path || files.length || failures.length || rawOutput || typeof evidence?.exitCode === 'number');
+  const technical = Boolean(command || path || codePreview || files.length || failures.length || rawOutput || typeof evidence?.exitCode === 'number');
 
   const details = detailsVisible && (hasEvidence || rawOutput) ? <div className={`ox-evidence ${detailMode === 'code' ? 'ox-evidence-code' : ''}`}>
     {toolTitle && detailMode === 'code' && toolTitle !== title && <div className="ox-code-caption">{toolTitle}</div>}
@@ -44,6 +45,7 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
       <pre className="ox-command" aria-label="Command"><span aria-hidden>$ </span>{command}</pre>
     </div>}
     {path && <div className="ox-code-path"><span className="ox-code-label">Path</span><code>{path}</code></div>}
+    {codePreview && <div className="ox-code-preview"><span className="ox-code-label">Code</span><pre>{codePreview}</pre></div>}
     {typeof evidence?.exitCode === 'number' && <div className="small">Exit code {evidence.exitCode}</div>}
     {typeof evidence?.passed === 'number' && <div className="small">{evidence.passed} passed{typeof evidence.failed === 'number' ? ` · ${evidence.failed} failed` : ''}{typeof evidence.skipped === 'number' ? ` · ${evidence.skipped} skipped` : ''}</div>}
     {files.length > 0 && <div className="ox-code-files">
