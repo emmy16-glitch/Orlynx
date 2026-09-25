@@ -18,17 +18,31 @@ export async function openCodeAccountKey(userId: string): Promise<string> {
 export async function listZenModels(userId?: string, force = false): Promise<AIModel[]> {
   if (force) void refreshOpenCodeCatalog();
   const provider = openCodeCatalog();
-  const connected = userId ? Boolean(await savedOpenCodeAccountKey(userId)) : false;
+
+  // Model discovery must never depend on decrypting a stored credential.
+  // A broken/stale credential may affect paid execution, but it must not hide
+  // the local catalog or free public models from the picker.
+  let accountConnected = false;
+  if (userId) {
+    try {
+      const row = await controlPlaneRepository().getProviderConnection(userId, 'opencode');
+      accountConnected = Boolean(row && row.state === 'connected' && row.credential);
+    } catch {
+      accountConnected = false;
+    }
+  }
+
   return Object.values(provider.models).map((model): AIModel => {
     const free = model.cost?.input === 0;
     return {
       id: `opencode/${model.id}`,
-      providerId: 'opencode', providerName: 'OpenCode',
+      providerId: 'opencode',
+      providerName: 'OpenCode',
       displayName: model.name,
       free,
       family: model.family || 'OpenCode',
-      connected: connected || free,
-      status: connected || free ? 'available' : 'needs-connection',
+      connected: accountConnected || free,
+      status: accountConnected || free ? 'available' : 'needs-connection',
     };
   }).sort((a, b) => a.displayName.localeCompare(b.displayName));
 }

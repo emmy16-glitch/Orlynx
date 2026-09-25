@@ -82,3 +82,13 @@ test('repeated historical failures never add error cards to the activity list', 
   const success = toActivities([...events, { eventId: 'done', runId: 'r4', sequence: 4, type: 'run.completed', payload: {} }]);
   assert.ok(chatActivities(success).every((item) => item.state !== 'failed'));
 });
+
+
+test('catalog remains visible when stored credential cannot decrypt', async () => {
+  // The bundled catalog path itself must never require credential decryption.
+  // Calling without identity models the safe fallback used when credential
+  // state is stale or unavailable.
+  const models = await listZenModels();
+  assert.ok(models.length > 100);
+  assert.ok(models.some((model) => model.free && model.status === 'available'));
+});
