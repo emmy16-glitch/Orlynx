@@ -1215,7 +1215,7 @@ function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?
   return <div className="card">
     <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
     <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
-    {hidden > 0 && <Button tone="ghost" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show recent activity' : `Show ${hidden} earlier updates`}</Button>}
+    {(hidden > 0 || expanded) && <Button tone="ghost" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show recent activity' : `Show ${hidden} earlier updates`}</Button>}
   </div>;
 }
 
