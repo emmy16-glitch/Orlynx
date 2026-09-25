@@ -64,10 +64,17 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       const previousFailure = workspace.failureCode || '';
       if (workspace.codespaceName && workspaceNeedsSshRebuild(previousFailure)) {
         emit(input.sessionId, 'workspace.preparing', {
-          stage: 'codespace.rebuild',
-          message: 'Rebuilding the development environment with SSH support…',
+          stage: 'codespace.replace',
+          message: 'Replacing the broken development environment with a fresh Codespace…',
         });
-        workspace = await provider.rebuild(workspace);
+        workspace = await provider.replace({
+          workspaceId: workspace.id,
+          sessionId: input.sessionId,
+          userId: input.userId,
+          projectId: input.projectId,
+          repositoryId: input.repositoryId,
+          branch: input.branch,
+        }, workspace);
         await repository.putWorkspace(workspace);
       } else {
         workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };

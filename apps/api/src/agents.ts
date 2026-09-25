@@ -35,6 +35,10 @@ export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefine
   return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
 }
 
+export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
+  return Boolean(workspace && workspace.state === 'ready' && workspace.bridgeState === 'ready');
+}
+
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
@@ -463,6 +467,15 @@ export async function startRun(sessionId: string, project: string, userText: str
     store.save();
     await repository.putTask(task);
     emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, plane, engine, provider, model: modelId, mode, permission }, run.id);
+
+    // Workspace tasks must remain queued while the development environment is
+    // being created/repaired. The route starts preparation immediately after
+    // admission and promotes the queue once the bridge is actually ready.
+    if (plane === 'workspace') {
+      const workspace = await repository.getWorkspace(options.workspaceId!);
+      if (!workspaceCanAcceptTask(workspace)) return run;
+    }
+
     const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
     return promoted?.id === run.id ? promoted : run;
   }

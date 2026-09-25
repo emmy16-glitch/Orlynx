@@ -161,6 +161,24 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       updatedAt: now,
     };
   }
+  async replace(input: CreateWorkspaceInput, workspace: WorkspaceRecord) {
+    const oldName = workspace.codespaceName;
+    if (oldName) {
+      await this.destroy(workspace);
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const rows = await this.listUserCodespaces(input.userId).catch(() => []);
+        if (!rows.some((item) => item.name === oldName)) break;
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      const remaining = await this.listUserCodespaces(input.userId).catch(() => []);
+      if (remaining.some((item) => item.name === oldName)) {
+        throw new Error('GitHub did not finish deleting the broken Codespace before replacement.');
+      }
+    }
+    return this.create(input);
+  }
+
   async rebuild(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) throw new Error('Workspace has no Codespace name.');
     const token = await githubUserAccessToken(workspace.userId);
