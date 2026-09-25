@@ -94,7 +94,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', message.result || { error: message.error || 'Workspace command failed.' });
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || ''); const runId = String(command.payload.runId || ''); const task = taskId ? await repository.getTask(taskId) : null; const now = new Date().toISOString();
-          if (task && task.state !== 'cancelled') { task.state = message.ok ? 'completed' : 'failed'; task.updatedAt = now; await repository.putTask(task); }
+          if (task?.state === 'cancelled') {
+            console.info(`[bridge] ignored late result for cancelled run=${runId}`);
+            return;
+          }
+          if (task) { task.state = message.ok ? 'completed' : 'failed'; task.updatedAt = now; await repository.putTask(task); }
           if (message.ok) {
             const responseText = String(message.result?.responseText || '');
             if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, createdAt: now });
@@ -118,7 +122,20 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
-  ws.once('close', async (code) => { console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`); active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.once('close', async (code) => {
+    console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`);
+    active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials);
+    if (activeSockets.get(claims.workspaceId) !== ws) return;
+    activeSockets.delete(claims.workspaceId);
+    // Vercel periodically recycles long-lived function sockets. The Codespace
+    // reconnects automatically, so an authenticated transport close must not
+    // turn a healthy workspace into a false "disconnected" state.
+    if (authenticatedHello && [1001, 1006, 1012].includes(code)) {
+      console.info('[bridge] transient transport close; preserving ready workspace state');
+      return;
+    }
+    try { await persistBridgeState(claims, 'disconnected'); } catch {}
+  });
   ws.on('error', (error) => { console.warn(`[bridge] socket error: ${error.message}`); ws.close(); });
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
 }
