@@ -42,10 +42,19 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   const helloTimeout = setTimeout(() => { if (!authenticatedHello) ws.close(1008, 'hello timeout'); }, 15_000);
   activeSockets.set(claims.workspaceId, ws);
   const repository = controlPlaneRepository();
+  // A durable "sent" command is eligible for delivery retry after its lease
+  // expires. Never re-execute that retry on the same transport: it is only
+  // useful after a socket replacement. This also protects older bridge
+  // processes that do not yet de-duplicate commands while they are running.
+  const deliveredOnSocket = new Set<string>();
   const commands = setInterval(async () => {
     if (!active || !authenticatedHello || ws.readyState !== ws.OPEN) return;
     try {
-      for (const command of await repository.claimCommands(claims.workspaceId)) ws.send(JSON.stringify({ kind: 'COMMAND', commandId: command.id, type: command.kind, payload: command.payload }));
+      for (const command of await repository.claimCommands(claims.workspaceId)) {
+        if (deliveredOnSocket.has(command.id)) continue;
+        deliveredOnSocket.add(command.id);
+        ws.send(JSON.stringify({ kind: 'COMMAND', commandId: command.id, type: command.kind, payload: command.payload }));
+      }
     } catch { /* the next poll retries queued commands */ }
   }, 300);
   const credentials = setInterval(() => {
