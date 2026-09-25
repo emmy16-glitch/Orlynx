@@ -14,10 +14,13 @@ export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details/i.test(failureCode || '');
 }
 
+export function workspaceConnectionMatchesRevision(connectionId: string | undefined, revision: string): boolean {
+  return Boolean(connectionId?.startsWith(`bridge-${revision}-`));
+}
+
 export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'>): boolean {
   if (workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
-  const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
-  return !workspace.connectionId?.startsWith(bridgePrefix);
+  return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
 }
 
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
