@@ -37,6 +37,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
   let active = true;
   let authenticatedHello = false;
+  const helloTimeout = setTimeout(() => { if (!authenticatedHello) ws.close(1008, 'hello timeout'); }, 15_000);
   activeSockets.set(claims.workspaceId, ws);
   const repository = controlPlaneRepository();
   const commands = setInterval(async () => {
@@ -56,6 +57,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       if (!authenticatedHello) {
         if (message.kind !== 'HELLO' || message.workspaceId !== claims.workspaceId || message.sessionId !== claims.sessionId || message.userId !== claims.userId || message.connectionId !== claims.connectionId) { console.warn('[bridge] hello rejected: claim mismatch'); ws.close(1008, 'claim mismatch'); return; }
         authenticatedHello = true;
+        clearTimeout(helloTimeout);
         console.info('[bridge] hello authenticated');
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
         return;
@@ -114,7 +116,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
-  ws.once('close', async (code) => { console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`); active = false; clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.once('close', async (code) => { console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`); active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials); if (activeSockets.get(claims.workspaceId) !== ws) return; activeSockets.delete(claims.workspaceId); try { await persistBridgeState(claims, 'disconnected'); } catch {} });
+  ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
 }
 
 export const bridgeGatewayServer = http.createServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'WebSocket upgrade required.' })); });
