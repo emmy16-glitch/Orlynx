@@ -874,7 +874,7 @@ export default function ProductionApp() {
                 {!!events.length && <div className="workstream-wrap"><ActivityList activities={activities.filter((item: any) => item.state !== 'fail')} /></div>}
                 {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
                 {lastRun?.state === 'completed' && lastRun?.model && <p className="run-receipt">Completed with {lastRun.model}</p>}
-                {lastRun?.state === 'failed' && (() => {
+                {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
                   const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota|OpenCode/i.test(String(failure?.summary || ''));
                   return <AgentErrorCard
