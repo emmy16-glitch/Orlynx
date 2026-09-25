@@ -381,6 +381,15 @@ router.post('/sessions/:id/cloud', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (!durableStorageConfigured()) return res.status(503).json({ error: 'Durable workspace storage is not configured.' });
   try {
+    const permissionCheck = await githubConnectionStatus(requestInstallationId(req));
+    if (permissionCheck.permissionStatus && !permissionCheck.permissionStatus.workspaceReady) {
+      return res.status(409).json({
+        error: 'Approve the pending GitHub permission update before starting this workspace.',
+        code: 'GITHUB_PERMISSION_UPDATE_REQUIRED',
+        missingPermissions: permissionCheck.permissionStatus.missingWorkspace,
+        retryable: true,
+      });
+    }
     const durable = await controlPlaneRepository().getSession(s.id);
     const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
     if (!durable || !githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
@@ -499,7 +508,17 @@ router.get('/sessions/:id/files', async (req, res) => {
     if (!workspace || workspace.state !== 'ready') {
       try { return res.json(await githubFilesSnapshot(req, s, directory)); }
       catch (error) {
-        console.warn(`[orlynx] sid=${s.id} github files unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
+        const message = error instanceof Error ? error.message : 'unknown error';
+        console.warn(`[orlynx] sid=${s.id} github files unavailable: ${message}`);
+        const permissionCheck = await githubConnectionStatus(requestInstallationId(req)).catch(() => null);
+        if (permissionCheck?.permissionStatus && permissionCheck.permissionStatus.granted.contents !== 'write') {
+          return res.status(409).json({
+            error: 'Approve the pending GitHub code-access update, then return to Orlynx.',
+            code: 'GITHUB_PERMISSION_UPDATE_REQUIRED',
+            missingPermissions: ['contents'],
+            retryable: true,
+          });
+        }
         return res.status(502).json({ error: 'Repository files are temporarily unavailable.', code: 'GITHUB_FILES_UNAVAILABLE', retryable: true });
       }
     }
@@ -542,6 +561,17 @@ router.get('/sessions/:id/file', async (req, res) => {
     return res.json({ path: filename, content: readFile(s.project, filename) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'File could not be read.';
+    const permissionCheck = durableStorageConfigured()
+      ? await githubConnectionStatus(requestInstallationId(req)).catch(() => null)
+      : null;
+    if (permissionCheck?.permissionStatus && permissionCheck.permissionStatus.granted.contents !== 'write') {
+      return res.status(409).json({
+        error: 'Approve the pending GitHub code-access update, then return to Orlynx.',
+        code: 'GITHUB_PERMISSION_UPDATE_REQUIRED',
+        missingPermissions: ['contents'],
+        retryable: true,
+      });
+    }
     const statusCode = /not available through an installed GitHub App|not connected|authorized/i.test(message) ? 403 : /HTTP 404|cannot be displayed|path escape/i.test(message) ? 404 : 502;
     return res.status(statusCode).json({ error: statusCode === 502 ? 'Repository file is temporarily unavailable.' : message, retryable: statusCode === 502 });
   }
@@ -849,6 +879,11 @@ router.get('/github/status', async (req, res) => {
       pullRequests: platform.permissions.pull_requests === 'write',
       codespaces: platform.permissions.codespaces === 'write',
       codespacesLifecycle: platform.permissions.codespaces_lifecycle_admin === 'write',
+      leastPrivilege: Object.entries(platform.permissions).every(([permission, level]) =>
+        ['contents', 'metadata', 'pull_requests', 'codespaces', 'codespaces_lifecycle_admin'].includes(permission)
+          ? ['read', 'write'].includes(level)
+          : level === 'none'
+      ),
     },
   });
 });
@@ -982,6 +1017,11 @@ router.get('/integrations/status', async (req, res) => {
         pullRequests: platform.permissions.pull_requests === 'write',
         codespaces: platform.permissions.codespaces === 'write',
         codespacesLifecycle: platform.permissions.codespaces_lifecycle_admin === 'write',
+        leastPrivilege: Object.entries(platform.permissions).every(([permission, level]) =>
+          ['contents', 'metadata', 'pull_requests', 'codespaces', 'codespaces_lifecycle_admin'].includes(permission)
+            ? ['read', 'write'].includes(level)
+            : level === 'none'
+        ),
       },
     },
     githubAvailable: platform.configured && platform.healthy,
