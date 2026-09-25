@@ -145,14 +145,11 @@ export default function ProductionApp() {
 
   const refreshAi = useCallback(async (sessionId?: string) => {
     try {
-      const [status, models, providers] = await Promise.all([
-        j<any>(await fetch(`/v1/ai/status${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)),
-        j<any>(await fetch(`/v1/ai/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)),
-        j<any>(await fetch(`/v1/ai/providers${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)).catch(() => ({ providers: [], supported: [] })),
-      ]);
+      const overview = await j<any>(await fetch(`/v1/ai/overview${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`));
       setAiModelError('');
-      setAi(status); setAiModels(models.models || []);
-      setAiProviders(providers.providers || []);
+      setAi(overview);
+      setAiModels(overview.models || []);
+      setAiProviders(overview.providerConnections || []);
     } catch (error: any) { setAiModelError(error?.message || 'Models could not be loaded. Try again.'); }
   }, []);
 
