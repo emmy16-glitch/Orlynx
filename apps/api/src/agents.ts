@@ -30,6 +30,11 @@ export interface TaskOptions {
 const staleTaskGraceMs = 15_000;
 const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
+export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
+  const queued = tasks.filter((item) => item.state === 'queued');
+  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+}
+
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
@@ -216,7 +221,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
   // Conversational work does not depend on the development environment. Let it
   // bypass a queued Build task while GitHub Codespaces is still starting.
-  const nextQueued = queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+  const nextQueued = chooseNextQueuedTask(queued)!;
 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
