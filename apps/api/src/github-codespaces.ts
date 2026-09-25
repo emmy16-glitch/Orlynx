@@ -3,7 +3,16 @@ import type { CreateWorkspaceInput, WorkspaceProvider } from './workspace-provid
 import { githubUserAccessToken } from './github.js';
 
 const API = 'https://api.github.com';
-type Codespace = { name: string; state: string; repository?: { id: number }; git_status?: { ref?: string } };
+type Codespace = {
+  name: string;
+  display_name?: string;
+  state: string;
+  repository?: { id: number };
+  git_status?: { ref?: string };
+  last_used_at?: string;
+  created_at?: string;
+  updated_at?: string;
+};
 
 function headers(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
@@ -17,6 +26,16 @@ function mappedState(value: string): WorkspaceState {
     case 'failed': case 'unknown': return 'failed';
     default: return 'starting';
   }
+}
+
+function branchMatches(codespace: Codespace, branch: string): boolean {
+  const ref = String(codespace.git_status?.ref || '');
+  return !ref || ref === branch || ref.endsWith(`/${branch}`);
+}
+
+function ageMs(value?: string): number {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : Number.POSITIVE_INFINITY;
 }
 
 export class GitHubCodespacesProvider implements WorkspaceProvider {
@@ -38,10 +57,108 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     }
     return response.status === 204 ? undefined as T : await response.json() as T;
   }
+
+  private async listUserCodespaces(userId: string): Promise<Codespace[]> {
+    const result = await this.request<{ codespaces?: Codespace[] }>(userId, '/user/codespaces?per_page=100');
+    return Array.isArray(result.codespaces) ? result.codespaces : [];
+  }
+
+  private async reusableForSession(input: CreateWorkspaceInput): Promise<Codespace | null> {
+    const expected = `Orlynx ${input.sessionId}`;
+    const rows = await this.listUserCodespaces(input.userId).catch(() => []);
+    return rows.find((item) =>
+      item.display_name === expected &&
+      item.repository?.id === input.repositoryId &&
+      branchMatches(item, input.branch) &&
+      !/failed|deleted/i.test(item.state)
+    ) || null;
+  }
+
+  private async reclaimIdleOrlynxCodespace(userId: string, excludeName?: string): Promise<string | null> {
+    const rows = await this.listUserCodespaces(userId).catch(() => []);
+    const candidates = rows
+      .filter((item) =>
+        item.name !== excludeName &&
+        String(item.display_name || '').startsWith('Orlynx ') &&
+        /available|starting|rebuilding|shutdown/i.test(item.state) &&
+        ageMs(item.last_used_at || item.updated_at || item.created_at) > 10 * 60_000
+      )
+      .sort((a, b) => ageMs(b.last_used_at || b.updated_at || b.created_at) - ageMs(a.last_used_at || a.updated_at || a.created_at));
+    const candidate = candidates[0];
+    if (!candidate) return null;
+    if (!/shutdown/i.test(candidate.state)) {
+      await this.request<Codespace>(userId, `/user/codespaces/${encodeURIComponent(candidate.name)}/stop`, { method: 'POST' });
+    }
+    return candidate.name;
+  }
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const now = new Date().toISOString();
-    const result = await this.request<Codespace>(input.userId, '/user/codespaces', { method: 'POST', body: JSON.stringify({ repository_id: input.repositoryId, ref: input.branch, display_name: `Orlynx ${input.sessionId}` }) });
-    return { id: input.workspaceId, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, provider: 'github-codespaces', codespaceName: result.name, repositoryId: input.repositoryId, branch: input.branch, state: mappedState(result.state), bridgeState: 'disconnected', openCodeState: 'not_installed', createdAt: now, updatedAt: now };
+
+    // Recover an exact Codespace if GitHub created it before Orlynx managed to
+    // persist its name (for example after a server restart).
+    const existing = await this.reusableForSession(input);
+    if (existing) {
+      const recovered: WorkspaceRecord = {
+        id: input.workspaceId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        projectId: input.projectId,
+        provider: 'github-codespaces',
+        codespaceName: existing.name,
+        repositoryId: input.repositoryId,
+        branch: input.branch,
+        state: mappedState(existing.state),
+        bridgeState: 'disconnected',
+        openCodeState: 'not_installed',
+        createdAt: now,
+        updatedAt: now,
+      };
+      return recovered.state === 'stopped' ? this.start(recovered) : recovered;
+    }
+
+    const create = () => this.request<Codespace>(input.userId, '/user/codespaces', {
+      method: 'POST',
+      body: JSON.stringify({
+        repository_id: input.repositoryId,
+        ref: input.branch,
+        display_name: `Orlynx ${input.sessionId}`,
+        idle_timeout_minutes: Number(process.env.ORLYNX_CODESPACE_IDLE_MINUTES || 30),
+        retention_period_minutes: Number(process.env.ORLYNX_CODESPACE_RETENTION_MINUTES || 60),
+      }),
+    });
+
+    let result: Codespace;
+    try {
+      result = await create();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (!/too many codespaces running/i.test(message)) throw error;
+
+      // Reclaim only an old Orlynx-owned Codespace. Never stop an unrelated
+      // personal environment just to make room.
+      const reclaimed = await this.reclaimIdleOrlynxCodespace(input.userId);
+      if (!reclaimed) {
+        throw new Error('GitHub has reached your running Codespace limit. Orlynx could not find an old idle Orlynx environment to stop safely.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      result = await create();
+    }
+
+    return {
+      id: input.workspaceId,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      projectId: input.projectId,
+      provider: 'github-codespaces',
+      codespaceName: result.name,
+      repositoryId: input.repositoryId,
+      branch: input.branch,
+      state: mappedState(result.state),
+      bridgeState: 'disconnected',
+      openCodeState: 'not_installed',
+      createdAt: now,
+      updatedAt: now,
+    };
   }
   async start(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) throw new Error('Workspace has no Codespace name.');

@@ -656,6 +656,9 @@ router.get('/sessions/:id/runs', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   if (durableStorageConfigured()) {
     await recoverInterruptedDirectRuns(req.params.id);
+    // Opening/reloading a conversation is also a safe recovery point for
+    // durable queued work admitted before a previous disconnect or deploy.
+    await promoteNextQueuedRun(req.params.id).catch(() => null);
     const tasks = await controlPlaneRepository().listTasks(req.params.id);
     return res.json(tasks.map((task) => ({
       id: task.runId || task.id,
