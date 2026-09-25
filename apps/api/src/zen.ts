@@ -37,6 +37,14 @@ function usesPublicFreeAccess(model: string): boolean {
     id === 'big-pickle';
 }
 
+const unsupportedThirdPartyFree = new Set([
+  // OpenCode's relay currently gates or persistently rejects these outside
+  // the official CLI. Do not advertise them as usable Orlynx choices.
+  'big-pickle',
+  'mimo-v2.5-free',
+  'deepseek-v4-flash-free',
+]);
+
 async function keyForModel(userId: string, model: string): Promise<string> {
   // Match OpenCode CLI behavior: free models use the public provider key.
   // A user's saved Zen credential is only needed for paid/account-backed models.
@@ -71,7 +79,7 @@ export async function listZenModels(_userId?: string, force = false): Promise<AI
   for (const item of rows) {
     const record = typeof item === 'string' ? { id: item } : item && typeof item === 'object' ? item as Record<string, unknown> : {};
     const rawId = String(record.id || record.model || '');
-    if (!rawId || seen.has(rawId)) continue;
+    if (!rawId || seen.has(rawId) || unsupportedThirdPartyFree.has(rawId.toLowerCase())) continue;
     seen.add(rawId);
     const display = String(record.name || record.display_name || record.displayName || titleCase(rawId));
     models.push({
@@ -84,7 +92,12 @@ export async function listZenModels(_userId?: string, force = false): Promise<AI
       status: 'available',
     });
   }
-  models.sort((a,b)=>a.displayName.localeCompare(b.displayName));
+  models.sort((a,b) => {
+    const af = usesPublicFreeAccess(a.id.replace(/^opencode\//, ''));
+    const bf = usesPublicFreeAccess(b.id.replace(/^opencode\//, ''));
+    if (af !== bf) return af ? -1 : 1;
+    return a.displayName.localeCompare(b.displayName);
+  });
   modelCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, models });
   return models;
 }
@@ -257,6 +270,9 @@ export async function streamZenChat(input: {
       }
 
       if (response.status === 401 || response.status === 403) {
+        if (usesPublicFreeAccess(model)) {
+          throw new Error(`The free model ${model} is not available to Orlynx through OpenCode's public third-party route. Choose another free model.`);
+        }
         throw new Error(`OpenCode rejected the saved account credential (HTTP ${response.status}). Reconnect OpenCode and try again.`);
       }
 

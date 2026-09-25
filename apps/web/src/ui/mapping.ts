@@ -241,6 +241,7 @@ function waitingTitle(tool: string, command: string): string {
 function friendlyFailure(raw: string): string | undefined {
   if (/FreeUsageLimitError|temporarily rate limit|rate.?limit exceeded|too many requests/i.test(raw)) return 'This model is temporarily rate limited by OpenCode. Orlynx already retried it; try again shortly or choose another model.';
   if (/reached its quota|available quota|available credits|billing|payment/i.test(raw)) return 'The OpenCode account has reached its quota or available credits.';
+  if (/free model.*not available.*Orlynx|public third-party route|choose another free model/i.test(raw)) return 'That free model is restricted on OpenCode’s side for third-party clients. Choose another free model.';
   if (/Reconnect your OpenCode account|credential.*rejected|HTTP 401|HTTP 403|provider connection needs to be refreshed/i.test(raw)) return 'OpenCode rejected the saved connection. Reconnect OpenCode, then continue in this same chat.';
   if (/model.*not available|selected model is not currently available|unknown model/i.test(raw)) return 'The selected model is not available right now. Choose another model and try again.';
   if (/AI workspace connection was interrupted/i.test(raw)) return 'The AI workspace connection was interrupted. Reconnect and try again.';

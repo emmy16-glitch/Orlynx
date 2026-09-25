@@ -398,9 +398,9 @@ export function classifyError(message: string): 'rate_limit' | 'quota' | 'auth' 
   const text = message.toLowerCase();
   if (/429|rate.?limit|too many requests/.test(text)) return 'rate_limit';
   if (/quota|insufficient|credit|balance|billing|payment/.test(text)) return 'quota';
+  if (/model.*(not found|unavailable|unknown)|unknown model|free model.*not available|choose another free model/.test(text)) return 'model';
   if (/401|unauthorized|invalid.*(key|token)|expired|forbidden/.test(text)) return 'auth';
   if (/could not reach|unavailable|offline|econn|timeout|timed out/.test(text)) return 'engine';
-  if (/model.*(not found|unavailable|unknown)|unknown model/.test(text)) return 'model';
   if (/read only|permission|denied|approval/.test(text)) return 'permission';
   return 'unknown';
 }

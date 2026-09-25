@@ -871,7 +871,7 @@ export default function ProductionApp() {
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">Working</span></div><div className="message-text">{draftReply}<span className="stream-caret" /></div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!events.length && <div className="workstream-wrap"><ActivityList activities={activities} /></div>}
+                {!!events.length && <div className="workstream-wrap"><ActivityList activities={activities.filter((item: any) => item.state !== 'fail')} /></div>}
                 {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
                 {lastRun?.state === 'completed' && lastRun?.model && <p className="run-receipt">Completed with {lastRun.model}</p>}
                 {lastRun?.state === 'failed' && (() => {
@@ -944,6 +944,11 @@ export default function ProductionApp() {
           if (!id) return;
           const chosen = aiModels.find((model: any) => model.id === id);
           if (chosen) setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
+          if (lastRun?.state === 'failed') {
+            setLastRun(null);
+            runRef.current = null;
+          }
+          setError('');
           void setAiPrefs({ modelId: id });
         }}
         disabled={!online || !aiModels.length}
