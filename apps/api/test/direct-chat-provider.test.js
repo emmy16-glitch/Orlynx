@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
+import { listZenModels } from '../src/zen.ts';
 import { turnsForMessage, needsRepositoryContext, executionPlaneFor } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
@@ -29,6 +30,17 @@ test('model overrides win; catalog endpoints cannot exfiltrate credentials', () 
   assert.equal(resolveModel(custom, 'example').npm, '@ai-sdk/google');
   model.provider.api = 'https://elsewhere.invalid/zen/v1';
   assert.throws(() => resolveModel(custom, 'example'), /untrusted/);
+});
+
+
+test('free OpenCode catalog loads without user identity or saved account', async () => {
+  const models = await listZenModels();
+  assert.ok(models.length > 0);
+  const free = models.filter((model) => model.free);
+  assert.ok(free.length > 0);
+  assert.ok(free.every((model) => model.status === 'available' && model.connected === true));
+  const paid = models.filter((model) => !model.free);
+  assert.ok(paid.every((model) => model.status === 'needs-connection'));
 });
 
 test('public auth is a fallback; saved credentials retain OpenCode precedence', () => {

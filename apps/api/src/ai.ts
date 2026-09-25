@@ -132,7 +132,10 @@ export async function listProviderConnections(project = '', userId?: string, ses
   const accountIds = new Set([...durableIds, ...locallyStored]);
 
   let zenModels: AIModel[] = [];
-  if (durableStorageConfigured() && userId) {
+  if (durableStorageConfigured()) {
+    // The bundled OpenCode catalog is usable without account identity.
+    // Free models must remain visible even if GitHub/user lookup is briefly
+    // unavailable; userId is only needed to unlock account-backed models.
     try { zenModels = await listZenModels(userId); }
     catch { zenModels = []; }
   }
