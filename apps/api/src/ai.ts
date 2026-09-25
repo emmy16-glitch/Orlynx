@@ -383,14 +383,20 @@ export function classifyError(message: string): 'rate_limit' | 'quota' | 'auth' 
 
 export type AIState = 'disconnected' | 'ready' | 'working' | 'needs_attention' | 'error';
 
-export async function aiStatus(sessionId?: string, project?: string, userId?: string): Promise<{
+export type ProviderConnectionSnapshot = Awaited<ReturnType<typeof listProviderConnections>>;
+
+export async function aiStatus(sessionId?: string, project?: string, userId?: string, snapshot?: ProviderConnectionSnapshot): Promise<{
   state: AIState; engine: string; engineConnected: boolean; message: string;
   model?: AIModel; mode: AgentMode; permission: PermissionProfile;
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? await hydrateSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models, providers } = await listProviderConnections(project, userId);
-  const running = sessionId ? (store.db.runs[sessionId] || []).some((r) => r.state === 'running') : false;
+  const { engine, models, providers } = snapshot || await listProviderConnections(project, userId);
+  const running = sessionId
+    ? durableStorageConfigured()
+      ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => r.state === 'running' || r.state === 'queued')
+      : (store.db.runs[sessionId] || []).some((r) => r.state === 'running')
+    : false;
   if (!engine.connected) {
     return { state: 'error', engine: 'OpenCode', engineConnected: false, message: engine.message, mode: prefs.mode, permission: prefs.permission, providers: { connected: 0, total: 0 } };
   }
