@@ -159,7 +159,18 @@ export default function ProductionApp() {
 
     setAiModels(models);
     if (overview) {
-      setAi(overview);
+      setAi((current: any) => {
+        const overviewModelId = overview.model?.id;
+        const currentModelId = current?.model?.id;
+        const wantedId = overviewModelId || currentModelId;
+        const retained = wantedId
+          ? models.find((model: any) => String(model.id).toLowerCase() === String(wantedId).toLowerCase() && model.status === 'available')
+          : undefined;
+        return {
+          ...overview,
+          model: retained,
+        };
+      });
       setAiProviders(overview.providerConnections || []);
     }
 
@@ -674,6 +685,22 @@ export default function ProductionApp() {
     setError('');
     try {
       const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }));
+
+      if (result.prefs?.modelId) {
+        const selected = aiModels.find((model: any) =>
+          String(model.id).toLowerCase() === String(result.prefs.modelId).toLowerCase() &&
+          model.status === 'available'
+        );
+        if (selected) {
+          setAi((current: any) => ({
+            ...current,
+            model: selected,
+            state: 'ready',
+            message: 'Ready.',
+          }));
+        }
+      }
+
       if (result.appliesTo === 'next-turn') setError('A task is running. Your selection applies to the next turn.');
       await refreshAi(session.id);
     } catch (error: any) { setError(error.message || 'AI preference could not be saved.'); }
@@ -968,7 +995,11 @@ export default function ProductionApp() {
           const id = event.target.value;
           if (!id) return;
           const chosen = aiModels.find((model: any) => model.id === id);
-          if (chosen) setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
+          if (!chosen || chosen.status !== 'available') {
+            setError('That model needs an active OpenCode connection before it can be used.');
+            return;
+          }
+          setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
           if (lastRun?.state === 'failed') {
             setLastRun(null);
             runRef.current = null;
@@ -979,7 +1010,13 @@ export default function ProductionApp() {
         disabled={!online || !aiModels.length}
       >
         {!ai.model && <option value="">{aiModels.length ? 'Choose model' : 'Loading models…'}</option>}
-        {aiModels.map((model: any) => <option key={model.id} value={model.id}>{model.displayName}{(model.free ?? (/-free$/i.test(model.id) || /\/big-pickle$/i.test(model.id))) && !/free/i.test(model.displayName) ? ' · Free' : ''}</option>)}
+        {aiModels.map((model: any) => {
+          const available = model.status === 'available';
+          const free = model.free ?? (/-free$/i.test(model.id) || /\/big-pickle$/i.test(model.id));
+          return <option key={model.id} value={model.id} disabled={!available}>
+            {model.displayName}{free && !/free/i.test(model.displayName) ? ' · Free' : ''}{!available ? ' · Reconnect OpenCode' : ''}
+          </option>;
+        })}
       </select>
     </label>
   : <button type="button" className="model-trigger" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><Icon name="agents" size={14} /><span>Connect AI</span></button>}<details className="composer-options"><summary aria-label="Chat options">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary><div className="composer-options-panel"><label>Mode<select aria-label="Mode" value={ai.mode || 'build'} onChange={(event) => setAiPrefs({ mode: event.target.value })} disabled={!online}><option value="build">Build</option><option value="plan">Plan</option><option value="ask">Ask</option></select></label><label>Access<select aria-label="Access level" value={ai.permission || 'ask-first'} onChange={(event) => { setTempFullAccess(false); setAiPrefs({ permission: event.target.value }); }} disabled={!online}><option value="full">Full project access</option><option value="ask-first">Ask first</option><option value="read-only">Read only</option></select></label></div></details></div>{ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
