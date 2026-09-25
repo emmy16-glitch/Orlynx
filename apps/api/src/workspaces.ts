@@ -23,6 +23,17 @@ export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'c
   return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
 }
 
+export function workspaceFullyReady(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState' | 'openCodeState'>): boolean {
+  return workspace.state === 'ready' && workspace.bridgeState === 'ready' && workspace.openCodeState === 'ready';
+}
+
+export function workspaceStartupPending(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState' | 'openCodeState'>): boolean {
+  if (workspaceFullyReady(workspace) || workspace.state === 'failed' || workspace.state === 'stopped' || workspace.state === 'stopping') return false;
+  return ['bootstrapping', 'connecting'].includes(workspace.state)
+    || workspace.bridgeState === 'connecting'
+    || ['installing', 'starting'].includes(workspace.openCodeState);
+}
+
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
@@ -189,16 +200,26 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
     }
     let finalWorkspace = (await repository.getWorkspace(workspace.id)) || workspace;
-    if (finalWorkspace.state === 'bootstrapping' && finalWorkspace.bridgeState !== 'ready') {
-      const bridgeDeadline = Date.now() + Math.max(10_000, Number(process.env.ORLYNX_BRIDGE_READY_TIMEOUT_MS || 30_000));
+    if (workspaceStartupPending(finalWorkspace)) {
+      const bridgeDeadline = Date.now() + Math.max(30_000, Number(process.env.ORLYNX_BRIDGE_READY_TIMEOUT_MS || 60_000));
+      let lastReadyProgressAt = 0;
       while (Date.now() < bridgeDeadline) {
+        if (workspaceFullyReady(finalWorkspace) || finalWorkspace.state === 'failed') break;
+        if (Date.now() - lastReadyProgressAt > 10_000) {
+          lastReadyProgressAt = Date.now();
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'agent.ready',
+            state: finalWorkspace.state,
+            message: finalWorkspace.bridgeState === 'ready'
+              ? 'OpenCode is starting in the development environment…'
+              : 'Connecting Orlynx to the development environment…',
+          });
+        }
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         finalWorkspace = (await repository.getWorkspace(workspace.id)) || finalWorkspace;
-        if (finalWorkspace.state === 'ready' && finalWorkspace.bridgeState === 'ready') break;
-        if (finalWorkspace.state === 'failed') break;
       }
     }
-    if (finalWorkspace.state === 'ready' && finalWorkspace.bridgeState === 'ready') {
+    if (workspaceFullyReady(finalWorkspace)) {
       emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Development environment ready.' });
       return finalWorkspace;
     }
@@ -208,7 +229,16 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     throw new Error('Orlynx could not connect to the development environment after the Codespace started.');
   } catch (error) {
     if (workspace) {
-      workspace = { ...workspace, state: 'failed', bridgeState: 'disconnected', openCodeState: workspace.openCodeState === 'starting' ? 'failed' : workspace.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
+      // READY can race the final bootstrap read by a few seconds. Re-read the
+      // durable row before persisting failure so a healthy late READY signal is
+      // never overwritten by stale in-memory bootstrap state.
+      const current = (await repository.getWorkspace(workspace.id)) || workspace;
+      if (workspaceFullyReady(current)) {
+        console.info(`[workspace] recovered late-ready race session=${current.sessionId} workspace=${current.id}`);
+        emit(input.sessionId, 'workspace.ready', { workspaceId: current.id, message: 'Development environment ready.' });
+        return current;
+      }
+      workspace = { ...current, state: 'failed', bridgeState: 'disconnected', openCodeState: current.openCodeState === 'starting' ? 'failed' : current.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'failed',
