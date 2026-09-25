@@ -120,8 +120,8 @@ export interface ProviderConnection {
   message: string;
 }
 
-export async function listProviderConnections(project = '', userId?: string): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
-  const status = await openCodeStatus(project || undefined);
+export async function listProviderConnections(project = '', userId?: string, sessionId?: string): Promise<{ engine: { connected: boolean; message: string }; providers: ProviderConnection[]; models: AIModel[] }> {
+  const status = await openCodeStatus(project || undefined, sessionId);
   const localSecrets = durableStorageConfigured() ? { providers: {}, keys: {} } as Secrets : readSecrets();
   const durableRows = durableStorageConfigured() && userId ? await controlPlaneRepository().listProviderConnections(userId) : [];
   const durableIds = durableRows.filter((row) => row.state === 'connected').map((row) => row.provider);
@@ -312,11 +312,11 @@ export function setProjectDefaults(project: string, patch: { modelId?: string; m
 
 const MODE_AGENT: Record<AgentMode, string> = { build: '', plan: 'plan', ask: 'explore' };
 
-export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string, project = ''): Promise<{ agent?: string; note?: string }> {
+export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string, project = '', sessionId?: string): Promise<{ agent?: string; note?: string }> {
   if (mode === 'build') return configuredAgent ? { agent: configuredAgent } : {};
   const wanted = MODE_AGENT[mode];
   try {
-    const { agents } = await catalog(await openCodeStatus(project || undefined));
+    const { agents } = await catalog(await openCodeStatus(project || undefined, sessionId));
     const names = agents.map((a) => String(a?.name || a?.id || '').toLowerCase());
     if (names.includes(wanted)) return { agent: wanted };
     return { agent: configuredAgent || undefined, note: `The engine does not offer a ${wanted} agent, so this task uses the default agent with ${mode} instructions instead.` };
@@ -391,7 +391,7 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? await hydrateSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models, providers } = snapshot || await listProviderConnections(project, userId);
+  const { engine, models, providers } = snapshot || await listProviderConnections(project, userId, sessionId);
   const running = sessionId
     ? durableStorageConfigured()
       ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => r.state === 'running' || r.state === 'queued')
