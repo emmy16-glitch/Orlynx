@@ -24,4 +24,3 @@ rm -rf .render-opencode
 npm install --prefix .render-opencode --omit=dev --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
 ln -sf ../.render-opencode/node_modules/.bin/opencode .render-bin/opencode
 .render-bin/opencode --version
-\n
