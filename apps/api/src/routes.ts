@@ -838,7 +838,20 @@ router.get('/setup/github-app/callback', async (req, res) => {
 });
 
 // repos
-router.get('/github/status', async (req, res) => res.json(await githubConnectionStatus(installationIdFor(req))));
+router.get('/github/status', async (req, res) => {
+  const connection = await githubConnectionStatus(installationIdFor(req));
+  const platform = await githubPlatformHealth();
+  res.json({
+    ...connection,
+    appPermissions: platform.permissions,
+    appCapabilities: {
+      contents: platform.permissions.contents === 'write',
+      pullRequests: platform.permissions.pull_requests === 'write',
+      codespaces: platform.permissions.codespaces === 'write',
+      codespacesLifecycle: platform.permissions.codespaces_lifecycle_admin === 'write',
+    },
+  });
+});
 router.get('/repos', async (req, res) => {
   const installationId = requestInstallationId(req);
   const connection = await githubConnectionStatus(installationId);
@@ -861,6 +874,17 @@ router.get('/github/manage', (req, res) => {
   try {
     res.redirect(302, githubManageUrl(requestInstallationId(req)));
   } catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub App is not configured.' }); }
+});
+router.get('/github/reauthorize', (req, res) => {
+  try {
+    const installationId = requestInstallationId(req);
+    if (!installationId) return res.status(401).json({ error: 'Connect GitHub to continue.', code: 'AUTH_REQUIRED' });
+    const oauth = githubOAuthUrl(installationId);
+    setOAuthStateCookie(res, oauth.state);
+    return res.redirect(302, oauth.url);
+  } catch (error) {
+    return res.status(503).json({ error: error instanceof Error ? error.message : 'GitHub authorization could not start.' });
+  }
 });
 router.post('/github/disconnect', async (req, res) => {
   // Orlynx-side disconnect. Sessions, messages, changes and local history are
@@ -945,7 +969,21 @@ router.get('/integrations/status', async (req, res) => {
   const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
   const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
-    github: { connected: connection.connected, needsAttention: connection.needsAttention, login: connection.login, repositorySelection: connection.repositorySelection, authorizedRepositories: health.authorizedRepositories, health: health.healthy ? 'healthy' : 'unavailable' },
+    github: {
+      connected: connection.connected,
+      needsAttention: connection.needsAttention,
+      login: connection.login,
+      repositorySelection: connection.repositorySelection,
+      authorizedRepositories: health.authorizedRepositories,
+      health: health.healthy ? 'healthy' : 'needs_attention',
+      permissionStatus: connection.permissionStatus,
+      appCapabilities: {
+        contents: platform.permissions.contents === 'write',
+        pullRequests: platform.permissions.pull_requests === 'write',
+        codespaces: platform.permissions.codespaces === 'write',
+        codespacesLifecycle: platform.permissions.codespaces_lifecycle_admin === 'write',
+      },
+    },
     githubAvailable: platform.configured && platform.healthy,
     ai: { available: opencode.connected },
     workspace: { terminalAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', cloudAvailable: infrastructure && connection.userAuthorizationState === 'established', previewAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', state: workspace?.state || 'not_created' },
