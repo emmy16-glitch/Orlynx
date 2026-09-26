@@ -1066,35 +1066,6 @@ export default function ProductionApp() {
         : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
     </div>
   </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
-          {showConnectAI && <ConnectAiSheet
-            models={aiModels}
-            providers={aiProviders}
-            adapters={ai.adapters || []}
-            selectedAdapterId={ai.adapterId || 'opencode'}
-            selectedModelId={ai.model?.id || ''}
-            modelError={aiModelError}
-            search={modelSearch}
-            setSearch={setModelSearch}
-            onRefresh={async () => { await refreshAi(session.id); }}
-            onSelectAdapter={(id) => {
-              const adapter = (ai.adapters || []).find((candidate: any) => candidate.id === id);
-              if (!adapter) return;
-              setAi((current: any) => ({ ...current, adapterId: id }));
-              if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
-              setError('');
-              void setAiPrefs({ adapterId: id });
-            }}
-            onSelectModel={(id) => {
-              const chosen = aiModels.find((model: any) => model.id === id);
-              if (!chosen || chosen.status !== 'available') return;
-              setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
-              if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
-              setError('');
-              setShowConnectAI(false);
-              void setAiPrefs({ modelId: id });
-            }}
-            onClose={() => setShowConnectAI(false)}
-          />}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
@@ -1166,6 +1137,35 @@ export default function ProductionApp() {
           </main>
           {onboarded && page !== 'github' && <nav className="mobile-global-nav" aria-label="Main navigation">{globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} /><span>{label}</span></button>)}</nav>}
         </>}
+        {showConnectAI && session && <ConnectAiSheet
+          models={aiModels}
+          providers={aiProviders}
+          adapters={ai.adapters || []}
+          selectedAdapterId={ai.adapterId || 'opencode'}
+          selectedModelId={ai.model?.id || ''}
+          modelError={aiModelError}
+          search={modelSearch}
+          setSearch={setModelSearch}
+          onRefresh={async () => { await refreshAi(session.id); }}
+          onSelectAdapter={(id) => {
+            const adapter = (ai.adapters || []).find((candidate: any) => candidate.id === id);
+            if (!adapter) return;
+            setAi((current: any) => ({ ...current, adapterId: id }));
+            if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
+            setError('');
+            void setAiPrefs({ adapterId: id });
+          }}
+          onSelectModel={(id) => {
+            const chosen = aiModels.find((model: any) => model.id === id);
+            if (!chosen || chosen.status !== 'available') return;
+            setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
+            if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
+            setError('');
+            setShowConnectAI(false);
+            void setAiPrefs({ modelId: id });
+          }}
+          onClose={() => setShowConnectAI(false)}
+        />}
       </div>
     </div>
   );
