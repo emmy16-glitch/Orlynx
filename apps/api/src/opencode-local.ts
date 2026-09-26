@@ -439,32 +439,22 @@ export async function streamWithOfficialOpenCode(input: {
   const started = performance.now();
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
 
-  // Free OpenCode models are deliberately independent from saved account
-  // credentials. A stale or rotated Zen key must never break Ask/Plan for a
-  // free model. OpenCode's own runtime owns the public/free authentication
-  // path; saved Zen keys are only required for paid models.
+  // Direct Ask/Plan chat stays inside the persistent API. Free models use
+  // OpenCode's public credential directly through the AI SDK and therefore do
+  // not depend on a separate sleeping runtime service or on the user's saved
+  // Zen key. Paid models still require the saved server-side credential.
+  let auth: { apiKey: string; publicAccess: boolean };
   if (resolved.free) {
-    return streamFreeModelThroughOpenCodeRuntime({
-      runtimeKey: input.runtimeKey,
-      requestId: input.requestId,
-      modelId: input.modelId,
-      system: input.system,
-      messages: input.messages,
-      signal: input.signal,
-      onDelta: input.onDelta,
-      onStatus: input.onStatus,
-      onTiming: input.onTiming,
-    });
+    auth = resolveAuth(true);
+  } else {
+    let savedKey: string | undefined;
+    try {
+      savedKey = await savedOpenCodeAccountKey(input.userId);
+    } catch {
+      throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
+    }
+    auth = resolveAuth(false, savedKey);
   }
-
-  let savedKey: string | undefined;
-  try {
-    savedKey = await savedOpenCodeAccountKey(input.userId);
-  } catch {
-    throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
-  }
-
-  const auth = resolveAuth(false, savedKey);
   input.signal.throwIfAborted();
   // Scope cached clients to user + credential fingerprint. Rotation cannot reuse
   // the old client. Never log this fingerprint or the credential.
