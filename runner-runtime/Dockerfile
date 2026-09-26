@@ -1,4 +1,6 @@
 FROM node:24-bookworm-slim AS bridge-build
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/bridge
 COPY bridge/package.json bridge/tsconfig.json ./
 RUN npm install --no-audit --no-fund
@@ -10,7 +12,7 @@ ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.32
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git curl psmisc python3 python3-pip make g++ \
+      ca-certificates git curl psmisc iproute2 ripgrep python3 python3-pip make g++ \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable
 
