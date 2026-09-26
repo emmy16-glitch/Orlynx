@@ -25,6 +25,10 @@ export function authenticateBridgeSocket(workspaceId: string, socket: WebSocket)
   if (current?.socket === socket) current.authenticated = true;
 }
 
+export function isCurrentBridgeSocket(workspaceId: string, socket: WebSocket): boolean {
+  return liveBridges.get(workspaceId)?.socket === socket;
+}
+
 export function unregisterBridgeSocket(workspaceId: string, socket: WebSocket): void {
   if (liveBridges.get(workspaceId)?.socket === socket) liveBridges.delete(workspaceId);
 }
