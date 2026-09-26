@@ -7,7 +7,8 @@ import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 
-const activePreparations = new Map<string, Promise<WorkspaceRecord>>();
+type PreparationContext = { allowFallback: boolean; promise: Promise<WorkspaceRecord> };
+const activePreparations = new Map<string, PreparationContext>();
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details|Codespace SSH did not become ready/i.test(failureCode || '');
@@ -68,17 +69,25 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
   return workspace;
 }
 
-export async function prepareWorkspace(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+export async function prepareWorkspace(
+  input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
+  options: { allowFallback?: boolean } = {},
+): Promise<WorkspaceRecord> {
   const running = activePreparations.get(input.sessionId);
-  if (running) return running;
-  const preparation = prepareWorkspaceOnce(input).finally(() => activePreparations.delete(input.sessionId));
-  activePreparations.set(input.sessionId, preparation);
-  return preparation;
+  if (running) {
+    if (options.allowFallback !== false) running.allowFallback = true;
+    return running.promise;
+  }
+  const context = { allowFallback: options.allowFallback !== false, promise: Promise.resolve(null as unknown as WorkspaceRecord) };
+  context.promise = prepareWorkspaceOnce(input, 0, context).finally(() => activePreparations.delete(input.sessionId));
+  activePreparations.set(input.sessionId, context);
+  return context.promise;
 }
 
 async function prepareWorkspaceOnce(
   input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
   replacementDepth = 0,
+  context: { allowFallback: boolean } = { allowFallback: true },
 ): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
@@ -310,7 +319,7 @@ async function prepareWorkspaceOnce(
           }, refreshFallback);
           await repository.putWorkspace(replacement);
           console.warn(`[workspace] replaced stale Codespace after refresh 404 session=${input.sessionId} old=${refreshFallback.codespaceName || 'unknown'} new=${replacement.codespaceName || 'unknown'}`);
-          return prepareWorkspaceOnce(input);
+          return prepareWorkspaceOnce(input, replacementDepth, context);
         } catch (replacementError) {
           console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
@@ -339,13 +348,13 @@ async function prepareWorkspaceOnce(
             updatedAt: replacement.updatedAt,
           });
           console.warn(`[workspace] replaced broken Codespace after SSH failure session=${input.sessionId} old=${brokenName} new=${replacement.codespaceName || 'unknown'}`);
-          return prepareWorkspaceOnce(input, replacementDepth + 1);
+          return prepareWorkspaceOnce(input, replacementDepth + 1, context);
         } catch (replacementError) {
           console.warn(`[workspace] automatic Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
       }
 
-      if (workspace.provider === 'orlynx-runner' && runnerFallbackEnabled()) {
+      if (workspace.provider === 'orlynx-runner' && runnerFallbackEnabled() && context.allowFallback) {
         console.warn(`[workspace] warm runner failed; falling back to Codespaces session=${input.sessionId}: ${detail}`);
         await provider.destroy(workspace).catch(() => {});
         const now = new Date().toISOString();
