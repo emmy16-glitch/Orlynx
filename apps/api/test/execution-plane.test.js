@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionPlaneFor, executionPlaneWithExistingWorkspace } from '../src/direct-chat.ts';
-import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, workspaceOpenCodePublicAccess } from '../src/agents.ts';
+import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
+import { getAgentAdapter } from '../src/agent-runtime.ts';
 
 test('existing project workspace is reused for conversational turns', () => {
   assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Hello', 'build'), true), 'workspace');
@@ -63,7 +64,8 @@ test('stale delayed Build work expires instead of executing much later', () => {
 
 
 test('free OpenCode workspace models use public auth instead of a saved account key', () => {
-  assert.equal(workspaceOpenCodePublicAccess('opencode/muse-spark-1.3-contributor-free'), true);
-  assert.equal(workspaceOpenCodePublicAccess('opencode/muse-spark-1.3'), false);
-  assert.equal(workspaceOpenCodePublicAccess('anthropic/claude-sonnet-4'), undefined);
+  const adapter = getAgentAdapter('opencode');
+  assert.equal(adapter.publicAccessForModel('opencode/muse-spark-1.3-contributor-free'), true);
+  assert.equal(adapter.publicAccessForModel('opencode/muse-spark-1.3'), false);
+  assert.equal(adapter.publicAccessForModel('anthropic/claude-sonnet-4'), undefined);
 });
