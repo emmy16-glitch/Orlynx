@@ -137,18 +137,22 @@ async function createWorkspace(body) {
   try {
     await docker(['start', name], { timeoutMs: 30_000 });
     const auth = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
+    const authEncoded = Buffer.from(`AUTHORIZATION: basic ${auth}`).toString('base64');
+    const branchEncoded = Buffer.from(branch).toString('base64');
+    const repoEncoded = Buffer.from(fullName).toString('base64');
     const script = `set -eu
-IFS= read -r GIT_AUTH_HEADER
+GIT_AUTH_HEADER="$(printf '%s' '${authEncoded}' | base64 -d)"
+ORLYNX_BRANCH="$(printf '%s' '${branchEncoded}' | base64 -d)"
+ORLYNX_REPOSITORY="$(printf '%s' '${repoEncoded}' | base64 -d)"
 if [ ! -d /workspace/repo/.git ]; then
   git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/$ORLYNX_REPOSITORY.git" /workspace/repo
 fi
+unset GIT_AUTH_HEADER
 `;
-    await docker([
-      'exec', '-i',
-      '-e', `ORLYNX_BRANCH=${branch}`,
-      '-e', `ORLYNX_REPOSITORY=${fullName}`,
-      name, 'bash', '-s',
-    ], { stdin: `AUTHORIZATION: basic ${auth}\n${script}`, timeoutMs: Math.max(60_000, Number(process.env.ORLYNX_RUNNER_CLONE_TIMEOUT_MS || 180_000)) });
+    await docker(['exec', '-i', name, 'bash', '-s'], {
+      stdin: script,
+      timeoutMs: Math.max(60_000, Number(process.env.ORLYNX_RUNNER_CLONE_TIMEOUT_MS || 180_000)),
+    });
   } catch (error) {
     await docker(['rm', '-f', name], { allowFailure: true, timeoutMs: 30_000 }).catch(() => {});
     throw error;
@@ -178,18 +182,14 @@ async function connectWorkspace(name, body) {
     ORLYNX_REPO_ROOT: '/workspace/repo',
     OPENCODE_API_KEY: openCodeApiKey,
   };
-  const encoded = Object.entries(values)
-    .map(([key, value]) => `${key}=${Buffer.from(String(value)).toString('base64')}`)
+  const exports = Object.entries(values)
+    .map(([key, value]) => `export ${key}="$(printf '%s' '${Buffer.from(String(value)).toString('base64')}' | base64 -d)"`)
     .join('\n');
   const script = `set -eu
-while IFS='=' read -r key value; do
-  test -n "$key" || continue
-  decoded="$(printf '%s' "$value" | base64 -d)"
-  export "$key=$decoded"
-done
+${exports}
 /opt/orlynx/start-bridge.sh
 `;
-  await docker(['exec', '-i', name, 'bash', '-s'], { stdin: `${encoded}\n\n${script}`, timeoutMs: 15_000 });
+  await docker(['exec', '-i', name, 'bash', '-s'], { stdin: script, timeoutMs: 15_000 });
 }
 async function route(req, res) {
   const url = new URL(req.url || '/', 'http://runner.local');
