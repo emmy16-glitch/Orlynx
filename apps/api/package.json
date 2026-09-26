@@ -12,7 +12,8 @@
     "test": "node --import tsx --test test/*.test.js",
     "e2e": "node test/e2e.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify:provider-runtime": "node scripts/verify-provider-runtime.mjs"
+    "verify:provider-runtime": "node scripts/verify-provider-runtime.mjs",
+    "start:orchestrator": "node dist/orchestrator-worker.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
