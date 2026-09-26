@@ -3343,3 +3343,86 @@ html[data-theme="light"] .composer-options-panel {
     width: auto;
   }
 }
+
+
+/* Build workspace startup: one calm inline progress stream, never a red status banner. */
+.workspace-progress {
+  max-width: 680px;
+  margin: 10px auto 18px 40px;
+  padding: 10px 0 10px 14px;
+  border-left: 1px solid var(--border-strong);
+  color: var(--foreground-muted);
+}
+.workspace-progress-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+.workspace-progress-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 32%, transparent);
+  animation: workspace-progress-pulse 1.5s ease-out infinite;
+}
+@keyframes workspace-progress-pulse {
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.workspace-progress-steps {
+  display: grid;
+  gap: 6px;
+}
+.workspace-progress-step {
+  min-height: 24px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.workspace-progress-mark {
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--success);
+  background: var(--surface);
+}
+.workspace-progress-step.active { color: var(--foreground); }
+.workspace-progress-step.active .workspace-progress-mark::after,
+.workspace-progress-step.retry .workspace-progress-mark::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.workspace-progress-step.active .workspace-progress-mark {
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 38%, var(--border));
+}
+.workspace-progress-step.retry {
+  color: var(--warning);
+}
+.workspace-progress-step.retry .workspace-progress-mark {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border));
+}
+.workspace-progress-step.done {
+  color: var(--foreground-muted);
+}
+@media (max-width: 560px) {
+  .workspace-progress {
+    margin-left: 0;
+    padding-left: 10px;
+  }
+}
