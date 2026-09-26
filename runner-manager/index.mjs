@@ -138,17 +138,17 @@ async function createWorkspace(body) {
     await docker(['start', name], { timeoutMs: 30_000 });
     const auth = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
     const script = `set -eu
+IFS= read -r GIT_AUTH_HEADER
 if [ ! -d /workspace/repo/.git ]; then
   git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/$ORLYNX_REPOSITORY.git" /workspace/repo
 fi
 `;
     await docker([
       'exec', '-i',
-      '-e', `GIT_AUTH_HEADER=AUTHORIZATION: basic ${auth}`,
       '-e', `ORLYNX_BRANCH=${branch}`,
       '-e', `ORLYNX_REPOSITORY=${fullName}`,
       name, 'bash', '-s',
-    ], { stdin: script, timeoutMs: Math.max(60_000, Number(process.env.ORLYNX_RUNNER_CLONE_TIMEOUT_MS || 180_000)) });
+    ], { stdin: `AUTHORIZATION: basic ${auth}\n${script}`, timeoutMs: Math.max(60_000, Number(process.env.ORLYNX_RUNNER_CLONE_TIMEOUT_MS || 180_000)) });
   } catch (error) {
     await docker(['rm', '-f', name], { allowFailure: true, timeoutMs: 30_000 }).catch(() => {});
     throw error;
@@ -167,20 +167,29 @@ async function connectWorkspace(name, body) {
   if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword) throw new Error('invalid bridge configuration');
   if (!(await inspect(name))) throw new Error('runner not found');
 
-  const args = [
-    'exec', '-d',
-    '-e', `ORLYNX_CONTROL=${bridgeUrl}`,
-    '-e', `ORLYNX_WORKSPACE_TOKEN=${bridgeToken}`,
-    '-e', `ORLYNX_WORKSPACE_ID=${workspaceId}`,
-    '-e', `ORLYNX_SESSION_ID=${sessionId}`,
-    '-e', `ORLYNX_USER_ID=${userId}`,
-    '-e', `ORLYNX_CONNECTION_ID=${connectionId}`,
-    '-e', `OPENCODE_SERVER_PASSWORD=${openCodePassword}`,
-    '-e', 'ORLYNX_REPO_ROOT=/workspace/repo',
-  ];
-  if (openCodeApiKey) args.push('-e', `OPENCODE_API_KEY=${openCodeApiKey}`);
-  args.push(name, '/opt/orlynx/start-bridge.sh');
-  await docker(args, { timeoutMs: 15_000 });
+  const values = {
+    ORLYNX_CONTROL: bridgeUrl,
+    ORLYNX_WORKSPACE_TOKEN: bridgeToken,
+    ORLYNX_WORKSPACE_ID: workspaceId,
+    ORLYNX_SESSION_ID: sessionId,
+    ORLYNX_USER_ID: userId,
+    ORLYNX_CONNECTION_ID: connectionId,
+    OPENCODE_SERVER_PASSWORD: openCodePassword,
+    ORLYNX_REPO_ROOT: '/workspace/repo',
+    OPENCODE_API_KEY: openCodeApiKey,
+  };
+  const encoded = Object.entries(values)
+    .map(([key, value]) => `${key}=${Buffer.from(String(value)).toString('base64')}`)
+    .join('\n');
+  const script = `set -eu
+while IFS='=' read -r key value; do
+  test -n "$key" || continue
+  decoded="$(printf '%s' "$value" | base64 -d)"
+  export "$key=$decoded"
+done
+/opt/orlynx/start-bridge.sh
+`;
+  await docker(['exec', '-i', name, 'bash', '-s'], { stdin: `${encoded}\n\n${script}`, timeoutMs: 15_000 });
 }
 async function route(req, res) {
   const url = new URL(req.url || '/', 'http://runner.local');
