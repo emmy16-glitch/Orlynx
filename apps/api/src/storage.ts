@@ -114,7 +114,8 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
-  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, runner_id text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runner_id text`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
   `CREATE INDEX IF NOT EXISTS task_events_replay_idx ON task_events(session_id, sequence)`,
@@ -181,7 +182,7 @@ function mapSession(r: Record<string, unknown>): ProjectSession & { userId: stri
 function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
   return {
     id: String(row.id), sessionId: String(row.session_id), userId: String(row.user_id), projectId: String(row.project_id),
-    provider: 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined,
+    provider: row.provider === 'orlynx-runner' ? 'orlynx-runner' : 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined, runnerId: row.runner_id ? String(row.runner_id) : undefined,
     repositoryId: Number(row.repository_id), branch: String(row.branch), state: row.state as WorkspaceRecord['state'],
     bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'],
     connectionId: row.connection_id ? String(row.connection_id) : undefined, repoRoot: row.repo_root ? String(row.repo_root) : undefined,
@@ -334,7 +335,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET codespace_name=EXCLUDED.codespace_name,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
