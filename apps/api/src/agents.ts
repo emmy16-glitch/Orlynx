@@ -72,7 +72,10 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
       }
 
       if (wasRunning && task.workspaceId && task.workspaceId !== 'direct') {
-        void queueBridgeCommand(task.workspaceId, 'agent.cancel', { taskId: task.id }, 15_000).catch(() => {});
+        try {
+          const adapter = getAgentAdapter(task.adapterId || 'opencode');
+          void queueBridgeCommand(task.workspaceId, adapter.bridgeCancelCommand, { adapterId: adapter.id, taskId: task.id }, 15_000).catch(() => {});
+        } catch { /* adapter may have been removed; task expiry still proceeds */ }
       }
 
       emit(sessionId, 'run.failed', {
@@ -249,18 +252,6 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   const queued = tasks.filter((item) => item.state === 'queued');
   if (!queued.length) return null;
 
-  // Tasks admitted before the direct-chat plane existed were stored as
-  // workspace work by default. Reclassify every safe conversational prompt so
-  // one blocked workspace task cannot strand later chat behind it.
-  for (const task of queued) {
-    if ((task.plane || 'workspace') === 'workspace' && executionPlaneFor(task.prompt, task.mode || 'build') === 'direct') {
-      task.plane = 'direct';
-      task.workspaceId = 'direct';
-      task.updatedAt = new Date().toISOString();
-      await repository.putTask(task);
-    }
-  }
-
   // Conversational work does not depend on the development environment. Let it
   // bypass a queued Build task while GitHub Codespaces is still starting.
   const nextQueued = chooseNextQueuedTask(queued)!;
@@ -290,6 +281,32 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       return promoteNextQueuedRunInner(sessionId);
     }
     if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+
+    const adapterId = nextQueued.adapterId || 'opencode';
+    const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);
+    if (!adapterState || ['not_installed', 'installing', 'starting', 'busy', 'unavailable'].includes(adapterState.state)) return null;
+    if (adapterState.state === 'failed') {
+      const now = new Date().toISOString();
+      nextQueued.state = 'failed';
+      nextQueued.updatedAt = now;
+      await repository.putTask(nextQueued);
+      const failedRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+      if (failedRun) {
+        failedRun.state = 'failed';
+        failedRun.activity = 'Agent adapter unavailable';
+        failedRun.finishedAt = now;
+        failedRun.errorKind = 'engine';
+      }
+      store.save();
+      emit(sessionId, 'run.failed', {
+        taskId: nextQueued.id,
+        adapterId,
+        error: `${adapterId} adapter could not start in the development environment. The workspace itself is still available.`,
+        errorKind: 'engine',
+        recoverable: true,
+      }, nextQueued.runId);
+      return promoteNextQueuedRunInner(sessionId);
+    }
   }
 
   const task = await repository.claimQueuedTask(sessionId, nextQueued.id);
