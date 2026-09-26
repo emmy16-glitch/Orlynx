@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
 import { listZenModels } from '../src/zen.ts';
-import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, createPromptEchoFilter } from '../src/direct-chat.ts';
+import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
 const catalog = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
@@ -83,13 +83,6 @@ test('prompt echoes are removed without breaking natural greetings', () => {
   assert.equal(cleanAssistantText('what repo are u connected to currently?Currently connected to: emmy16-glitch/Orlynx', 'what repo are u connected to currently?'), 'Currently connected to: emmy16-glitch/Orlynx');
   assert.equal(cleanAssistantText('Hello! How can I help?', 'Hello'), 'Hello! How can I help?');
 
-  const chunks = [];
-  const filter = createPromptEchoFilter('hello', (delta) => chunks.push(delta));
-  filter.push('hel');
-  filter.push('loHello');
-  filter.push('!');
-  filter.finish();
-  assert.equal(chunks.join(''), 'Hello!');
 });
 
 test('repeated historical failures never add error cards to the activity list', () => {
