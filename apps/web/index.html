@@ -12,9 +12,13 @@
       const resolved = saved === 'system'
         ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
         : saved;
-      document.documentElement.dataset.theme = resolved === 'dark' ? 'dark' : 'light';
+      const theme = resolved === 'dark' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = theme;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#111310' : '#F7F7F3');
     } catch {
-      document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      const theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.dataset.theme = theme;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#111310' : '#F7F7F3');
     }
   })();
 </script>
