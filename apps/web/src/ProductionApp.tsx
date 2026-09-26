@@ -255,7 +255,7 @@ export default function ProductionApp() {
         if (item.type === 'run.started') {
           setDraftReply('');
           partialCutoffRef.current = 0;
-          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: 'opencode', startedAt: item.timestamp });
+          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
         }
         if (!nearBottomRef.current) setNewActivity(true);
       }
