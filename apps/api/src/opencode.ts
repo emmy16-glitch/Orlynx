@@ -50,12 +50,18 @@ function sessionForProject(project?: string, sessionId?: string) {
     .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''))[0];
 }
 
+async function durableOpenCodeReady(workspace: { id: string; state: string; bridgeState: string; openCodeState: string } | null): Promise<boolean> {
+  if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
+  const adapter = await controlPlaneRepository().getWorkspaceAgentAdapter(workspace.id, 'opencode');
+  return adapter ? adapter.state === 'ready' : workspace.openCodeState === 'ready';
+}
+
 async function request<T>(project: string, apiPath: string, init: RequestInit = {}, sessionId?: string): Promise<T> {
   if (durableStorageConfigured()) {
     const session = sessionForProject(project, sessionId);
     if (!session) throw new Error('No project session is available for this OpenCode request.');
     const workspace = await controlPlaneRepository().getWorkspaceBySession(session.id);
-    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') throw new Error('OpenCode is not ready in this workspace.');
+    if (!(await durableOpenCodeReady(workspace))) throw new Error('OpenCode adapter is not ready in this workspace.');
     const result = await bridgeRequest<{ status: number; body: T }>(workspace.id, 'opencode.request', { path: apiPath.split('?')[0], method: init.method || 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined, timeoutMs: requestTimeout() });
     return result.body;
   }
@@ -85,8 +91,8 @@ export async function openCodeReadiness(project?: string, sessionId?: string): P
     if (!project) return { connected: false, message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = sessionForProject(project, sessionId);
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
-    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') {
-      return { connected: false, message: 'AI is not ready in this cloud workspace.' };
+    if (!(await durableOpenCodeReady(workspace))) {
+      return { connected: false, message: 'OpenCode adapter is not ready in this workspace.' };
     }
     try {
       const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
@@ -106,7 +112,7 @@ export async function openCodeStatus(project?: string, sessionId?: string) {
     if (!project) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = sessionForProject(project, sessionId);
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
-    if (!workspace || workspace.state !== 'ready' || workspace.openCodeState !== 'ready' || workspace.bridgeState === 'disconnected') return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'AI is not ready in this cloud workspace.' };
+    if (!(await durableOpenCodeReady(workspace))) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'OpenCode adapter is not ready in this workspace.' };
     try {
       const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
       if (health.openCode !== 'ready') throw new Error('OpenCode is unhealthy.');
@@ -142,7 +148,7 @@ function safeOrigin(): string | null {
 export async function getOrCreateOpenCodeSession(lynxSessionId: string, project: string): Promise<OpenCodeSession> {
   const directory = durableStorageConfigured() ? '' : directoryFor(project);
   const durableRepository = durableStorageConfigured() ? controlPlaneRepository() : null;
-  const existingId = durableRepository ? await durableRepository.getEngineSession(lynxSessionId) || undefined : store.db.openCodeSessions[lynxSessionId];
+  const existingId = durableRepository ? await durableRepository.getAgentSession(lynxSessionId, 'opencode') || undefined : store.db.openCodeSessions[lynxSessionId];
   if (existingId) {
     try {
       const existing = await request<Record<string, any>>(project, `/session/${encodeURIComponent(existingId)}`, {}, lynxSessionId);
@@ -153,7 +159,7 @@ export async function getOrCreateOpenCodeSession(lynxSessionId: string, project:
   }
   const created = await request<Record<string, any>>(project, '/session', { method: 'POST', body: JSON.stringify({ title: project }) }, lynxSessionId);
   if (!created?.id) throw new Error('OpenCode did not return a session id.');
-  if (durableRepository) await durableRepository.putEngineSession(lynxSessionId, created.id);
+  if (durableRepository) await durableRepository.putAgentSession(lynxSessionId, 'opencode', created.id);
   else { store.db.openCodeSessions[lynxSessionId] = created.id; store.save(); }
   return { id: created.id, directory };
 }
