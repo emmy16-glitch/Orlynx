@@ -32,3 +32,15 @@ export function shouldPrewarmWorkspace(): boolean {
 export function runnerFallbackEnabled(): boolean {
   return process.env.ORLYNX_RUNNER_FALLBACK_TO_CODESPACES !== '0';
 }
+
+export function workspaceInfrastructureConfigured(): boolean {
+  try {
+    if (defaultWorkspaceProviderId() === 'orlynx-runner') return orlynxRunnerConfigured();
+    return process.env.VERCEL === '1'
+      || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox'
+      || process.env.ORLYNX_BOOTSTRAP_MODE === 'local'
+      || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
+  } catch {
+    return false;
+  }
+}
