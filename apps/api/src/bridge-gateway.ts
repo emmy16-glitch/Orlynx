@@ -7,8 +7,9 @@ import { decryptCredential } from './credentials.js';
 import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
-import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
+import { markWorkspaceConnectionLost, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
+import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 type BridgeAdapterState = { state?: string; reason?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
@@ -185,14 +186,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         const currentWorkspace = await repository.getWorkspace(claims.workspaceId);
         if (currentWorkspace && workspaceNeedsRuntimeRefresh(currentWorkspace)) {
           console.info(`[bridge] stale runtime revision detected on reconnect; refreshing workspace=${claims.workspaceId}`);
-          void prepareWorkspace({
+          void scheduleWorkspacePreparation({
             sessionId: currentWorkspace.sessionId,
             userId: currentWorkspace.userId,
             projectId: currentWorkspace.projectId,
             repositoryId: currentWorkspace.repositoryId,
             branch: currentWorkspace.branch,
-          }).then(() => promoteNextQueuedRun(claims.sessionId))
-            .catch((error) => console.warn(`[bridge] automatic runtime refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+          }, { allowFallback: true, reason: 'runtime_refresh' })
+            .catch((error) => console.warn(`[bridge] runtime refresh scheduling failed: ${error instanceof Error ? error.message : 'unknown error'}`));
           return;
         }
         void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after READY failed: ${error instanceof Error ? error.message : 'unknown error'}`));
@@ -331,15 +332,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          console.warn(`[bridge] active Build work needs transport recovery; re-bootstrapping workspace=${claims.workspaceId}`);
-          await prepareWorkspace({
+          console.warn(`[bridge] active Build work needs transport recovery; scheduling workspace=${claims.workspaceId}`);
+          await scheduleWorkspacePreparation({
             sessionId: lost.sessionId,
             userId: lost.userId,
             projectId: lost.projectId,
             repositoryId: lost.repositoryId,
             branch: lost.branch,
-          });
-          await promoteNextQueuedRun(lost.sessionId);
+          }, { allowFallback: true, reason: 'bridge_recovery' });
         } catch (error) {
           console.warn(`[bridge] automatic transport recovery failed workspace=${claims.workspaceId}: ${error instanceof Error ? error.message : 'unknown error'}`);
         }
