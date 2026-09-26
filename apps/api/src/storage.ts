@@ -75,6 +75,7 @@ export interface ControlPlaneRepository {
   listWorkspaceAgentAdapters(workspaceId: string): Promise<WorkspaceAgentAdapterRecord[]>;
   appendEvent(value: Omit<OrlynxEvent, 'sequence'>): Promise<OrlynxEvent>;
   listEvents(sessionId: string, after?: number, limit?: number): Promise<OrlynxEvent[]>;
+  listRecentEvents(sessionId: string, limit?: number): Promise<OrlynxEvent[]>;
   queueCommand(value: BridgeCommand): Promise<void>;
   claimCommands(workspaceId: string, limit?: number): Promise<BridgeCommand[]>;
   completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>): Promise<void>;
@@ -358,6 +359,15 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     return event;
   }
   async listEvents(sessionId: string, after = 0, limit = 200) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM task_events WHERE session_id=${sessionId} AND sequence>${after} ORDER BY sequence LIMIT ${limit}`).map((r) => ({ eventId: String(r.event_id), sequence: Number(r.sequence), sessionId: String(r.session_id), taskId: r.task_id ? String(r.task_id) : undefined, runId: r.run_id ? String(r.run_id) : undefined, workspaceId: r.workspace_id ? String(r.workspace_id) : undefined, type: r.type as OrlynxEvent['type'], payload: r.payload as Record<string, unknown>, timestamp: iso(r.timestamp) })); }
+  async listRecentEvents(sessionId: string, limit = 300) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 300, 500));
+    const recent = rows<Record<string, unknown>>(await this.sql.query(
+      'SELECT * FROM task_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT $2',
+      [sessionId, safeLimit],
+    ));
+    return recent.reverse().map((r) => ({ eventId: String(r.event_id), sequence: Number(r.sequence), sessionId: String(r.session_id), taskId: r.task_id ? String(r.task_id) : undefined, runId: r.run_id ? String(r.run_id) : undefined, workspaceId: r.workspace_id ? String(r.workspace_id) : undefined, type: r.type as OrlynxEvent['type'], payload: r.payload as Record<string, unknown>, timestamp: iso(r.timestamp) }));
+  }
   async queueCommand(v: BridgeCommand) { await this.initialize(); await this.sql`INSERT INTO bridge_commands (id,workspace_id,kind,payload,status,result,expires_at,created_at,updated_at) VALUES (${v.id},${v.workspaceId},${v.kind},${JSON.stringify(v.payload)},${v.status},${JSON.stringify(v.result || null)},${v.expiresAt},${v.createdAt},${v.updatedAt})`; }
   async claimCommands(workspaceId: string, limit = 20) {
     await this.initialize();
