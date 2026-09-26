@@ -61,7 +61,7 @@ async function request<T>(project: string, apiPath: string, init: RequestInit = 
     const session = sessionForProject(project, sessionId);
     if (!session) throw new Error('No project session is available for this OpenCode request.');
     const workspace = await controlPlaneRepository().getWorkspaceBySession(session.id);
-    if (!(await durableOpenCodeReady(workspace))) throw new Error('OpenCode adapter is not ready in this workspace.');
+    if (!workspace || !(await durableOpenCodeReady(workspace))) throw new Error('OpenCode adapter is not ready in this workspace.');
     const result = await bridgeRequest<{ status: number; body: T }>(workspace.id, 'opencode.request', { path: apiPath.split('?')[0], method: init.method || 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined, timeoutMs: requestTimeout() });
     return result.body;
   }
@@ -91,7 +91,7 @@ export async function openCodeReadiness(project?: string, sessionId?: string): P
     if (!project) return { connected: false, message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = sessionForProject(project, sessionId);
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
-    if (!(await durableOpenCodeReady(workspace))) {
+    if (!workspace || !(await durableOpenCodeReady(workspace))) {
       return { connected: false, message: 'OpenCode adapter is not ready in this workspace.' };
     }
     try {
@@ -112,7 +112,7 @@ export async function openCodeStatus(project?: string, sessionId?: string) {
     if (!project) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = sessionForProject(project, sessionId);
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
-    if (!(await durableOpenCodeReady(workspace))) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'OpenCode adapter is not ready in this workspace.' };
+    if (!workspace || !(await durableOpenCodeReady(workspace))) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'OpenCode adapter is not ready in this workspace.' };
     try {
       const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
       if (health.openCode !== 'ready') throw new Error('OpenCode is unhealthy.');
