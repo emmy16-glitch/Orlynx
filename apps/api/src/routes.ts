@@ -21,6 +21,7 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 import { executionPlaneFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
+import { warmOpenCodeRuntime } from './opencode-local.js';
 
 export const router = Router();
 
@@ -968,6 +969,7 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
 // unified AI layer (engine underneath, one experience on top)
 router.get('/ai/catalog', async (_req, res) => {
+  void warmOpenCodeRuntime();
   try {
     const { models } = await listProviderConnections('', undefined, undefined);
     const catalogModels = models.filter((model) => model.providerId === 'opencode');
@@ -983,6 +985,7 @@ router.get('/ai/catalog', async (_req, res) => {
 });
 
 router.get('/ai/overview', async (req, res) => {
+  void warmOpenCodeRuntime();
   const sessionId = String(req.query.sessionId || '');
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });

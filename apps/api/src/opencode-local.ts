@@ -10,9 +10,14 @@ const MAX_RUNTIME_SESSIONS = 256;
 const TRANSIENT_RUNTIME_STATUSES = new Set([502, 503, 504]);
 const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 150_000;
 const DEFAULT_RUNTIME_WAKE_POLL_MS = 2_000;
+const RUNTIME_PREWARM_TTL_MS = 5 * 60_000;
+let runtimePrewarmAt = 0;
+let runtimePrewarmPromise: Promise<boolean> | null = null;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
+  runtimePrewarmAt = 0;
+  runtimePrewarmPromise = null;
 }
 
 async function initialize(npm: string, baseURL: string, apiKey: string, id: string): Promise<LanguageModel> {
@@ -109,6 +114,33 @@ async function runtimeFetch(
       ...(init.headers || {}),
     },
   });
+}
+
+export function warmOpenCodeRuntime(): Promise<boolean> {
+  const now = Date.now();
+  if (runtimePrewarmPromise) return runtimePrewarmPromise;
+  if (now - runtimePrewarmAt < RUNTIME_PREWARM_TTL_MS) return Promise.resolve(true);
+
+  runtimePrewarmPromise = (async () => {
+    try {
+      const response = await runtimeFetch('/global/health', {
+        headers: { Accept: 'application/json' },
+      }, 20_000);
+      if (response.ok) {
+        runtimePrewarmAt = Date.now();
+        return true;
+      }
+      // Even a transient edge response is useful because the request starts
+      // Render's cold-start path. The normal chat path will poll until ready.
+      return false;
+    } catch {
+      // Prewarming is best-effort and must never break catalog/overview calls.
+      return false;
+    } finally {
+      runtimePrewarmPromise = null;
+    }
+  })();
+  return runtimePrewarmPromise;
 }
 
 function runtimeError(status: number, prefix = 'OpenCode runtime'): ProviderRequestError {
@@ -440,8 +472,9 @@ export async function streamWithOfficialOpenCode(input: {
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
 
   // OpenCode's free tier must be invoked from an actual OpenCode process.
-  // Production starts a loopback-only OpenCode sidecar beside the API, so
-  // Plan/Ask stays off Codespaces without depending on a second Render service.
+  // Plan/Ask uses the dedicated OpenCode runtime service; catalog/overview
+  // requests prewarm it so normal chat does not carry OpenCode in the main API
+  // process or require a Codespace.
   if (resolved.free) {
     return streamFreeModelThroughOpenCodeRuntime({
       runtimeKey: input.runtimeKey,
