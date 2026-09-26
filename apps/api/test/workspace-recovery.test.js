@@ -1,12 +1,19 @@
 import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workspaceNeedsSshRebuild, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
+import { workspaceNeedsSshRebuild, workspaceNeedsCodespaceReplacement, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
   assert.equal(workspaceNeedsSshRebuild('error getting ssh server details'), true);
   assert.equal(workspaceNeedsSshRebuild('GitHub Codespace did not become ready before the startup timeout.'), false);
+});
+
+test('missing or invisible Codespaces request automatic replacement', () => {
+  assert.equal(workspaceNeedsCodespaceReplacement('Codespace bootstrap failed (exit 1): getting full codespace details: HTTP 404: Not Found (https://api.github.com/user/codespaces/orlynx-old)'), true);
+  assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespaces request failed (HTTP 404): Not Found.'), true);
+  assert.equal(workspaceNeedsCodespaceReplacement('Codespace bootstrap failed: failed to start SSH server'), true);
+  assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespace did not become ready before the startup timeout.'), false);
 });
 
 test('bridge runtime revision marker distinguishes current and stale bridges', () => {
