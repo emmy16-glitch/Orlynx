@@ -82,6 +82,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
   let refreshFallback: WorkspaceRecord | null = null;
+  let refreshAdapterFallback: Awaited<ReturnType<typeof repository.listWorkspaceAgentAdapters>> = [];
   try {
     if (workspace.state === 'creating' && !workspace.codespaceName) {
       emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting a development environment on GitHub…' });
@@ -128,6 +129,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
     if (workspaceNeedsRuntimeRefresh(workspace)) {
       refreshFallback = workspace;
+      refreshAdapterFallback = await repository.listWorkspaceAgentAdapters(workspace.id);
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'agent.refresh',
         message: 'Updating the Orlynx workspace runtime…',
@@ -255,6 +257,12 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
           if (workspaceFullyReady(verified)) {
             const restored = { ...refreshFallback, updatedAt: new Date().toISOString() };
             await repository.putWorkspace(restored);
+            for (const adapter of refreshAdapterFallback) {
+              await repository.putWorkspaceAgentAdapter({ ...adapter, updatedAt: restored.updatedAt });
+            }
+            if (!refreshAdapterFallback.length && restored.openCodeState === 'ready') {
+              await repository.putWorkspaceAgentAdapter({ workspaceId: restored.id, adapterId: 'opencode', state: 'ready', updatedAt: restored.updatedAt });
+            }
             console.warn(`[workspace] runtime refresh deferred after Codespace lookup/SSH mismatch session=${restored.sessionId} codespace=${restored.codespaceName || 'unknown'}`);
             emit(input.sessionId, 'workspace.ready', {
               workspaceId: restored.id,
