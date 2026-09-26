@@ -57,10 +57,12 @@ test('workspace bridge can start without OpenCode and reports adapter status sep
 });
 
 
-test('visible agent picker and task admission use the selected adapter explicitly', () => {
+test('visible agent controls and task admission use the selected adapter explicitly', () => {
   const web = fs.readFileSync(new URL('../../../apps/web/src/ProductionApp.tsx', import.meta.url), 'utf8');
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  assert.match(web, /inline-agent-picker/);
+  assert.match(web, /className="ai-control-trigger"/);
+  assert.match(web, /<b>Agent<\/b>/);
+  assert.match(web, /onSelectAdapter=\{\(id\) =>/);
   assert.match(web, /adapterId: ai\.adapterId \|\| 'opencode'/);
   assert.match(routes, /selectedAdapterId/);
   assert.match(routes, /startRun\(s\.id, s\.project, text, selectedAdapterId/);
