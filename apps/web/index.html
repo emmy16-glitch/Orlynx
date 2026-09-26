@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#fbf8f3" />
 <meta name="description" content="Orlynx — one conversation, your entire development workspace." />
+<script>
+  (() => {
+    try {
+      const saved = localStorage.getItem('orlynx:theme') || 'system';
+      const resolved = saved === 'system'
+        ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : saved;
+      document.documentElement.dataset.theme = resolved === 'dark' ? 'dark' : 'light';
+    } catch {
+      document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+  })();
+</script>
 <title>Orlynx — GitHub-native AI workspace</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

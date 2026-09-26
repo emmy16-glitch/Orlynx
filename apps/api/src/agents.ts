@@ -168,6 +168,7 @@ async function executeDirectTask(
       acceptedAt: task.createdAt,
       session,
       modelId,
+      mode: task.mode || run.mode || 'build',
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onDelta: (delta) => {
         if (run.state !== 'running') return;

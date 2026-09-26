@@ -19,7 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
+import { executionPlaneFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 
 export const router = Router();
@@ -311,11 +311,10 @@ router.post('/sessions/:id/messages', async (req, res) => {
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
 
-    // Once a project has a real development environment, reuse that project's
-    // selected agent adapter for conversational turns too. Projects that have
-    // never started a workspace can still use an adapter's direct-chat path.
+    // Execution plane is determined by the current mode + request, not by
+    // whether this project happens to have an existing Codespace. Ask/Plan and
+    // conversational Build turns stay direct; only execution work uses cloud.
     let workspace = await repository.getWorkspaceBySession(s.id);
-    plane = executionPlaneWithExistingWorkspace(plane, Boolean(workspace));
 
     if (plane === 'workspace') {
       if (!workspace) {

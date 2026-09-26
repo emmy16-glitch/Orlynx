@@ -2747,3 +2747,456 @@ html {
   .composer-options-panel { left: auto; right: 0; }
   .ai-sheet { padding: 16px; }
 }
+
+
+/* === Compact AI switcher + truthful direct modes: 2026-09-26 === */
+.ai-switcher-popover {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: 116px;
+  width: min(500px, calc(100vw - 32px));
+  max-height: min(480px, calc(100dvh - 170px));
+  transform: translateX(-50%);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 12px;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(18px);
+}
+.ai-switcher-header {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ai-switcher-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.ai-switcher-header b { font-size: 12px; }
+.ai-switcher-header small {
+  color: var(--foreground-muted);
+  font-size: 10px;
+}
+.compact-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+.ai-switcher-section {
+  display: grid;
+  gap: 8px;
+  padding: 11px 1px 0;
+}
+.ai-switcher-section + .ai-switcher-section {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ai-switcher-label,
+.ai-switcher-label-row {
+  color: var(--foreground-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.ai-switcher-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ai-switcher-label-row small {
+  color: var(--foreground-subtle);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ai-agent-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ai-agent-pill {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px 9px;
+  color: var(--foreground);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+.ai-agent-pill:hover { background: var(--surface-hover); }
+.ai-agent-pill.selected {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+.ai-agent-pill:disabled { opacity: .5; cursor: not-allowed; }
+.ai-agent-pill > span:nth-child(2) {
+  display: grid;
+  gap: 1px;
+}
+.ai-agent-pill b { font-size: 10px; }
+.ai-agent-pill small {
+  color: var(--foreground-muted);
+  font-size: 9px;
+}
+.ai-agent-pill > svg { color: var(--accent); }
+.ai-switcher-search {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+}
+.ai-model-compact-list {
+  max-height: 260px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.ai-model-compact {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+  color: var(--foreground);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-model-compact:last-child { border-bottom: 0; }
+.ai-model-compact:hover { background: var(--surface-hover); }
+.ai-model-compact.selected {
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+.ai-model-compact > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.ai-model-compact b,
+.ai-model-compact small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-model-compact b { font-size: 11px; }
+.ai-model-compact small {
+  color: var(--foreground-muted);
+  font-size: 9px;
+}
+.ai-model-compact > svg { color: var(--accent); }
+.ai-switcher-empty {
+  margin: 0;
+  padding: 18px 12px;
+  color: var(--foreground-muted);
+  text-align: center;
+  font-size: 11px;
+}
+.ai-quick-connect {
+  display: grid;
+  gap: 9px;
+  padding-top: 11px;
+}
+.ai-quick-connect > div {
+  display: grid;
+  gap: 2px;
+}
+.ai-quick-connect b { font-size: 12px; }
+.ai-quick-connect small {
+  color: var(--foreground-muted);
+  font-size: 10px;
+}
+.ai-quick-connect input {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: var(--foreground);
+  background: var(--background-elevated);
+}
+.mode-readonly-note {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--info) 24%, var(--border));
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 7%, var(--surface));
+}
+.mode-readonly-note > span {
+  display: grid;
+  gap: 2px;
+}
+.mode-readonly-note b {
+  color: var(--foreground);
+  font-size: 11px;
+}
+.mode-readonly-note small {
+  color: var(--foreground-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+@media (max-width: 850px) {
+  .ai-switcher-popover {
+    bottom: calc(170px + env(safe-area-inset-bottom));
+    width: min(460px, calc(100vw - 20px));
+    max-height: min(430px, calc(100dvh - 220px));
+  }
+}
+@media (max-width: 560px) {
+  .ai-switcher-popover {
+    bottom: calc(172px + env(safe-area-inset-bottom));
+    padding: 10px;
+    border-radius: 14px;
+  }
+  .ai-model-compact-list { max-height: 220px; }
+  .ai-agent-pill { width: 100%; }
+}
+
+
+/* === Theme integrity: dark means dark everywhere; light means light everywhere. === */
+.theme-settings-row {
+  align-items: center;
+}
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 3px;
+  background: var(--surface-muted);
+}
+.theme-switcher button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 10px;
+  color: var(--foreground-muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.theme-switcher button:hover {
+  color: var(--foreground);
+  background: var(--surface-hover);
+}
+.theme-switcher button.selected {
+  color: var(--foreground);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.theme-switcher button.selected svg { color: var(--accent); }
+
+/* Raise semantic theme surfaces above older light-only mockup rules. */
+html[data-theme="dark"],
+html[data-theme="dark"] body,
+html[data-theme="dark"] #root,
+html[data-theme="dark"] .orlynx-app,
+html[data-theme="dark"] .app-main,
+html[data-theme="dark"] .page-body,
+html[data-theme="dark"] .workspace-layout,
+html[data-theme="dark"] .workspace-main,
+html[data-theme="dark"] .screen-section,
+html[data-theme="dark"] .home-screen,
+html[data-theme="dark"] .settings-screen {
+  color: var(--foreground);
+  background-color: var(--background);
+}
+
+html[data-theme="dark"] .simple-header,
+html[data-theme="dark"] .project-header,
+html[data-theme="dark"] .is-workspace .project-header,
+html[data-theme="dark"] .project-tabs,
+html[data-theme="dark"] .is-workspace .project-tabs {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--background-elevated) 96%, transparent);
+}
+
+html[data-theme="dark"] .sidebar {
+  border-color: var(--border);
+  background: var(--surface-muted);
+}
+
+html[data-theme="dark"] .is-workspace .composer,
+html[data-theme="dark"] .composer {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  box-shadow: var(--shadow-2);
+}
+
+html[data-theme="dark"] .is-workspace .mobile-project-nav,
+html[data-theme="dark"] .mobile-project-nav,
+html[data-theme="dark"] .mobile-global-nav {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  box-shadow: 0 -10px 30px rgb(0 0 0 / 18%);
+}
+
+html[data-theme="dark"] .is-workspace .mobile-project-nav button,
+html[data-theme="dark"] .mobile-project-nav button,
+html[data-theme="dark"] .mobile-global-nav button {
+  color: var(--foreground-muted);
+  background: transparent;
+}
+html[data-theme="dark"] .is-workspace .mobile-project-nav button.selected,
+html[data-theme="dark"] .mobile-project-nav button.selected,
+html[data-theme="dark"] .mobile-global-nav button.selected {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+html[data-theme="dark"] .attachment-popover,
+html[data-theme="dark"] .composer-options-panel,
+html[data-theme="dark"] .ai-switcher-popover,
+html[data-theme="dark"] .sheet,
+html[data-theme="dark"] .selected-repository,
+html[data-theme="dark"] .context-card,
+html[data-theme="dark"] .task-row,
+html[data-theme="dark"] .change-set,
+html[data-theme="dark"] .terminal-panel,
+html[data-theme="dark"] .preview-panel,
+html[data-theme="dark"] .more-grid button,
+html[data-theme="dark"] .code-viewer,
+html[data-theme="dark"] .loading-screen {
+  border-color: var(--border);
+  color: var(--foreground);
+  background: var(--surface);
+}
+
+html[data-theme="dark"] .is-workspace .repo-avatar.large,
+html[data-theme="dark"] .is-workspace .global-search,
+html[data-theme="dark"] .repo-search,
+html[data-theme="dark"] .search-field,
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  color: var(--foreground);
+  border-color: var(--border);
+  background-color: var(--surface);
+}
+
+html[data-theme="dark"] .conversation-intro,
+html[data-theme="dark"] .conversation-intro.setup-aware {
+  border-color: var(--border);
+  background:
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--accent) 13%, transparent), transparent 38%),
+    var(--surface);
+}
+
+html[data-theme="dark"] .user-message .message-content {
+  color: var(--foreground);
+  border-color: color-mix(in srgb, var(--info) 25%, var(--border));
+  background: color-mix(in srgb, var(--info) 9%, var(--surface));
+}
+
+html[data-theme="dark"] .repo-flow-screen,
+html[data-theme="dark"] .github-sync-screen {
+  background:
+    radial-gradient(circle at 85% 4%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 22%),
+    var(--background);
+}
+html[data-theme="dark"] .repo-flow-row,
+html[data-theme="dark"] .view-all-repositories {
+  border-color: var(--border);
+  color: var(--foreground);
+  background: var(--surface);
+}
+html[data-theme="dark"] .repo-search {
+  border-color: var(--border);
+  background: var(--surface);
+}
+html[data-theme="dark"] .repo-list-heading > span { color: var(--foreground-muted); }
+
+html[data-theme="dark"] .welcome-screen {
+  color: var(--foreground);
+  border-color: var(--border);
+  background:
+    radial-gradient(circle at 76% 8%, color-mix(in srgb, var(--accent) 18%, transparent) 0 2%, transparent 27%),
+    linear-gradient(180deg, var(--background-elevated) 0%, var(--background) 74%, color-mix(in srgb, var(--accent) 10%, var(--background)) 100%);
+}
+html[data-theme="dark"] .is-welcome .page-body {
+  background:
+    radial-gradient(circle at 86% 8%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 28%),
+    var(--background);
+}
+
+html[data-theme="dark"] .disconnect-sheet,
+html[data-theme="dark"] .screen-alert,
+html[data-theme="dark"] .offline-banner,
+html[data-theme="dark"] .provider-notice,
+html[data-theme="dark"] .cloud-detail-card {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+html[data-theme="dark"] pre,
+html[data-theme="dark"] .terminal-output,
+html[data-theme="dark"] .terminal-note,
+html[data-theme="dark"] .diff-explanation {
+  color: var(--foreground);
+  border-color: var(--border-subtle);
+  background: var(--surface-muted);
+}
+
+/* Light mode gets the same authored surfaces, rather than browser/native leftovers. */
+html[data-theme="light"],
+html[data-theme="light"] body,
+html[data-theme="light"] #root,
+html[data-theme="light"] .orlynx-app,
+html[data-theme="light"] .app-main {
+  color: var(--foreground);
+  background-color: var(--background);
+}
+html[data-theme="light"] .is-workspace .mobile-project-nav,
+html[data-theme="light"] .mobile-project-nav,
+html[data-theme="light"] .mobile-global-nav {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+}
+html[data-theme="light"] .is-workspace .composer,
+html[data-theme="light"] .composer,
+html[data-theme="light"] .ai-switcher-popover,
+html[data-theme="light"] .composer-options-panel {
+  border-color: var(--border);
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+}
+
+@media (max-width: 560px) {
+  .theme-settings-row { align-items: stretch; }
+  .theme-settings-row > span:not(.settings-icon) { width: calc(100% - 44px); }
+  .theme-switcher { width: 100%; margin-top: 2px; }
+  .theme-switcher button { flex: 1; }
+}

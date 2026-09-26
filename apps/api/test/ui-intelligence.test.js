@@ -68,13 +68,39 @@ describe('workspace trust and AI control contract', () => {
 
   it('uses one authored agent/model control instead of native composer selects', () => {
     assert.match(src, /className="ai-control-trigger"/, 'unified AI control trigger missing');
-    assert.match(src, /<b>Agent<\/b>/, 'agent switcher section missing');
-    assert.match(src, /<b>Model<\/b>/, 'model switcher section missing');
+    assert.match(src, /className="ai-switcher-label">Agent<\/span>/, 'agent switcher section missing');
+    assert.match(src, /className="ai-switcher-label">Model<\/span>/, 'model switcher section missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
+    assert.match(src, /showConnectAI && session && <ConnectAiSheet/, 'AI switcher is not rendered from the shared app layer');
   });
 
   it('routes model recovery back into the unified AI controls', () => {
     assert.match(src, /if \(modelProblem\) \{\s*setShowConnectAI\(true\);/, 'model recovery does not open AI controls');
+  });
+});
+
+
+describe('theme integrity contract', () => {
+  const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'apps/web/src/styles.css'), 'utf8');
+  const html = fs.readFileSync(path.join(root, 'apps/web/index.html'), 'utf8');
+
+  it('uses an authored System/Light/Dark theme switcher instead of a native select', () => {
+    assert.match(src, /className="theme-switcher"/, 'theme switcher is missing');
+    assert.match(src, /\['system', 'System'\]/, 'System theme option missing');
+    assert.match(src, /\['light', 'Light'\]/, 'Light theme option missing');
+    assert.match(src, /\['dark', 'Dark'\]/, 'Dark theme option missing');
+    assert.doesNotMatch(src, /<select value=\{theme\}/, 'native theme select returned');
+  });
+
+  it('applies the chosen theme before React paints', () => {
+    assert.match(html, /localStorage\.getItem\('orlynx:theme'\)/, 'theme is not restored before first paint');
+    assert.match(html, /document\.documentElement\.dataset\.theme/, 'resolved theme is not applied to the root element');
+  });
+
+  it('overrides the high-specificity mobile workspace bar in dark mode', () => {
+    assert.match(css, /html\[data-theme="dark"\] \.is-workspace \.mobile-project-nav[\s\S]*?background:/, 'dark mobile project navigation override missing');
+    assert.match(css, /html\[data-theme="dark"\] \.is-workspace \.composer[\s\S]*?background:/, 'dark composer override missing');
   });
 });
