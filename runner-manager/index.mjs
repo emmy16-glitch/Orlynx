@@ -15,7 +15,7 @@ function safeId(value) {
 }
 function safeBranch(value) {
   const branch = String(value || '');
-  if (!branch || branch.length > 240 || /[\s~^:?*[\\]/.test(branch) || branch.includes('..') || branch.startsWith('-')) throw new Error('invalid branch');
+  if (!branch || branch.length > 240 || /[\\\s~^:?*\[\]]/.test(branch) || branch.includes('..') || branch.startsWith('-')) throw new Error('invalid branch');
   return branch;
 }
 function containerName(workspaceId) {
