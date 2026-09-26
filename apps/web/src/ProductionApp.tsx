@@ -250,6 +250,12 @@ export default function ProductionApp() {
       if (terminalEvents.length) setTerminalOutput((previous) => `${previous}${terminalEvents.map((item) => String(item.payload?.data || '')).join('')}`.slice(-100_000));
       for (const item of batch) {
         if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
+        if (item.type === 'state.delta' && item.payload?.scope === 'agent-adapter') {
+          refreshAi(sessionId).catch(() => {});
+          if (item.payload?.state === 'ready') {
+            setWorkspaceReadNotice((current) => /OpenCode|AI|agent|runtime/i.test(current) ? '' : current);
+          }
+        }
         if (item.type === 'workspace.preparing' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
         if (item.type === 'workspace.ready') setWorkspaceReadNotice('');
         if (item.type === 'run.started') {
@@ -950,10 +956,14 @@ export default function ProductionApp() {
                 {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
-                  const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota|OpenCode/i.test(String(failure?.summary || ''));
+                  const failureSummary = String(failure?.summary || '');
+                  const runtimeRecovered = selectedAgentAdapter?.state === 'ready'
+                    && /AI is not ready|OpenCode adapter is not ready|AI runtime unavailable|workspace connection interrupted/i.test(failureSummary);
+                  if (runtimeRecovered) return null;
+                  const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(failureSummary);
                   return <AgentErrorCard
                     title={failure?.title || (modelProblem ? 'This model could not respond.' : 'Orlynx needs attention.')}
-                    hint={failure?.summary || 'Your conversation is preserved.'}
+                    hint={failureSummary || 'Your conversation is preserved.'}
                     onRetry={() => {
                       if (modelProblem) {
                         document.querySelector<HTMLSelectElement>('.inline-model-picker select')?.focus();
@@ -1009,6 +1019,7 @@ export default function ProductionApp() {
   disabled={!aiAccountConnected || !ai.model || !online}
 /><div className="composer-controls">{aiAccountConnected
   ? <>
+      {(ai.adapters || []).length > 1 && <>
       <label className="inline-agent-picker" aria-label="Agent adapter">
         <span className="picker-label">Agent</span>
         <select
@@ -1032,6 +1043,7 @@ export default function ProductionApp() {
           </option>)}
         </select>
       </label>
+      </>}
       <label className="inline-model-picker" aria-label="AI model">
       <Icon name="agents" size={14} />
       <select
