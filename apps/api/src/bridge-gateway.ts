@@ -8,10 +8,10 @@ import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
 import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
+import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
 
 type BridgeAdapterState = { state?: string; reason?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
-const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
@@ -87,7 +87,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
       workspaceId: claims.workspaceId,
       type: 'workspace.ready',
       timestamp: now,
-      payload: { provider: 'github-codespaces', adapters },
+      payload: { provider: current.provider, adapters },
     });
   }
 }
@@ -115,8 +115,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   let active = true;
   let authenticatedHello = false;
   const helloTimeout = setTimeout(() => { if (!authenticatedHello) ws.close(1008, 'hello timeout'); }, 15_000);
-  const previousSocket = activeSockets.get(claims.workspaceId);
-  activeSockets.set(claims.workspaceId, ws);
+  const previousSocket = registerBridgeSocket(claims.workspaceId, ws);
   if (previousSocket && previousSocket !== ws && previousSocket.readyState === previousSocket.OPEN) {
     console.info(`[bridge] retiring previous socket workspace=${claims.workspaceId}`);
     previousSocket.close(1000, 'replaced by newer workspace connection');
@@ -126,17 +125,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   // expires. Never re-execute that retry on the same transport: it is only
   // useful after a socket replacement. This also protects older bridge
   // processes that do not yet de-duplicate commands while they are running.
-  const deliveredOnSocket = new Set<string>();
   const commands = setInterval(async () => {
     if (!active || !authenticatedHello || ws.readyState !== ws.OPEN) return;
     try {
       for (const command of await repository.claimCommands(claims.workspaceId)) {
-        if (deliveredOnSocket.has(command.id)) continue;
-        deliveredOnSocket.add(command.id);
-        ws.send(JSON.stringify({ kind: 'COMMAND', commandId: command.id, type: command.kind, payload: command.payload }));
+        sendBridgeCommandNow(claims.workspaceId, { id: command.id, kind: command.kind, payload: command.payload });
       }
     } catch { /* the next poll retries queued commands */ }
-  }, 300);
+  }, 1_000);
   const credentials = setInterval(() => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ kind: 'CREDENTIAL', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
   }, 4 * 60_000);
@@ -148,6 +144,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       if (!authenticatedHello) {
         if (message.kind !== 'HELLO' || message.workspaceId !== claims.workspaceId || message.sessionId !== claims.sessionId || message.userId !== claims.userId || message.connectionId !== claims.connectionId) { console.warn('[bridge] hello rejected: claim mismatch'); ws.close(1008, 'claim mismatch'); return; }
         authenticatedHello = true;
+        authenticateBridgeSocket(claims.workspaceId, ws);
         clearTimeout(helloTimeout);
         console.info('[bridge] hello authenticated');
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
@@ -203,7 +200,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
-        await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', message.result || { error: message.error || 'Workspace command failed.' });
+        const resultPayload = message.result || { error: message.error || 'Workspace command failed.' };
+        await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
+        publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || ''); const runId = String(command.payload.runId || ''); const task = taskId ? await repository.getTask(taskId) : null; const now = new Date().toISOString();
           if (task?.state === 'cancelled') {
@@ -303,8 +302,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   ws.once('close', async (code) => {
     console.info(`[bridge] socket closed: ${code}, hello: ${authenticatedHello}`);
     active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials);
-    if (activeSockets.get(claims.workspaceId) !== ws) return;
-    activeSockets.delete(claims.workspaceId);
+    if (!isCurrentBridgeSocket(claims.workspaceId, ws)) return;
+    unregisterBridgeSocket(claims.workspaceId, ws);
     // A transient socket close may reconnect by itself. Do not immediately
     // SSH back into an idle Codespace: that creates background churn and turns
     // harmless network/deploy blips into expensive bootstrap failures. Only
@@ -313,7 +312,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       const graceMs = Math.max(10_000, Number(process.env.ORLYNX_BRIDGE_RECONNECT_GRACE_MS || 20_000));
       console.info(`[bridge] transient transport close; waiting ${Math.round(graceMs / 1000)}s for reconnect`);
       const recovery = setTimeout(async () => {
-        if (activeSockets.has(claims.workspaceId)) return;
+        if (hasLiveBridge(claims.workspaceId)) return;
         try {
           const current = await repository.getWorkspace(claims.workspaceId);
           if (!current || current.connectionId !== claims.connectionId) return;
