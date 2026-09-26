@@ -312,6 +312,17 @@ test('legacy leaked transcript wrapper is removed before future history reuse', 
   assert.equal(cleanLegacyAssistantText(leaked), 'Hi there');
 });
 
+test('connected account bypasses the sleeping free runtime for free models', async (t) => {
+  mockFetch(t, async (url, init) => {
+    assert.doesNotMatch(String(url), /runtime\.test/, 'connected free model unexpectedly used the auxiliary runtime');
+    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer saved-test-key');
+    return new Response(frame('Connected') + frame('', 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  });
+  process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+  setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('saved-test-key') }) });
+  assert.equal(await streamWithOfficialOpenCode(input()), 'Connected');
+});
+
 test('paid model receives the saved server-side credential', async (t) => {
   mockFetch(t, async (_url, init) => {
     assert.equal(new Headers(init.headers).get('authorization'), 'Bearer saved-test-key');
