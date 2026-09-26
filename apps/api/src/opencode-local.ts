@@ -128,13 +128,17 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       }, 20_000);
       if (response.ok) {
         runtimePrewarmAt = Date.now();
+        console.info('[ai-runtime] prewarm ready');
         return true;
       }
       // Even a transient edge response is useful because the request starts
       // Render's cold-start path. The normal chat path will poll until ready.
+      console.warn(`[ai-runtime] prewarm returned HTTP ${response.status}`);
       return false;
-    } catch {
+    } catch (error) {
       // Prewarming is best-effort and must never break catalog/overview calls.
+      const name = error instanceof Error ? error.name : 'Error';
+      console.warn(`[ai-runtime] prewarm request failed (${name})`);
       return false;
     } finally {
       runtimePrewarmPromise = null;
