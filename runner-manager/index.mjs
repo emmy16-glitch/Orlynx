@@ -28,6 +28,63 @@ function authorized(header) {
   const b = Buffer.from(TOKEN);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+const PREVIEW_COOKIE = 'orlynx_preview';
+function previewSignature(name, port, expires) {
+  return crypto.createHmac('sha256', TOKEN).update(`${name}:${port}:${expires}`).digest('base64url');
+}
+function validPreviewToken(name, port, token) {
+  if (!TOKEN || !/^orlynx-[a-z0-9-]{3,120}$/.test(name)) return false;
+  if (!Number.isInteger(port) || port <= 1024 || port > 65535 || port === 4096) return false;
+  const [expiresRaw, signature = ''] = String(token || '').split('.');
+  const expires = Number(expiresRaw);
+  if (!Number.isSafeInteger(expires) || expires < Math.floor(Date.now() / 1000) || !signature) return false;
+  const expected = Buffer.from(previewSignature(name, port, expires));
+  const actual = Buffer.from(signature);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+function encodePreviewCookie(name, port, token) {
+  return Buffer.from(JSON.stringify({ name, port, token })).toString('base64url');
+}
+function cookieValue(header, name) {
+  for (const item of String(header || '').split(';')) {
+    const index = item.indexOf('=');
+    if (index < 0) continue;
+    if (item.slice(0, index).trim() === name) return item.slice(index + 1).trim();
+  }
+  return '';
+}
+function previewContext(req, url) {
+  const initial = url.pathname.match(/^\/preview\/(orlynx-[a-z0-9-]{3,120})\/(\d{4,5})(\/.*)?$/);
+  if (initial) {
+    const name = initial[1];
+    const port = Number(initial[2]);
+    const token = String(url.searchParams.get('t') || '');
+    if (!validPreviewToken(name, port, token)) return { denied: true };
+    const params = new URLSearchParams(url.searchParams);
+    params.delete('t');
+    const path = (initial[3] || '/') + (params.size ? `?${params.toString()}` : '');
+    const maxAge = Math.max(1, Number(token.split('.')[0]) - Math.floor(Date.now() / 1000));
+    return {
+      name, port, path,
+      cookie: `${PREVIEW_COOKIE}=${encodePreviewCookie(name, port, token)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`,
+    };
+  }
+
+  if (url.pathname === '/health' || url.pathname.startsWith('/v1/')) return null;
+  const encoded = cookieValue(req.headers.cookie, PREVIEW_COOKIE);
+  if (!encoded) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    const name = String(parsed.name || '');
+    const port = Number(parsed.port);
+    const token = String(parsed.token || '');
+    if (!validPreviewToken(name, port, token)) return null;
+    return { name, port, path: url.pathname + url.search };
+  } catch {
+    return null;
+  }
+}
 function redact(text) {
   return String(text || '').replace(/(?:gh[opsu]_|github_pat_)[A-Za-z0-9_]+/g, '[redacted]').slice(-4000);
 }
@@ -71,6 +128,59 @@ async function inspect(name) {
   const result = await docker(['inspect', name, '--format', '{{json .State}}'], { allowFailure: true, timeoutMs: 10_000 });
   if (result.code !== 0) return null;
   try { return JSON.parse(result.stdout.trim()); } catch { return null; }
+}
+
+async function containerAddress(name) {
+  const result = await docker(['inspect', name, '--format', '{{json .NetworkSettings.Networks}}'], { allowFailure: true, timeoutMs: 10_000 });
+  if (result.code !== 0) return null;
+  try {
+    const networks = JSON.parse(result.stdout.trim());
+    for (const value of Object.values(networks || {})) {
+      const address = String(value?.IPAddress || '');
+      if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)) return address;
+    }
+  } catch {}
+  return null;
+}
+
+function upstreamHeaders(headers, address, port) {
+  const next = { ...headers, host: `${address}:${port}` };
+  delete next.authorization;
+  delete next.cookie;
+  delete next['proxy-authorization'];
+  return next;
+}
+
+async function proxyPreview(req, res, context) {
+  const address = await containerAddress(context.name);
+  if (!address) return json(res, 404, { error: 'Preview workspace is unavailable.' });
+
+  const upstream = http.request({
+    hostname: address,
+    port: context.port,
+    path: context.path,
+    method: req.method,
+    headers: upstreamHeaders(req.headers, address, context.port),
+  }, (upstreamResponse) => {
+    const headers = { ...upstreamResponse.headers };
+    delete headers['content-security-policy'];
+    const existingCookies = headers['set-cookie'];
+    if (context.cookie) {
+      headers['set-cookie'] = [
+        ...(Array.isArray(existingCookies) ? existingCookies : existingCookies ? [existingCookies] : []),
+        context.cookie,
+      ];
+    }
+    headers['referrer-policy'] = 'no-referrer';
+    res.writeHead(upstreamResponse.statusCode || 502, headers);
+    upstreamResponse.pipe(res);
+  });
+  upstream.on('error', (error) => {
+    console.warn('[runner-manager] preview proxy failed', redact(error.message));
+    if (!res.headersSent) json(res, 502, { error: 'Preview server is unavailable.' });
+    else res.destroy(error);
+  });
+  req.pipe(upstream);
 }
 async function resolveRepository(repositoryId, githubToken) {
   const response = await fetch(`https://api.github.com/repositories/${Number(repositoryId)}`, {
@@ -239,10 +349,59 @@ async function route(req, res) {
 }
 
 export const server = http.createServer((req, res) => {
+  const url = new URL(req.url || '/', 'http://runner.local');
+  const preview = previewContext(req, url);
+  if (preview?.denied) return json(res, 401, { error: 'Preview link is invalid or expired.' });
+  if (preview) {
+    void proxyPreview(req, res, preview).catch((error) => {
+      console.error('[runner-manager] preview failed', redact(error instanceof Error ? error.message : error));
+      if (!res.headersSent) json(res, 502, { error: 'Preview server is unavailable.' });
+      else res.destroy();
+    });
+    return;
+  }
+
   route(req, res).catch((error) => {
     console.error('[runner-manager]', redact(error instanceof Error ? error.message : error));
     json(res, 502, { error: 'Runner operation failed.', detail: redact(error instanceof Error ? error.message : error) });
   });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '/', 'http://runner.local');
+  const preview = previewContext(req, url);
+  if (!preview || preview.denied) { socket.destroy(); return; }
+
+  void (async () => {
+    const address = await containerAddress(preview.name);
+    if (!address) { socket.destroy(); return; }
+    const upstream = http.request({
+      hostname: address,
+      port: preview.port,
+      path: preview.path,
+      method: req.method,
+      headers: upstreamHeaders(req.headers, address, preview.port),
+    });
+
+    upstream.on('upgrade', (response, upstreamSocket, upstreamHead) => {
+      let status = `HTTP/1.1 ${response.statusCode || 101} ${response.statusMessage || 'Switching Protocols'}\r\n`;
+      for (const [key, value] of Object.entries(response.headers)) {
+        if (value == null || key.toLowerCase() === 'set-cookie') continue;
+        for (const item of Array.isArray(value) ? value : [value]) status += `${key}: ${item}\r\n`;
+      }
+      status += '\r\n';
+      socket.write(status);
+      if (upstreamHead.length) socket.write(upstreamHead);
+      if (head.length) upstreamSocket.write(head);
+      socket.pipe(upstreamSocket).pipe(socket);
+    });
+    upstream.on('response', (response) => {
+      socket.write(`HTTP/1.1 ${response.statusCode || 502} ${response.statusMessage || 'Bad Gateway'}\r\nConnection: close\r\n\r\n`);
+      socket.destroy();
+    });
+    upstream.on('error', () => socket.destroy());
+    upstream.end();
+  })().catch(() => socket.destroy());
 });
 
 if (import.meta.url === `file://${process.argv[1]}`) {
