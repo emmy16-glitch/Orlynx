@@ -64,7 +64,7 @@ function familyOf(modelId: string, providerId: string): string {
 
 interface RawCatalog { agents: Record<string, any>[]; providersAll: any[]; connectedIds: string[] }
 
-async function catalog(status: Awaited<ReturnType<typeof openCodeStatus>>): Promise<RawCatalog> {
+async function catalog(status: { agents?: unknown; providers?: unknown; connectedProviders?: unknown }): Promise<RawCatalog> {
   const agents = Array.isArray(status.agents) ? status.agents : [];
   const rawProviders: unknown = status.providers;
   let providersAll: any[] = [];
@@ -374,11 +374,17 @@ export function setProjectDefaults(project: string, patch: { modelId?: string; m
 
 const MODE_AGENT: Record<AgentMode, string> = { build: '', plan: 'plan', ask: 'explore' };
 
-export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string, project = '', sessionId?: string): Promise<{ agent?: string; note?: string }> {
+export async function resolveAgentForMode(
+  mode: AgentMode,
+  configuredAgent: string,
+  project = '',
+  sessionId?: string,
+  statusLoader: (project?: string, sessionId?: string) => Promise<{ agents?: unknown; providers?: unknown; connectedProviders?: unknown }> = openCodeStatus,
+): Promise<{ agent?: string; note?: string }> {
   if (mode === 'build') return configuredAgent ? { agent: configuredAgent } : {};
   const wanted = MODE_AGENT[mode];
   try {
-    const { agents } = await catalog(await openCodeStatus(project || undefined, sessionId));
+    const { agents } = await catalog(await statusLoader(project || undefined, sessionId));
     const names = agents.map((a) => String(a?.name || a?.id || '').toLowerCase());
     if (names.includes(wanted)) return { agent: wanted };
     return { agent: configuredAgent || undefined, note: `The engine does not offer a ${wanted} agent, so this task uses the default agent with ${mode} instructions instead.` };
