@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { resetOpenCodeRuntimeSessionsForTests, streamWithOfficialOpenCode, verifyProviderRuntime } from '../src/opencode-local.ts';
+import { resetOpenCodeRuntimeSessionsForTests, streamWithOfficialOpenCode, verifyProviderRuntime, warmOpenCodeRuntime } from '../src/opencode-local.ts';
 import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
 import { encryptCredential } from '../src/credentials.ts';
 import { cleanLegacyAssistantText } from '../src/direct-chat.ts';
@@ -403,17 +403,32 @@ test('Hello streams without repository/workspace requests and reload does not ca
 
 
 
-test('production starts a loopback OpenCode sidecar for free Plan/Ask', () => {
+test('production keeps the main API lightweight and prewarms the external OpenCode runtime', () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const buildScript = fs.readFileSync(new URL('../../../scripts/render-build.sh', import.meta.url), 'utf8');
-  const startScript = fs.readFileSync(new URL('../scripts/start-production.mjs', import.meta.url), 'utf8');
   const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
+  const routesSource = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
 
-  assert.equal(packageJson.scripts.start, 'node scripts/start-production.mjs');
+  assert.equal(packageJson.scripts.start, 'node dist/index.js');
   assert.match(buildScript, /^npm ci --include=dev$/m);
-  assert.match(buildScript, /opencode-ai@1\.18\.32/);
-  assert.match(startScript, /127\.0\.0\.1/);
-  assert.match(startScript, /OPENCODE_SERVER_PASSWORD/);
-  assert.match(startScript, /ORLYNX_OPENCODE_RUNTIME_URL/);
+  assert.doesNotMatch(buildScript, /Installing local OpenCode sidecar|apps\/api\/\.opencode-runtime/);
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
+  assert.match(providerSource, /export function warmOpenCodeRuntime/);
+  assert.match(routesSource, /router\.get\('\/ai\/catalog'[\s\S]*void warmOpenCodeRuntime\(\)/);
+  assert.match(routesSource, /router\.get\('\/ai\/overview'[\s\S]*void warmOpenCodeRuntime\(\)/);
+});
+
+test('runtime prewarm hits health once and is throttled', async (t) => {
+  configureRuntime(t);
+  let healthCalls = 0;
+  mockFetch(t, async (url) => {
+    throw new Error('Unexpected fetch ' + url);
+  }, async () => {
+    healthCalls++;
+    return Response.json({ healthy: true });
+  });
+
+  assert.equal(await warmOpenCodeRuntime(), true);
+  assert.equal(await warmOpenCodeRuntime(), true);
+  assert.equal(healthCalls, 1);
 });
