@@ -22,7 +22,7 @@ import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
-import { shouldPrewarmWorkspace } from './workspace-providers.js';
+import { shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 
 export const router = Router();
 
@@ -647,7 +647,7 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     emit(s.id, 'workspace.preparing', {
       state: current.state,
       stage: 'accepted',
-      message: current.codespaceName ? 'Waking the existing development environment…' : 'Starting a development environment only for this task…',
+      message: current.codespaceName || current.runnerId ? 'Waking the existing development environment…' : 'Starting a development environment only for this task…',
     });
     void prepareWorkspace({
       sessionId: s.id,
@@ -1400,8 +1400,7 @@ router.get('/integrations/status', async (req, res) => {
     ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
   const workspace = session && durableStorageConfigured() ? await getWorkspace(session.id) : null;
-  const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || process.env.ORLYNX_BOOTSTRAP_MODE === 'local' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
-  const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
+  const infrastructure = durableStorageConfigured() && workspaceInfrastructureConfigured() && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
     github: {
       connected: connection.connected,
