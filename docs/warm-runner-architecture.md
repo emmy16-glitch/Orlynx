@@ -139,6 +139,29 @@ transport.
 Command results also wake an in-process waiter immediately. Database polling is
 kept as a recovery path when a result is completed by another API instance.
 
+## Preview gateway
+
+Warm runners support browser previews without requiring the user's dev server to
+bind to the container network.
+
+```text
+browser
+  -> signed short-lived runner preview URL
+  -> runner manager validates HMAC
+  -> internal preview proxy :4108
+  -> 127.0.0.1:<discovered dev port>
+```
+
+The first signed request establishes an HttpOnly/Secure preview cookie so
+root-relative asset requests and WebSocket/HMR connections can continue on the
+same preview origin without putting the runner API token in the browser.
+
+Configure `ORLYNX_RUNNER_PUBLIC_URL` to the public HTTPS origin of the runner
+gateway. It may equal `ORLYNX_RUNNER_URL` when the control-plane API and browser
+can reach the same host.
+
+OpenCode's private port is explicitly excluded from preview forwarding.
+
 ## Failure behavior
 
 If an Orlynx runner fails during preparation and
