@@ -8,6 +8,7 @@ const IMAGE = process.env.ORLYNX_RUNNER_IMAGE || 'orlynx-runner-runtime:local';
 const CPU_LIMIT = process.env.ORLYNX_RUNNER_CPUS || '2';
 const MEMORY_LIMIT = process.env.ORLYNX_RUNNER_MEMORY || '4g';
 const PIDS_LIMIT = process.env.ORLYNX_RUNNER_PIDS || '512';
+const PREVIEW_PROXY_PORT = Number(process.env.ORLYNX_RUNNER_PREVIEW_PROXY_PORT || 4108);
 
 function safeId(value) {
   if (!/^[A-Za-z0-9_-]{3,120}$/.test(String(value || ''))) throw new Error('invalid identifier');
@@ -157,13 +158,12 @@ async function proxyPreview(req, res, context) {
 
   const upstream = http.request({
     hostname: address,
-    port: context.port,
-    path: context.path,
+    port: PREVIEW_PROXY_PORT,
+    path: `/proxy/${context.port}${context.path}`,
     method: req.method,
-    headers: upstreamHeaders(req.headers, address, context.port),
+    headers: upstreamHeaders(req.headers, address, PREVIEW_PROXY_PORT),
   }, (upstreamResponse) => {
     const headers = { ...upstreamResponse.headers };
-    delete headers['content-security-policy'];
     const existingCookies = headers['set-cookie'];
     if (context.cookie) {
       headers['set-cookie'] = [
@@ -377,10 +377,10 @@ server.on('upgrade', (req, socket, head) => {
     if (!address) { socket.destroy(); return; }
     const upstream = http.request({
       hostname: address,
-      port: preview.port,
-      path: preview.path,
+      port: PREVIEW_PROXY_PORT,
+      path: `/proxy/${preview.port}${preview.path}`,
       method: req.method,
-      headers: upstreamHeaders(req.headers, address, preview.port),
+      headers: upstreamHeaders(req.headers, address, PREVIEW_PROXY_PORT),
     });
 
     upstream.on('upgrade', (response, upstreamSocket, upstreamHead) => {
