@@ -390,7 +390,16 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
        RETURNING id`,
       [v.id, v.workspaceId, v.sessionId, v.kind, v.allowFallback, v.reason || null, v.createdAt, v.updatedAt],
     );
-    return rows<Record<string, unknown>>(result).length > 0;
+    const inserted = rows<Record<string, unknown>>(result).length > 0;
+    if (!inserted && v.allowFallback) {
+      await this.sql.query(
+        `UPDATE workspace_jobs
+         SET allow_fallback=true, reason=COALESCE(reason,$3), updated_at=now()
+         WHERE workspace_id=$1 AND kind=$2 AND state IN ('queued','leased')`,
+        [v.workspaceId, v.kind, v.reason || null],
+      );
+    }
+    return inserted;
   }
   async claimWorkspaceJobs(workerId: string, limit = 4, leaseSeconds = 90) {
     await this.initialize();
