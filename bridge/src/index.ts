@@ -28,7 +28,9 @@ const completed = new Map<string, CommandReply>();
 const inFlight = new Map<string, InFlightCommand>();
 const activeAgents = new Map<string, string>();
 type OpenCodeAuthMode = 'public' | 'account';
+type AdapterLifecycle = { state: 'starting' | 'ready' | 'failed' | 'unavailable'; reason?: string };
 let openCodeAuthMode: OpenCodeAuthMode | undefined;
+let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
 try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, CommandReply>)) completed.set(id, value); } catch {}
 function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
@@ -182,6 +184,7 @@ async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
   if (openCodeAuthMode === desired && await openCodeHealth() === 'ready') return false;
 
   const started = await startOpenCode(desired === 'account', true);
+  openCodeLifecycle = started;
   if (started.state !== 'ready') {
     throw new Error(started.reason === 'account_key_unavailable'
       ? 'Connect your OpenCode account before using this paid model.'
@@ -509,8 +512,15 @@ const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
   ['opencode', {
     id: 'opencode',
     health: async () => {
-      const state = await openCodeHealth();
-      return { state: state === 'ready' ? 'ready' : 'unavailable', ...(state === 'unauthorized' ? { reason: 'auth_mismatch' } : {}) };
+      const health = await openCodeHealth();
+      if (health === 'ready') {
+        openCodeLifecycle = { state: 'ready' };
+        return openCodeLifecycle;
+      }
+      if (openCodeLifecycle.state === 'failed') return openCodeLifecycle;
+      if (openCodeLifecycle.state === 'starting') return openCodeLifecycle;
+      openCodeLifecycle = { state: 'unavailable', ...(health === 'unauthorized' ? { reason: 'auth_mismatch' } : {}) };
+      return openCodeLifecycle;
     },
     run: runAgent,
     cancel: cancelOpenCodeAgent,
@@ -598,7 +608,13 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
 
 function connect(delay = 0): void {
   setTimeout(async () => {
-    const openCodeStartup = startOpenCode();
+    openCodeLifecycle = { state: 'starting' };
+    const openCodeStartup = startOpenCode()
+      .then((result) => { openCodeLifecycle = result; return result; })
+      .catch((error) => {
+        openCodeLifecycle = { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 160) : 'startup_failed' };
+        return openCodeLifecycle;
+      });
     const ws = new WebSocket(CONTROL, { headers: { Authorization: `Bearer ${token}` } }); let heartbeat: NodeJS.Timeout | undefined;
     ws.on('message', async (raw) => {
       let message: { kind: string; token?: string; commandId?: string; type?: string; payload?: Record<string, unknown> }; try { message = JSON.parse(String(raw)); } catch { return; }
