@@ -22,7 +22,7 @@ import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
-import { shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
+import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 export const router = Router();
@@ -917,7 +917,15 @@ router.post('/sessions/:id/terminal/:ptyId/input', async (req, res) => {
 router.get('/sessions/:id/ports', async (req, res) => {
   const s = ownedSession(req, req.params.id); if (!s) return res.status(404).json({ error: 'session not found' }); const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null;
   if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-  try { res.json(await bridgeRequest(workspace.id, 'ports.list')); } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Preview ports are unavailable.' }); }
+  try {
+    const result = await bridgeRequest<{ ports?: Array<{ port: number; visibility?: string; url?: string }> }>(workspace.id, 'ports.list');
+    const provider = providerForWorkspace(workspace);
+    const ports = (result.ports || []).map((item) => ({
+      ...item,
+      url: item.url || provider.previewUrl?.(workspace, Number(item.port)),
+    })).filter((item) => item.url);
+    res.json({ ports });
+  } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Preview ports are unavailable.' }); }
 });
 
 // changes
