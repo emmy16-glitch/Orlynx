@@ -41,12 +41,22 @@ async function promoteSession(sessionId: string): Promise<void> {
 let inlineKick: Promise<void> | null = null;
 function kickInlineOrchestrator(): void {
   if (orchestratorMode() === 'worker' || inlineKick || !durableStorageConfigured()) return;
+  let shouldRecheck = false;
   inlineKick = (async () => {
     const sessions = await runWorkspaceOrchestratorOnce(workerId('inline'), 2);
+    shouldRecheck = sessions.length > 0;
     for (const sessionId of sessions) await promoteSession(sessionId);
   })().catch((error) => {
     console.warn(`[orchestrator] inline pass failed: ${error instanceof Error ? error.message : 'unknown error'}`);
-  }).finally(() => { inlineKick = null; });
+  }).finally(() => {
+    inlineKick = null;
+    // Inline compatibility mode still recovers retry-delayed durable jobs.
+    // Production worker mode uses the persistent loop instead.
+    if (shouldRecheck) {
+      const timer = setTimeout(kickInlineOrchestrator, 10_000);
+      timer.unref?.();
+    }
+  });
 }
 
 export async function scheduleWorkspacePreparation(
