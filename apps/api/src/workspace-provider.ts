@@ -1,4 +1,4 @@
-import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
+import type { WorkspaceProviderId, WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 
 export interface CreateWorkspaceInput {
   workspaceId: string;
@@ -9,11 +9,20 @@ export interface CreateWorkspaceInput {
   branch: string;
 }
 
+export interface WorkspaceConnectionValues {
+  bridgeToken: string;
+  connectionId: string;
+  openCodePassword: string;
+}
+
 export interface WorkspaceProvider {
+  readonly id: WorkspaceProviderId;
   create(input: CreateWorkspaceInput): Promise<WorkspaceRecord>;
   start(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   stop(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   get(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   getStatus(workspace: WorkspaceRecord): Promise<WorkspaceState>;
   destroy(workspace: WorkspaceRecord): Promise<void>;
+  replace?(input: CreateWorkspaceInput, workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
+  connect?(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void>;
 }
