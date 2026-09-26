@@ -151,6 +151,7 @@ export default function ProductionApp() {
   const rafRef = useRef<number | null>(null);
   const runRef = useRef<any>(null);
   const partialCutoffRef = useRef(0);
+  const sessionRefreshesRef = useRef(new Map<string, Promise<void>>());
   const ptyRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
   const repoLoadAttempt = useRef(false);
@@ -222,28 +223,56 @@ export default function ProductionApp() {
     }
   }
 
-  const refreshSession = useCallback(async (id: string) => {
-    const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
-      fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
-      fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
-    ]);
-    setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
-    const latestRun = runData.slice(-1)[0] || null;
-    setLastRun(latestRun); runRef.current = latestRun;
-    if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
-      setDraftReply(String(latestRun.partialText));
-      partialCutoffRef.current = Date.parse(latestRun.partialUpdatedAt || '') || 0;
-    } else if (latestRun?.state !== 'running') {
-      setDraftReply('');
-      partialCutoffRef.current = 0;
-    }
-    setSession(details); currentSessionRef.current = details;
-    refreshIntegrations().catch(() => {});
-    refreshAi(id).catch(() => {});
-  }, [refreshAi]);
+  const refreshSession = useCallback((id: string): Promise<void> => {
+    const inFlight = sessionRefreshesRef.current.get(id);
+    if (inFlight) return inFlight;
+
+    const refresh = (async () => {
+      const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
+        fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
+        fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
+      ]);
+
+      // Ignore a response for a conversation the user has already left.
+      if (currentSessionRef.current?.id && currentSessionRef.current.id !== id) return;
+
+      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
+      const latestRun = runData.slice(-1)[0] || null;
+      setLastRun(latestRun); runRef.current = latestRun;
+
+      if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
+        const snapshot = String(latestRun.partialText);
+        const snapshotUpdatedAt = Date.parse(latestRun.partialUpdatedAt || '') || 0;
+        const cutoff = partialCutoffRef.current;
+
+        // SSE is the hot path. A slower HTTP refresh must never replace newer
+        // streamed text with an older partial snapshot.
+        setDraftReply((current) => {
+          if (snapshotUpdatedAt < cutoff && current) return current;
+          if (current && current.startsWith(snapshot)) return current;
+          if (current && snapshot.startsWith(current)) return snapshot;
+          return snapshotUpdatedAt >= cutoff ? snapshot : current;
+        });
+        partialCutoffRef.current = Math.max(cutoff, snapshotUpdatedAt);
+      } else if (latestRun?.state !== 'running') {
+        setDraftReply('');
+        partialCutoffRef.current = 0;
+      }
+
+      setSession(details); currentSessionRef.current = details;
+      refreshIntegrations().catch(() => {});
+      refreshAi(id).catch(() => {});
+    })();
+
+    sessionRefreshesRef.current.set(id, refresh);
+    void refresh.finally(() => {
+      if (sessionRefreshesRef.current.get(id) === refresh) sessionRefreshesRef.current.delete(id);
+    });
+    return refresh;
+  }, [refreshAi, refreshIntegrations]);
 
   const ingest = useCallback((sessionId: string, event: any) => {
     if (!event?.eventId || seenRef.current.has(event.eventId)) return;
@@ -259,6 +288,7 @@ export default function ProductionApp() {
       // arrive in the same animation frame; clearing the draft after appending
       // deltas used to erase the first streamed token.
       let replaceDraft = false;
+      let newestDeltaAt = partialCutoffRef.current;
       const deltas: string[] = [];
       const terminalChunks: string[] = [];
       for (const item of batch) {
@@ -269,8 +299,12 @@ export default function ProductionApp() {
           setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
         }
 
-        if (item.type === 'message.delta' && (Date.parse(item.timestamp || '') || 0) > partialCutoffRef.current) {
-          deltas.push(String(item.payload?.delta || ''));
+        if (item.type === 'message.delta') {
+          const deltaAt = Date.parse(item.timestamp || '') || 0;
+          if (deltaAt > partialCutoffRef.current) {
+            deltas.push(String(item.payload?.delta || ''));
+            newestDeltaAt = Math.max(newestDeltaAt, deltaAt);
+          }
         }
         if (item.payload?.sourceType === 'pty.output') terminalChunks.push(String(item.payload?.data || ''));
 
@@ -299,6 +333,7 @@ export default function ProductionApp() {
 
       if (replaceDraft) setDraftReply(deltas.join(''));
       else if (deltas.length) setDraftReply((previous) => previous + deltas.join(''));
+      if (newestDeltaAt > partialCutoffRef.current) partialCutoffRef.current = newestDeltaAt;
       if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
     });
