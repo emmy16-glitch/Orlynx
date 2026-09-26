@@ -10,6 +10,7 @@ import {
   waitForLiveBridgeResult,
 } from '../src/bridge-live.ts';
 import { defaultWorkspaceProviderId, shouldPrewarmWorkspace } from '../src/workspace-providers.ts';
+import { OrlynxRunnerProvider } from '../src/orlynx-runner.ts';
 
 function withEnv(values, fn) {
   const previous = {};
@@ -118,4 +119,45 @@ test('Build work can escalate a passive prewarm job to Codespaces fallback', () 
   assert.match(storage, /SET allow_fallback=true/);
   assert.match(jobs, /allowFallback: options\.allowFallback !== false/);
   assert.match(jobs, /reason: options\.reason/);
+});
+
+
+test('warm runner preview URLs are signed, short-lived and browser-safe', () => {
+  withEnv({
+    ORLYNX_RUNNER_URL: 'https://runner.internal.example',
+    ORLYNX_RUNNER_PUBLIC_URL: 'https://preview.example.com',
+    ORLYNX_RUNNER_TOKEN: 'runner-secret-that-must-not-leak',
+    ORLYNX_PREVIEW_TOKEN_TTL_SECONDS: '300',
+  }, () => {
+    const provider = new OrlynxRunnerProvider();
+    const url = provider.previewUrl({
+      id: 'ws_preview',
+      sessionId: 'session_preview',
+      userId: 'user_preview',
+      projectId: 'project_preview',
+      provider: 'orlynx-runner',
+      runnerId: 'orlynx-ws-preview',
+      repositoryId: 123,
+      branch: 'main',
+      state: 'ready',
+      bridgeState: 'ready',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, 5173);
+    assert.ok(url);
+    assert.match(url, /^https:\/\/preview\.example\.com\/preview\/orlynx-ws-preview\/5173\/\?t=\d+\.[A-Za-z0-9_-]+$/);
+    assert.equal(url.includes('runner-secret-that-must-not-leak'), false);
+  });
+});
+
+test('runner preview gateway supports HTTP, cookies and WebSocket/HMR forwarding', () => {
+  const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
+  const internal = fs.readFileSync(new URL('../../../runner-runtime/preview-proxy.mjs', import.meta.url), 'utf8');
+  assert.match(manager, /validPreviewToken/);
+  assert.match(manager, /HttpOnly; Secure; SameSite=Lax/);
+  assert.match(manager, /server\.on\('upgrade'/);
+  assert.match(manager, /PREVIEW_PROXY_PORT/);
+  assert.match(internal, /127\.0\.0\.1/);
+  assert.match(internal, /server\.on\('upgrade'/);
+  assert.match(internal, /BLOCKED = new Set\(\[4096, PORT\]\)/);
 });
