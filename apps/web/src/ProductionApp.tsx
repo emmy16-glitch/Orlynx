@@ -1303,11 +1303,18 @@ export default function ProductionApp() {
               <OperationProgress
                 title="Connecting GitHub"
                 className="page-operation-progress"
-                steps={[
-                  { key: 'github.verify', label: 'Verifying installation…', tone: syncStep === 'Verifying installation' ? 'active' : 'done' },
-                  { key: 'github.repos', label: 'Fetching repositories…', tone: syncStep === 'Fetching repositories' ? 'active' : (syncStep === 'Finishing setup' || !syncStep ? 'done' : 'active') },
-                  { key: 'github.finish', label: 'Preparing Orlynx…', tone: syncStep === 'Finishing setup' ? 'active' : 'done' },
-                ]}
+                steps={syncStep === 'Verifying installation'
+                  ? [{ key: 'github.verify', label: 'Verifying installation…', tone: 'active' }]
+                  : syncStep === 'Fetching repositories'
+                    ? [
+                        { key: 'github.verify', label: 'Verifying installation…', tone: 'done' },
+                        { key: 'github.repos', label: 'Fetching repositories…', tone: 'active' },
+                      ]
+                    : [
+                        { key: 'github.verify', label: 'Verifying installation…', tone: 'done' },
+                        { key: 'github.repos', label: 'Fetching repositories…', tone: 'done' },
+                        { key: 'github.finish', label: 'Preparing Orlynx…', tone: 'active' },
+                      ]}
               />
             </section> : <section className="repo-flow-screen">
               <header className="repo-flow-header"><div className="flow-brand"><span className="brand-mark" /><b>Orlynx</b></div><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></header>
