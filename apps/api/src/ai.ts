@@ -301,10 +301,11 @@ export function providerHasKey(providerId: string): boolean {
 
 // ---- session / project / global preferences (server-side) ----
 
-export function defaultPrefs(): { mode: AgentMode; permission: PermissionProfile; modelId?: string } {
+export function defaultPrefs(): { adapterId: string; mode: AgentMode; permission: PermissionProfile; modelId?: string } {
   const mode = (process.env.ORLYNX_DEFAULT_MODE || 'build').toLowerCase();
   const permission = (process.env.ORLYNX_DEFAULT_PERMISSION || 'ask-first').toLowerCase();
   return {
+    adapterId: process.env.ORLYNX_DEFAULT_AGENT_ADAPTER || 'opencode',
     mode: (['build', 'plan', 'ask'] as AgentMode[]).includes(mode as AgentMode) ? (mode as AgentMode) : 'build',
     permission: (['full', 'ask-first', 'read-only'] as PermissionProfile[]).includes(permission as PermissionProfile) ? (permission as PermissionProfile) : 'ask-first',
     modelId: process.env.ORLYNX_DEFAULT_MODEL || undefined,
@@ -328,6 +329,7 @@ export function getSessionPrefs(sessionId: string, project?: string): AISessionP
   const defaults = defaultPrefs();
   return {
     sessionId,
+    adapterId: stored?.adapterId || defaults.adapterId,
     providerId: stored?.providerId || projectDefaults?.providerId,
     modelId: stored?.modelId || projectDefaults?.modelId || defaults.modelId,
     mode: stored?.mode || projectDefaults?.mode || defaults.mode,
@@ -336,14 +338,15 @@ export function getSessionPrefs(sessionId: string, project?: string): AISessionP
   };
 }
 
-export function setSessionPrefs(sessionId: string, patch: { providerId?: string; modelId?: string; mode?: AgentMode; permission?: PermissionProfile }): AISessionPrefs {
+export function setSessionPrefs(sessionId: string, patch: { adapterId?: string; providerId?: string; modelId?: string; mode?: AgentMode; permission?: PermissionProfile }): AISessionPrefs {
   if (patch.mode && !['build', 'plan', 'ask'].includes(patch.mode)) throw new Error('Unknown agent mode.');
   if (patch.permission && !['full', 'ask-first', 'read-only'].includes(patch.permission)) throw new Error('Unknown permission profile.');
   if (patch.modelId !== undefined && patch.modelId !== '' && !/^[\w.-]+\/[\w.:-]+$/.test(patch.modelId)) throw new Error('Unknown model. Choose a model from the available list.');
   store.db.aiSessions ||= {};
-  const current = store.db.aiSessions[sessionId] || { sessionId, mode: 'build' as AgentMode, permission: 'ask-first' as PermissionProfile, updatedAt: new Date().toISOString() };
+  const current = store.db.aiSessions[sessionId] || { sessionId, adapterId: 'opencode', mode: 'build' as AgentMode, permission: 'ask-first' as PermissionProfile, updatedAt: new Date().toISOString() };
   const next: AISessionPrefs = {
     ...current,
+    ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId || 'opencode' } : {}),
     ...(patch.providerId !== undefined ? { providerId: patch.providerId || undefined } : {}),
     ...(patch.modelId !== undefined ? { modelId: patch.modelId || undefined, providerId: patch.modelId ? patch.modelId.split('/')[0] : current.providerId } : {}),
     ...(patch.mode ? { mode: patch.mode } : {}),
