@@ -3207,15 +3207,15 @@ html[data-theme="light"] .composer-options-panel {
   position: absolute;
   z-index: 60;
   left: 52px;
-  bottom: calc(100% + 9px);
-  width: min(350px, calc(100vw - 28px));
+  bottom: calc(100% + 6px);
+  width: min(302px, calc(100vw - 24px));
 }
 .ai-settings-switcher-anchor {
   position: fixed;
   z-index: 60;
-  top: 78px;
-  right: 24px;
-  width: min(360px, calc(100vw - 32px));
+  top: 74px;
+  right: 20px;
+  width: min(320px, calc(100vw - 28px));
 }
 .composer-ai-dropdown .ai-switcher-popover,
 .ai-settings-switcher-anchor .ai-switcher-popover {
@@ -3223,63 +3223,123 @@ html[data-theme="light"] .composer-options-panel {
   left: auto;
   bottom: auto;
   width: 100%;
-  max-height: 340px;
+  max-height: 252px;
   transform: none;
-  padding: 10px;
-  border-radius: 13px;
+  overflow: hidden;
+  padding: 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
 }
-.composer-ai-dropdown .ai-switcher-header {
-  min-height: 32px;
-  padding-bottom: 7px;
+.ai-dropdown-topline {
+  min-height: 31px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 4px 7px;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.composer-ai-dropdown .ai-switcher-section {
+.ai-dropdown-agent-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  line-height: 1.05;
+}
+.ai-dropdown-agent-copy b { font-size: 10.5px; }
+.ai-dropdown-agent-copy small {
+  color: var(--foreground-muted);
+  font-size: 8.5px;
+}
+.ai-dropdown-count {
+  color: var(--foreground-subtle);
+  font-size: 8.5px;
+  white-space: nowrap;
+}
+.ai-agent-compact-list {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 6px 0 2px;
+  scrollbar-width: thin;
+}
+.ai-agent-compact {
+  min-height: 29px;
+  display: grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
   gap: 6px;
-  padding-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 7px;
+  color: var(--foreground);
+  background: var(--surface);
+  font-size: 9px;
+  white-space: nowrap;
+  cursor: pointer;
 }
-.composer-ai-dropdown .ai-switcher-section + .ai-switcher-section {
-  margin-top: 8px;
+.ai-agent-compact.selected { background: var(--surface-hover); border-color: var(--border-strong); }
+.composer-ai-dropdown .ai-switcher-search,
+.ai-settings-switcher-anchor .ai-switcher-search {
+  min-height: 31px;
+  margin: 6px 0;
+  border-radius: 8px;
+  padding: 0 8px;
 }
-.composer-ai-dropdown .ai-agent-pill {
-  min-height: 36px;
+.composer-ai-dropdown .ai-switcher-search input,
+.ai-settings-switcher-anchor .ai-switcher-search input {
+  min-height: 29px;
+  padding: 4px 0;
+  font-size: 9.5px;
 }
-.composer-ai-dropdown .ai-switcher-search {
+.composer-ai-dropdown .ai-model-compact-list,
+.ai-settings-switcher-anchor .ai-model-compact-list {
+  max-height: 155px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border-top: 1px solid var(--border-subtle);
+}
+.composer-ai-dropdown .ai-model-compact,
+.ai-settings-switcher-anchor .ai-model-compact {
   min-height: 34px;
+  padding: 5px 7px;
+  border-radius: 7px;
 }
-.composer-ai-dropdown .ai-model-compact-list {
-  max-height: 190px;
+.composer-ai-dropdown .ai-model-compact b,
+.ai-settings-switcher-anchor .ai-model-compact b { font-size: 9.5px; }
+.composer-ai-dropdown .ai-model-compact small,
+.ai-settings-switcher-anchor .ai-model-compact small { font-size: 8px; }
+.composer-ai-dropdown .ai-quick-connect,
+.ai-settings-switcher-anchor .ai-quick-connect {
+  gap: 7px;
 }
-.composer-ai-dropdown .ai-model-compact {
-  min-height: 38px;
-  padding: 6px 9px;
-}
-.composer-ai-dropdown .ai-model-compact b { font-size: 10px; }
-.composer-ai-dropdown .ai-model-compact small { font-size: 8.5px; }
+.composer-ai-dropdown .ai-quick-connect input,
+.ai-settings-switcher-anchor .ai-quick-connect input { min-height: 32px; }
 
 @media (max-width: 850px) {
   .composer-ai-dropdown {
-    left: 12px;
-    bottom: calc(100% + 8px);
-    width: min(340px, calc(100vw - 24px));
-  }
-  .composer-ai-dropdown .ai-switcher-popover {
-    max-height: min(330px, calc(100dvh - 220px));
+    left: 10px;
+    bottom: calc(100% + 6px);
+    width: min(300px, calc(100vw - 20px));
   }
 }
 @media (max-width: 560px) {
   .composer-ai-dropdown {
-    left: 6px;
-    width: calc(100vw - 20px);
+    left: 4px;
+    width: calc(100vw - 16px);
   }
   .composer-ai-dropdown .ai-switcher-popover {
-    max-height: min(310px, calc(100dvh - 230px));
+    max-height: 240px;
   }
   .composer-ai-dropdown .ai-model-compact-list {
-    max-height: 170px;
+    max-height: 145px;
   }
   .ai-settings-switcher-anchor {
-    top: 70px;
-    right: 10px;
-    left: 10px;
+    top: 68px;
+    right: 8px;
+    left: 8px;
     width: auto;
   }
 }

@@ -1006,7 +1006,9 @@ export default function ProductionApp() {
                   const failureSummary = String(failure?.summary || '');
                   const runtimeRecovered = selectedAgentAdapter?.state === 'ready'
                     && /AI is not ready|OpenCode adapter is not ready|AI runtime unavailable|workspace connection interrupted/i.test(failureSummary);
-                  if (runtimeRecovered) return null;
+                  const staleFreeModelAuthFailure = Boolean(ai.model?.free)
+                    && /rejected the saved connection|credential.*rejected|HTTP 401|Invalid API key/i.test(failureSummary);
+                  if (runtimeRecovered || staleFreeModelAuthFailure) return null;
                   const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(failureSummary);
                   return <AgentErrorCard
                     title={failure?.title || (modelProblem ? 'This model could not respond.' : 'Orlynx needs attention.')}
@@ -1188,6 +1190,7 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const connected = accountConnected || publicModelsAvailable;
   const query = search.toLowerCase().trim();
   const filtered = available.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
+  const selectedAdapter = adapters.find((adapter: any) => adapter.id === selectedAdapterId) || adapters[0];
 
   useEffect(() => {
     const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
@@ -1216,46 +1219,42 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   }
 
   return <aside ref={popoverRef} className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
-    <div className="ai-switcher-header">
-      <div><b>AI</b><small>{connected ? 'Choose agent and model' : 'Connect AI to continue'}</small></div>
-      <button type="button" className="icon-button compact-icon" aria-label="Close AI switcher" onClick={onClose}><Icon name="close" size={15} /></button>
-    </div>
-
     {sheetError && <div className="screen-alert tone-fail ai-sheet-alert" role="alert"><span>{sheetError}</span></div>}
 
     {!connected ? <form className="ai-quick-connect" onSubmit={connectOpenCode}>
-      <div><b>OpenCode</b><small>Paste your API key, or use the public models when available.</small></div>
-      <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenCode API key" autoComplete="off" spellCheck={false} />
+      <div><b>Connect OpenCode</b><small>Use a Zen API key for paid models. Free models remain available without it.</small></div>
+      <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenCode Zen API key" autoComplete="off" spellCheck={false} />
       <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : 'Connect'}</Button>
     </form> : <>
-      <section className="ai-switcher-section">
-        <span className="ai-switcher-label">Agent</span>
-        <div className="ai-agent-pills" role="list">
-          {adapters.length ? adapters.map((adapter: any) => {
-            const selected = adapter.id === selectedAdapterId;
-            const unavailable = adapter.state === 'failed';
-            return <button key={adapter.id} type="button" className={selected ? 'ai-agent-pill selected' : 'ai-agent-pill'} onClick={() => onSelectAdapter(adapter.id)} disabled={unavailable}>
-              <span className={`ai-control-state state-${adapter.state || 'available'}`} />
-              <span><b>{adapter.displayName}</b><small>{unavailable ? 'Unavailable' : adapter.state === 'starting' || adapter.state === 'installing' ? 'Starting' : 'Ready'}</small></span>
-              {selected && <Icon name="check" size={13} />}
-            </button>;
-          }) : <span className="small">Loading agent…</span>}
-        </div>
-      </section>
+      <div className="ai-dropdown-topline">
+        <span className={`ai-control-state state-${selectedAdapter?.state || 'available'}`} aria-hidden="true" />
+        <span className="ai-dropdown-agent-copy"><b>{selectedAdapter?.displayName || 'OpenCode'}</b><small>{selectedAdapter?.state === 'starting' || selectedAdapter?.state === 'installing' ? 'Starting' : selectedAdapter?.state === 'failed' ? 'Unavailable' : 'Ready'}</small></span>
+        <span className="ai-dropdown-count">{filtered.length} models</span>
+      </div>
 
-      <section className="ai-switcher-section model-section">
-        <div className="ai-switcher-label-row"><span className="ai-switcher-label">Model</span><small>{filtered.length} available</small></div>
-        {available.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-        {available.length
-          ? <div className="ai-model-compact-list">
-              {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
-                <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
-                {m.id === selectedModelId ? <Icon name="check" size={13} /> : null}
-              </button>)}
-              {!filtered.length && <p className="ai-switcher-empty">No matching models.</p>}
-            </div>
-          : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
-      </section>
+      {adapters.length > 1 && <div className="ai-agent-compact-list" role="list" aria-label="Agent">
+        {adapters.map((adapter: any) => {
+          const selected = adapter.id === selectedAdapterId;
+          const unavailable = adapter.state === 'failed';
+          return <button key={adapter.id} type="button" className={selected ? 'ai-agent-compact selected' : 'ai-agent-compact'} onClick={() => onSelectAdapter(adapter.id)} disabled={unavailable}>
+            <span className={`ai-control-state state-${adapter.state || 'available'}`} />
+            <span>{adapter.displayName}</span>
+            {selected && <Icon name="check" size={12} />}
+          </button>;
+        })}
+      </div>}
+
+      {available.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
+
+      {available.length
+        ? <div className="ai-model-compact-list" role="listbox" aria-label="Model">
+            {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" role="option" aria-selected={m.id === selectedModelId} className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
+              <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
+              {m.id === selectedModelId ? <Icon name="check" size={12} /> : null}
+            </button>)}
+            {!filtered.length && <p className="ai-switcher-empty">No matching models.</p>}
+          </div>
+        : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
     </>}
   </aside>;
 }

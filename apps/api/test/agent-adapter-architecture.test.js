@@ -61,7 +61,7 @@ test('visible agent controls and task admission use the selected adapter explici
   const web = fs.readFileSync(new URL('../../../apps/web/src/ProductionApp.tsx', import.meta.url), 'utf8');
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   assert.match(web, /className="ai-control-trigger"/);
-  assert.match(web, /className="ai-switcher-label">Agent<\/span>/);
+  assert.match(web, /className="ai-dropdown-topline"/);
   assert.match(web, /onSelectAdapter=\{\(id\) =>/);
   assert.match(web, /adapterId: ai\.adapterId \|\| 'opencode'/);
   assert.match(routes, /selectedAdapterId/);

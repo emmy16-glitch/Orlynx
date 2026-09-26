@@ -68,8 +68,8 @@ describe('workspace trust and AI control contract', () => {
 
   it('uses one authored agent/model control instead of native composer selects', () => {
     assert.match(src, /className="ai-control-trigger"/, 'unified AI control trigger missing');
-    assert.match(src, /className="ai-switcher-label">Agent<\/span>/, 'agent switcher section missing');
-    assert.match(src, /className="ai-switcher-label">Model<\/span>/, 'model switcher section missing');
+    assert.match(src, /className="ai-dropdown-topline"/, 'compact AI dropdown header missing');
+    assert.match(src, /aria-label="Model"/, 'model picker list missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
     assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');
@@ -79,6 +79,12 @@ describe('workspace trust and AI control contract', () => {
 
   it('routes model recovery back into the unified AI controls', () => {
     assert.match(src, /if \(modelProblem\) \{\s*setShowConnectAI\(true\);/, 'model recovery does not open AI controls');
+  });
+
+  it('keeps the composer picker compact and scrollable', () => {
+    const css = fs.readFileSync(path.join(root, 'apps/web/src/styles.css'), 'utf8');
+    assert.match(css, /\.composer-ai-dropdown[\s\S]*?width: min\(302px/, 'composer dropdown is too wide');
+    assert.match(css, /\.composer-ai-dropdown \.ai-model-compact-list[\s\S]*?max-height: 155px/, 'model list is not compact and scrollable');
   });
 });
 
