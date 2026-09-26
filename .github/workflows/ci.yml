@@ -34,7 +34,12 @@ jobs:
         run: npm run typecheck
 
       - name: Tests
-        run: npm test
+        run: |
+          npm run build --workspace=@orlynx/shared
+          for file in apps/api/test/*.test.js; do
+            echo "=== TEST FILE: $file ==="
+            timeout 45s node --import tsx --test "$file"
+          done
 
       - name: Build
         run: npm run build
