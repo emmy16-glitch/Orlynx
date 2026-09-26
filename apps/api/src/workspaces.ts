@@ -24,8 +24,13 @@ export function workspaceConnectionMatchesRevision(connectionId: string | undefi
   return Boolean(connectionId?.startsWith(`bridge-${revision}-`));
 }
 
-export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'>): boolean {
+export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'> & Partial<Pick<WorkspaceRecord, 'provider'>>): boolean {
   if (workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
+  // Codespaces receive the current bridge bundle during bootstrap. Warm runners
+  // use a bridge baked into their versioned runtime image, so they are upgraded
+  // by replacing/redeploying that image rather than pretending an API refresh
+  // changed the already-running container.
+  if (workspace.provider === 'orlynx-runner') return false;
   return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
 }
 
@@ -138,7 +143,7 @@ async function prepareWorkspaceOnce(
     // Encode the current bundle fingerprint in connectionId so the next Build
     // request can refresh only the private Orlynx bridge, without rebuilding
     // the Codespace or touching repository files.
-    const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
+    const bridgePrefix = workspace.provider === 'orlynx-runner' ? 'bridge-runner-' : `bridge-${bridgeRuntimeRevision()}-`;
     if (workspaceNeedsRuntimeRefresh(workspace)) {
       refreshFallback = workspace;
       refreshAdapterFallback = await repository.listWorkspaceAgentAdapters(workspace.id);
