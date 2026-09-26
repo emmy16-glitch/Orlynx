@@ -929,6 +929,35 @@ export default function ProductionApp() {
   ] as const;
 
   const onboarded = Boolean(session || integration.github?.connected || recentProjects.length);
+  const renderAiSwitcher = () => session ? <ConnectAiSheet
+    models={aiModels}
+    providers={aiProviders}
+    adapters={ai.adapters || []}
+    selectedAdapterId={ai.adapterId || 'opencode'}
+    selectedModelId={ai.model?.id || ''}
+    modelError={aiModelError}
+    search={modelSearch}
+    setSearch={setModelSearch}
+    onRefresh={async () => { await refreshAi(session.id); }}
+    onSelectAdapter={(id) => {
+      const adapter = (ai.adapters || []).find((candidate: any) => candidate.id === id);
+      if (!adapter) return;
+      setAi((current: any) => ({ ...current, adapterId: id }));
+      if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
+      setError('');
+      void setAiPrefs({ adapterId: id });
+    }}
+    onSelectModel={(id) => {
+      const chosen = aiModels.find((model: any) => model.id === id);
+      if (!chosen || chosen.status !== 'available') return;
+      setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
+      if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
+      setError('');
+      setShowConnectAI(false);
+      void setAiPrefs({ modelId: id });
+    }}
+    onClose={() => setShowConnectAI(false)}
+  /> : null;
   return (
     <div className={`orlynx-app ${page === 'workspace' ? 'is-workspace' : ''} ${page === 'welcome' ? 'is-welcome' : ''} ${page === 'github' ? 'is-github' : ''}`}>
       {page !== 'welcome' && page !== 'github' && page !== 'workspace' && onboarded && <aside className="sidebar">
@@ -1065,7 +1094,7 @@ export default function ProductionApp() {
           </div></div>
         : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
     </div>
-  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
+  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
@@ -1137,35 +1166,7 @@ export default function ProductionApp() {
           </main>
           {onboarded && page !== 'github' && <nav className="mobile-global-nav" aria-label="Main navigation">{globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} /><span>{label}</span></button>)}</nav>}
         </>}
-        {showConnectAI && session && <ConnectAiSheet
-          models={aiModels}
-          providers={aiProviders}
-          adapters={ai.adapters || []}
-          selectedAdapterId={ai.adapterId || 'opencode'}
-          selectedModelId={ai.model?.id || ''}
-          modelError={aiModelError}
-          search={modelSearch}
-          setSearch={setModelSearch}
-          onRefresh={async () => { await refreshAi(session.id); }}
-          onSelectAdapter={(id) => {
-            const adapter = (ai.adapters || []).find((candidate: any) => candidate.id === id);
-            if (!adapter) return;
-            setAi((current: any) => ({ ...current, adapterId: id }));
-            if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
-            setError('');
-            void setAiPrefs({ adapterId: id });
-          }}
-          onSelectModel={(id) => {
-            const chosen = aiModels.find((model: any) => model.id === id);
-            if (!chosen || chosen.status !== 'available') return;
-            setAi((current: any) => ({ ...current, model: chosen, state: 'ready', message: 'Ready.' }));
-            if (lastRun?.state === 'failed') { setLastRun(null); runRef.current = null; }
-            setError('');
-            setShowConnectAI(false);
-            void setAiPrefs({ modelId: id });
-          }}
-          onClose={() => setShowConnectAI(false)}
-        />}
+        {showConnectAI && session && page !== 'workspace' && <div className="ai-settings-switcher-anchor">{renderAiSwitcher()}</div>}
       </div>
     </div>
   );
@@ -1179,6 +1180,7 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [sheetError, setSheetError] = useState('');
+  const popoverRef = useRef<HTMLElement | null>(null);
   const openCode = providers.find((provider: any) => provider.id === 'opencode');
   const accountConnected = openCode?.state === 'connected';
   const available = models.filter((m) => m.status === 'available');
@@ -1188,9 +1190,16 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const filtered = available.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
+    const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const closeOnPointer = (event: PointerEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', closeOnKey);
+    window.addEventListener('pointerdown', closeOnPointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnKey);
+      window.removeEventListener('pointerdown', closeOnPointer);
+    };
   }, [onClose]);
 
   async function connectOpenCode(event: React.FormEvent) {
@@ -1206,7 +1215,7 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
     } finally { setBusy(false); }
   }
 
-  return <aside className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
+  return <aside ref={popoverRef} className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
     <div className="ai-switcher-header">
       <div><b>AI</b><small>{connected ? 'Choose agent and model' : 'Connect AI to continue'}</small></div>
       <button type="button" className="icon-button compact-icon" aria-label="Close AI switcher" onClick={onClose}><Icon name="close" size={15} /></button>

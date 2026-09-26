@@ -3200,3 +3200,86 @@ html[data-theme="light"] .composer-options-panel {
   .theme-switcher { width: 100%; margin-top: 2px; }
   .theme-switcher button { flex: 1; }
 }
+
+
+/* === Composer-anchored AI dropdown: 2026-09-26 === */
+.composer-ai-dropdown {
+  position: absolute;
+  z-index: 60;
+  left: 52px;
+  bottom: calc(100% + 9px);
+  width: min(350px, calc(100vw - 28px));
+}
+.ai-settings-switcher-anchor {
+  position: fixed;
+  z-index: 60;
+  top: 78px;
+  right: 24px;
+  width: min(360px, calc(100vw - 32px));
+}
+.composer-ai-dropdown .ai-switcher-popover,
+.ai-settings-switcher-anchor .ai-switcher-popover {
+  position: static;
+  left: auto;
+  bottom: auto;
+  width: 100%;
+  max-height: 340px;
+  transform: none;
+  padding: 10px;
+  border-radius: 13px;
+}
+.composer-ai-dropdown .ai-switcher-header {
+  min-height: 32px;
+  padding-bottom: 7px;
+}
+.composer-ai-dropdown .ai-switcher-section {
+  gap: 6px;
+  padding-top: 8px;
+}
+.composer-ai-dropdown .ai-switcher-section + .ai-switcher-section {
+  margin-top: 8px;
+}
+.composer-ai-dropdown .ai-agent-pill {
+  min-height: 36px;
+}
+.composer-ai-dropdown .ai-switcher-search {
+  min-height: 34px;
+}
+.composer-ai-dropdown .ai-model-compact-list {
+  max-height: 190px;
+}
+.composer-ai-dropdown .ai-model-compact {
+  min-height: 38px;
+  padding: 6px 9px;
+}
+.composer-ai-dropdown .ai-model-compact b { font-size: 10px; }
+.composer-ai-dropdown .ai-model-compact small { font-size: 8.5px; }
+
+@media (max-width: 850px) {
+  .composer-ai-dropdown {
+    left: 12px;
+    bottom: calc(100% + 8px);
+    width: min(340px, calc(100vw - 24px));
+  }
+  .composer-ai-dropdown .ai-switcher-popover {
+    max-height: min(330px, calc(100dvh - 220px));
+  }
+}
+@media (max-width: 560px) {
+  .composer-ai-dropdown {
+    left: 6px;
+    width: calc(100vw - 20px);
+  }
+  .composer-ai-dropdown .ai-switcher-popover {
+    max-height: min(310px, calc(100dvh - 230px));
+  }
+  .composer-ai-dropdown .ai-model-compact-list {
+    max-height: 170px;
+  }
+  .ai-settings-switcher-anchor {
+    top: 70px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+}

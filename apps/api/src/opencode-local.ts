@@ -438,7 +438,22 @@ export async function streamWithOfficialOpenCode(input: {
   input.signal.throwIfAborted();
   const started = performance.now();
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
-  if (resolved.free) {
+
+  // Connected OpenCode accounts should always use the direct provider route,
+  // including zero-cost/free models. This avoids making normal Ask/Plan chat
+  // depend on a sleeping auxiliary Render runtime. The runtime remains the
+  // fallback only for public free-model access when no account credential is
+  // available.
+  let savedKey: string | undefined;
+  try {
+    savedKey = await savedOpenCodeAccountKey(input.userId);
+  } catch {
+    if (!resolved.free) {
+      throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
+    }
+  }
+
+  if (resolved.free && !savedKey) {
     return streamFreeModelThroughOpenCodeRuntime({
       runtimeKey: input.runtimeKey,
       requestId: input.requestId,
@@ -452,15 +467,7 @@ export async function streamWithOfficialOpenCode(input: {
     });
   }
 
-  let savedKey: string | undefined;
-  if (!resolved.free) {
-    try {
-      savedKey = await savedOpenCodeAccountKey(input.userId);
-    } catch {
-      throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
-    }
-  }
-  const auth = resolveAuth(false, savedKey);
+  const auth = resolveAuth(resolved.free, savedKey);
   input.signal.throwIfAborted();
   // Scope cached clients to user + credential fingerprint. Rotation cannot reuse
   // the old client. Never log this fingerprint or the credential.

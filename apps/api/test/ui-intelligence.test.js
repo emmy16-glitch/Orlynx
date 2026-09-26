@@ -72,7 +72,9 @@ describe('workspace trust and AI control contract', () => {
     assert.match(src, /className="ai-switcher-label">Model<\/span>/, 'model switcher section missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
-    assert.match(src, /showConnectAI && session && <ConnectAiSheet/, 'AI switcher is not rendered from the shared app layer');
+    assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');
+    assert.match(src, /className="composer-ai-dropdown"/, 'AI switcher is not anchored to the composer');
+    assert.match(src, /page !== 'workspace'.*ai-settings-switcher-anchor/, 'settings AI switcher fallback missing');
   });
 
   it('routes model recovery back into the unified AI controls', () => {
