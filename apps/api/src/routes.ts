@@ -674,10 +674,25 @@ router.post('/sessions/:id/cloud/reconnect', async (req, res) => {
     const repository = controlPlaneRepository(); const current = await repository.getWorkspaceBySession(s.id); const durable = await repository.getSession(s.id);
     const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
     if (!current || !durable || !githubRepo) return res.status(404).json({ error: 'Cloud workspace not found.' });
-    await repository.putWorkspace({ ...current, state: 'connecting', bridgeState: 'disconnected' , connectionId: undefined, updatedAt: new Date().toISOString() });
-    emit(s.id, 'workspace.reconnecting', { workspaceId: current.id });
-    return res.status(202).json(await prepareWorkspace({ sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch }));
-  } catch (error) { return res.status(502).json({ error: 'Workspace connection interrupted.', retryable: true, diagnostic: error instanceof Error ? error.message : 'Reconnect failed.' }); }
+    const reconnecting = { ...current, state: 'connecting' as const, bridgeState: 'disconnected' as const, connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
+    await repository.putWorkspace(reconnecting);
+    emit(s.id, 'workspace.reconnecting', { workspaceId: current.id, message: 'Reconnecting to the development environment…' });
+
+    // Reconnect is asynchronous just like first startup. Holding this HTTP
+    // request open while GitHub boots/SSHs causes browser timeouts and duplicate
+    // retries. The durable workspace row + SSE/session polling report progress.
+    void prepareWorkspace({ sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch })
+      .then(async (workspace) => {
+        if (workspace.state === 'ready' && workspace.bridgeState === 'ready') await promoteNextQueuedRun(s.id);
+      })
+      .catch((error) => {
+        console.warn(`[workspace] background reconnect failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      });
+
+    return res.status(202).json(reconnecting);
+  } catch (error) {
+    return res.status(502).json({ error: 'Workspace connection interrupted.', retryable: true, diagnostic: error instanceof Error ? error.message : 'Reconnect failed.' });
+  }
 });
 
 router.post('/sessions/:id/exec', async (req, res) => {

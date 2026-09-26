@@ -305,20 +305,34 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     active = false; clearTimeout(helloTimeout); clearInterval(commands); clearInterval(credentials);
     if (activeSockets.get(claims.workspaceId) !== ws) return;
     activeSockets.delete(claims.workspaceId);
-    // A transient socket close may reconnect by itself. Give the bridge a short
-    // grace window; if no replacement socket arrives, mark the transport lost
-    // and re-bootstrap the existing Codespace automatically. Keeping a dead
-    // socket marked "ready" strands queued Build work indefinitely.
+    // A transient socket close may reconnect by itself. Do not immediately
+    // SSH back into an idle Codespace: that creates background churn and turns
+    // harmless network/deploy blips into expensive bootstrap failures. Only
+    // auto-repair when queued/running workspace work actually needs the bridge.
     if (shouldRecoverTransientBridgeClose(authenticatedHello, code)) {
-      console.info('[bridge] transient transport close; waiting briefly for reconnect');
+      const graceMs = Math.max(10_000, Number(process.env.ORLYNX_BRIDGE_RECONNECT_GRACE_MS || 20_000));
+      console.info(`[bridge] transient transport close; waiting ${Math.round(graceMs / 1000)}s for reconnect`);
       const recovery = setTimeout(async () => {
         if (activeSockets.has(claims.workspaceId)) return;
         try {
           const current = await repository.getWorkspace(claims.workspaceId);
           if (!current || current.connectionId !== claims.connectionId) return;
+
+          const tasks = await repository.listTasks(claims.sessionId);
+          const activeWorkspaceWork = tasks.some((task) =>
+            (task.plane || 'workspace') === 'workspace' &&
+            (task.state === 'queued' || task.state === 'running')
+          );
+
           const lost = await markWorkspaceConnectionLost(claims.workspaceId);
           if (!lost) return;
-          console.warn(`[bridge] transient close did not recover; re-bootstrapping workspace=${claims.workspaceId}`);
+
+          if (!activeWorkspaceWork) {
+            console.info(`[bridge] idle workspace transport lost; deferring SSH repair until next Build task workspace=${claims.workspaceId}`);
+            return;
+          }
+
+          console.warn(`[bridge] active Build work needs transport recovery; re-bootstrapping workspace=${claims.workspaceId}`);
           await prepareWorkspace({
             sessionId: lost.sessionId,
             userId: lost.userId,
@@ -330,7 +344,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         } catch (error) {
           console.warn(`[bridge] automatic transport recovery failed workspace=${claims.workspaceId}: ${error instanceof Error ? error.message : 'unknown error'}`);
         }
-      }, 5_000);
+      }, graceMs);
       recovery.unref?.();
       return;
     }

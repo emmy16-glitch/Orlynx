@@ -151,6 +151,7 @@ export default function ProductionApp() {
   const rafRef = useRef<number | null>(null);
   const runRef = useRef<any>(null);
   const partialCutoffRef = useRef(0);
+  const sessionRefreshesRef = useRef(new Map<string, Promise<void>>());
   const ptyRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
   const repoLoadAttempt = useRef(false);
@@ -222,28 +223,56 @@ export default function ProductionApp() {
     }
   }
 
-  const refreshSession = useCallback(async (id: string) => {
-    const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
-      fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
-      fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
-      fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
-    ]);
-    setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
-    const latestRun = runData.slice(-1)[0] || null;
-    setLastRun(latestRun); runRef.current = latestRun;
-    if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
-      setDraftReply(String(latestRun.partialText));
-      partialCutoffRef.current = Date.parse(latestRun.partialUpdatedAt || '') || 0;
-    } else if (latestRun?.state !== 'running') {
-      setDraftReply('');
-      partialCutoffRef.current = 0;
-    }
-    setSession(details); currentSessionRef.current = details;
-    refreshIntegrations().catch(() => {});
-    refreshAi(id).catch(() => {});
-  }, [refreshAi]);
+  const refreshSession = useCallback((id: string): Promise<void> => {
+    const inFlight = sessionRefreshesRef.current.get(id);
+    if (inFlight) return inFlight;
+
+    const refresh = (async () => {
+      const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
+        fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
+        fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
+      ]);
+
+      // Ignore a response for a conversation the user has already left.
+      if (currentSessionRef.current?.id && currentSessionRef.current.id !== id) return;
+
+      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
+      const latestRun = runData.slice(-1)[0] || null;
+      setLastRun(latestRun); runRef.current = latestRun;
+
+      if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
+        const snapshot = String(latestRun.partialText);
+        const snapshotUpdatedAt = Date.parse(latestRun.partialUpdatedAt || '') || 0;
+        const cutoff = partialCutoffRef.current;
+
+        // SSE is the hot path. A slower HTTP refresh must never replace newer
+        // streamed text with an older partial snapshot.
+        setDraftReply((current) => {
+          if (snapshotUpdatedAt < cutoff && current) return current;
+          if (current && current.startsWith(snapshot)) return current;
+          if (current && snapshot.startsWith(current)) return snapshot;
+          return snapshotUpdatedAt >= cutoff ? snapshot : current;
+        });
+        partialCutoffRef.current = Math.max(cutoff, snapshotUpdatedAt);
+      } else if (latestRun?.state !== 'running') {
+        setDraftReply('');
+        partialCutoffRef.current = 0;
+      }
+
+      setSession(details); currentSessionRef.current = details;
+      refreshIntegrations().catch(() => {});
+      refreshAi(id).catch(() => {});
+    })();
+
+    sessionRefreshesRef.current.set(id, refresh);
+    void refresh.finally(() => {
+      if (sessionRefreshesRef.current.get(id) === refresh) sessionRefreshesRef.current.delete(id);
+    });
+    return refresh;
+  }, [refreshAi, refreshIntegrations]);
 
   const ingest = useCallback((sessionId: string, event: any) => {
     if (!event?.eventId || seenRef.current.has(event.eventId)) return;
@@ -252,13 +281,40 @@ export default function ProductionApp() {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
-      const batch = pendingRef.current.splice(0);
+      const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
       setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-300));
-      const textEvents = batch.filter((item) => item.type === 'message.delta' && (Date.parse(item.timestamp || '') || 0) > partialCutoffRef.current);
-      if (textEvents.length) setDraftReply((previous) => previous + textEvents.map((item) => String(item.payload?.delta || '')).join(''));
-      const terminalEvents = batch.filter((item) => item.payload?.sourceType === 'pty.output');
-      if (terminalEvents.length) setTerminalOutput((previous) => `${previous}${terminalEvents.map((item) => String(item.payload?.data || '')).join('')}`.slice(-100_000));
+
+      // Preserve event order. A run.started and its first message.delta can
+      // arrive in the same animation frame; clearing the draft after appending
+      // deltas used to erase the first streamed token.
+      let replaceDraft = false;
+      let newestDeltaAt = partialCutoffRef.current;
+      const deltas: string[] = [];
+      const terminalChunks: string[] = [];
       for (const item of batch) {
+        if (item.type === 'run.started') {
+          replaceDraft = true;
+          deltas.length = 0;
+          partialCutoffRef.current = 0;
+          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
+        }
+
+        if (item.type === 'message.delta') {
+          const deltaAt = Date.parse(item.timestamp || '') || 0;
+          if (deltaAt > partialCutoffRef.current) {
+            deltas.push(String(item.payload?.delta || ''));
+            newestDeltaAt = Math.max(newestDeltaAt, deltaAt);
+          }
+        }
+        if (item.payload?.sourceType === 'pty.output') terminalChunks.push(String(item.payload?.data || ''));
+
+        if (item.type === 'run.completed') {
+          setLastRun((current: any) => current?.id === item.runId ? { ...current, state: 'completed', finishedAt: item.timestamp } : current);
+        }
+        if (item.type === 'run.failed') {
+          setLastRun((current: any) => current?.id === item.runId ? { ...current, state: item.payload?.cancelled ? 'cancelled' : 'failed', finishedAt: item.timestamp } : current);
+        }
+
         if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
         if (item.type === 'state.delta' && item.payload?.scope === 'agent-adapter') {
           refreshAi(sessionId).catch(() => {});
@@ -267,14 +323,18 @@ export default function ProductionApp() {
           }
         }
         if (item.type === 'workspace.preparing' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
-        if (item.type === 'workspace.ready') setWorkspaceReadNotice('');
-        if (item.type === 'run.started') {
-          setDraftReply('');
-          partialCutoffRef.current = 0;
-          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
+        if (item.type === 'workspace.ready') {
+          setWorkspaceReadNotice('');
+          setCloudIssue(null);
         }
+        if (item.type === 'workspace.reconnecting' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
         if (!nearBottomRef.current) setNewActivity(true);
       }
+
+      if (replaceDraft) setDraftReply(deltas.join(''));
+      else if (deltas.length) setDraftReply((previous) => previous + deltas.join(''));
+      if (newestDeltaAt > partialCutoffRef.current) partialCutoffRef.current = newestDeltaAt;
+      if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
     });
   }, [refreshAi, refreshSession]);
@@ -774,24 +834,18 @@ export default function ProductionApp() {
     if (!sessionId || cloudBusy) return;
     setCloudBusy(true); setError(''); setCloudIssue(null);
     try {
-      let workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
-      const deadline = Date.now() + 3 * 60_000;
-      while (workspace?.state !== 'ready' && workspace?.state !== 'failed' && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const details = await j<any>(await fetch(`/v1/sessions/${sessionId}`));
-        workspace = details.workspace; setSession(details); currentSessionRef.current = details;
-        if (workspace?.state === 'creating' || workspace?.state === 'starting') {
-          workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud`, { method: 'POST' }));
-        }
-      }
-      if (workspace?.state !== 'ready') {
-        const failure = String(workspace?.failureCode || '');
-        const permission = /codespaces.*(permission|403|forbidden)|HTTP 403/i.test(failure);
-        const next = new Error(permission ? 'GitHub Codespaces access needs approval before this workspace can start.' : workspace?.state === 'failed' ? "The workspace couldn't start." : 'Workspace is taking longer than expected. Reconnect to continue.') as Error & { code?: string };
-        next.code = permission ? 'CODESPACES_PERMISSION_REQUIRED' : 'WORKSPACE_START_FAILED';
-        throw next;
-      }
-      setCloudIssue(null);
+      // Start/reconnect exactly once. The backend owns the long-running
+      // Codespace preparation; the existing session poll + SSE stream observe
+      // progress. Re-POSTing /cloud every two seconds used to re-enter recovery
+      // while GitHub was still changing state.
+      const workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
+      setWorkspaceClock(Date.now());
+      setSession((current: any) => {
+        if (!current || current.id !== sessionId) return current;
+        const next = { ...current, workspace };
+        currentSessionRef.current = next;
+        return next;
+      });
       try { sessionStorage.removeItem(PENDING_CLOUD_RETRY); } catch {}
       await refreshSession(sessionId);
     } catch (error: any) {

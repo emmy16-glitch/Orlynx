@@ -24,7 +24,10 @@ test('bridge runtime revision marker distinguishes current and stale bridges', (
 });
 
 
-test('workspace startup waits for the workspace bridge, not for an agent adapter', () => {
+test('workspace startup waits across every provisioning stage until the bridge is ready', () => {
+  assert.equal(workspaceStartupPending({ state: 'creating', bridgeState: 'disconnected' }), true);
+  assert.equal(workspaceStartupPending({ state: 'starting', bridgeState: 'disconnected' }), true);
+  assert.equal(workspaceStartupPending({ state: 'bootstrapping', bridgeState: 'connecting' }), true);
   assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'connecting' }), true);
   assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'ready' }), true);
   assert.equal(workspaceStartupPending({ state: 'ready', bridgeState: 'ready' }), false);
@@ -86,4 +89,28 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
   assert.doesNotMatch(source, /setTimeout\(resolve, 1_500\)/);
   assert.match(source, /reusableForProject/);
   assert.match(source, /sessionHasActiveWork/);
+});
+
+
+test('Codespace SSH bootstrap retries transient readiness races instead of one-shot timing out', () => {
+  const source = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 4 \* 60_000/);
+  assert.match(source, /ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS \|\| 45_000/);
+  assert.match(source, /Codespace SSH not ready yet/);
+  assert.match(source, /bootstrap attempts/);
+  assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
+});
+
+test('bridge disconnect recovery leaves idle Codespaces alone and repairs only active Build work', () => {
+  const source = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(source, /ORLYNX_BRIDGE_RECONNECT_GRACE_MS \|\| 20_000/);
+  assert.match(source, /activeWorkspaceWork/);
+  assert.match(source, /idle workspace transport lost; deferring SSH repair until next Build task/);
+  assert.match(source, /active Build work needs transport recovery/);
+});
+
+test('workspace startup retries transient GitHub status lookup failures', () => {
+  const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  assert.match(source, /GitHub status is temporarily unavailable/);
+  assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
 });

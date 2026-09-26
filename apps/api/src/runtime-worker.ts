@@ -114,39 +114,83 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
 
 async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
   const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
-  const timeoutMs = Math.max(30_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 90_000));
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('gh', ['codespace', 'ssh', '-c', workspace.codespaceName || '', '--', 'bash', '-s'], {
-      env: { ...process.env, GH_TOKEN: githubUserToken },
-      stdio: ['pipe', 'pipe', 'pipe'],
+  const totalTimeoutMs = Math.max(90_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 4 * 60_000));
+  const attemptTimeoutMs = Math.min(
+    60_000,
+    Math.max(20_000, Number(process.env.ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS || 45_000)),
+  );
+  const deadline = Date.now() + totalTimeoutMs;
+  let attempt = 0;
+  let lastDetail = '';
+
+  while (Date.now() < deadline) {
+    attempt += 1;
+    const remaining = Math.max(1_000, deadline - Date.now());
+    const timeoutMs = Math.min(attemptTimeoutMs, remaining);
+    const result = await new Promise<{ ok: boolean; fatal: boolean; detail: string }>((resolve) => {
+      const child = spawn('gh', ['codespace', 'ssh', '-c', workspace.codespaceName || '', '--', 'bash', '-s'], {
+        env: { ...process.env, GH_TOKEN: githubUserToken },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const finish = (value: { ok: boolean; fatal: boolean; detail: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        const detail = (stderr || stdout).trim().slice(-1600);
+        child.kill('SIGTERM');
+        const force = setTimeout(() => child.kill('SIGKILL'), 3_000);
+        force.unref?.();
+        finish({ ok: false, fatal: false, detail: detail || `SSH attempt ${attempt} timed out after ${Math.round(timeoutMs / 1000)} seconds.` });
+      }, timeoutMs);
+      timer.unref?.();
+      child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-5000); });
+      child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-3000); });
+      child.once('error', (error) => finish({ ok: false, fatal: true, detail: error.message }));
+      child.once('exit', (code, signal) => {
+        if (settled) return;
+        if (code === 0) {
+          finish({ ok: true, fatal: false, detail: '' });
+          return;
+        }
+        const detail = (stderr || stdout).trim().slice(-1600);
+        const fatal = /(?:HTTP\s+(?:401|403|404)|forbidden|not found|permission|authentication|unknown codespace|no such codespace)/i.test(detail);
+        finish({
+          ok: false,
+          fatal,
+          detail: `Codespace bootstrap failed (${signal ? `signal ${signal}` : `exit ${code}`}): ${detail || 'SSH was not ready.'}`,
+        });
+      });
+      child.stdin.on('error', (error) => {
+        // EPIPE is common while GitHub is still bringing SSH online. Treat it
+        // as a retryable readiness signal; a missing local gh binary is fatal.
+        const fatal = (error as NodeJS.ErrnoException).code === 'ENOENT';
+        finish({ ok: false, fatal, detail: error.message });
+      });
+      child.stdin.end(script);
     });
-    let stderr = '';
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      error ? reject(error) : resolve();
-    };
-    const timer = setTimeout(() => {
-      const detail = stderr.trim().slice(-1200);
-      child.kill('SIGTERM');
-      const force = setTimeout(() => child.kill('SIGKILL'), 5_000);
-      force.unref?.();
-      finish(new Error(`Codespace SSH did not become ready within ${Math.round(timeoutMs / 1000)} seconds${detail ? `: ${detail}` : '.'}`));
-    }, timeoutMs);
-    timer.unref?.();
-    child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4000); });
-    child.stdout.resume();
-    child.once('error', (error) => finish(error));
-    child.once('exit', (code, signal) => {
-      if (settled) return;
-      if (code === 0) finish();
-      else finish(new Error(`Codespace bootstrap failed (${signal ? `signal ${signal}` : `exit ${code}`}): ${stderr.trim().slice(-1600)}`));
-    });
-    child.stdin.on('error', (error) => finish(error));
-    child.stdin.end(script);
-  });
+
+    if (result.ok) {
+      if (attempt > 1) console.info(`[workspace] Codespace SSH became ready after ${attempt} bootstrap attempts workspace=${workspace.id}`);
+      return;
+    }
+
+    lastDetail = result.detail;
+    if (result.fatal) throw new Error(result.detail || 'Codespace bootstrap failed.');
+    if (Date.now() >= deadline) break;
+
+    console.info(`[workspace] Codespace SSH not ready yet workspace=${workspace.id} attempt=${attempt}; retrying`);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
+
+  throw new Error(
+    `Codespace SSH did not become ready after ${attempt} bootstrap attempts within ${Math.round(totalTimeoutMs / 1000)} seconds${lastDetail ? `: ${lastDetail}` : '.'}`,
+  );
 }
 
 export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Values): Promise<void> {
