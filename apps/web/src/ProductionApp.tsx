@@ -267,7 +267,7 @@ export default function ProductionApp() {
       }
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
     });
-  }, [refreshSession]);
+  }, [refreshAi, refreshSession]);
 
   const connectEvents = useCallback((sessionId: string) => {
     sourceRef.current?.close();
