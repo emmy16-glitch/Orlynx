@@ -90,13 +90,16 @@ export interface AgentRun {
   errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'unknown';
 }
 
+export type WorkspaceProviderId = 'github-codespaces' | 'orlynx-runner';
+
 export interface WorkspaceRecord {
   id: string;
   sessionId: string;
   userId: string;
   projectId: string;
-  provider: 'github-codespaces';
+  provider: WorkspaceProviderId;
   codespaceName?: string;
+  runnerId?: string;
   repositoryId: number;
   branch: string;
   state: WorkspaceState;
