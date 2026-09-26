@@ -410,6 +410,7 @@ test('production starts a loopback OpenCode sidecar for free Plan/Ask', () => {
   const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
 
   assert.equal(packageJson.scripts.start, 'node scripts/start-production.mjs');
+  assert.match(buildScript, /^npm ci --include=dev$/m);
   assert.match(buildScript, /opencode-ai@1\.18\.32/);
   assert.match(startScript, /127\.0\.0\.1/);
   assert.match(startScript, /OPENCODE_SERVER_PASSWORD/);
