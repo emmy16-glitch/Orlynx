@@ -362,7 +362,7 @@ test('Hello streams without repository/workspace requests and reload does not ca
     putTask: async () => { writes++; },
   });
   const response = streamDirectRepositoryChat({
-    runId: task.runId, messageId: 'hello-message', prompt: 'Hello', modelId: 'opencode/big-pickle',
+    runId: task.runId, messageId: 'hello-message', prompt: 'Hello', modelId: 'opencode/big-pickle', mode: 'ask',
     session: { id: 'reload-session', userId: 'test-user', projectId: 'p', project: 'owner/repo', branch: 'main' },
     onDelta: () => first(),
   });
