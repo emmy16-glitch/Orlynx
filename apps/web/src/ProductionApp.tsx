@@ -4,7 +4,6 @@ import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
 import { ActivityDetailToggle, useActivityDetailMode } from './ui/workstream';
-import './curated.css';
 import { toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -527,11 +526,7 @@ export default function ProductionApp() {
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const apply = () => {
-      const resolved = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme;
-      document.documentElement.dataset.theme = resolved;
-      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#111310' : '#F7F7F3');
-    };
+    const apply = () => { document.documentElement.dataset.theme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme; };
     apply(); if (theme === 'system') media.addEventListener('change', apply);
     try { localStorage.setItem(THEME, theme); } catch {}
     return () => media.removeEventListener('change', apply);
@@ -1124,10 +1119,10 @@ export default function ProductionApp() {
             {!restoring && page === 'welcome' && <section className="welcome-screen">
               <div className="welcome-brand"><span className="brand-mark" /><b>Orlynx</b></div>
               <div className="welcome-hero">
-                <h1>Your code,<br />without the clutter.</h1>
-                <p className="welcome-copy">Connect GitHub, open a repository, and work through one focused conversation—from questions to real changes.</p>
+                <h1>Build from<br />anywhere.</h1>
+                <p className="welcome-copy">Connect GitHub and start working with your repositories using Orlynx AI.</p>
                 <Button className="welcome-github-button" onClick={connectGitHub} disabled={connectingGithub || integration.githubAvailable === false}><Icon name="github" size={20} />{connectingGithub ? 'Opening GitHub…' : integration.githubAvailable === false ? 'GitHub is temporarily unavailable' : integration.github?.connected ? 'Choose a repository' : 'Continue with GitHub'}<Icon name="arrow" /></Button>
-                <p className="welcome-trust">GitHub-native access. Your repositories stay under your permissions.</p>
+                <p className="welcome-trust">Your repositories stay under your GitHub permissions.</p>
               </div>
               <div className="welcome-landscape" aria-hidden="true">
                 <span className="sun" />
@@ -1141,7 +1136,7 @@ export default function ProductionApp() {
                 </div>
               </div>
             </section>}
-            {!restoring && page === 'home' && <section className="home-screen"><div className="home-greeting"><p className="eyebrow">YOUR REPOSITORIES</p><h1>{integration.github?.connected && integration.github?.login ? `Pick up where you left off, ${integration.github.login}.` : 'Your repositories, one workspace.'}</h1><p>{integration.github?.connected ? 'Open a repository or browse everything you have connected.' : 'Connect GitHub to bring your repositories into one focused workspace.'}</p></div><div className="home-primary-actions">{integration.github?.connected ? <Button onClick={() => { setPage('github'); loadRepositories(); }}><Icon name="github" />Browse repositories</Button> : <Button onClick={connectGitHub} disabled={connectingGithub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}</Button>}</div><div className="home-grid"><section className="home-section"><div className="section-title"><h2>Recent projects</h2><button className="text-button" onClick={() => setPage('projects')}>View all</button></div>{recentProjects.length ? recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-list-row" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>) : <EmptyState title="No repositories yet" hint={integration.github?.connected ? 'Choose a repository above to open your first project.' : 'Your repositories will appear here after connecting GitHub.'} />}</section></div></section>}
+            {!restoring && page === 'home' && <section className="home-screen"><div className="home-greeting"><p className="eyebrow">YOUR REPOSITORIES</p><h1>{integration.github?.connected && integration.github?.login ? `Welcome, ${integration.github.login}.` : 'Welcome to Orlynx.'}</h1><p>{integration.github?.connected ? 'Choose a repository to start working.' : 'Connect GitHub to start building with your repositories.'}</p></div><div className="home-primary-actions">{integration.github?.connected ? <Button onClick={() => { setPage('github'); loadRepositories(); }}><Icon name="github" />Browse repositories</Button> : <Button onClick={connectGitHub} disabled={connectingGithub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}</Button>}</div><div className="home-grid"><section className="home-section"><div className="section-title"><h2>Recent projects</h2><button className="text-button" onClick={() => setPage('projects')}>View all</button></div>{recentProjects.length ? recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-list-row" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>) : <EmptyState title="No repositories yet" hint={integration.github?.connected ? 'Choose a repository above to open your first project.' : 'Your repositories will appear here after connecting GitHub.'} />}</section></div></section>}
             {!restoring && page === 'projects' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">REPOSITORIES</p><h1>Projects</h1><p className="screen-subtitle">Open one of your connected repositories.</p></div><Button disabled={!integration.github?.connected} onClick={() => { setPage('github'); loadRepositories(); }}>Browse repositories</Button></div>{recentProjects.length ? <div className="project-grid">{recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-card" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>)}</div> : <EmptyState title="No repositories imported" hint="Connect GitHub and choose a repository to open your first project." />}</section>}
             {!restoring && page === 'github' && (syncingGithub ? <section className="github-sync-screen" role="status" aria-live="polite">
               <div className="flow-brand"><span className="brand-mark" /><b>Orlynx</b></div>
@@ -1162,7 +1157,7 @@ export default function ProductionApp() {
                 {githubNotice && <div className={`screen-alert tone-${githubNotice.tone}`} role={githubNotice.tone === 'fail' ? 'alert' : 'status'}><span>{githubNotice.text}</span></div>}
                 <Button className="welcome-github-button" disabled={repoBusy || connectingGithub || integration.githubAvailable === false} onClick={connectGitHub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}<Icon name="arrow" /></Button>
               </div> : <>
-                <div className="repo-flow-intro"><h1>Choose a repository.</h1><p>Open a project and continue in the same focused workspace.</p></div>
+                <div className="repo-flow-intro"><h1>Welcome back!</h1><p>Choose a repository to start working with Orlynx.</p></div>
                 {githubNotice && githubNotice.tone !== 'ok' && <div className={`screen-alert repo-inline-alert tone-${githubNotice.tone}`} role={githubNotice.tone === 'fail' ? 'alert' : 'status'}><span>{githubNotice.text}</span><button onClick={() => setGithubNotice(null)} aria-label="Dismiss"><Icon name="close" /></button></div>}
                 {error && <div className="screen-alert repo-inline-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
                 <label className="repo-search"><Icon name="search" /><input value={repoQuery} onChange={(event) => { setRepoQuery(event.target.value); if (event.target.value) setRepoExpanded(true); }} placeholder="Search repositories…" aria-label="Search repositories" /></label>
