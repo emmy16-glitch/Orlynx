@@ -532,6 +532,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     await this.sql.query("DELETE FROM webhook_deliveries WHERE received_at < $1::timestamptz - interval '30 days'", [now.toISOString()]);
     await this.sql.query("DELETE FROM bridge_commands WHERE status IN ('completed','failed') AND updated_at < $1::timestamptz - interval '7 days'", [now.toISOString()]);
+    await this.sql.query("DELETE FROM workspace_jobs WHERE state IN ('completed','failed') AND updated_at < $1::timestamptz - interval '7 days'", [now.toISOString()]);
   }
 }
 
