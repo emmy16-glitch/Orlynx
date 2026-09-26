@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executionPlaneFor, executionPlaneWithExistingWorkspace } from '../src/direct-chat.ts';
+import { executionPlaneFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
-test('existing project workspace is reused for conversational turns', () => {
-  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Hello', 'build'), true), 'workspace');
-  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Explain this repo', 'ask'), true), 'workspace');
-  assert.equal(executionPlaneWithExistingWorkspace(executionPlaneFor('Hello', 'build'), false), 'direct');
+test('an existing Codespace never changes the mode/request execution decision', () => {
+  assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
+  assert.equal(executionPlaneFor('Explain this repo', 'ask'), 'direct');
+  assert.equal(executionPlaneFor('Plan the refactor and show the steps', 'plan'), 'direct');
+  assert.equal(executionPlaneFor('Run git status -sb', 'build'), 'workspace');
 });
 
 test('plain conversation does not start a development environment', () => {
@@ -28,9 +29,11 @@ test('runtime and mutating build work requests the development environment', () 
   assert.equal(executionPlaneFor('check the main repo and pull update', 'build'), 'workspace');
 });
 
-test('plan and ask modes remain direct because they cannot mutate the project', () => {
+test('plan and ask modes remain direct even when the wording asks for execution', () => {
   assert.equal(executionPlaneFor('Plan how to refactor the backend', 'plan'), 'direct');
+  assert.equal(executionPlaneFor('run git status -sb', 'plan'), 'direct');
   assert.equal(executionPlaneFor('Tell me how you would fix the build', 'ask'), 'direct');
+  assert.equal(executionPlaneFor('run the tests', 'ask'), 'direct');
 });
 
 
