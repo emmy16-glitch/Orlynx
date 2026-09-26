@@ -245,7 +245,7 @@ router.post('/sessions', async (req, res) => {
         projectId,
         repositoryId: githubRepo.id,
         branch: String(branch),
-      }).catch((error) => {
+      }, { allowFallback: false }).catch((error) => {
         console.warn(`[workspace] background prewarm failed session=${id}: ${error instanceof Error ? error.message : 'unknown error'}`);
       });
     }
