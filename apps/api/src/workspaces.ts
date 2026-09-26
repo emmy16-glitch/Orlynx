@@ -377,7 +377,7 @@ async function prepareWorkspaceOnce(
           provider: 'github-codespaces',
           message: 'Fast runner unavailable. Falling back to GitHub Codespaces automatically…',
         });
-        return prepareWorkspaceOnce(input, replacementDepth);
+        return prepareWorkspaceOnce(input, replacementDepth, context);
       }
 
       // READY can race the final bootstrap read by a few seconds. Re-read the
