@@ -19,8 +19,9 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
     || /\b(?:switch(?:ed)?|set)\b[\s\S]{0,40}\bbuild\b[\s\S]{0,80}\b(check|inspect|verify)\b/i.test(text)
     || /^\s*(check|inspect|verify)(?:\s+(?:it|this|that))?[!.?\s]*$/i.test(text);
 
+  const explanatory = /^\s*(explain|what (?:is|are|does)|how (?:do|does|can|would)|why|review|discuss|suggest)\b/i.test(text);
+  if (explanatory && !mutatesRepo && !inspectProject) return 'direct';
   if (requiresMachine || actionRequest || mutatesRepo || inspectProject) return 'workspace';
-  if (/^\s*(explain|what (?:is|are|does)|how (?:do|does|can|would)|why|review|discuss|suggest)\b/i.test(text)) return 'direct';
   return 'direct';
 }
 
