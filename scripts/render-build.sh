@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-npm ci --include=dev
+npm ci
+
+echo "[render-build] Installing local OpenCode sidecar..."
+npm install --prefix apps/api/.opencode-runtime --omit=dev --no-audit --no-fund opencode-ai@1.18.32 --include=dev
 npm run build
 
 GH_VERSION="${GH_VERSION:-2.80.0}"
