@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 import type { WorkspaceRecord } from '@orlynx/shared';
 import { createBridgeToken } from './bridge-auth.js';
-import { GitHubCodespacesProvider } from './github-codespaces.js';
-import { bootstrapWorkspace, bridgeRuntimeRevision } from './runtime-worker.js';
+import { bridgeRuntimeRevision } from './runtime-worker.js';
+import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled } from './workspace-providers.js';
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 
-const provider = new GitHubCodespacesProvider();
-const activePreparations = new Map<string, Promise<WorkspaceRecord>>();
+type PreparationContext = { allowFallback: boolean; promise: Promise<WorkspaceRecord> };
+const activePreparations = new Map<string, PreparationContext>();
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details|Codespace SSH did not become ready/i.test(failureCode || '');
@@ -24,8 +24,13 @@ export function workspaceConnectionMatchesRevision(connectionId: string | undefi
   return Boolean(connectionId?.startsWith(`bridge-${revision}-`));
 }
 
-export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'>): boolean {
+export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'connectionId' | 'state' | 'bridgeState'> & Partial<Pick<WorkspaceRecord, 'provider'>>): boolean {
   if (workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
+  // Codespaces receive the current bridge bundle during bootstrap. Warm runners
+  // use a bridge baked into their versioned runtime image, so they are upgraded
+  // by replacing/redeploying that image rather than pretending an API refresh
+  // changed the already-running container.
+  if (workspace.provider === 'orlynx-runner') return false;
   return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
 }
 
@@ -56,7 +61,7 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
     sessionId: input.sessionId,
     userId: input.userId,
     projectId: input.projectId,
-    provider: 'github-codespaces',
+    provider: defaultWorkspaceProviderId(),
     repositoryId: input.repositoryId,
     branch: input.branch,
     state: 'creating',
@@ -69,25 +74,35 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
   return workspace;
 }
 
-export async function prepareWorkspace(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+export async function prepareWorkspace(
+  input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
+  options: { allowFallback?: boolean } = {},
+): Promise<WorkspaceRecord> {
   const running = activePreparations.get(input.sessionId);
-  if (running) return running;
-  const preparation = prepareWorkspaceOnce(input).finally(() => activePreparations.delete(input.sessionId));
-  activePreparations.set(input.sessionId, preparation);
-  return preparation;
+  if (running) {
+    if (options.allowFallback !== false) running.allowFallback = true;
+    return running.promise;
+  }
+  const context = { allowFallback: options.allowFallback !== false, promise: Promise.resolve(null as unknown as WorkspaceRecord) };
+  context.promise = prepareWorkspaceOnce(input, 0, context).finally(() => activePreparations.delete(input.sessionId));
+  activePreparations.set(input.sessionId, context);
+  return context.promise;
 }
 
 async function prepareWorkspaceOnce(
   input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
   replacementDepth = 0,
+  context: { allowFallback: boolean } = { allowFallback: true },
 ): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
+  let provider = providerForWorkspace(workspace);
+  const hasProviderHandle = (value: WorkspaceRecord) => value.provider === 'orlynx-runner' ? Boolean(value.runnerId) : Boolean(value.codespaceName);
   let refreshFallback: WorkspaceRecord | null = null;
   let refreshAdapterFallback: Awaited<ReturnType<typeof repository.listWorkspaceAgentAdapters>> = [];
   try {
-    if (workspace.state === 'creating' && !workspace.codespaceName) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting a development environment on GitHub…' });
+    if (workspace.state === 'creating' && !hasProviderHandle(workspace)) {
+      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.create', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Preparing a fast Orlynx workspace…' : 'Starting a development environment on GitHub…' });
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {
@@ -95,7 +110,7 @@ async function prepareWorkspaceOnce(
       // a newly requested GitHub Codespaces permission or after a transient
       // bootstrap failure.
       const previousFailure = workspace.failureCode || '';
-      if (workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure)) {
+      if (workspace.provider === 'github-codespaces' && workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure) && provider.replace) {
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'codespace.replace',
           message: 'Replacing the broken development environment with a fresh Codespace…',
@@ -110,16 +125,16 @@ async function prepareWorkspaceOnce(
         }, workspace);
         await repository.putWorkspace(workspace);
       } else {
-        workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
+        workspace = { ...workspace, state: hasProviderHandle(workspace) ? 'starting' : 'creating', bridgeState: 'disconnected', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
         await repository.putWorkspace(workspace);
-        workspace = workspace.codespaceName
+        workspace = hasProviderHandle(workspace)
           ? await provider.get(workspace)
           : await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
         await repository.putWorkspace(workspace);
       }
     }
     if (workspace.state === 'stopped') {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.start', message: 'Waking the existing GitHub Codespace…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.start', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Waking the Orlynx workspace…' : 'Waking the existing GitHub Codespace…' });
       workspace = { ...(await provider.start(workspace)), state: 'starting' };
       await repository.putWorkspace(workspace);
     }
@@ -128,7 +143,7 @@ async function prepareWorkspaceOnce(
     // Encode the current bundle fingerprint in connectionId so the next Build
     // request can refresh only the private Orlynx bridge, without rebuilding
     // the Codespace or touching repository files.
-    const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
+    const bridgePrefix = workspace.provider === 'orlynx-runner' ? 'bridge-runner-' : `bridge-${bridgeRuntimeRevision()}-`;
     if (workspaceNeedsRuntimeRefresh(workspace)) {
       refreshFallback = workspace;
       refreshAdapterFallback = await repository.listWorkspaceAgentAdapters(workspace.id);
@@ -165,8 +180,11 @@ async function prepareWorkspaceOnce(
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.wait', message: 'Waiting for GitHub to finish starting the Codespace…' });
-      const deadline = Date.now() + Math.max(90_000, Number(process.env.ORLYNX_CODESPACE_READY_TIMEOUT_MS || 4 * 60_000));
+      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.wait', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Preparing the Orlynx workspace…' : 'Waiting for GitHub to finish starting the Codespace…' });
+      const readyTimeout = workspace.provider === 'orlynx-runner'
+        ? Math.max(15_000, Number(process.env.ORLYNX_RUNNER_READY_TIMEOUT_MS || 60_000))
+        : Math.max(90_000, Number(process.env.ORLYNX_CODESPACE_READY_TIMEOUT_MS || 4 * 60_000));
+      const deadline = Date.now() + readyTimeout;
       let lastState = workspace.state;
       let lastProgressAt = 0;
       while (Date.now() < deadline) {
@@ -180,9 +198,9 @@ async function prepareWorkspaceOnce(
           if (Date.now() - lastProgressAt > 15_000) {
             lastProgressAt = Date.now();
             emit(input.sessionId, 'workspace.preparing', {
-              stage: 'codespace.wait',
+              stage: 'workspace.wait',
               state: workspace.state,
-              message: 'GitHub status is temporarily unavailable. Orlynx is still waiting for the development environment.',
+              message: workspace.provider === 'orlynx-runner' ? 'Runner status is temporarily unavailable. Orlynx is still preparing the workspace.' : 'GitHub status is temporarily unavailable. Orlynx is still waiting for the development environment.',
             });
           }
           await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -192,28 +210,28 @@ async function prepareWorkspaceOnce(
         if (workspace.state !== lastState) {
           lastState = workspace.state;
           emit(input.sessionId, 'workspace.preparing', {
-            stage: 'codespace.state',
+            stage: 'workspace.state',
             state: workspace.state,
             message: workspace.state === 'connecting'
-              ? 'Codespace is online. Connecting Orlynx…'
+              ? (workspace.provider === 'orlynx-runner' ? 'Runner is ready. Connecting Orlynx…' : 'Codespace is online. Connecting Orlynx…')
               : workspace.state === 'failed'
-                ? 'GitHub could not start the Codespace.'
-                : 'GitHub is preparing the Codespace…',
+                ? (workspace.provider === 'orlynx-runner' ? 'The Orlynx runner could not prepare the workspace.' : 'GitHub could not start the Codespace.')
+                : (workspace.provider === 'orlynx-runner' ? 'Orlynx is preparing the runner…' : 'GitHub is preparing the Codespace…'),
           });
         }
         if (workspace.state === 'connecting' || workspace.state === 'failed') break;
         if (Date.now() - lastProgressAt > 15_000) {
           lastProgressAt = Date.now();
           emit(input.sessionId, 'workspace.preparing', {
-            stage: 'codespace.wait',
+            stage: 'workspace.wait',
             state: workspace.state,
-            message: 'GitHub is still preparing the development environment. Your task is saved and Orlynx will continue automatically.',
+            message: workspace.provider === 'orlynx-runner' ? 'The runner is still preparing. Your task is saved and will start automatically.' : 'GitHub is still preparing the development environment. Your task is saved and Orlynx will continue automatically.',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_500));
       }
       if (['creating', 'starting'].includes(workspace.state)) {
-        throw new Error('GitHub Codespace did not become ready before the startup timeout.');
+        throw new Error(workspace.provider === 'orlynx-runner' ? 'Orlynx runner did not become ready before the startup timeout.' : 'GitHub Codespace did not become ready before the startup timeout.');
       }
     }
     const connectionAge = Date.now() - Date.parse(workspace.updatedAt);
@@ -225,9 +243,10 @@ async function prepareWorkspaceOnce(
       await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
       emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: 'Connecting Orlynx to the development environment…' });
-      console.info(`[workspace] bootstrapping session=${workspace.sessionId} workspace=${workspace.id} codespace=${workspace.codespaceName || 'unknown'}`);
-      await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
-      console.info(`[workspace] bootstrap command completed session=${workspace.sessionId} workspace=${workspace.id}`);
+      console.info(`[workspace] connecting runtime session=${workspace.sessionId} workspace=${workspace.id} provider=${workspace.provider}`);
+      if (!provider.connect) throw new Error(`Workspace provider ${workspace.provider} cannot connect the Orlynx runtime.`);
+      await provider.connect(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
+      console.info(`[workspace] runtime connect completed session=${workspace.sessionId} workspace=${workspace.id} provider=${workspace.provider}`);
       // The bridge can report READY before bootstrap returns. Read its state;
       // a post-bootstrap write would overwrite that newer READY transition.
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
@@ -259,7 +278,7 @@ async function prepareWorkspaceOnce(
     if (finalWorkspace.state === 'failed') {
       throw new Error(finalWorkspace.failureCode || 'The development environment failed to start.');
     }
-    throw new Error('Orlynx could not connect to the development environment after the Codespace started.');
+    throw new Error('Orlynx could not connect to the development environment after the workspace started.');
   } catch (error) {
     if (workspace) {
       const detail = error instanceof Error ? error.message : 'workspace_start_failed';
@@ -268,7 +287,7 @@ async function prepareWorkspaceOnce(
       // workspace is still healthy. If gh codespace ssh cannot see the
       // Codespace but the REST API still can, restore the proven-good bridge
       // instead of turning a refresh problem into a workspace outage.
-      if (refreshFallback && workspaceNeedsCodespaceReplacement(detail)) {
+      if (workspace.provider === 'github-codespaces' && refreshFallback && workspaceNeedsCodespaceReplacement(detail)) {
         try {
           const verified = await provider.get(refreshFallback);
           if (workspaceFullyReady(verified)) {
@@ -294,6 +313,7 @@ async function prepareWorkspaceOnce(
             stage: 'codespace.replace',
             message: 'The previous Codespace is no longer available. Starting a fresh development environment…',
           });
+          if (!provider.replace) throw new Error('Workspace provider cannot replace this environment.');
           const replacement = await provider.replace({
             workspaceId: workspace.id,
             sessionId: input.sessionId,
@@ -304,13 +324,13 @@ async function prepareWorkspaceOnce(
           }, refreshFallback);
           await repository.putWorkspace(replacement);
           console.warn(`[workspace] replaced stale Codespace after refresh 404 session=${input.sessionId} old=${refreshFallback.codespaceName || 'unknown'} new=${replacement.codespaceName || 'unknown'}`);
-          return prepareWorkspaceOnce(input);
+          return prepareWorkspaceOnce(input, replacementDepth, context);
         } catch (replacementError) {
           console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
       }
 
-      if (!refreshFallback && workspace.codespaceName && workspaceNeedsCodespaceReplacement(detail) && replacementDepth < 1) {
+      if (workspace.provider === 'github-codespaces' && !refreshFallback && workspace.codespaceName && workspaceNeedsCodespaceReplacement(detail) && replacementDepth < 1 && provider.replace) {
         try {
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'codespace.replace',
@@ -333,10 +353,36 @@ async function prepareWorkspaceOnce(
             updatedAt: replacement.updatedAt,
           });
           console.warn(`[workspace] replaced broken Codespace after SSH failure session=${input.sessionId} old=${brokenName} new=${replacement.codespaceName || 'unknown'}`);
-          return prepareWorkspaceOnce(input, replacementDepth + 1);
+          return prepareWorkspaceOnce(input, replacementDepth + 1, context);
         } catch (replacementError) {
           console.warn(`[workspace] automatic Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
+      }
+
+      if (workspace.provider === 'orlynx-runner' && runnerFallbackEnabled() && context.allowFallback) {
+        console.warn(`[workspace] warm runner failed; falling back to Codespaces session=${input.sessionId}: ${detail}`);
+        await provider.destroy(workspace).catch(() => {});
+        const now = new Date().toISOString();
+        workspace = {
+          ...workspace,
+          provider: 'github-codespaces',
+          runnerId: undefined,
+          codespaceName: undefined,
+          state: 'creating',
+          bridgeState: 'disconnected',
+          connectionId: undefined,
+          failureCode: undefined,
+          updatedAt: now,
+        };
+        provider = providerForWorkspace(workspace);
+        await repository.putWorkspace(workspace);
+        await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'not_installed', updatedAt: now });
+        emit(input.sessionId, 'workspace.preparing', {
+          stage: 'workspace.fallback',
+          provider: 'github-codespaces',
+          message: 'Fast runner unavailable. Falling back to GitHub Codespaces automatically…',
+        });
+        return prepareWorkspaceOnce(input, replacementDepth, context);
       }
 
       // READY can race the final bootstrap read by a few seconds. Re-read the
@@ -381,7 +427,7 @@ export async function stopWorkspace(sessionId: string): Promise<WorkspaceRecord>
   if (!workspace) throw new Error('This project does not have a cloud workspace.');
   const stopping = { ...workspace, state: 'stopping' as const, updatedAt: new Date().toISOString() };
   await repository.putWorkspace(stopping);
-  const stopped = await provider.stop(stopping);
+  const stopped = await providerForWorkspace(stopping).stop(stopping);
   await repository.putWorkspace(stopped);
   return stopped;
 }

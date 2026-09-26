@@ -140,14 +140,14 @@ test('SSH replacement recovery is automatic but bounded to one replacement per p
   const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
   assert.match(source, /replacementDepth = 0/);
   assert.match(source, /workspaceNeedsCodespaceReplacement\(detail\) && replacementDepth < 1/);
-  assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1\)/);
+  assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1, context\)/);
 });
 
 
-test('queued Build work repairs SSH-broken workspaces instead of being failed immediately', () => {
+test('queued Build work durably schedules recoverable workspace repair', () => {
   const source = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
   assert.match(source, /workspaceNeedsCodespaceReplacement\(readyWorkspace\.failureCode\)/);
-  assert.match(source, /repairing failed workspace before Build task/);
-  assert.match(source, /void prepareWorkspace\(\{/);
-  assert.match(source, /await promoteNextQueuedRun\(sessionId\)/);
+  assert.match(source, /readyWorkspace\.provider === 'orlynx-runner'/);
+  assert.match(source, /scheduleWorkspacePreparation\(\{/);
+  assert.match(source, /reason: 'queue_repair'/);
 });

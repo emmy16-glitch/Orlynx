@@ -43,6 +43,23 @@ export interface BridgeCommand {
   updatedAt: string;
 }
 
+export interface WorkspaceJobRecord {
+  id: string;
+  workspaceId: string;
+  sessionId: string;
+  kind: 'prepare';
+  state: 'queued' | 'leased' | 'completed' | 'failed';
+  allowFallback: boolean;
+  reason?: string;
+  workerId?: string;
+  leaseUntil?: string;
+  availableAt?: string;
+  attempt: number;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ControlPlaneRepository {
   initialize(): Promise<void>;
   upsertGitHubConnection(value: GitHubConnectionRecord): Promise<void>;
@@ -70,6 +87,12 @@ export interface ControlPlaneRepository {
   putWorkspace(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
+  enqueueWorkspaceJob(value: WorkspaceJobRecord): Promise<boolean>;
+  claimWorkspaceJobs(workerId: string, limit?: number, leaseSeconds?: number): Promise<WorkspaceJobRecord[]>;
+  completeWorkspaceJob(id: string): Promise<void>;
+  renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds?: number): Promise<boolean>;
+  retryWorkspaceJob(id: string, error: string, delaySeconds?: number): Promise<void>;
+  failWorkspaceJob(id: string, error: string): Promise<void>;
   putWorkspaceAgentAdapter(value: WorkspaceAgentAdapterRecord): Promise<void>;
   getWorkspaceAgentAdapter(workspaceId: string, adapterId: string): Promise<WorkspaceAgentAdapterRecord | null>;
   listWorkspaceAgentAdapters(workspaceId: string): Promise<WorkspaceAgentAdapterRecord[]>;
@@ -114,7 +137,12 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
-  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, runner_id text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runner_id text`,
+  `CREATE TABLE IF NOT EXISTS workspace_jobs (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind text NOT NULL, state text NOT NULL, allow_fallback boolean NOT NULL DEFAULT true, reason text, worker_id text, lease_until timestamptz, available_at timestamptz NOT NULL DEFAULT now(), attempt integer NOT NULL DEFAULT 0, error text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE workspace_jobs ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now()`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS workspace_jobs_active_idx ON workspace_jobs(workspace_id,kind) WHERE state IN ('queued','leased')`,
+  `CREATE INDEX IF NOT EXISTS workspace_jobs_claim_idx ON workspace_jobs(state,lease_until,created_at)`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
   `CREATE INDEX IF NOT EXISTS task_events_replay_idx ON task_events(session_id, sequence)`,
@@ -181,11 +209,30 @@ function mapSession(r: Record<string, unknown>): ProjectSession & { userId: stri
 function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
   return {
     id: String(row.id), sessionId: String(row.session_id), userId: String(row.user_id), projectId: String(row.project_id),
-    provider: 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined,
+    provider: row.provider === 'orlynx-runner' ? 'orlynx-runner' : 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined, runnerId: row.runner_id ? String(row.runner_id) : undefined,
     repositoryId: Number(row.repository_id), branch: String(row.branch), state: row.state as WorkspaceRecord['state'],
     bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'],
     connectionId: row.connection_id ? String(row.connection_id) : undefined, repoRoot: row.repo_root ? String(row.repo_root) : undefined,
     failureCode: row.failure_code ? String(row.failure_code) : undefined, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+  };
+}
+
+function mapWorkspaceJob(row: Record<string, unknown>): WorkspaceJobRecord {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    sessionId: String(row.session_id),
+    kind: 'prepare',
+    state: String(row.state) as WorkspaceJobRecord['state'],
+    allowFallback: row.allow_fallback !== false,
+    reason: row.reason ? String(row.reason) : undefined,
+    workerId: row.worker_id ? String(row.worker_id) : undefined,
+    leaseUntil: row.lease_until ? iso(row.lease_until) : undefined,
+    availableAt: row.available_at ? iso(row.available_at) : undefined,
+    attempt: Number(row.attempt || 0),
+    error: row.error ? String(row.error) : undefined,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   };
 }
 
@@ -334,10 +381,76 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET codespace_name=EXCLUDED.codespace_name,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
+  async enqueueWorkspaceJob(v: WorkspaceJobRecord) {
+    await this.initialize();
+    const result = await this.sql.query(
+      `INSERT INTO workspace_jobs (id,workspace_id,session_id,kind,state,allow_fallback,reason,available_at,attempt,error,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'queued',$5,$6,now(),0,NULL,$7,$8)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [v.id, v.workspaceId, v.sessionId, v.kind, v.allowFallback, v.reason || null, v.createdAt, v.updatedAt],
+    );
+    const inserted = rows<Record<string, unknown>>(result).length > 0;
+    if (!inserted && v.allowFallback) {
+      await this.sql.query(
+        `UPDATE workspace_jobs
+         SET allow_fallback=true, reason=COALESCE(reason,$3), updated_at=now()
+         WHERE workspace_id=$1 AND kind=$2 AND state IN ('queued','leased')`,
+        [v.workspaceId, v.kind, v.reason || null],
+      );
+    }
+    return inserted;
+  }
+  async claimWorkspaceJobs(workerId: string, limit = 4, leaseSeconds = 90) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 4, 20));
+    const safeLease = Math.max(30, Math.min(Number(leaseSeconds) || 90, 600));
+    const result = await this.sql.query(
+      `WITH candidate AS (
+         SELECT id FROM workspace_jobs
+         WHERE (state='queued' AND available_at <= now()) OR (state='leased' AND lease_until < now())
+         ORDER BY created_at,id
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE workspace_jobs
+       SET state='leased', worker_id=$2, lease_until=now() + ($3 * interval '1 second'), attempt=attempt+1, updated_at=now()
+       WHERE id IN (SELECT id FROM candidate)
+       RETURNING *`,
+      [safeLimit, workerId, safeLease],
+    );
+    return rows<Record<string, unknown>>(result).map(mapWorkspaceJob);
+  }
+  async completeWorkspaceJob(id: string) {
+    await this.initialize();
+    await this.sql`UPDATE workspace_jobs SET state='completed',worker_id=NULL,lease_until=NULL,error=NULL,updated_at=now() WHERE id=${id}`;
+  }
+  async renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds = 90) {
+    await this.initialize();
+    const safeLease = Math.max(30, Math.min(Number(leaseSeconds) || 90, 600));
+    const result = await this.sql.query(
+      `UPDATE workspace_jobs SET lease_until=now() + ($3 * interval '1 second'),updated_at=now()
+       WHERE id=$1 AND state='leased' AND worker_id=$2 RETURNING id`,
+      [id, workerId, safeLease],
+    );
+    return rows<Record<string, unknown>>(result).length > 0;
+  }
+  async retryWorkspaceJob(id: string, error: string, delaySeconds = 3) {
+    await this.initialize();
+    const safeDelay = Math.max(1, Math.min(Number(delaySeconds) || 3, 300));
+    await this.sql.query(
+      `UPDATE workspace_jobs SET state='queued',worker_id=NULL,lease_until=NULL,available_at=now() + ($3 * interval '1 second'),error=$2,updated_at=now() WHERE id=$1`,
+      [id, error.slice(0,1000), safeDelay],
+    );
+  }
+  async failWorkspaceJob(id: string, error: string) {
+    await this.initialize();
+    await this.sql`UPDATE workspace_jobs SET state='failed',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id}`;
+  }
   async putWorkspaceAgentAdapter(v: WorkspaceAgentAdapterRecord) {
     await this.initialize();
     await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at`;

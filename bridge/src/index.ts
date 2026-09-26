@@ -14,6 +14,7 @@ const CONNECTION_ID = process.env.ORLYNX_CONNECTION_ID || '';
 const REPO_ROOT = path.resolve(process.env.ORLYNX_REPO_ROOT || process.cwd());
 const OPENCODE_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD || '';
 const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || '';
+const GITHUB_TOKEN = process.env.ORLYNX_GITHUB_TOKEN || '';
 const OPENCODE_BIN = process.env.OPENCODE_BIN || 'opencode';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
@@ -85,8 +86,8 @@ function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   for (const [name, value] of Object.entries(process.env)) if (!/(ORLYNX_WORKSPACE_TOKEN|OPENCODE_SERVER_PASSWORD|TOKEN|SECRET|PRIVATE.?KEY|API.?KEY|CREDENTIAL)/i.test(name)) env[name] = value;
   return { ...env, ...extra };
 }
-function git(args: string[], timeout = 30_000) {
-  const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment() });
+function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
+  const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment(extraEnv) });
   if (result.error || result.status !== 0) throw new Error(output(result.stderr) || result.error?.message || `git exited ${result.status}`);
   return output(result.stdout);
 }
@@ -595,7 +596,17 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
     case 'git.commit': { const message = String(payload.message || '').trim().slice(0, 240); if (!message) throw new Error('Commit message is required.'); git(['add', '--all']); git(['commit', '-m', message], 60_000); return { sha: git(['rev-parse', 'HEAD']).trim() }; }
-    case 'git.push': { if (payload.approved !== true) throw new Error('Push requires an approved command.'); const branch = git(['branch', '--show-current']).trim(); if (!branch || branch === 'main' || branch === 'master') throw new Error('Direct push to the default branch is denied.'); return { output: git(['push', '--set-upstream', 'origin', branch], 120_000), branch }; }
+    case 'git.push': {
+      if (payload.approved !== true) throw new Error('Push requires an approved command.');
+      const branch = git(['branch', '--show-current']).trim();
+      if (!branch || branch === 'main' || branch === 'master') throw new Error('Direct push to the default branch is denied.');
+      const authEnv = GITHUB_TOKEN ? {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
+      } : {};
+      return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch };
+    }
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: ports() };
     case 'opencode.request': return opencodeRequest(payload);

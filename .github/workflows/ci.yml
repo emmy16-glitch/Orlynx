@@ -41,3 +41,20 @@ jobs:
 
       - name: Verify compiled provider runtime
         run: npm run verify:provider-runtime --workspace=@orlynx/api
+
+
+  runner-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check runner manager syntax
+        run: node --check runner-manager/index.mjs
+
+      - name: Build runner runtime image
+        run: docker build --file runner-runtime/Dockerfile --tag orlynx-runner-runtime:ci .
+
+      - name: Build runner manager image
+        run: docker build --file runner-manager/Dockerfile --tag orlynx-runner-manager:ci .

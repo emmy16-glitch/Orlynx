@@ -6,7 +6,7 @@ import { durableHistory, emit, recentHistory, subscribe, subscribeEvents } from 
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, prepareWorkspace, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -22,6 +22,8 @@ import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
+import { shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
+import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 export const router = Router();
 
@@ -233,6 +235,21 @@ router.post('/sessions', async (req, res) => {
     const projectId = `prj_${connection.userId}_${githubRepo.id}`;
     await repository.upsertProject({ id: projectId, userId: connection.userId, installationId, repositoryId: githubRepo.id, fullName: githubRepo.full, defaultBranch: githubRepo.defaultBranch });
     await repository.putSession({ ...store.db.sessions[id], userId: connection.userId, projectId });
+
+    // Warm runners are prepared as soon as the repository opens, while chat
+    // remains immediately usable. Codespaces are intentionally not prewarmed
+    // here because their cold-start/cost profile is the fallback path.
+    if (shouldPrewarmWorkspace()) {
+      await scheduleWorkspacePreparation({
+        sessionId: id,
+        userId: connection.userId,
+        projectId,
+        repositoryId: githubRepo.id,
+        branch: String(branch),
+      }, { allowFallback: false, reason: 'prewarm' }).catch((error) => {
+        console.warn(`[workspace] prewarm scheduling failed session=${id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      });
+    }
   }
   emit(id, 'state.snapshot', { project, branch, mode: 'repository' });
   res.json(store.db.sessions[id]);
@@ -456,19 +473,12 @@ router.post('/sessions/:id/messages', async (req, res) => {
         automatic: true,
         message: 'Starting the development environment for this task.',
       });
-      void prepareWorkspace(automaticWorkspaceInput)
-        .then(async (workspace) => {
-          if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
-            emit(s.id, 'workspace.ready', { workspaceId: workspace.id, automatic: true });
-            await promoteNextQueuedRun(s.id);
-          }
-        })
-        .catch(async (error) => {
-          console.warn(`[workspace] automatic preparation failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-          await promoteNextQueuedRun(s.id).catch((promotionError) => {
-            console.warn(`[workspace] queue recovery failed session=${s.id}: ${promotionError instanceof Error ? promotionError.message : 'unknown error'}`);
-          });
-        });
+      await scheduleWorkspacePreparation(automaticWorkspaceInput, {
+        allowFallback: true,
+        reason: 'build_task',
+      }).catch((error) => {
+        console.warn(`[workspace] automatic preparation scheduling failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      });
     }
   }
 
@@ -631,21 +641,15 @@ router.post('/sessions/:id/cloud', async (req, res) => {
     emit(s.id, 'workspace.preparing', {
       state: current.state,
       stage: 'accepted',
-      message: current.codespaceName ? 'Waking the existing development environment…' : 'Starting a development environment only for this task…',
+      message: current.codespaceName || current.runnerId ? 'Waking the existing development environment…' : 'Starting a development environment only for this task…',
     });
-    void prepareWorkspace({
+    await scheduleWorkspacePreparation({
       sessionId: s.id,
       userId: durable.userId,
       projectId: durable.projectId,
       repositoryId: githubRepo.id,
       branch: s.branch,
-    }).then(async (workspace) => {
-      if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
-        await promoteNextQueuedRun(s.id);
-      }
-    }).catch((error) => {
-      console.warn(`[workspace] background start failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-    });
+    }, { allowFallback: true, reason: 'manual_start' });
 
     await recordAudit(req, s.id, 'workspace.start', 'accepted', { workspaceId: current.id, state: current.state, provider: current.provider });
     return res.status(current.state === 'ready' ? 200 : 202).json(current);
@@ -681,13 +685,10 @@ router.post('/sessions/:id/cloud/reconnect', async (req, res) => {
     // Reconnect is asynchronous just like first startup. Holding this HTTP
     // request open while GitHub boots/SSHs causes browser timeouts and duplicate
     // retries. The durable workspace row + SSE/session polling report progress.
-    void prepareWorkspace({ sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch })
-      .then(async (workspace) => {
-        if (workspace.state === 'ready' && workspace.bridgeState === 'ready') await promoteNextQueuedRun(s.id);
-      })
-      .catch((error) => {
-        console.warn(`[workspace] background reconnect failed session=${s.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-      });
+    await scheduleWorkspacePreparation(
+      { sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch },
+      { allowFallback: true, reason: 'reconnect' },
+    );
 
     return res.status(202).json(reconnecting);
   } catch (error) {
@@ -1384,8 +1385,7 @@ router.get('/integrations/status', async (req, res) => {
     ? await githubHealth(installationId || undefined)
     : { healthy: false as boolean, authorizedRepositories: 0, message: platform.configured ? 'Connect GitHub to see your repositories.' : 'GitHub connection is temporarily unavailable.' };
   const workspace = session && durableStorageConfigured() ? await getWorkspace(session.id) : null;
-  const bootstrapAvailable = process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || process.env.ORLYNX_BOOTSTRAP_MODE === 'local' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);
-  const infrastructure = durableStorageConfigured() && bootstrapAvailable && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
+  const infrastructure = durableStorageConfigured() && workspaceInfrastructureConfigured() && Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET);
   res.json({
     github: {
       connected: connection.connected,
