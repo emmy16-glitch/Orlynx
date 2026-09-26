@@ -23,6 +23,14 @@ export interface ProviderConnectionRecord {
   updatedAt: string;
 }
 
+export interface WorkspaceAgentAdapterRecord {
+  workspaceId: string;
+  adapterId: string;
+  state: 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed';
+  reason?: string;
+  updatedAt: string;
+}
+
 export interface BridgeCommand {
   id: string;
   workspaceId: string;
@@ -62,6 +70,9 @@ export interface ControlPlaneRepository {
   putWorkspace(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
+  putWorkspaceAgentAdapter(value: WorkspaceAgentAdapterRecord): Promise<void>;
+  getWorkspaceAgentAdapter(workspaceId: string, adapterId: string): Promise<WorkspaceAgentAdapterRecord | null>;
+  listWorkspaceAgentAdapters(workspaceId: string): Promise<WorkspaceAgentAdapterRecord[]>;
   appendEvent(value: Omit<OrlynxEvent, 'sequence'>): Promise<OrlynxEvent>;
   listEvents(sessionId: string, after?: number, limit?: number): Promise<OrlynxEvent[]>;
   queueCommand(value: BridgeCommand): Promise<void>;
@@ -75,6 +86,8 @@ export interface ControlPlaneRepository {
   putChangeSet(value: ChangeSet): Promise<void>;
   listChangeSets(sessionId: string): Promise<ChangeSet[]>;
   getChangeSet(id: string): Promise<ChangeSet | null>;
+  getAgentSession(sessionId: string, adapterId: string): Promise<string | null>;
+  putAgentSession(sessionId: string, adapterId: string, engineSessionId: string): Promise<void>;
   getEngineSession(sessionId: string): Promise<string | null>;
   putEngineSession(sessionId: string, engineSessionId: string): Promise<void>;
   recordWebhookDelivery(deliveryId: string, event: string): Promise<boolean>;
@@ -99,6 +112,7 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS temp_permission text`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_plane text NOT NULL DEFAULT 'workspace'`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS partial_text text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
   `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, opencode_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
@@ -106,12 +120,17 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
   `CREATE INDEX IF NOT EXISTS task_events_replay_idx ON task_events(session_id, sequence)`,
   `CREATE TABLE IF NOT EXISTS ai_session_prefs (session_id text PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, provider_id text, model_id text, mode text NOT NULL, permission text NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE ai_session_prefs ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `CREATE TABLE IF NOT EXISTS provider_connections (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), provider text NOT NULL, credential text, state text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS approvals (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, action text NOT NULL, state text NOT NULL, context jsonb NOT NULL, created_at timestamptz NOT NULL, resolved_at timestamptz)`,
   `CREATE TABLE IF NOT EXISTS attachments (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, filename text NOT NULL, safe_name text NOT NULL, mime text NOT NULL, size bigint NOT NULL, hash text, blob_url text, created_at timestamptz NOT NULL)`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS content_base64 text`,
   `CREATE TABLE IF NOT EXISTS bridge_commands (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL, result jsonb, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS engine_sessions (session_id text PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS agent_sessions (session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, adapter_id text NOT NULL, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(session_id,adapter_id))`,
+  `INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id,updated_at) SELECT session_id,'opencode',engine_session_id,updated_at FROM engine_sessions ON CONFLICT (session_id,adapter_id) DO NOTHING`,
+  `CREATE TABLE IF NOT EXISTS workspace_agent_adapters (workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, adapter_id text NOT NULL, state text NOT NULL, reason text, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,adapter_id))`,
+  `INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,updated_at) SELECT id,'opencode',opencode_state,updated_at FROM workspaces ON CONFLICT (workspace_id,adapter_id) DO NOTHING`,
   `CREATE TABLE IF NOT EXISTS change_sets (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS webhook_deliveries (delivery_id text PRIMARY KEY, event text NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
@@ -157,6 +176,7 @@ function mapTask(row: Record<string, unknown>): TaskRecord {
     state: row.state as TaskRecord['state'],
     prompt: String(row.prompt),
     modelId: row.model_id ? String(row.model_id) : undefined,
+    adapterId: row.adapter_id ? String(row.adapter_id) : 'opencode',
     mode: row.mode ? row.mode as TaskRecord['mode'] : undefined,
     permission: row.permission ? row.permission as TaskRecord['permission'] : undefined,
     tempPermission: row.temp_permission ? row.temp_permission as TaskRecord['tempPermission'] : undefined,
@@ -229,20 +249,20 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async getAISessionPrefs(sessionId: string) {
     await this.initialize();
     const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM ai_session_prefs WHERE session_id=${sessionId}`)[0];
-    return r ? { sessionId: String(r.session_id), providerId: r.provider_id ? String(r.provider_id) : undefined, modelId: r.model_id ? String(r.model_id) : undefined, mode: String(r.mode) as AISessionPrefs['mode'], permission: String(r.permission) as AISessionPrefs['permission'], updatedAt: iso(r.updated_at) } : null;
+    return r ? { sessionId: String(r.session_id), adapterId: r.adapter_id ? String(r.adapter_id) : 'opencode', providerId: r.provider_id ? String(r.provider_id) : undefined, modelId: r.model_id ? String(r.model_id) : undefined, mode: String(r.mode) as AISessionPrefs['mode'], permission: String(r.permission) as AISessionPrefs['permission'], updatedAt: iso(r.updated_at) } : null;
   }
   async putAISessionPrefs(v: AISessionPrefs) {
     await this.initialize();
-    await this.sql`INSERT INTO ai_session_prefs (session_id,provider_id,model_id,mode,permission,updated_at) VALUES (${v.sessionId},${v.providerId || null},${v.modelId || null},${v.mode},${v.permission},${v.updatedAt}) ON CONFLICT (session_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO ai_session_prefs (session_id,adapter_id,provider_id,model_id,mode,permission,updated_at) VALUES (${v.sessionId},${v.adapterId || 'opencode'},${v.providerId || null},${v.modelId || null},${v.mode},${v.permission},${v.updatedAt}) ON CONFLICT (session_id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,provider_id=EXCLUDED.provider_id,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,updated_at=EXCLUDED.updated_at`;
   }
   async putMessage(v: ChatMessage) { await this.initialize(); await this.sql`INSERT INTO messages (id,session_id,role,text,created_at) VALUES (${v.id},${v.sessionId},${v.role},${v.text},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async deleteMessage(id: string, sessionId: string) { await this.initialize(); await this.sql`DELETE FROM messages WHERE id=${id} AND session_id=${sessionId}`; }
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at) })); }
   async putTask(v: TaskRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,created_at,updated_at)
-      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.createdAt},${v.updatedAt})
-      ON CONFLICT (id) DO UPDATE SET run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,created_at,updated_at)
+      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.createdAt},${v.updatedAt})
+      ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,updated_at=EXCLUDED.updated_at`;
   }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
   async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }
@@ -291,6 +311,19 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
+  async putWorkspaceAgentAdapter(v: WorkspaceAgentAdapterRecord) {
+    await this.initialize();
+    await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at`;
+  }
+  async getWorkspaceAgentAdapter(workspaceId: string, adapterId: string) {
+    await this.initialize();
+    const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_agent_adapters WHERE workspace_id=${workspaceId} AND adapter_id=${adapterId}`)[0];
+    return r ? { workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, updatedAt: iso(r.updated_at) } : null;
+  }
+  async listWorkspaceAgentAdapters(workspaceId: string) {
+    await this.initialize();
+    return rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_agent_adapters WHERE workspace_id=${workspaceId} ORDER BY adapter_id`).map((r) => ({ workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, updatedAt: iso(r.updated_at) }));
+  }
   async appendEvent(v: Omit<OrlynxEvent, 'sequence'>): Promise<OrlynxEvent> {
     await this.initialize();
     const seq = rows<{ sequence: string }>(await this.sql`INSERT INTO event_sequences (session_id,sequence) VALUES (${v.sessionId},1) ON CONFLICT (session_id) DO UPDATE SET sequence=event_sequences.sequence+1 RETURNING sequence`)[0];
@@ -319,8 +352,21 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async putChangeSet(v: ChangeSet) { await this.initialize(); await this.sql`INSERT INTO change_sets (id,session_id,record,created_at) VALUES (${v.id},${v.sessionId},${JSON.stringify(v)},${v.createdAt}) ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record,updated_at=now()`; }
   async listChangeSets(sessionId: string) { await this.initialize(); return rows<{ record: ChangeSet }>(await this.sql`SELECT record FROM change_sets WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => r.record); }
   async getChangeSet(id: string) { await this.initialize(); return rows<{ record: ChangeSet }>(await this.sql`SELECT record FROM change_sets WHERE id=${id}`)[0]?.record || null; }
-  async getEngineSession(sessionId: string) { await this.initialize(); const r = rows<{ engine_session_id: string }>(await this.sql`SELECT engine_session_id FROM engine_sessions WHERE session_id=${sessionId}`)[0]; return r?.engine_session_id || null; }
-  async putEngineSession(sessionId: string, engineSessionId: string) { await this.initialize(); await this.sql`INSERT INTO engine_sessions (session_id,engine_session_id) VALUES (${sessionId},${engineSessionId}) ON CONFLICT (session_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`; }
+  async getAgentSession(sessionId: string, adapterId: string) {
+    await this.initialize();
+    const r = rows<{ engine_session_id: string }>(await this.sql`SELECT engine_session_id FROM agent_sessions WHERE session_id=${sessionId} AND adapter_id=${adapterId}`)[0];
+    return r?.engine_session_id || null;
+  }
+  async putAgentSession(sessionId: string, adapterId: string, engineSessionId: string) {
+    await this.initialize();
+    await this.sql`INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id) VALUES (${sessionId},${adapterId},${engineSessionId}) ON CONFLICT (session_id,adapter_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`;
+    if (adapterId === 'opencode') await this.sql`INSERT INTO engine_sessions (session_id,engine_session_id) VALUES (${sessionId},${engineSessionId}) ON CONFLICT (session_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`;
+  }
+  async getEngineSession(sessionId: string) {
+    await this.initialize();
+    return await this.getAgentSession(sessionId, 'opencode') || rows<{ engine_session_id: string }>(await this.sql`SELECT engine_session_id FROM engine_sessions WHERE session_id=${sessionId}`)[0]?.engine_session_id || null;
+  }
+  async putEngineSession(sessionId: string, engineSessionId: string) { await this.putAgentSession(sessionId, 'opencode', engineSessionId); }
   async recordWebhookDelivery(deliveryId: string, event: string) {
     await this.initialize();
     const result = rows<{ delivery_id: string }>(await this.sql`INSERT INTO webhook_deliveries (delivery_id,event) VALUES (${deliveryId},${event}) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`);
