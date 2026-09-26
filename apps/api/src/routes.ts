@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
-import { durableHistory, emit, subscribe, subscribeEvents } from './events.js';
+import { durableHistory, emit, recentHistory, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -435,6 +435,16 @@ router.post('/sessions/:id/messages', async (req, res) => {
 router.get('/sessions/:id/messages', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
   res.json(durableStorageConfigured() ? await controlPlaneRepository().listMessages(req.params.id) : store.db.messages[req.params.id] || []);
+});
+
+// GET /v1/sessions/{id}/activity — recent durable activity used to rebuild the
+// workspace timeline after navigation/reload without replaying chat deltas.
+router.get('/sessions/:id/activity', async (req, res) => {
+  const id = req.params.id;
+  if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
+  const requested = Number(req.query.limit || 300);
+  const limit = Number.isFinite(requested) ? Math.max(1, Math.min(500, Math.floor(requested))) : 300;
+  res.json(await recentHistory(id, limit));
 });
 
 // GET /v1/sessions/{id}/events — SSE stream with ?after=seq (§14.2 reconnect)

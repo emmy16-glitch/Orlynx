@@ -63,6 +63,13 @@ export async function durableHistory(sessionId: string, after = 0, limit = 200):
   return durableStorageConfigured() ? controlPlaneRepository().listEvents(sessionId, after, limit) : history(sessionId, after, limit);
 }
 
+export async function recentHistory(sessionId: string, limit = 300): Promise<OrlynxEvent[]> {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 300, 500));
+  return durableStorageConfigured()
+    ? controlPlaneRepository().listRecentEvents(sessionId, safeLimit)
+    : (store.db.events[sessionId] || []).slice(-safeLimit);
+}
+
 export function history(sessionId: string, after = 0, limit = 200): OrlynxEvent[] {
   return (store.db.events[sessionId] || []).filter((e) => e.sequence > after).slice(0, limit);
 }
