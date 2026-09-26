@@ -142,3 +142,12 @@ test('SSH replacement recovery is automatic but bounded to one replacement per p
   assert.match(source, /workspaceNeedsCodespaceReplacement\(detail\) && replacementDepth < 1/);
   assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1\)/);
 });
+
+
+test('queued Build work repairs SSH-broken workspaces instead of being failed immediately', () => {
+  const source = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(source, /workspaceNeedsCodespaceReplacement\(readyWorkspace\.failureCode\)/);
+  assert.match(source, /repairing failed workspace before Build task/);
+  assert.match(source, /void prepareWorkspace\(\{/);
+  assert.match(source, /await promoteNextQueuedRun\(sessionId\)/);
+});
