@@ -527,7 +527,11 @@ export default function ProductionApp() {
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const apply = () => { document.documentElement.dataset.theme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme; };
+    const apply = () => {
+      const resolved = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme;
+      document.documentElement.dataset.theme = resolved;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#111310' : '#F7F7F3');
+    };
     apply(); if (theme === 'system') media.addEventListener('change', apply);
     try { localStorage.setItem(THEME, theme); } catch {}
     return () => media.removeEventListener('change', apply);
