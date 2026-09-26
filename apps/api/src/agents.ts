@@ -4,7 +4,7 @@ import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfil
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { getAgentAdapter, openCodeRuntime, type RuntimeMessage } from './agent-runtime.js';
+import { getAgentAdapter, openCodeRuntime, type AgentRuntimeAdapter, type RuntimeMessage } from './agent-runtime.js';
 import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
@@ -14,7 +14,7 @@ import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositor
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
-const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
+const activeAgentSessions = new Map<string, { adapterId: AgentAdapterId; project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
 export interface TaskOptions {
@@ -446,9 +446,8 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
   }
 }
 
-export async function startRun(sessionId: string, project: string, userText: string, engine: Engine = 'opencode', options: TaskOptions = {}): Promise<AgentRun> {
-  if (engine !== 'opencode') throw new Error('Only the configured OpenCode server adapter is supported.');
-  if (!durableStorageConfigured() && (store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An OpenCode task is already running in this project.');
+export async function startRun(sessionId: string, project: string, userText: string, engine?: Engine, options: TaskOptions = {}): Promise<AgentRun> {
+  if (!durableStorageConfigured() && (store.db.runs[sessionId] || []).some((candidate) => candidate.state === 'running')) throw new Error('An agent task is already running in this project.');
   if (durableStorageConfigured()) await hydrateSessionPrefs(sessionId, project);
   const gate = canPerform(sessionId, 'agent.task');
   if (!gate.allowed) {
@@ -457,16 +456,15 @@ export async function startRun(sessionId: string, project: string, userText: str
     throw error;
   }
   const prefs = getSessionPrefs(sessionId, project);
+  const adapter = getAgentAdapter(engine || prefs.adapterId || 'opencode');
   const mode = options.mode || prefs.mode;
   const { permission, tempPermission } = taskPermission(prefs.permission, options.tempPermission);
   const modelId = options.modelId || prefs.modelId;
   let model: { providerID: string; modelID: string } | undefined;
   let provider: string | undefined;
   if (modelId) {
-    const [providerID, ...rest] = modelId.split('/');
-    if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
-    provider = providerID;
-    model = { providerID, modelID: rest.join('/') };
+    model = adapter.parseModel(modelId);
+    provider = model.providerID;
   }
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
@@ -483,7 +481,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     const run: AgentRun = {
       id: `run_${uuid().slice(0,8)}`,
       sessionId,
-      engine,
+      engine: adapter.id,
       plane,
       provider,
       model: modelId,
@@ -504,6 +502,7 @@ export async function startRun(sessionId: string, project: string, userText: str
       state: 'queued',
       prompt: userText,
       modelId,
+      adapterId: adapter.id,
       mode,
       permission: prefs.permission,
       tempPermission: options.tempPermission,
@@ -513,7 +512,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     (store.db.runs[sessionId] ||= []).push(run);
     store.save();
     await repository.putTask(task);
-    emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, plane, engine, provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'run.queued', { taskId: task.id, position: queuedAhead + 1, plane, engine: adapter.id, adapterId: adapter.id, provider, model: modelId, mode, permission }, run.id);
 
     // Workspace tasks must remain queued while the development environment is
     // being created/repaired. The route starts preparation immediately after
@@ -526,23 +525,23 @@ export async function startRun(sessionId: string, project: string, userText: str
     const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
     return promoted?.id === run.id ? promoted : run;
   }
-  const connection = await openCodeReadiness(project, sessionId);
-  if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable. Configure a healthy OpenCode server before sending work.');
-  const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), project, sessionId);
-  const openCodeSession = await openCodeRuntime.getOrCreateSession(sessionId, project);
-  const before = await openCodeRuntime.messages(project, openCodeSession.id);
+  const connection = await adapter.readiness(project, sessionId);
+  if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable.`);
+  const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), project, sessionId);
+  const engineSession = await adapter.getOrCreateSession(sessionId, project);
+  const before = await adapter.messages(project, engineSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const run: AgentRun = {
-    id: `run_${uuid().slice(0, 8)}`, sessionId, engine, provider, model: modelId,
+    id: `run_${uuid().slice(0, 8)}`, sessionId, engine: adapter.id, provider, model: modelId,
     mode, permission, tempPermission,
     state: 'running', activity: 'Starting work', startedAt: new Date().toISOString(),
   };
   (store.db.runs[sessionId] ||= []).push(run);
   store.save();
-  emit(sessionId, 'run.started', { engine, provider, model: modelId, mode, permission }, run.id);
+  emit(sessionId, 'run.started', { engine: adapter.id, adapterId: adapter.id, provider, model: modelId, mode, permission }, run.id);
   emit(sessionId, 'activity.started', { text: 'Starting work' }, run.id);
   if (resolvedAgent.note) emit(sessionId, 'activity.progress', { text: resolvedAgent.note }, run.id);
-  emit(sessionId, 'message.start', { engine }, run.id);
+  emit(sessionId, 'message.start', { engine: adapter.id, adapterId: adapter.id }, run.id);
   // Backend-enforced mode guardrails travel with the task itself.
   const availableAttachments = durableStorageConfigured() ? [] : materializeAttachments(sessionId, project);
   const attachmentInstruction = availableAttachments.length
@@ -556,21 +555,21 @@ export async function startRun(sessionId: string, project: string, userText: str
     userText,
   ].filter(Boolean).join('\n\n');
   try {
-    await openCodeRuntime.prompt(project, openCodeSession.id, guardedText, { model, agent: resolvedAgent.agent });
+    await adapter.prompt(project, engineSession.id, guardedText, { model, agent: resolvedAgent.agent });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
     store.save();
-    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode rejected the task.', errorKind: run.errorKind }, run.id);
+    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : `${adapter.displayName} rejected the task.`, errorKind: run.errorKind }, run.id);
     throw error;
   }
-  activeOpenCodeSessions.set(run.id, { project, sessionId: openCodeSession.id, cancelled: false });
-  void monitorRun(sessionId, project, openCodeSession.id, run, previousAssistantId);
+  activeAgentSessions.set(run.id, { adapterId: adapter.id, project, sessionId: engineSession.id, cancelled: false });
+  void monitorRun(sessionId, project, engineSession.id, run, adapter, previousAssistantId);
   return run;
 }
 
-async function monitorRun(sessionId: string, project: string, openCodeSessionId: string, run: AgentRun, previousAssistantId?: string): Promise<void> {
-  const active = activeOpenCodeSessions.get(run.id);
+async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentRuntimeAdapter, previousAssistantId?: string): Promise<void> {
+  const active = activeAgentSessions.get(run.id);
   if (!active) return;
   const deadline = Date.now() + timeoutMs;
   let assistant: RuntimeMessage | undefined;
@@ -578,7 +577,7 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
   const toolStates = new Map<string, string>();
   try {
     while (Date.now() < deadline && !active.cancelled) {
-      const messages = await openCodeRuntime.messages(project, openCodeSessionId);
+      const messages = await adapter.messages(project, engineSessionId);
       assistant = [...messages].reverse().find((message) => message.info?.role === 'assistant' && message.info?.id !== previousAssistantId);
       if (assistant) {
         const text = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
@@ -592,21 +591,21 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
         collectToolEvents(sessionId, run.id, assistant, toolStates);
         const failed = Boolean(assistant.info?.error);
         const complete = Boolean(assistant.info?.time?.completed) || (assistant.info?.finish && assistant.info.finish !== 'tool-calls');
-        if (failed) throw new Error('OpenCode reported that the task failed.');
+        if (failed) throw new Error(`${adapter.displayName} reported that the task failed.`);
         if (complete) break;
       }
-      const status = await openCodeRuntime.sessionStatus(project, openCodeSessionId);
+      const status = await adapter.sessionStatus(project, engineSessionId);
       if (assistant && status.type === 'idle') break;
       await delay(800);
     }
     if (active.cancelled) return;
-    if (Date.now() >= deadline) throw new Error(`OpenCode task timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
-    if (!assistant) throw new Error('OpenCode finished without returning an assistant response.');
+    if (Date.now() >= deadline) throw new Error(`${adapter.displayName} task timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    if (!assistant) throw new Error(`${adapter.displayName} finished without returning an assistant response.`);
     const responseText = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
     (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, createdAt: new Date().toISOString() });
     if (durableStorageConfigured()) await controlPlaneRepository().putMessage(store.db.messages[sessionId][store.db.messages[sessionId].length - 1]);
     emit(sessionId, 'message.end', {}, run.id);
-    await captureDiff(sessionId, project, run.id, openCodeSessionId);
+    await captureDiff(sessionId, project, run.id, engineSessionId, adapter);
     run.state = 'completed';
     run.finishedAt = new Date().toISOString();
     run.activity = 'Ready for review';
@@ -622,10 +621,10 @@ async function monitorRun(sessionId: string, project: string, openCodeSessionId:
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
     if (active.task) { active.task.state = 'failed'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
     store.save();
-    for (const [toolId, state] of toolStates) if (state === 'running') emit(sessionId, 'tool.failed', { toolCallId: toolId, error: 'OpenCode did not complete this action.' }, run.id);
-    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : 'OpenCode task failed.', errorKind: run.errorKind }, run.id);
+    for (const [toolId, state] of toolStates) if (state === 'running') emit(sessionId, 'tool.failed', { toolCallId: toolId, error: `${adapter.displayName} did not complete this action.` }, run.id);
+    emit(sessionId, 'run.failed', { error: error instanceof Error ? error.message : `${adapter.displayName} task failed.`, errorKind: run.errorKind }, run.id);
   } finally {
-    activeOpenCodeSessions.delete(run.id);
+    activeAgentSessions.delete(run.id);
   }
 }
 
@@ -647,8 +646,8 @@ function collectToolEvents(sessionId: string, runId: string, message: RuntimeMes
   }
 }
 
-async function captureDiff(sessionId: string, project: string, runId: string, openCodeSessionId: string) {
-  const raw = await openCodeRuntime.diff(project, openCodeSessionId);
+async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentRuntimeAdapter = openCodeRuntime) {
+  const raw = await adapter.diff(project, engineSessionId);
   const files: ChangedFile[] = raw.flatMap((item) => {
     const file = String(item.file || item.path || '');
     if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
@@ -666,10 +665,10 @@ export async function cancelRun(sessionId: string, runId: string) {
   const run = (store.db.runs[sessionId] || []).find((item) => item.id === runId);
   if (!run || run.state !== 'running') return run;
   if (run.plane === 'direct') cancelDirectRun(runId);
-  const active = activeOpenCodeSessions.get(runId);
+  const active = activeAgentSessions.get(runId);
   if (active) {
     active.cancelled = true;
-    try { await openCodeRuntime.abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
+    try { await getAgentAdapter(active.adapterId).abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
   if (active?.task) { active.task.state = 'cancelled'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
