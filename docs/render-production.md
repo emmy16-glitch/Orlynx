@@ -78,6 +78,25 @@ provider and still uses `ORLYNX_BOOTSTRAP_MODE=local`.
 
 See [warm runner architecture](warm-runner-architecture.md).
 
+## Orchestrator worker
+
+For production, run workspace lifecycle orchestration in a separate persistent
+Render background worker using the same build artifact and environment:
+
+```text
+Build: npm run render:build
+Start: npm run start:orchestrator --workspace=@orlynx/api
+ORLYNX_ORCHESTRATOR_MODE=worker
+```
+
+Set `ORLYNX_ORCHESTRATOR_MODE=worker` on the web service as well. HTTP handlers
+then only persist workspace jobs. The worker claims them with Postgres row
+locking, renews leases while provisioning, retries transient failures with
+backoff, and promotes queued Build work after readiness.
+
+For local/single-service development, `ORLYNX_ORCHESTRATOR_MODE=inline` keeps a
+compatibility executor, but it still writes the durable job before execution.
+
 ## Durable chat execution
 
 Messages are stored before agent execution. The task ledger is an ordered durable
