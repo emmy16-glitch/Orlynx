@@ -151,3 +151,16 @@ test('queued Build work repairs SSH-broken workspaces instead of being failed im
   assert.match(source, /void prepareWorkspace\(\{/);
   assert.match(source, /await promoteNextQueuedRun\(sessionId\)/);
 });
+
+
+test('workspace preparation emits concise user-facing startup stages', () => {
+  const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  for (const text of [
+    'Starting Codespace…',
+    'Waiting for GitHub…',
+    'Codespace online. Starting SSH…',
+    'Starting SSH and installing Orlynx bridge…',
+    'Orlynx bridge installed. Connecting…',
+    'Starting OpenCode…',
+  ]) assert.match(source, new RegExp(text.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&')));
+});
