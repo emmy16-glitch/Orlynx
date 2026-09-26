@@ -9,6 +9,11 @@ const CPU_LIMIT = process.env.ORLYNX_RUNNER_CPUS || '2';
 const MEMORY_LIMIT = process.env.ORLYNX_RUNNER_MEMORY || '4g';
 const PIDS_LIMIT = process.env.ORLYNX_RUNNER_PIDS || '512';
 const PREVIEW_PROXY_PORT = Number(process.env.ORLYNX_RUNNER_PREVIEW_PROXY_PORT || 4108);
+const MAX_RUNNING = Math.max(1, Number(process.env.ORLYNX_RUNNER_MAX_WORKSPACES || 4));
+const IDLE_SECONDS = Math.max(300, Number(process.env.ORLYNX_RUNNER_IDLE_SECONDS || 3600));
+const RECLAIM_SECONDS = Math.max(IDLE_SECONDS, Number(process.env.ORLYNX_RUNNER_RECLAIM_SECONDS || 21600));
+const CLEANUP_SECONDS = Math.max(30, Number(process.env.ORLYNX_RUNNER_CLEANUP_SECONDS || 60));
+const ACTIVITY_FILE = '/home/orlynx/.orlynx/runtime/activity';
 
 function safeId(value) {
   if (!/^[A-Za-z0-9_-]{3,120}$/.test(String(value || ''))) throw new Error('invalid identifier');
@@ -125,6 +130,38 @@ function run(command, args, { env = {}, stdin = '', timeoutMs = 60_000, allowFai
 async function docker(args, options) {
   return run('docker', args, options);
 }
+
+async function managedNames(runningOnly = false) {
+  const args = ['ps', ...(runningOnly ? [] : ['-a']), '--filter', 'label=orlynx.workspace', '--format', '{{.Names}}'];
+  const result = await docker(args, { allowFailure: true, timeoutMs: 10_000 });
+  if (result.code !== 0) return [];
+  return result.stdout.split('\n').map((value) => value.trim()).filter(Boolean);
+}
+
+let allocationTail = Promise.resolve();
+async function withAllocationLock(fn) {
+  const previous = allocationTail;
+  let release;
+  allocationTail = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try { return await fn(); }
+  finally { release(); }
+}
+
+async function assertRunnerCapacity(excludeName = '') {
+  const running = (await managedNames(true)).filter((name) => name !== excludeName);
+  if (running.length >= MAX_RUNNING) throw new Error(`Orlynx runner capacity is full (${running.length}/${MAX_RUNNING}).`);
+}
+
+async function startManagedContainer(name) {
+  return withAllocationLock(async () => {
+    const state = await inspect(name);
+    if (!state) throw new Error('runner not found');
+    if (state.Running) return;
+    await assertRunnerCapacity(name);
+    await docker(['start', name], { timeoutMs: 30_000 });
+  });
+}
 async function inspect(name) {
   const result = await docker(['inspect', name, '--format', '{{json .State}}'], { allowFailure: true, timeoutMs: 10_000 });
   if (result.code !== 0) return null;
@@ -225,7 +262,7 @@ async function createWorkspace(body) {
 
   const existing = await inspect(name);
   if (existing) {
-    if (!existing.Running) await docker(['start', name], { timeoutMs: 30_000 });
+    if (!existing.Running) await startManagedContainer(name);
     return { runnerId: name, state: 'running', repoRoot: '/workspace/repo' };
   }
 
@@ -243,9 +280,20 @@ async function createWorkspace(body) {
     '--cap-drop', 'ALL',
     IMAGE,
   ];
-  await docker(createArgs, { timeoutMs: 30_000 });
-  try {
+  await withAllocationLock(async () => {
+    const raced = await inspect(name);
+    if (raced) {
+      if (!raced.Running) {
+        await assertRunnerCapacity(name);
+        await docker(['start', name], { timeoutMs: 30_000 });
+      }
+      return;
+    }
+    await assertRunnerCapacity();
+    await docker(createArgs, { timeoutMs: 30_000 });
     await docker(['start', name], { timeoutMs: 30_000 });
+  });
+  try {
     const auth = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
     const authEncoded = Buffer.from(`AUTHORIZATION: basic ${auth}`).toString('base64');
     const branchEncoded = Buffer.from(branch).toString('base64');
@@ -333,7 +381,7 @@ async function route(req, res) {
   }
   if (req.method === 'POST' && action === 'start') {
     if (!(await inspect(name))) return json(res, 404, { error: 'Runner not found.' });
-    await docker(['start', name], { timeoutMs: 30_000, allowFailure: true });
+    await startManagedContainer(name);
     return json(res, 200, { runnerId: name, state: 'running', repoRoot: '/workspace/repo' });
   }
   if (req.method === 'POST' && action === 'stop') {
