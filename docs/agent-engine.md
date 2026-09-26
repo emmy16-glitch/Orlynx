@@ -34,8 +34,10 @@ Adapter selection survives API restarts:
 - `workspace_agent_adapters` stores health per workspace + adapter;
 - `agent_sessions` stores engine-session IDs by session + adapter.
 
-Legacy OpenCode-specific columns/tables remain temporarily as compatibility
-mirrors during migration. They are not the architectural source of truth.
+Legacy OpenCode workspace/session persistence has been migrated away. Production
+uses the generic adapter tables as the only source of truth; the startup migration
+copies any older data once and drops the old `engine_sessions` table and
+`workspaces.opencode_state` column.
 
 ## Workspace vs adapter lifecycle
 
@@ -58,9 +60,16 @@ uses the private OpenCode server inside the Codespace and the existing
 OpenCode HTTP/session APIs, but those details are contained behind the adapter
 boundary.
 
-Queued work waits until the selected adapter is ready. A terminal adapter
+Queued work waits until the selected adapter is ready. Adapter-ready wake-ups
+are coalesced without being dropped, so a readiness signal that arrives while a
+queue-promotion pass is already running triggers another pass. A terminal adapter
 failure produces an adapter-specific run failure and does not mark the
 development environment failed.
+
+The chat composer exposes an **Agent** picker separately from the model picker.
+The selected adapter is persisted in session preferences and also snapshotted on
+each admitted task so rapid picker changes cannot alter or race an already-sent
+task.
 
 When another adapter is added, the expected work is:
 
