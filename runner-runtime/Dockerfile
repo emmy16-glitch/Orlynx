@@ -23,6 +23,7 @@ RUN useradd --create-home --uid 10001 --shell /bin/bash orlynx \
 COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/dist /opt/orlynx/bridge
 COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/node_modules /opt/orlynx/bridge/node_modules
 COPY --chown=orlynx:orlynx runner-runtime/start-bridge.sh /opt/orlynx/start-bridge.sh
+COPY --chown=orlynx:orlynx runner-runtime/preview-proxy.mjs /opt/orlynx/preview-proxy.mjs
 RUN chmod +x /opt/orlynx/start-bridge.sh \
     && case "$TARGETARCH" in \
          amd64|"") pkg="opencode-linux-x64-baseline" ;; \
@@ -35,4 +36,5 @@ RUN chmod +x /opt/orlynx/start-bridge.sh \
 
 USER orlynx
 WORKDIR /workspace
-CMD ["sleep", "infinity"]
+ENV ORLYNX_PREVIEW_PROXY_PORT=4108
+CMD ["node", "/opt/orlynx/preview-proxy.mjs"]
