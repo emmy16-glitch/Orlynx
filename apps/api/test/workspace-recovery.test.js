@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workspaceNeedsSshRebuild, workspaceNeedsCodespaceReplacement, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
 import { codespaceMatchesProject, orlynxSessionId } from '../src/github-codespaces.ts';
+import { workspaceOpenCodeHealthState } from '../src/opencode.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
