@@ -25,4 +25,5 @@ export interface WorkspaceProvider {
   destroy(workspace: WorkspaceRecord): Promise<void>;
   replace?(input: CreateWorkspaceInput, workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   connect?(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void>;
+  previewUrl?(workspace: WorkspaceRecord, port: number): string | undefined;
 }
