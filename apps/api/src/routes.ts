@@ -437,6 +437,17 @@ router.get('/sessions/:id/messages', async (req, res) => {
   res.json(durableStorageConfigured() ? await controlPlaneRepository().listMessages(req.params.id) : store.db.messages[req.params.id] || []);
 });
 
+// GET /v1/sessions/{id}/activity — recent durable activity used to rebuild the
+// workspace timeline after navigation/reload without replaying chat deltas.
+router.get('/sessions/:id/activity', async (req, res) => {
+  const id = req.params.id;
+  if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
+  const requested = Number(req.query.limit || 300);
+  const limit = Number.isFinite(requested) ? Math.max(1, Math.min(500, Math.floor(requested))) : 300;
+  const retained = await durableHistory(id, 0, 2000);
+  res.json(retained.slice(-limit));
+});
+
 // GET /v1/sessions/{id}/events — SSE stream with ?after=seq (§14.2 reconnect)
 router.get('/sessions/:id/events', async (req, res) => {
   const id = req.params.id;
