@@ -60,6 +60,24 @@ Webhook:   https://orlynx.onrender.com/v1/github/webhook
 If repository-selection updates use "Redirect on update", they should return to
 the same setup URL.
 
+## Execution provider
+
+Render remains the web/control plane. When a separate Docker-capable runner host
+is configured, set:
+
+```text
+ORLYNX_WORKSPACE_PROVIDER=auto
+ORLYNX_RUNNER_URL=https://<private-runner-host>
+ORLYNX_RUNNER_TOKEN=<independent secret>
+ORLYNX_PREWARM_WORKSPACES=1
+```
+
+The Render web service does not need Docker privileges. It talks to the runner
+manager over authenticated HTTPS. GitHub Codespaces remains the fallback
+provider and still uses `ORLYNX_BOOTSTRAP_MODE=local`.
+
+See [warm runner architecture](warm-runner-architecture.md).
+
 ## Durable chat execution
 
 Messages are stored before agent execution. The task ledger is an ordered durable
