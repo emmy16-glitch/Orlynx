@@ -140,7 +140,7 @@ test('SSH replacement recovery is automatic but bounded to one replacement per p
   const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
   assert.match(source, /replacementDepth = 0/);
   assert.match(source, /workspaceNeedsCodespaceReplacement\(detail\) && replacementDepth < 1/);
-  assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1\)/);
+  assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1, context\)/);
 });
 
 
