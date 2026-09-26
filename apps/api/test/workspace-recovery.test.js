@@ -114,3 +114,11 @@ test('workspace startup retries transient GitHub status lookup failures', () => 
   assert.match(source, /GitHub status is temporarily unavailable/);
   assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
 });
+
+
+test('workspace OpenCode health accepts both generic adapter and legacy health schemas', () => {
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', adapters: { opencode: { state: 'ready' } } }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'ready' }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'starting', adapters: { opencode: { state: 'ready' } } }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', adapters: { opencode: { state: 'starting' } } }), 'starting');
+});
