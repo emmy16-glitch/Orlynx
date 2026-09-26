@@ -126,22 +126,6 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS bridge_commands (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL, result jsonb, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS agent_sessions (session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, adapter_id text NOT NULL, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(session_id,adapter_id))`,
   `CREATE TABLE IF NOT EXISTS workspace_agent_adapters (workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, adapter_id text NOT NULL, state text NOT NULL, reason text, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,adapter_id))`,
-  `DO $ BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='engine_sessions') THEN
-        INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id,updated_at)
-        SELECT session_id,'opencode',engine_session_id,updated_at FROM engine_sessions
-        ON CONFLICT (session_id,adapter_id) DO NOTHING;
-        DROP TABLE engine_sessions;
-      END IF;
-    END $`,
-  `DO $ BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='workspaces' AND column_name='opencode_state') THEN
-        INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,updated_at)
-        SELECT id,'opencode',opencode_state,updated_at FROM workspaces
-        ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,updated_at=EXCLUDED.updated_at;
-        ALTER TABLE workspaces DROP COLUMN opencode_state;
-      END IF;
-    END $`,
   `CREATE TABLE IF NOT EXISTS change_sets (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS webhook_deliveries (delivery_id text PRIMARY KEY, event text NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
@@ -149,6 +133,34 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS webhook_deliveries_received_idx ON webhook_deliveries(received_at)`,
   `CREATE INDEX IF NOT EXISTS bridge_commands_delivery_idx ON bridge_commands(workspace_id, status, created_at)`,
 ];
+
+async function migrateLegacyAdapterStorage(sql: Sql): Promise<void> {
+  const legacyEngineTable = rows<{ exists: boolean }>(await sql.query(
+    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='engine_sessions') AS exists",
+    [],
+  ))[0]?.exists === true;
+
+  if (legacyEngineTable) {
+    await sql.query(
+      "INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id,updated_at) SELECT session_id,'opencode',engine_session_id,updated_at FROM engine_sessions ON CONFLICT (session_id,adapter_id) DO NOTHING",
+      [],
+    );
+    await sql.query('DROP TABLE engine_sessions', []);
+  }
+
+  const legacyOpenCodeColumn = rows<{ exists: boolean }>(await sql.query(
+    "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='workspaces' AND column_name='opencode_state') AS exists",
+    [],
+  ))[0]?.exists === true;
+
+  if (legacyOpenCodeColumn) {
+    await sql.query(
+      "INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,updated_at) SELECT id,'opencode',opencode_state,updated_at FROM workspaces ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,updated_at=EXCLUDED.updated_at",
+      [],
+    );
+    await sql.query('ALTER TABLE workspaces DROP COLUMN opencode_state', []);
+  }
+}
 
 function rows<T>(value: unknown): T[] { return value as T[]; }
 function iso(value: unknown): string { return new Date(String(value)).toISOString(); }
@@ -201,7 +213,10 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   private ready?: Promise<void>;
   constructor(private readonly sql: Sql) {}
   initialize(): Promise<void> {
-    this.ready ||= (async () => { for (const statement of migrations) await this.sql.query(statement, []); })();
+    this.ready ||= (async () => {
+      for (const statement of migrations) await this.sql.query(statement, []);
+      await migrateLegacyAdapterStorage(this.sql);
+    })();
     return this.ready;
   }
   async upsertGitHubConnection(v: GitHubConnectionRecord) {

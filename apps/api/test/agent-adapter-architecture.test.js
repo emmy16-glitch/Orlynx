@@ -38,8 +38,12 @@ test('durable storage persists only generic adapter identity, health and session
   assert.match(storage, /agent_sessions/);
   assert.match(storage, /PRIMARY KEY\(session_id,adapter_id\)/);
   assert.match(storage, /PRIMARY KEY\(workspace_id,adapter_id\)/);
+  assert.match(storage, /migrateLegacyAdapterStorage/);
+  assert.match(storage, /information_schema\.tables/);
+  assert.match(storage, /information_schema\.columns/);
   assert.match(storage, /DROP TABLE engine_sessions/);
   assert.match(storage, /DROP COLUMN opencode_state/);
+  assert.doesNotMatch(storage, /DO \$/);
   assert.doesNotMatch(storage, /getEngineSession\(/);
   assert.doesNotMatch(storage, /putEngineSession\(/);
 });
