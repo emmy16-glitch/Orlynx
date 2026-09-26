@@ -162,6 +162,47 @@ async function startManagedContainer(name) {
     await docker(['start', name], { timeoutMs: 30_000 });
   });
 }
+
+async function touchManagedActivity(name) {
+  await docker(['exec', name, 'sh', '-c', `mkdir -p "${ACTIVITY_FILE%/*}" && touch "${ACTIVITY_FILE}"`], {
+    allowFailure: true,
+    timeoutMs: 5_000,
+  });
+}
+
+async function activityEpoch(name, state) {
+  if (state?.Running) {
+    const result = await docker(['exec', name, 'stat', '-c', '%Y', ACTIVITY_FILE], { allowFailure: true, timeoutMs: 5_000 });
+    const value = Number(result.stdout.trim());
+    if (result.code === 0 && Number.isFinite(value) && value > 0) return value;
+    const started = Date.parse(String(state.StartedAt || ''));
+    return Number.isFinite(started) ? Math.floor(started / 1000) : Math.floor(Date.now() / 1000);
+  }
+  const finished = Date.parse(String(state?.FinishedAt || ''));
+  return Number.isFinite(finished) ? Math.floor(finished / 1000) : Math.floor(Date.now() / 1000);
+}
+
+async function cleanupManagedRunners() {
+  const names = await managedNames(false);
+  const now = Math.floor(Date.now() / 1000);
+  for (const name of names) {
+    await withAllocationLock(async () => {
+      const state = await inspect(name);
+      if (!state) return;
+      const last = await activityEpoch(name, state);
+      const idle = Math.max(0, now - last);
+      if (state.Running && idle >= IDLE_SECONDS) {
+        console.log(`[runner-manager] stopping idle workspace ${name} idleSeconds=${idle}`);
+        await docker(['stop', '--time', '10', name], { allowFailure: true, timeoutMs: 30_000 });
+        return;
+      }
+      if (!state.Running && idle >= RECLAIM_SECONDS) {
+        console.log(`[runner-manager] reclaiming stopped workspace ${name} idleSeconds=${idle}`);
+        await docker(['rm', '-f', name], { allowFailure: true, timeoutMs: 30_000 });
+      }
+    });
+  }
+}
 async function inspect(name) {
   const result = await docker(['inspect', name, '--format', '{{json .State}}'], { allowFailure: true, timeoutMs: 10_000 });
   if (result.code !== 0) return null;
@@ -329,6 +370,7 @@ async function connectWorkspace(name, body) {
   const githubToken = String(body.githubToken || '');
   if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword || !githubToken) throw new Error('invalid bridge configuration');
   if (!(await inspect(name))) throw new Error('runner not found');
+  await touchManagedActivity(name);
 
   const values = {
     ORLYNX_CONTROL: bridgeUrl,
@@ -452,6 +494,14 @@ server.on('upgrade', (req, socket, head) => {
   })().catch(() => socket.destroy());
 });
 
+const cleanupTimer = setInterval(() => {
+  void cleanupManagedRunners().catch((error) => console.warn('[runner-manager] cleanup failed', redact(error instanceof Error ? error.message : error)));
+}, CLEANUP_SECONDS * 1000);
+cleanupTimer.unref?.();
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  server.listen(PORT, '0.0.0.0', () => console.log(`[runner-manager] listening on :${PORT}`));
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[runner-manager] listening on :${PORT} maxRunning=${MAX_RUNNING} idleSeconds=${IDLE_SECONDS}`);
+    void cleanupManagedRunners().catch(() => {});
+  });
 }
