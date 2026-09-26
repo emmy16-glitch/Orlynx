@@ -66,13 +66,13 @@ function visibleChatText(role: string, text: string, prompt = ''): string {
   return cleaned;
 }
 
-type WorkspaceProgressStep = {
+type OperationProgressStep = {
   key: string;
   label: string;
   tone: 'done' | 'active' | 'retry';
 };
 
-function workspaceProgressStep(event: any): WorkspaceProgressStep | null {
+function operationProgressStep(event: any): OperationProgressStep | null {
   const payload = event?.payload || {};
   if (event?.type === 'workspace.preparing') {
     const stage = String(payload.stage || 'workspace');
@@ -90,16 +90,32 @@ function workspaceProgressStep(event: any): WorkspaceProgressStep | null {
     if (state === 'installing') return { key: 'opencode.installing', label: 'Installing OpenCode…', tone: 'active' };
     if (state === 'starting') return { key: 'opencode.starting', label: 'Starting OpenCode…', tone: 'active' };
     if (state === 'ready') return { key: 'opencode.ready', label: 'OpenCode ready.', tone: 'done' };
-    if (state === 'busy') return { key: 'opencode.busy', label: 'OpenCode is starting the Build task…', tone: 'active' };
+    if (state === 'busy') return { key: 'opencode.busy', label: 'OpenCode is starting the task…', tone: 'active' };
     if (state === 'unavailable') return { key: 'opencode.unavailable', label: 'OpenCode unavailable — reconnecting…', tone: 'retry' };
+  }
+  if (event?.type === 'run.queued') {
+    const mode = String(payload.mode || '');
+    return { key: 'run.queued', label: mode === 'plan' ? 'Waiting to start planning…' : mode === 'ask' ? 'Waiting to answer…' : 'Waiting to start…', tone: 'active' };
+  }
+  if (event?.type === 'run.started') {
+    return { key: 'run.started', label: payload.plane === 'workspace' ? 'Development environment ready. Starting task…' : 'Starting AI…', tone: 'active' };
+  }
+  if ((event?.type === 'activity.started' || event?.type === 'activity.progress') && event?.runId) {
+    const text = String(payload.text || '').trim();
+    if (!text) return null;
+    if (payload.sourceType === 'opencode.retry' || /retry|reconnect|temporarily|busy/i.test(text)) {
+      return { key: 'run.retry', label: /retry/i.test(text) ? text : `${text} — retrying…`, tone: 'retry' };
+    }
+    const label = /^thinking[.…]*$/i.test(text) ? 'Preparing response…' : text;
+    return { key: `run.activity.${label.toLowerCase().replace(/[^a-z0-9]+/g, '.').slice(0, 48)}`, label, tone: 'active' };
   }
   return null;
 }
 
-function WorkspaceProgress({ steps }: { steps: WorkspaceProgressStep[] }) {
+function OperationProgress({ title, steps, className = '' }: { title: string; steps: OperationProgressStep[]; className?: string }) {
   if (!steps.length) return null;
-  return <div className="workspace-progress" role="status" aria-live="polite" aria-label="Development environment progress">
-    <div className="workspace-progress-title"><span className="workspace-progress-pulse" />Preparing development environment</div>
+  return <div className={`workspace-progress ${className}`.trim()} role="status" aria-live="polite" aria-label={`${title} progress`}>
+    <div className="workspace-progress-title"><span className="workspace-progress-pulse" />{title}</div>
     <div className="workspace-progress-steps">
       {steps.map((step, index) => {
         const isLast = index === steps.length - 1;
@@ -1022,13 +1038,14 @@ export default function ProductionApp() {
   const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
   const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
   const activities = useMemo(() => toActivities(events), [events]);
-  const workspaceProgressSteps = useMemo(() => {
-    const cutoff = lastRun?.plane === 'workspace' && lastRun?.startedAt ? Date.parse(lastRun.startedAt) : 0;
-    const steps: WorkspaceProgressStep[] = [];
+  const operationProgressSteps = useMemo(() => {
+    const cutoff = lastRun?.startedAt ? Date.parse(lastRun.startedAt) : 0;
+    const steps: OperationProgressStep[] = [];
     for (const event of events) {
       const eventAt = Date.parse(event?.timestamp || '') || 0;
       if (cutoff && eventAt + 2_000 < cutoff) continue;
-      const step = workspaceProgressStep(event);
+      if (event?.runId && lastRun?.id && event.runId !== lastRun.id) continue;
+      const step = operationProgressStep(event);
       if (!step) continue;
       const previous = steps[steps.length - 1];
       if (previous?.key === step.key && previous?.label === step.label) {
@@ -1037,17 +1054,30 @@ export default function ProductionApp() {
         steps.push(step);
       }
     }
-    if (!steps.length && (workspacePreparing || workspaceDisconnected || cloudBusy) && lastRun?.plane === 'workspace') {
+    if (!steps.length && lastRun?.plane === 'workspace' && (workspacePreparing || workspaceDisconnected || cloudBusy)) {
       steps.push({ key: 'workspace.start', label: 'Starting development environment…', tone: 'active' });
     }
+    if (!steps.length && lastRun?.plane === 'direct' && ['queued', 'running'].includes(lastRun?.state)) {
+      steps.push({ key: 'direct.start', label: lastRun?.state === 'queued' ? 'Queued…' : 'Starting AI…', tone: 'active' });
+    }
     return steps.slice(-7);
-  }, [cloudBusy, events, lastRun?.plane, lastRun?.startedAt, workspaceDisconnected, workspacePreparing]);
-  const workspaceProgressActive = Boolean(
-    lastRun?.plane === 'workspace'
-    && (lastRun.state === 'queued' || lastRun.state === 'running')
-    && (workspacePreparing || workspaceDisconnected || cloudBusy || workspaceProgressSteps.length > 0)
-    && !workspaceReady
+  }, [cloudBusy, events, lastRun?.id, lastRun?.plane, lastRun?.startedAt, lastRun?.state, workspaceDisconnected, workspacePreparing]);
+  const operationProgressActive = Boolean(
+    lastRun
+    && ['queued', 'running'].includes(lastRun.state)
+    && (
+      lastRun.plane === 'workspace'
+        ? (!workspaceReady && (workspacePreparing || workspaceDisconnected || cloudBusy || operationProgressSteps.length > 0))
+        : !draftReply
+    )
   );
+  const operationProgressTitle = lastRun?.plane === 'workspace'
+    ? 'Preparing development environment'
+    : lastRun?.mode === 'plan'
+      ? 'Preparing plan'
+      : lastRun?.mode === 'ask'
+        ? 'Preparing answer'
+        : 'Preparing response';
 
   const currentChatActivities = useMemo(() => {
     if (!lastRun?.id) return [];
@@ -1137,9 +1167,9 @@ export default function ProductionApp() {
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {workspaceProgressActive && <WorkspaceProgress steps={workspaceProgressSteps} />}
-                {!!currentChatActivities.length && !workspaceProgressActive && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
-                {lastRun?.state === 'queued' && lastRun?.plane !== 'workspace' && <p className="run-receipt">Queued · Orlynx will respond automatically.</p>}
+                {operationProgressActive && <OperationProgress title={operationProgressTitle} steps={operationProgressSteps} />}
+                {!!currentChatActivities.length && !operationProgressActive && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
+                {lastRun?.state === 'queued' && !operationProgressActive && <p className="run-receipt">Queued · Orlynx will continue automatically.</p>}
                 {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
@@ -1270,11 +1300,15 @@ export default function ProductionApp() {
               <div className="sync-visual" aria-hidden="true"><span className="sync-orbit" /><span className="sync-dot" /></div>
               <h1>Connecting your GitHub account…</h1>
               <p>We're verifying your access and bringing your repositories into Orlynx.</p>
-              <ul className="sync-steps premium">
-                <li className={syncStep === 'Verifying installation' ? 'active' : 'done'}><span>{syncStep === 'Verifying installation' ? '●' : '✓'}</span>Verifying installation</li>
-                <li className={syncStep === 'Fetching repositories' ? 'active' : syncStep === 'Finishing setup' || !syncStep ? 'done' : ''}><span>{syncStep === 'Fetching repositories' ? '●' : syncStep === 'Finishing setup' || !syncStep ? '✓' : '○'}</span>Fetching repositories</li>
-                <li className={syncStep === 'Finishing setup' ? 'active' : ''}><span>{syncStep === 'Finishing setup' ? '●' : '○'}</span>Preparing Orlynx</li>
-              </ul>
+              <OperationProgress
+                title="Connecting GitHub"
+                className="page-operation-progress"
+                steps={[
+                  { key: 'github.verify', label: 'Verifying installation…', tone: syncStep === 'Verifying installation' ? 'active' : 'done' },
+                  { key: 'github.repos', label: 'Fetching repositories…', tone: syncStep === 'Fetching repositories' ? 'active' : (syncStep === 'Finishing setup' || !syncStep ? 'done' : 'active') },
+                  { key: 'github.finish', label: 'Preparing Orlynx…', tone: syncStep === 'Finishing setup' ? 'active' : 'done' },
+                ]}
+              />
             </section> : <section className="repo-flow-screen">
               <header className="repo-flow-header"><div className="flow-brand"><span className="brand-mark" /><b>Orlynx</b></div><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></header>
               {!integration.github?.connected ? <div className="github-connect-empty">
