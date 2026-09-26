@@ -1,104 +1,160 @@
-/* Orlynx visual system — quiet, premium, developer-focused. */
+/* Orlynx visual system — editorial, quiet, GitHub-native.
+   Curated-design pass: one neutral system, one focus accent, no dashboard chrome. */
 :root, [data-theme="light"] {
   color-scheme: light;
-  --background: #F7F5F1;
-  --background-elevated: #FFFFFF;
+
+  --background: #F7F7F3;
+  --background-elevated: #FBFBF8;
   --surface: #FFFFFF;
-  --surface-muted: #EFEEE9;
+  --surface-muted: #F0F0EB;
   --surface-elevated: #FFFFFF;
-  --surface-hover: #F2F1ED;
-  --surface-active: #E9E7E1;
-  --border: #D9DDE3;
-  --border-subtle: #E7E9ED;
-  --border-strong: #C4CAD2;
-  --foreground: #181B20;
-  --foreground-muted: #5F6874;
-  --foreground-subtle: #7D8794;
+  --surface-hover: #F2F2ED;
+  --surface-active: #EAEAE4;
+
+  --border: #D9D9D2;
+  --border-subtle: #E7E7E1;
+  --border-strong: #C6C7BF;
+
+  --foreground: #151515;
+  --foreground-muted: #6F716C;
+  --foreground-subtle: #969992;
+
   --text-primary: var(--foreground);
   --text-secondary: var(--foreground-muted);
   --text-muted: var(--foreground-subtle);
-  --primary: #181B20;
-  --primary-hover: #0F1115;
+
+  --primary: #151515;
+  --primary-hover: #050505;
   --primary-foreground: #FFFFFF;
-  --accent: #9A654A;
-  --accent-soft: #F0E3DA;
-  --success: #2F7D66;
-  --warning: #B98434;
-  --danger: #C95555;
-  --info: #3F6FA8;
-  --pending: #7D8794;
-  --agent-working: #3F6FA8;
-  --agent-success: #2F7D66;
-  --agent-failed: #C95555;
-  --agent-waiting: #B98434;
-  --agent-paused: #7D8794;
-  --git-added: #2F7D66;
-  --git-modified: #3F6FA8;
-  --git-deleted: #C95555;
-  --font-display: "Manrope", "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Source Sans 3", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --accent: #151515;
+  --accent-strong: #111310;
+  --accent-focus: #B7FF5A;
+  --accent-soft: #EEFFD8;
+
+  --success: #3E8A63;
+  --warning: #B5802E;
+  --danger: #C95454;
+  --info: #4C72A8;
+  --pending: #858981;
+
+  --agent-working: #4C72A8;
+  --agent-success: #3E8A63;
+  --agent-failed: #C95454;
+  --agent-waiting: #B5802E;
+  --agent-paused: #858981;
+
+  --git-added: #3E8A63;
+  --git-modified: #4C72A8;
+  --git-deleted: #C95454;
+
+  --font-display: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  --text-display: 40px;
-  --text-h1: 28px;
-  --text-h2: 20px;
+
+  --text-display: 48px;
+  --text-h1: 32px;
+  --text-h2: 22px;
   --text-h3: 16px;
   --text-body: 14px;
-  --text-small: 13px;
-  --text-meta: 12px;
+  --text-small: 12px;
+  --text-meta: 11px;
   --text-code: 12px;
-  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px; --sp-12: 48px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 22px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
   --radius-pill: 999px;
-  --shadow-1: 0 1px 2px rgb(24 27 32 / 4%), 0 8px 22px rgb(24 27 32 / 4%);
-  --shadow-2: 0 18px 48px rgb(24 27 32 / 12%);
-  --motion-fast: 120ms;
-  --motion-normal: 200ms;
-  --motion-slow: 320ms;
+
+  --shadow-1: 0 1px 1px rgb(21 21 21 / 4%);
+  --shadow-2: 0 12px 36px rgb(21 21 21 / 10%);
+
+  --motion-fast: 110ms;
+  --motion-normal: 180ms;
+  --motion-slow: 280ms;
   --motion-ease: cubic-bezier(.2, .75, .25, 1);
-  --touch-min: 44px;
+  --touch-min: 42px;
+
+  --content-max: 1180px;
+  --chat-max: 860px;
+  --rail-width: 224px;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --background: #111318;
-  --background-elevated: #15181E;
-  --surface: #191D23;
-  --surface-muted: #15181D;
-  --surface-elevated: #20252D;
-  --surface-hover: #222832;
-  --surface-active: #2A313B;
-  --border: #2D333C;
-  --border-subtle: #242A32;
-  --border-strong: #3C4552;
-  --foreground: #F5F7FA;
-  --foreground-muted: #AAB2BD;
-  --foreground-subtle: #7D8794;
-  --primary: #F5F7FA;
+
+  --background: #111310;
+  --background-elevated: #151713;
+  --surface: #1E1F1C;
+  --surface-muted: #181A17;
+  --surface-elevated: #242622;
+  --surface-hover: #272925;
+  --surface-active: #30332D;
+
+  --border: #33362F;
+  --border-subtle: #292C27;
+  --border-strong: #464A41;
+
+  --foreground: #F4F5EF;
+  --foreground-muted: #A9ADA3;
+  --foreground-subtle: #7C8177;
+
+  --primary: #F4F5EF;
   --primary-hover: #FFFFFF;
-  --primary-foreground: #111318;
-  --accent: #D5A585;
-  --accent-soft: #30231E;
-  --success: #6CC4A4;
-  --warning: #E2B05A;
-  --danger: #E17A7A;
-  --info: #7AA2D1;
-  --pending: #9099A5;
-  --agent-working: #7AA2D1;
-  --agent-success: #6CC4A4;
-  --agent-failed: #E17A7A;
-  --agent-waiting: #E2B05A;
-  --agent-paused: #9099A5;
-  --git-added: #6CC4A4;
-  --git-modified: #7AA2D1;
-  --git-deleted: #E17A7A;
-  --shadow-1: 0 1px 3px rgb(0 0 0 / 24%), 0 8px 22px rgb(0 0 0 / 16%);
-  --shadow-2: 0 18px 48px rgb(0 0 0 / 34%);
+  --primary-foreground: #111310;
+
+  --accent: #F4F5EF;
+  --accent-strong: #FFFFFF;
+  --accent-focus: #B7FF5A;
+  --accent-soft: #263218;
+
+  --success: #72BD91;
+  --warning: #D5A958;
+  --danger: #DF7676;
+  --info: #7C9AC8;
+  --pending: #969B91;
+
+  --agent-working: #7C9AC8;
+  --agent-success: #72BD91;
+  --agent-failed: #DF7676;
+  --agent-waiting: #D5A958;
+  --agent-paused: #969B91;
+
+  --git-added: #72BD91;
+  --git-modified: #7C9AC8;
+  --git-deleted: #DF7676;
+
+  --shadow-1: 0 1px 1px rgb(0 0 0 / 20%);
+  --shadow-2: 0 16px 42px rgb(0 0 0 / 30%);
+}
+
+::selection {
+  color: #111310;
+  background: #B7FF5A;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --motion-fast: 0ms; --motion-normal: 0ms; --motion-slow: 0ms; }
-  *, *::before, *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+    --motion-slow: 0ms;
+  }
+
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

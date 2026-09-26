@@ -4,140 +4,227 @@
 
 Orlynx is a mobile-first GitHub-native AI coding workspace. The primary user loop is:
 
-Connect GitHub → choose repository → chat with Orlynx → observe useful work → review files/changes → approve and push → continue.
+Connect GitHub → choose repository → chat with Orlynx → observe useful work → review files/changes → approve and publish → continue.
 
-The public interface is organized around the user's job, not infrastructure. GitHub App internals, OpenCode, workspace bridges, runtime servers, provider adapters and deployment configuration stay out of the normal product UI.
+The public interface is organized around the user's job, not infrastructure. GitHub App internals, OpenCode runtime details, workspace bridges, provider adapters and deployment configuration stay out of the normal product UI unless the user needs them to recover or diagnose something.
 
-## Approved visual reference
+## Current visual direction
 
-The approved 12-screen Orlynx flow supplied on 2026-09-24 is the primary visual source of truth.
+The current visual direction is the editorial restraint of curated.design translated into a real developer workspace.
 
-Key screens:
-1. Landing
-2. GitHub authorization handoff
-3. Repository access selection
-4. GitHub confirmation
-5. Returning/syncing to Orlynx
-6. Repository picker
-7. Chat-first project workspace
-8. Live agent activity
-9. File browser
-10. Changes review
-11. Commit/push
-12. Success
+This is a reference, not a clone. Orlynx should borrow the qualities that make Curated easy to scan:
+- strong type hierarchy
+- generous whitespace
+- restrained chrome
+- thin borders instead of card-heavy grouping
+- consistent list/grid geometry
+- compact search and filtering controls
+- a single visual language across pages
+- quiet light/dark modes
+- content first, controls second
+
+Orlynx must still behave like a coding workspace. Chat, files, diffs, execution evidence, repository state and approvals remain product-specific.
+
+## Workspace composition
+
+The workspace is not a dashboard.
+
+The default project screen is:
+1. compact project header
+2. quiet tab navigation
+3. one primary working canvas
+4. sticky composer
+5. contextual execution/status UI only when needed
+
+The old permanent right context rail is not part of the default workspace. Repository, AI, terminal, preview and settings information belongs in More, contextual controls, or lightweight inline state.
 
 ## Visual character
 
-Quiet, warm, premium, developer-focused, trustworthy.
+Editorial, calm, premium, developer-focused, trustworthy.
 
 Avoid:
 - purple AI SaaS styling
-- neon/cyberpunk
-- glassmorphism-heavy surfaces
-- dashboard clutter
-- random colored cards
-- technical infrastructure language in normal UI
+- neon/cyberpunk visuals
+- heavy glassmorphism
+- dashboard grids for primary workflows
+- permanent status cards
+- random colored surfaces
+- oversized rounded containers
+- infrastructure terminology in normal product copy
+- decorative monospace typography
 
 ## Core light palette
 
-- Canvas: #F7F5F1
-- Elevated background: #FFFFFF
+- Canvas: #F7F7F3
+- Elevated canvas: #FBFBF8
 - Surface: #FFFFFF
-- Muted surface: #EFEEE9
-- Primary ink: #181B20
-- Muted ink: #5F6874
-- Subtle ink: #7D8794
-- Border: #D9DDE3
-- Strong border: #C4CAD2
-- Primary CTA: #181B20
-- Warm accent: #9A654A
-- Warm accent surface: #F0E3DA
-- Success: #2F7D66
-- Warning: #B98434
-- Danger: #C95555
-- Working/info: #3F6FA8
+- Muted surface: #F0F0EB
+- Primary ink: #151515
+- Muted ink: #6F716C
+- Subtle ink: #969992
+- Border: #D9D9D2
+- Strong border: #C6C7BF
+- Focus accent: #B7FF5A
+- Focus accent surface: #EEFFD8
+- Success: #3E8A63
+- Warning: #B5802E
+- Danger: #C95454
+- Working/info: #4C72A8
 
 ## Core dark palette
 
-- Canvas: #111318
-- Elevated background: #15181E
-- Surface: #191D23
-- Elevated surface: #20252D
-- Primary ink: #F5F7FA
-- Muted ink: #AAB2BD
-- Subtle ink: #7D8794
-- Border: #2D333C
-- Strong border: #3C4552
-- Warm accent: #D5A585
-- Success: #6CC4A4
-- Warning: #E2B05A
-- Danger: #E17A7A
-- Working/info: #7AA2D1
+- Canvas: #111310
+- Elevated canvas: #151713
+- Surface: #1E1F1C
+- Muted surface: #181A17
+- Elevated surface: #242622
+- Primary ink: #F4F5EF
+- Muted ink: #A9ADA3
+- Subtle ink: #7C8177
+- Border: #33362F
+- Strong border: #464A41
+- Focus accent: #B7FF5A
+- Focus accent surface: #263218
+- Success: #72BD91
+- Warning: #D5A958
+- Danger: #DF7676
+- Working/info: #7C9AC8
 
-Runtime tokens live in `apps/web/src/ui/tokens.css`. Durable changes to these values should update this file and the runtime tokens together. Product surfaces must use semantic tokens rather than hard-coded light-only colors.
+Runtime tokens live in `apps/web/src/ui/tokens.css`. Durable palette changes must update this file and the runtime tokens together. Product surfaces use semantic tokens instead of hard-coded light-only colors.
 
 ## Typography
 
-Headings and brand moments: Manrope 600–700.
-Primary UI and long-form/chat text: Source Sans 3 400–700.
-Code, commands, file paths and technical metadata: IBM Plex Mono 400–600.
+Heading/brand: Geist 500–700.
+Primary UI, chat and long-form text: Inter 400–700.
+Code, commands, branches, paths and technical metadata: IBM Plex Mono 400–600.
 
-The three roles should remain visibly distinct but balanced. Monospace is reserved for actual code/data, not as a general “technical” decoration. Use strong negative tracking only for major headings. Body text remains calm and readable.
+Rules:
+- large headings use strong negative tracking
+- body text stays neutral and highly readable
+- monospace only indicates actual technical information
+- labels and metadata stay small rather than shouting
+- type hierarchy does more grouping work than boxes
 
 ## Geometry
 
-- Buttons: 11–13px radius
-- Standard controls/cards: 11–16px
-- Sheets/major containers: 18–22px
-- Pills: full radius
-- Shadows: extremely soft and sparse
+- Small controls: 6–8px radius
+- Standard controls: 8–10px radius
+- Major floating surfaces: 10–14px radius
+- Pills: only for true badges/status
+- Shadows: sparse; borders and spacing come first
 
-Use spacing and dividers before adding cards.
+Do not use a rounded card when a divider or whitespace communicates the grouping better.
 
 ## Navigation
 
-First run: no global dashboard navigation.
+Before a repository is open:
+- compact brand/header
+- repository discovery
+- settings when needed
 
-After GitHub connection: repository picker.
-
-Inside a project, mobile primary navigation is:
+Inside a project:
 - Chat
 - Files
 - Changes
 - More
 
-Repository switching belongs in the project header. Settings, Terminal, Preview and advanced workspace controls belong under More or contextual actions.
+Desktop navigation is visually equivalent to editorial categories: quiet text, restrained icons, and a thin active indicator.
+
+Mobile remains first-class and keeps a bottom project navigation.
+
+Repository switching belongs in the project header. Terminal, Preview, cloud/workspace controls and advanced project controls belong under More.
+
+## Chat
+
+Chat is the primary canvas.
+
+Messages should read as an editorial thread, not a stack of chat bubbles:
+- quiet avatars/icons
+- author/time metadata
+- readable full-width text
+- thin separators
+- code surfaces only where needed
+- no colored assistant bubbles
+
+The composer is sticky, compact and central. It exposes:
+- attachment control
+- current agent/model
+- mode
+- temporary access only when relevant
+- send/cancel
+
+Controls should remain subordinate to the writing area.
 
 ## AI controls
 
-Normal project UI exposes one compact AI control that opens a single, coherent selection surface for:
-- Agent
-- Model
+The agent/model selector is anchored to the composer control. It is a short dropdown, not a centered modal.
 
-Mode and access remain separate because they answer different questions:
-- Mode: Build / Plan / Ask
-- Access: Full project access / Ask first / Read only
+The selector:
+- shows the current agent
+- exposes truthful readiness
+- supports model search
+- shows only a few visible models at once
+- scrolls for the rest
+- closes on selection, Escape or outside click
 
-Do not use long native browser selects for agent/model choice. The control must show the current agent and model, expose adapter readiness truthfully, and scale cleanly when additional agents are added.
+Mode is separate because it controls behavior:
+- Build
+- Plan
+- Ask
 
-OpenCode account/provider details belong inside the AI management surface or advanced settings. The main workspace should present the user-facing agent name and current state, not infrastructure jargon.
+Access is shown only when Build can mutate the project.
+
+Provider/account configuration belongs in Settings or the same compact selector when action is required.
+
+## Repository discovery
+
+Repository browsing uses scan-friendly rows and compact cards:
+- search first
+- thin separators
+- small repository identity icon
+- name and secondary metadata
+- explicit Open action
+- no large decorative dashboard cards
+
+## Files
+
+Files use a table/list mental model:
+- breadcrumb path
+- folder filter
+- thin row separators
+- restrained modified state
+- code viewer with a compact title bar
+- monospace only inside code/path contexts
+
+## Changes
+
+Changes are a review document, not another dashboard:
+- change groups separated by rules
+- file summaries first
+- exact diffs behind disclosure
+- approval, commit and publish as explicit stages
+- success state remains calm and useful
+
+## More and Settings
+
+More is a clean list/grid of secondary project tools, not persistent chrome.
+
+Settings is composed from quiet rows grouped by section dividers. Theme selection uses authored System / Light / Dark controls.
 
 ## Activity
 
-Main conversation shows observable work, not private reasoning. Build mode is deliberately transparent: the user should be able to follow commands, files, patches, tests and resulting state without opening a separate IDE.
+Main conversation shows observable work, not private reasoning. Build mode is transparent: users can follow commands, files, patches, tests and results without opening a separate IDE.
 
-The activity stream has two remembered presentation modes:
+Activity has two presentation modes:
+- **Summary** — concise human progress with details on demand
+- **Code** — automatically reveals observable command/file/code evidence while work runs
 
-- **Summary** — concise human progress with details on demand.
-- **Code** — automatically reveals observable command/file/code evidence while work runs. Build uses this as the fresh-user default; Plan and Ask stay summary-first unless the user has chosen otherwise.
+Evidence hierarchy:
+1. concise human progress and one clearly emphasized current step
+2. structured execution evidence — command, path, changed files, bounded code/diff snippets, exit/test results
+3. raw stdout/stderr behind progressive disclosure
 
-Both modes keep the same evidence hierarchy:
-
-Layer 1: concise human progress and one clearly emphasized current step.
-Layer 2: structured execution evidence — command, path, changed files, bounded code/diff snippets, exit/test results.
-Layer 3: raw stdout/stderr behind explicit progressive disclosure.
-
-Queue labels must describe what is waiting when Orlynx knows it (for example, waiting to run tests or a Git command) rather than using generic “Action is queued” copy. Completed history is visually quieter than the one current step. Technical detail is evidence of observable work; private reasoning is never shown.
+Completed history is visually quieter than the current step.
 
 ## Interaction states
 
@@ -154,24 +241,44 @@ Always design explicit:
 - completed
 - offline/recovery
 
+Normal recovery states should be inline and calm. Large recovery cards are reserved for situations that genuinely require user action.
+
+## Light and dark mode
+
+Light and dark mode are the same system, not separate themes.
+
+Every surface must map to semantic tokens. Never leave a light navigation/composer/dialog surface inside dark mode or vice versa.
+
+Theme is resolved before React paints to avoid a flash of the wrong mode.
+
 ## Mobile behavior
 
-Mobile is first-class. Preserve:
-- safe areas
-- visible composer above keyboard
-- stable scroll position during streaming
-- bottom-sheet selectors
-- large touch targets
-- system/browser back behavior
+Mobile is first-class:
+- safe areas respected
+- sticky composer stays above keyboard/navigation
+- stable streaming scroll
+- model/mode selectors remain compact
+- minimum touch targets preserved
 - no horizontal overflow
+- no desktop context rail squeezed into mobile
+- project navigation stays available at the bottom
+
+## Implementation sources
+
+- `apps/web/src/ui/tokens.css` — design tokens
+- `apps/web/src/ui/components.css` — primitives
+- `apps/web/src/styles.css` — legacy/functional styles
+- `apps/web/src/curated.css` — current editorial visual layer
+- `apps/web/src/ProductionApp.tsx` — product composition
 
 ## Source hierarchy
 
 When design sources disagree:
-1. Current explicit product requirement
-2. Approved Orlynx flow mockup
-3. This DESIGN.md
-4. Shared Orlynx primitives/tokens
-5. External inspiration such as BeautifulUI, 21st.dev, BeUI, Rare UI, Transitions.dev or shadcn
+1. current explicit product requirement
+2. current Orlynx product behavior and accessibility needs
+3. this DESIGN.md
+4. shared Orlynx primitives/tokens
+5. curated.design as the approved external visual reference
+6. other external component inspiration
 
-External references may improve component craft and motion but must not change Orlynx's approved visual direction.
+External references may improve craft and restraint but must never make Orlynx less usable as a real GitHub-native coding workspace.
