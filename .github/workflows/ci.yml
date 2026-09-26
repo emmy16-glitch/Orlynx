@@ -58,3 +58,64 @@ jobs:
 
       - name: Build runner manager image
         run: docker build --file runner-manager/Dockerfile --tag orlynx-runner-manager:ci .
+
+
+  publish-runner-images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - verify
+      - runner-runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Build and publish runner runtime
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/orlynx-runner-runtime
+        run: |
+          docker build --file runner-runtime/Dockerfile             --tag "$IMAGE:${GITHUB_SHA}"             --tag "$IMAGE:latest" .
+          docker push "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:latest"
+
+      - name: Build and publish runner manager
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/orlynx-runner-manager
+        run: |
+          docker build --file runner-manager/Dockerfile             --tag "$IMAGE:${GITHUB_SHA}"             --tag "$IMAGE:latest" .
+          docker push "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:latest"
+
+  deploy-render:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - verify
+      - runner-runtime
+      - publish-runner-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy verified Render services
+        env:
+          WEB_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          ORCHESTRATOR_HOOK: ${{ secrets.RENDER_ORCHESTRATOR_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$WEB_HOOK" ]; then
+            curl --fail --silent --show-error --request POST "$WEB_HOOK"
+          else
+            echo "RENDER_DEPLOY_HOOK_URL is not configured; web deploy skipped."
+          fi
+
+          if [ -n "$ORCHESTRATOR_HOOK" ]; then
+            curl --fail --silent --show-error --request POST "$ORCHESTRATOR_HOOK"
+          else
+            echo "RENDER_ORCHESTRATOR_DEPLOY_HOOK_URL is not configured; worker deploy skipped."
+          fi
