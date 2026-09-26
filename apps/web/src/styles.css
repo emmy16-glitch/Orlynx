@@ -2230,7 +2230,8 @@ button, input, textarea, select { font: inherit; }
 }
 
 
-/* Chat polish: compact inline model selection and predictable message alignment. */
+/* Chat polish: compact inline agent/model selection and predictable message alignment. */
+.inline-agent-picker,
 .inline-model-picker {
   min-width: 0;
   max-width: min(48vw, 290px);
@@ -2243,6 +2244,19 @@ button, input, textarea, select { font: inherit; }
   background: var(--surface);
   color: var(--foreground-muted);
 }
+.inline-agent-picker {
+  flex: none;
+  max-width: 150px;
+}
+.inline-agent-picker .picker-label {
+  padding-left: 2px;
+  color: var(--foreground-subtle);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.inline-agent-picker select,
 .inline-model-picker select {
   min-width: 0;
   max-width: 250px;
@@ -2255,6 +2269,7 @@ button, input, textarea, select { font: inherit; }
   text-overflow: ellipsis;
   cursor: pointer;
 }
+.inline-agent-picker select:focus,
 .inline-model-picker select:focus {
   outline: none;
 }
@@ -2321,7 +2336,10 @@ button, input, textarea, select { font: inherit; }
   .user-message { padding-left: 34px; }
   .user-message .message-content { max-width: 88%; }
   .assistant-message { padding-right: 12px; }
-  .inline-model-picker { max-width: 52vw; }
-  .inline-model-picker select { max-width: 44vw; }
+  .inline-agent-picker { max-width: 34vw; }
+  .inline-agent-picker .picker-label { display: none; }
+  .inline-agent-picker select { max-width: 30vw; }
+  .inline-model-picker { max-width: 46vw; }
+  .inline-model-picker select { max-width: 38vw; }
   .composer-send.ox-btn { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
 }
