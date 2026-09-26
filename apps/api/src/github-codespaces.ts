@@ -328,7 +328,9 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       if ((error as Error & { status?: number })?.status === 404) return;
       throw error;
     }
-  }  async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
+  }
+
+  async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
     await bootstrapWorkspace(workspace, values);
   }
 }
