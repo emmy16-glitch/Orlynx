@@ -10,12 +10,34 @@ import { store } from './store.js';
 import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose } from './workspaces.js';
 
 type BridgeAdapterState = { state?: string; reason?: string };
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: BridgeAdapterState; adapters?: Record<string, BridgeAdapterState>; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: BridgeAdapterState; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
   return header.startsWith('Bearer ') ? header.slice(7) : '';
+}
+
+async function persistAdapterState(claims: BridgeClaims, adapterId: string, adapter: BridgeAdapterState) {
+  const repository = controlPlaneRepository();
+  const current = await repository.getWorkspace(claims.workspaceId);
+  if (!current || current.sessionId !== claims.sessionId || current.userId !== claims.userId || current.connectionId !== claims.connectionId) return;
+  const state = ['not_installed','installing','starting','ready','busy','unavailable','failed'].includes(String(adapter.state))
+    ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
+    : 'unavailable';
+  const now = new Date().toISOString();
+  await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, updatedAt: now });
+  if (adapterId === 'opencode') {
+    await repository.putWorkspace({ ...current, openCodeState: state, updatedAt: now });
+  }
+  await repository.appendEvent({
+    eventId: `evt_${uuid()}`,
+    sessionId: claims.sessionId,
+    workspaceId: claims.workspaceId,
+    type: 'state.delta',
+    timestamp: now,
+    payload: { scope: 'agent-adapter', adapterId, state, ...(adapter.reason ? { reason: adapter.reason } : {}) },
+  });
 }
 
 async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'ready' | 'disconnected', detail: BridgeMessage = {}) {
@@ -118,6 +140,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         clearTimeout(helloTimeout);
         console.info('[bridge] hello authenticated');
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
+        return;
+      }
+      if (message.kind === 'ADAPTER_STATUS' && message.adapterId && message.adapter) {
+        await persistAdapterState(claims, String(message.adapterId), message.adapter);
+        console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}`);
+        if (message.adapter.state === 'ready') {
+          void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after adapter ready failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+        }
         return;
       }
       if (message.kind === 'READY') {
