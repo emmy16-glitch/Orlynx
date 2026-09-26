@@ -1,6 +1,7 @@
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import type { CreateWorkspaceInput, WorkspaceProvider } from './workspace-provider.js';
 import { githubUserAccessToken } from './github.js';
+import { controlPlaneRepository } from './storage.js';
 import { spawn } from 'node:child_process';
 
 const API = 'https://api.github.com';
@@ -39,6 +40,17 @@ function ageMs(value?: string): number {
   return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : Number.POSITIVE_INFINITY;
 }
 
+export function orlynxSessionId(displayName?: string): string | null {
+  const match = String(displayName || '').match(/^Orlynx\s+(ses_[A-Za-z0-9_-]+)$/);
+  return match?.[1] || null;
+}
+
+export function codespaceMatchesProject(codespace: Codespace, repositoryId: number, branch: string): boolean {
+  return codespace.repository?.id === repositoryId
+    && branchMatches(codespace, branch)
+    && !/failed|deleted/i.test(codespace.state);
+}
+
 export class GitHubCodespacesProvider implements WorkspaceProvider {
   private async request<T>(userId: string, path: string, init: RequestInit = {}): Promise<T> {
     const token = await githubUserAccessToken(userId);
@@ -69,10 +81,67 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     const rows = await this.listUserCodespaces(input.userId).catch(() => []);
     return rows.find((item) =>
       item.display_name === expected &&
-      item.repository?.id === input.repositoryId &&
-      branchMatches(item, input.branch) &&
-      !/failed|deleted/i.test(item.state)
+      codespaceMatchesProject(item, input.repositoryId, input.branch)
     ) || null;
+  }
+
+  private async sessionHasActiveWork(sessionId: string): Promise<boolean> {
+    try {
+      const tasks = await controlPlaneRepository().listTasks(sessionId);
+      return tasks.some((task) => task.state === 'running' || task.state === 'queued');
+    } catch {
+      return true;
+    }
+  }
+
+  private async reusableForProject(input: CreateWorkspaceInput): Promise<Codespace | null> {
+    const rows = await this.listUserCodespaces(input.userId).catch(() => []);
+    const candidates = rows
+      .filter((item) =>
+        item.display_name !== `Orlynx ${input.sessionId}` &&
+        Boolean(orlynxSessionId(item.display_name)) &&
+        codespaceMatchesProject(item, input.repositoryId, input.branch) &&
+        /available|starting|rebuilding|shutdown/i.test(item.state)
+      )
+      .sort((a, b) => {
+        const aStopped = /shutdown/i.test(a.state) ? 1 : 0;
+        const bStopped = /shutdown/i.test(b.state) ? 1 : 0;
+        return bStopped - aStopped || ageMs(b.last_used_at || b.updated_at || b.created_at) - ageMs(a.last_used_at || a.updated_at || a.created_at);
+      });
+
+    const repository = controlPlaneRepository();
+    for (const candidate of candidates) {
+      const previousSessionId = orlynxSessionId(candidate.display_name);
+      if (!previousSessionId || await this.sessionHasActiveWork(previousSessionId)) continue;
+      const previousWorkspace = await repository.getWorkspaceBySession(previousSessionId).catch(() => null);
+      if (previousWorkspace?.codespaceName && previousWorkspace.codespaceName !== candidate.name) continue;
+
+      if (previousWorkspace?.codespaceName === candidate.name) {
+        const now = new Date().toISOString();
+        await repository.putWorkspace({
+          ...previousWorkspace,
+          codespaceName: undefined,
+          state: 'failed',
+          bridgeState: 'disconnected',
+          connectionId: undefined,
+          failureCode: 'This Orlynx Codespace was reused by a newer session for the same repository. Start Build again to reconnect.',
+          updatedAt: now,
+        });
+      }
+      return candidate;
+    }
+    return null;
+  }
+
+  private async waitUntilStopped(userId: string, name: string, timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rows = await this.listUserCodespaces(userId);
+      const current = rows.find((item) => item.name === name);
+      if (!current || /shutdown/i.test(current.state)) return;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    throw new Error('GitHub did not finish stopping the old Orlynx Codespace before Orlynx retried.');
   }
 
   private async reclaimIdleOrlynxCodespace(userId: string, excludeName?: string): Promise<string | null> {
@@ -80,24 +149,31 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     const candidates = rows
       .filter((item) =>
         item.name !== excludeName &&
-        String(item.display_name || '').startsWith('Orlynx ') &&
+        Boolean(orlynxSessionId(item.display_name)) &&
         /available|starting|rebuilding|shutdown/i.test(item.state) &&
-        ageMs(item.last_used_at || item.updated_at || item.created_at) > 10 * 60_000
+        ageMs(item.last_used_at || item.updated_at || item.created_at) > 2 * 60_000
       )
       .sort((a, b) => ageMs(b.last_used_at || b.updated_at || b.created_at) - ageMs(a.last_used_at || a.updated_at || a.created_at));
-    const candidate = candidates[0];
-    if (!candidate) return null;
-    if (!/shutdown/i.test(candidate.state)) {
-      await this.request<Codespace>(userId, `/user/codespaces/${encodeURIComponent(candidate.name)}/stop`, { method: 'POST' });
+
+    for (const candidate of candidates) {
+      const sessionId = orlynxSessionId(candidate.display_name);
+      if (!sessionId || await this.sessionHasActiveWork(sessionId)) continue;
+      if (!/shutdown/i.test(candidate.state)) {
+        await this.request<Codespace>(userId, `/user/codespaces/${encodeURIComponent(candidate.name)}/stop`, { method: 'POST' });
+        await this.waitUntilStopped(userId, candidate.name);
+      }
+      return candidate.name;
     }
-    return candidate.name;
+    return null;
   }
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const now = new Date().toISOString();
 
     // Recover an exact Codespace if GitHub created it before Orlynx managed to
-    // persist its name (for example after a server restart).
-    const existing = await this.reusableForSession(input);
+    // persist its name (for example after a server restart). If a newer Orlynx
+    // session opens the same repository/branch, reuse an idle Orlynx-owned
+    // Codespace instead of consuming another account slot.
+    const existing = await this.reusableForSession(input) || await this.reusableForProject(input);
     if (existing) {
       const recovered: WorkspaceRecord = {
         id: input.workspaceId,
@@ -140,7 +216,10 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       if (!reclaimed) {
         throw new Error('GitHub has reached your running Codespace limit. Orlynx could not find an old idle Orlynx environment to stop safely.');
       }
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      // GitHub's stop endpoint is asynchronous. Do not immediately retry
+      // creation while the old environment still counts against the running
+      // Codespace quota.
+      await this.waitUntilStopped(input.userId, reclaimed);
       result = await create();
     }
 
