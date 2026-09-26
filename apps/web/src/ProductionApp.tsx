@@ -1166,7 +1166,7 @@ export default function ProductionApp() {
           </main>
           {onboarded && page !== 'github' && <nav className="mobile-global-nav" aria-label="Main navigation">{globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} /><span>{label}</span></button>)}</nav>}
         </>}
-        {showConnectAI && session && page !== 'workspace' && <div className="ai-settings-switcher-anchor">{renderAiSwitcher()}</div>}}
+        {showConnectAI && session && page !== 'workspace' && <div className="ai-settings-switcher-anchor">{renderAiSwitcher()}</div>}
       </div>
     </div>
   );
