@@ -8,8 +8,9 @@ Orlynx production is split deliberately:
   are never authoritative in production.
 - One GitHub Codespace is the execution plane for an active project. Its
   checkout is authoritative for files, Git, terminal, tests, and previews.
-- OpenCode runs inside that Codespace on `127.0.0.1:4096`, protected by a random
-  per-bootstrap password. It is never exposed to the browser or public network.
+- Agent runtimes are private services/processes inside that Codespace. OpenCode
+  is Adapter #1 and runs on `127.0.0.1:4096`, protected by a random
+  per-bootstrap password. Adapter failure is separate from workspace failure.
 
 ## Provisioning
 
@@ -55,8 +56,14 @@ connection; completed IDs are not executed twice.
 
 The bridge exposes typed operations, not a remote shell API: constrained test
 and build commands, policy-filtered PTY input, repository-scoped files, safe Git
-operations, private OpenCode requests, and port discovery. Direct pushes to
-`main`/`master`, force pushes, path escape, and shell metacharacters are denied.
+operations, port discovery, and registered agent-adapter operations. Direct
+pushes to `main`/`master`, force pushes, path escape, and shell
+metacharacters are denied.
+
+The bridge announces workspace readiness as soon as the authenticated Orlynx
+bridge is usable. Agent adapters report their own status separately through
+adapter lifecycle messages. A failed adapter does not shut down workspace
+tools.
 
 ## Readiness
 
@@ -64,6 +71,24 @@ The durable lifecycle is:
 
 `not_created → creating → starting → bootstrapping → connecting → ready → stopping → stopped`
 
-Any stage may enter `failed`. `ready` is written only after GitHub reports the
-Codespace running, the scoped bridge authenticates, and the bridge reports a
-successful OpenCode health check. Codespace existence alone is not readiness.
+Any stage may enter `failed`. `ready` is written after GitHub reports the
+Codespace running and the scoped Orlynx bridge authenticates. Codespace
+existence alone is not readiness, but agent health is intentionally not part of
+workspace readiness.
+
+Agent health is durable per adapter in `workspace_agent_adapters`. For example:
+
+```text
+Workspace
+✓ Codespace running
+✓ Bridge authenticated
+✓ Shell / files / Git available
+
+Adapters
+✕ OpenCode failed
+○ Cline not installed
+```
+
+A task assigned to OpenCode waits for `opencode=ready` or fails with an
+adapter-specific error if OpenCode reaches a terminal failure state. The
+workspace remains usable.

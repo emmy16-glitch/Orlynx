@@ -23,15 +23,13 @@ export function workspaceNeedsRuntimeRefresh(workspace: Pick<WorkspaceRecord, 'c
   return !workspaceConnectionMatchesRevision(workspace.connectionId, bridgeRuntimeRevision());
 }
 
-export function workspaceFullyReady(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState' | 'openCodeState'>): boolean {
-  return workspace.state === 'ready' && workspace.bridgeState === 'ready' && workspace.openCodeState === 'ready';
+export function workspaceFullyReady(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState'>): boolean {
+  return workspace.state === 'ready' && workspace.bridgeState === 'ready';
 }
 
-export function workspaceStartupPending(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState' | 'openCodeState'>): boolean {
+export function workspaceStartupPending(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState'>): boolean {
   if (workspaceFullyReady(workspace) || workspace.state === 'failed' || workspace.state === 'stopped' || workspace.state === 'stopping') return false;
-  return ['bootstrapping', 'connecting'].includes(workspace.state)
-    || workspace.bridgeState === 'connecting'
-    || ['installing', 'starting'].includes(workspace.openCodeState);
+  return ['bootstrapping', 'connecting'].includes(workspace.state) || workspace.bridgeState === 'connecting';
 }
 
 export function shouldRecoverTransientBridgeClose(authenticated: boolean, code: number): boolean {
@@ -62,6 +60,7 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
     updatedAt: now,
   };
   await repository.putWorkspace(workspace);
+  await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'not_installed', updatedAt: now });
   return workspace;
 }
 
@@ -134,6 +133,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         updatedAt: new Date().toISOString(),
       };
       await repository.putWorkspace(workspace);
+      await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'unavailable', reason: 'workspace_runtime_refresh', updatedAt: workspace.updatedAt });
     }
 
     // A host restart or hung SSH bootstrap must not strand a session forever.
@@ -151,6 +151,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         updatedAt: new Date().toISOString(),
       };
       await repository.putWorkspace(workspace);
+      await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'unavailable', reason: 'bridge_reconnecting', updatedAt: workspace.updatedAt });
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
@@ -194,6 +195,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       const connectionId = `${bridgePrefix}${uuid()}`;
       workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
+      await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
       emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: 'Connecting Orlynx to the development environment…' });
       console.info(`[workspace] bootstrapping session=${workspace.sessionId} workspace=${workspace.id} codespace=${workspace.codespaceName || 'unknown'}`);
@@ -215,7 +217,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
             stage: 'agent.ready',
             state: finalWorkspace.state,
             message: finalWorkspace.bridgeState === 'ready'
-              ? 'OpenCode is starting in the development environment…'
+              ? 'Development environment connected. Preparing agent adapters…'
               : 'Connecting Orlynx to the development environment…',
           });
         }

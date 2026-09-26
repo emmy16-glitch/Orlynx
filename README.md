@@ -53,11 +53,15 @@ GitHub Codespace
       v
 authenticated Orlynx workspace bridge
       |
-      +-- OpenCode
-      +-- PTY
-      +-- Git
-      +-- filesystem
-      +-- preview ports
+      +-- workspace core
+      |    +-- PTY
+      |    +-- Git
+      |    +-- filesystem
+      |    +-- preview ports
+      |
+      +-- agent adapters
+           +-- OpenCode (Adapter #1)
+           +-- future: Cline / others
 ```
 
 ### GitHub
@@ -74,8 +78,8 @@ see [docs/github-app-manifest.md](docs/github-app-manifest.md).
 When `DATABASE_URL` or `POSTGRES_URL` is configured, Postgres is authoritative
 for users, GitHub connections, projects, sessions, messages, tasks, activity
 events, AI session preferences, workspaces, approvals, attachments, bridge
-commands, engine-session mappings, change sets, webhook-delivery receipts and
-audit records.
+commands, per-adapter sessions and health, change sets, webhook-delivery
+receipts and audit records.
 
 Local JSON under `data/` is only a development/test fallback. It is not accepted
 as production truth on hosted deployments.
@@ -83,13 +87,15 @@ as production truth on hosted deployments.
 ### Remote execution
 
 Real execution happens in a GitHub Codespace. Orlynx provisions it with the user's
-GitHub authorization, bootstraps the workspace bridge, starts OpenCode, and marks
-the workspace ready only after the authenticated bridge and OpenCode are healthy.
+GitHub authorization and bootstraps the workspace bridge. The workspace becomes
+ready when the Codespace and authenticated bridge are usable; agent runtimes have
+their own independent health lifecycle.
 
-The bridge provides the real PTY, filesystem, Git operations, command execution,
-preview-port discovery and OpenCode RPC. OpenCode is the first production agent
-runtime; `apps/api/src/agent-runtime.ts` keeps orchestration behind an adapter
-boundary for future real runtimes.
+The bridge provides the real PTY, filesystem, Git operations, command execution
+and preview-port discovery. Agent runtimes are registered behind
+`apps/api/src/agent-runtime.ts`. OpenCode is Adapter #1. If OpenCode fails,
+workspace shell/files/Git remain available and only OpenCode-assigned tasks are
+affected.
 
 ### Events, queueing and mobile recovery
 

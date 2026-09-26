@@ -1,7 +1,10 @@
 // @orlynx/shared — canonical types per Architecture Spec v1.1 §§13-14
 export type SessionMode = 'repository' | 'cloud';
 export type WorkspaceState = 'not_created' | 'creating' | 'starting' | 'bootstrapping' | 'connecting' | 'ready' | 'stopping' | 'stopped' | 'failed';
-export type OpenCodeState = 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed';
+export type AgentAdapterId = string;
+export type AgentAdapterState = 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed';
+// Backward-compatible alias while the OpenCode-specific workspace column is migrated.
+export type OpenCodeState = AgentAdapterState;
 export type RunState = 'queued' | 'running' | 'waiting_input' | 'waiting_approval' | 'paused' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
 export type ReviewState = 'pending' | 'approved' | 'committed' | 'stale' | 'discarded';
 
@@ -75,7 +78,7 @@ export interface ChangedFile {
 export interface AgentRun {
   id: string;
   sessionId: string;
-  engine: 'opencode';
+  engine: AgentAdapterId;
   plane?: 'direct' | 'workspace';
   provider?: string;
   model?: string;
@@ -118,6 +121,7 @@ export interface TaskRecord {
   state: RunState;
   prompt: string;
   modelId?: string;
+  adapterId?: AgentAdapterId;
   mode?: AgentMode;
   permission?: PermissionProfile;
   tempPermission?: PermissionProfile;
@@ -143,6 +147,7 @@ export interface AIModel {
 
 export interface AISessionPrefs {
   sessionId: string;
+  adapterId?: AgentAdapterId;
   providerId?: string;
   modelId?: string;
   mode: AgentMode;

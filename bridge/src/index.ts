@@ -28,7 +28,9 @@ const completed = new Map<string, CommandReply>();
 const inFlight = new Map<string, InFlightCommand>();
 const activeAgents = new Map<string, string>();
 type OpenCodeAuthMode = 'public' | 'account';
+type AdapterLifecycle = { state: 'starting' | 'ready' | 'failed' | 'unavailable'; reason?: string };
 let openCodeAuthMode: OpenCodeAuthMode | undefined;
+let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
 try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, CommandReply>)) completed.set(id, value); } catch {}
 function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
@@ -129,6 +131,7 @@ async function waitForOpenCodeToStop(): Promise<boolean> {
 }
 
 async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRestart = false): Promise<{ state: 'ready' | 'failed'; reason?: string }> {
+  if (!OPENCODE_PASSWORD) return { state: 'failed', reason: 'configuration_missing' };
   if (forceRestart) {
     stopStaleOpenCode();
     if (!(await waitForOpenCodeToStop())) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
@@ -181,6 +184,7 @@ async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
   if (openCodeAuthMode === desired && await openCodeHealth() === 'ready') return false;
 
   const started = await startOpenCode(desired === 'account', true);
+  openCodeLifecycle = started;
   if (started.state !== 'ready') {
     throw new Error(started.reason === 'account_key_unavailable'
       ? 'Connect your OpenCode account before using this paid model.'
@@ -489,6 +493,52 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   }
 }
 
+type BridgeAgentAdapter = {
+  id: string;
+  health: () => Promise<{ state: string; reason?: string }>;
+  run: (payload: Record<string, unknown>, ws: WebSocket) => Promise<Record<string, unknown>>;
+  cancel: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
+
+async function cancelOpenCodeAgent(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = activeAgents.get(String(payload.taskId || ''));
+  if (!id) return { cancelled: false };
+  await opencodeRequest({ path: `/session/${id}/abort`, method: 'POST' });
+  activeAgents.delete(String(payload.taskId || ''));
+  return { cancelled: true };
+}
+
+const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
+  ['opencode', {
+    id: 'opencode',
+    health: async () => {
+      const health = await openCodeHealth();
+      if (health === 'ready') {
+        openCodeLifecycle = { state: 'ready' };
+        return openCodeLifecycle;
+      }
+      if (openCodeLifecycle.state === 'failed') return openCodeLifecycle;
+      if (openCodeLifecycle.state === 'starting') return openCodeLifecycle;
+      openCodeLifecycle = { state: 'unavailable', ...(health === 'unauthorized' ? { reason: 'auth_mismatch' } : {}) };
+      return openCodeLifecycle;
+    },
+    run: runAgent,
+    cancel: cancelOpenCodeAgent,
+  }],
+]);
+
+function bridgeAgentAdapter(payload: Record<string, unknown>): BridgeAgentAdapter {
+  const adapterId = String(payload.adapterId || 'opencode');
+  const adapter = bridgeAgentAdapters.get(adapterId);
+  if (!adapter) throw new Error(`Agent adapter "${adapterId}" is not installed in this workspace runtime.`);
+  return adapter;
+}
+
+async function bridgeAdapterHealth(): Promise<Record<string, { state: string; reason?: string }>> {
+  const entries = await Promise.all([...bridgeAgentAdapters.entries()].map(async ([id, adapter]) => [id, await adapter.health()] as const));
+  return Object.fromEntries(entries);
+}
+
 function listFiles(relative: string) {
   const target = safePath(relative);
   return fs.readdirSync(target, { withFileTypes: true }).filter((entry) => entry.name !== '.git').map((entry) => ({ name: entry.name, path: path.relative(REPO_ROOT, path.join(target, entry.name)), dir: entry.isDirectory(), size: entry.isFile() ? fs.statSync(path.join(target, entry.name)).size : undefined }));
@@ -503,7 +553,10 @@ function ports() {
 async function execute(command: Command, ws: WebSocket): Promise<Record<string, unknown>> {
   const payload = command.payload || {};
   switch (command.type) {
-    case 'health': return { bridge: 'ready', openCode: await openCodeHealth() };
+    case 'health': {
+      const adapters = await bridgeAdapterHealth();
+      return { bridge: 'ready', adapters, openCode: adapters.opencode?.state === 'ready' ? 'ready' : 'unavailable' };
+    }
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
     case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
     case 'fs.write-attachment': {
@@ -521,8 +574,8 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: ports() };
     case 'opencode.request': return opencodeRequest(payload);
-    case 'agent.run': return runAgent(payload, ws);
-    case 'agent.cancel': { const id = activeAgents.get(String(payload.taskId || '')); if (!id) return { cancelled: false }; await opencodeRequest({ path: `/session/${id}/abort`, method: 'POST' }); activeAgents.delete(String(payload.taskId || '')); return { cancelled: true }; }
+    case 'agent.run': return bridgeAgentAdapter(payload).run(payload, ws);
+    case 'agent.cancel': return bridgeAgentAdapter(payload).cancel(payload);
     case 'pty.open': {
       const id = String(payload.ptyId || command.commandId); if (terminals.has(id)) throw new Error('PTY already exists.');
       const terminal = pty.spawn(process.env.SHELL || '/bin/bash', ['--noprofile', '--norc'], { name: 'xterm-256color', cols: Math.min(Number(payload.cols || 80), 300), rows: Math.min(Number(payload.rows || 24), 100), cwd: REPO_ROOT, env: cleanEnvironment() as Record<string, string> });
@@ -555,16 +608,41 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
 
 function connect(delay = 0): void {
   setTimeout(async () => {
-    const openCodeStartup = startOpenCode();
+    openCodeLifecycle = { state: 'starting' };
+    const openCodeStartup = startOpenCode()
+      .then((result) => { openCodeLifecycle = result; return result; })
+      .catch((error) => {
+        openCodeLifecycle = { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 160) : 'startup_failed' };
+        return openCodeLifecycle;
+      });
     const ws = new WebSocket(CONTROL, { headers: { Authorization: `Bearer ${token}` } }); let heartbeat: NodeJS.Timeout | undefined;
     ws.on('message', async (raw) => {
       let message: { kind: string; token?: string; commandId?: string; type?: string; payload?: Record<string, unknown> }; try { message = JSON.parse(String(raw)); } catch { return; }
       // The server attaches its message listener after verifying durable
       // workspace state. Wait for its request so HELLO cannot be lost.
-      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.0.1', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'opencode'] })); return; }
+      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.1.0', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', ...[...bridgeAgentAdapters.keys()].map((id) => `agent:${id}`)] })); return; }
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
-        if (message.kind === 'AUTHENTICATED') { const openCode = await openCodeStartup; if (ws.readyState !== WebSocket.OPEN) return; ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, openCode })); heartbeat ||= setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { openCode: openCode.state } } })); }, 15_000); }
+        if (message.kind === 'AUTHENTICATED') {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          // Workspace readiness is independent of any agent adapter. Make shell,
+          // files, Git and ports available immediately; adapters report their
+          // own lifecycle asynchronously.
+          ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, adapters: { opencode: { state: 'starting' } } }));
+          void openCodeStartup.then((adapter) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId: 'opencode', adapter }));
+          }).catch((error) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId: 'opencode', adapter: { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 160) : 'startup_failed' } }));
+          });
+          heartbeat ||= setInterval(async () => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            const currentAdapters = await bridgeAdapterHealth();
+            for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
+              ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
+            }
+            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready' } } }));
+          }, 15_000);
+        }
         return;
       }
       if (message.kind !== 'COMMAND' || !message.commandId) return;
@@ -575,7 +653,7 @@ function connect(delay = 0): void {
 }
 
 export function start(): void {
-  if (!CONTROL.startsWith('wss://') || !token || !WORKSPACE_ID || !SESSION_ID || !USER_ID || !CONNECTION_ID || !OPENCODE_PASSWORD) { console.error('[bridge] required secure workspace configuration is missing'); process.exitCode = 2; return; }
+  if (!CONTROL.startsWith('wss://') || !token || !WORKSPACE_ID || !SESSION_ID || !USER_ID || !CONNECTION_ID) { console.error('[bridge] required secure workspace configuration is missing'); process.exitCode = 2; return; }
   connect();
 }
 if (import.meta.url.endsWith(process.argv[1] || '')) start();

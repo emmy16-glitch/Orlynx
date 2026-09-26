@@ -64,7 +64,7 @@ function familyOf(modelId: string, providerId: string): string {
 
 interface RawCatalog { agents: Record<string, any>[]; providersAll: any[]; connectedIds: string[] }
 
-async function catalog(status: Awaited<ReturnType<typeof openCodeStatus>>): Promise<RawCatalog> {
+async function catalog(status: { agents?: unknown; providers?: unknown; connectedProviders?: unknown }): Promise<RawCatalog> {
   const agents = Array.isArray(status.agents) ? status.agents : [];
   const rawProviders: unknown = status.providers;
   let providersAll: any[] = [];
@@ -301,10 +301,11 @@ export function providerHasKey(providerId: string): boolean {
 
 // ---- session / project / global preferences (server-side) ----
 
-export function defaultPrefs(): { mode: AgentMode; permission: PermissionProfile; modelId?: string } {
+export function defaultPrefs(): { adapterId: string; mode: AgentMode; permission: PermissionProfile; modelId?: string } {
   const mode = (process.env.ORLYNX_DEFAULT_MODE || 'build').toLowerCase();
   const permission = (process.env.ORLYNX_DEFAULT_PERMISSION || 'ask-first').toLowerCase();
   return {
+    adapterId: process.env.ORLYNX_DEFAULT_AGENT_ADAPTER || 'opencode',
     mode: (['build', 'plan', 'ask'] as AgentMode[]).includes(mode as AgentMode) ? (mode as AgentMode) : 'build',
     permission: (['full', 'ask-first', 'read-only'] as PermissionProfile[]).includes(permission as PermissionProfile) ? (permission as PermissionProfile) : 'ask-first',
     modelId: process.env.ORLYNX_DEFAULT_MODEL || undefined,
@@ -328,6 +329,7 @@ export function getSessionPrefs(sessionId: string, project?: string): AISessionP
   const defaults = defaultPrefs();
   return {
     sessionId,
+    adapterId: stored?.adapterId || defaults.adapterId,
     providerId: stored?.providerId || projectDefaults?.providerId,
     modelId: stored?.modelId || projectDefaults?.modelId || defaults.modelId,
     mode: stored?.mode || projectDefaults?.mode || defaults.mode,
@@ -336,14 +338,15 @@ export function getSessionPrefs(sessionId: string, project?: string): AISessionP
   };
 }
 
-export function setSessionPrefs(sessionId: string, patch: { providerId?: string; modelId?: string; mode?: AgentMode; permission?: PermissionProfile }): AISessionPrefs {
+export function setSessionPrefs(sessionId: string, patch: { adapterId?: string; providerId?: string; modelId?: string; mode?: AgentMode; permission?: PermissionProfile }): AISessionPrefs {
   if (patch.mode && !['build', 'plan', 'ask'].includes(patch.mode)) throw new Error('Unknown agent mode.');
   if (patch.permission && !['full', 'ask-first', 'read-only'].includes(patch.permission)) throw new Error('Unknown permission profile.');
   if (patch.modelId !== undefined && patch.modelId !== '' && !/^[\w.-]+\/[\w.:-]+$/.test(patch.modelId)) throw new Error('Unknown model. Choose a model from the available list.');
   store.db.aiSessions ||= {};
-  const current = store.db.aiSessions[sessionId] || { sessionId, mode: 'build' as AgentMode, permission: 'ask-first' as PermissionProfile, updatedAt: new Date().toISOString() };
+  const current = store.db.aiSessions[sessionId] || { sessionId, adapterId: 'opencode', mode: 'build' as AgentMode, permission: 'ask-first' as PermissionProfile, updatedAt: new Date().toISOString() };
   const next: AISessionPrefs = {
     ...current,
+    ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId || 'opencode' } : {}),
     ...(patch.providerId !== undefined ? { providerId: patch.providerId || undefined } : {}),
     ...(patch.modelId !== undefined ? { modelId: patch.modelId || undefined, providerId: patch.modelId ? patch.modelId.split('/')[0] : current.providerId } : {}),
     ...(patch.mode ? { mode: patch.mode } : {}),
@@ -371,11 +374,17 @@ export function setProjectDefaults(project: string, patch: { modelId?: string; m
 
 const MODE_AGENT: Record<AgentMode, string> = { build: '', plan: 'plan', ask: 'explore' };
 
-export async function resolveAgentForMode(mode: AgentMode, configuredAgent: string, project = '', sessionId?: string): Promise<{ agent?: string; note?: string }> {
+export async function resolveAgentForMode(
+  mode: AgentMode,
+  configuredAgent: string,
+  project = '',
+  sessionId?: string,
+  statusLoader: (project?: string, sessionId?: string) => Promise<{ agents?: unknown; providers?: unknown; connectedProviders?: unknown }> = openCodeStatus,
+): Promise<{ agent?: string; note?: string }> {
   if (mode === 'build') return configuredAgent ? { agent: configuredAgent } : {};
   const wanted = MODE_AGENT[mode];
   try {
-    const { agents } = await catalog(await openCodeStatus(project || undefined, sessionId));
+    const { agents } = await catalog(await statusLoader(project || undefined, sessionId));
     const names = agents.map((a) => String(a?.name || a?.id || '').toLowerCase());
     if (names.includes(wanted)) return { agent: wanted };
     return { agent: configuredAgent || undefined, note: `The engine does not offer a ${wanted} agent, so this task uses the default agent with ${mode} instructions instead.` };

@@ -16,17 +16,17 @@ test('bridge runtime revision marker distinguishes current and stale bridges', (
 });
 
 
-test('workspace startup keeps waiting after bridge connection until OpenCode is ready', () => {
-  assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'connecting', openCodeState: 'installing' }), true);
-  assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'ready', openCodeState: 'starting' }), true);
-  assert.equal(workspaceStartupPending({ state: 'ready', bridgeState: 'ready', openCodeState: 'ready' }), false);
-  assert.equal(workspaceStartupPending({ state: 'failed', bridgeState: 'disconnected', openCodeState: 'failed' }), false);
+test('workspace startup waits for the workspace bridge, not for an agent adapter', () => {
+  assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'connecting' }), true);
+  assert.equal(workspaceStartupPending({ state: 'connecting', bridgeState: 'ready' }), true);
+  assert.equal(workspaceStartupPending({ state: 'ready', bridgeState: 'ready' }), false);
+  assert.equal(workspaceStartupPending({ state: 'failed', bridgeState: 'disconnected' }), false);
 });
 
-test('workspace readiness requires both authenticated bridge and healthy OpenCode', () => {
-  assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'ready', openCodeState: 'ready' }), true);
-  assert.equal(workspaceFullyReady({ state: 'connecting', bridgeState: 'ready', openCodeState: 'starting' }), false);
-  assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'connecting', openCodeState: 'ready' }), false);
+test('workspace readiness is independent of OpenCode adapter health', () => {
+  assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'ready' }), true);
+  assert.equal(workspaceFullyReady({ state: 'connecting', bridgeState: 'ready' }), false);
+  assert.equal(workspaceFullyReady({ state: 'ready', bridgeState: 'connecting' }), false);
 });
 
 

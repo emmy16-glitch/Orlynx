@@ -19,7 +19,8 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { cancelDirectRun, executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
+import { getAgentAdapter } from './agent-runtime.js';
 
 export const router = Router();
 
@@ -265,7 +266,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
         if (task) run = {
           id: task.runId || task.id,
           sessionId: task.sessionId,
-          engine: 'opencode',
+          engine: task.adapterId || 'opencode',
           plane: task.plane || 'workspace',
           state: task.state,
           model: task.modelId,
@@ -289,6 +290,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
     : getSessionPrefs(s.id, s.project);
   const effectiveMode = (mode ? String(mode) : prefs.mode) as 'build' | 'plan' | 'ask';
   let plane = executionPlaneFor(String(text), effectiveMode);
+  const selectedAdapter = getAgentAdapter(prefs.adapterId || 'opencode');
+  if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
   if (!selectedModel) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
@@ -333,8 +336,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
       // becomes a recoverable connecting workspace instead of a stranded task.
       if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
         try {
-          const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health', {}, 3_000);
-          if (health.bridge !== 'ready' || health.openCode !== 'ready') throw new Error('workspace transport unhealthy');
+          const health = await bridgeRequest<{ bridge?: string }>(workspace.id, 'health', {}, 3_000);
+          if (health.bridge !== 'ready') throw new Error('workspace transport unhealthy');
         } catch {
           workspace = (await markWorkspaceConnectionLost(workspace.id)) || workspace;
           emit(s.id, 'workspace.reconnecting', {
@@ -376,7 +379,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   console.info(`[orlynx] sid=${s.id} message received plane=${plane} len=${String(text).length}`);
   let run;
   try {
-    run = await startRun(s.id, s.project, text, 'opencode', {
+    run = await startRun(s.id, s.project, text, prefs.adapterId || 'opencode', {
       modelId: selectedModel,
       mode: effectiveMode,
       plane,
@@ -657,7 +660,8 @@ router.post('/sessions/:id/agent-runs', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
-    const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), 'opencode', {
+    const prefs = durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project);
+    const run = await startRun(s.id, s.project, String(req.body?.text || 'continue'), req.body?.adapterId ? String(req.body.adapterId) : prefs.adapterId || 'opencode', {
       ...(req.body?.modelId ? { modelId: String(req.body.modelId) } : {}),
       ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
       ...(req.body?.fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
@@ -676,7 +680,10 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
     if (!task) return res.status(404).json({ error: 'run not found' });
     if (task.state === 'running') {
       if (task.plane !== 'direct') {
-        try { await bridgeRequest(task.workspaceId, 'agent.cancel', { taskId: task.id, runId: task.runId }, 15_000); }
+        try {
+          const adapter = getAgentAdapter(task.adapterId || 'opencode');
+          await bridgeRequest(task.workspaceId, adapter.bridgeCancelCommand, { adapterId: adapter.id, taskId: task.id, runId: task.runId }, 15_000);
+        }
         catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
       }
     }
@@ -686,11 +693,13 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
       await repository.putTask(task);
       const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
       if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
-      if (task.plane === 'direct') cancelDirectRun(task.runId || req.params.runId);
+      if (task.plane === 'direct') {
+        try { getAgentAdapter(task.adapterId || 'opencode').cancelDirectRun?.(task.runId || req.params.runId); } catch {}
+      }
       emit(task.sessionId, 'run.failed', { cancelled: true, taskId: task.id }, task.runId);
       await promoteNextQueuedRun(task.sessionId).catch(() => null);
     }
-    return res.json({ id: task.runId, sessionId: task.sessionId, plane: task.plane || 'workspace', state: task.state, engine: 'opencode', model: task.modelId, mode: task.mode, startedAt: task.createdAt, finishedAt: task.updatedAt });
+    return res.json({ id: task.runId, sessionId: task.sessionId, plane: task.plane || 'workspace', state: task.state, engine: task.adapterId || 'opencode', model: task.modelId, mode: task.mode, startedAt: task.createdAt, finishedAt: task.updatedAt });
   }
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
 });
@@ -707,7 +716,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
     return res.json(tasks.map((task) => ({
       id: task.runId || task.id,
       sessionId: task.sessionId,
-      engine: 'opencode',
+      engine: task.adapterId || 'opencode',
       plane: task.plane || 'workspace',
       state: task.state,
       model: task.modelId,
@@ -1053,6 +1062,7 @@ router.put('/ai/session/:id', async (req, res) => {
   try {
     if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
     const prefs = setSessionPrefs(s.id, {
+      ...(req.body?.adapterId !== undefined ? { adapterId: String(req.body.adapterId) || 'opencode' } : {}),
       ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
       ...(req.body?.mode ? { mode: String(req.body.mode) as 'build' | 'plan' | 'ask' } : {}),
       ...(req.body?.permission ? { permission: String(req.body.permission) as 'full' | 'ask-first' | 'read-only' } : {}),
