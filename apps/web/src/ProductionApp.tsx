@@ -750,7 +750,7 @@ export default function ProductionApp() {
     setSending(true); setError('');
     const text = composer.trim(); const clientId = uid();
     try {
-      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: tempFullAccess }) }));
+      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: ai.mode === 'build' && tempFullAccess }) }));
       setComposer(''); setDraftReply(''); setTempFullAccess(false); try { localStorage.removeItem(draftKey(session.id)); } catch {}
       setLastRun(result.run); runRef.current = result.run;
       if (result.plane === 'direct') setWorkspaceReadNotice('');
@@ -1036,7 +1036,7 @@ export default function ProductionApp() {
   aria-label="Message Orlynx AI"
   disabled={!aiAccountConnected || !ai.model || !online}
 /><div className="composer-controls">{aiAccountConnected
-  ? <button type="button" className="ai-control-trigger" onClick={() => setShowConnectAI(true)} aria-label="Choose AI agent and model">
+  ? <button type="button" className="ai-control-trigger" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
       <span className="ai-control-icon"><Icon name="agents" size={14} /></span>
       <span className="ai-control-copy"><b>{selectedAgentAdapter?.displayName || 'Orlynx AI'}</b><small>{ai.model?.displayName || 'Choose model'}</small></span>
       <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
@@ -1044,24 +1044,28 @@ export default function ProductionApp() {
     </button>
   : <button type="button" className="ai-control-trigger connect" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><span className="ai-control-icon"><Icon name="agents" size={14} /></span><span className="ai-control-copy"><b>Connect AI</b><small>Choose an agent and model</small></span><Icon name="chevron" size={12} /></button>}
   <details className="composer-options">
-    <summary aria-label="Mode and access">{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'} · {ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'} <Icon name="chevron" size={12} /></summary>
+    <summary aria-label="Mode and access">{ai.mode === 'build'
+      ? `Build · ${ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'}`
+      : ai.mode === 'plan' ? 'Plan · No project changes' : 'Ask · Read only'} <Icon name="chevron" size={12} /></summary>
     <div className="composer-options-panel">
       <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
         {[
-          ['build', 'Build', 'Can inspect and change the project'],
-          ['plan', 'Plan', 'Plans work without editing files'],
-          ['ask', 'Ask', 'Answers questions about the repository'],
-        ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => void setAiPrefs({ mode: value })} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
+          ['build', 'Build', 'Uses the Codespace only when the request needs execution or file changes'],
+          ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
+          ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
+        ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
       </div></div>
-      <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
-        {[
-          ['full', 'Full project access', 'Can make project changes'],
-          ['ask-first', 'Ask first', 'Requests permission before changes'],
-          ['read-only', 'Read only', 'Cannot change project files'],
-        ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
-      </div></div>
+      {ai.mode === 'build'
+        ? <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
+            {[
+              ['full', 'Full project access', 'Can make project changes'],
+              ['ask-first', 'Ask first', 'Requests permission before changes'],
+              ['read-only', 'Read only', 'Cannot change project files'],
+            ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
+          </div></div>
+        : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
     </div>
-  </details></div>{ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
+  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button></form>}
           {showConnectAI && <ConnectAiSheet
             models={aiModels}
             providers={aiProviders}
@@ -1175,85 +1179,76 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [sheetError, setSheetError] = useState('');
-  const [connectedNotice, setConnectedNotice] = useState('');
   const openCode = providers.find((provider: any) => provider.id === 'opencode');
   const accountConnected = openCode?.state === 'connected';
   const available = models.filter((m) => m.status === 'available');
   const publicModelsAvailable = available.some((m) => m.free ?? /-free$/i.test(m.id));
   const connected = accountConnected || publicModelsAvailable;
-  const query = search.toLowerCase();
+  const query = search.toLowerCase().trim();
   const filtered = available.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
+
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [onClose]);
 
   async function connectOpenCode(event: React.FormEvent) {
     event.preventDefault();
     if (!apiKey.trim() || busy) return;
-    setBusy(true); setSheetError(''); setConnectedNotice('');
+    setBusy(true); setSheetError('');
     try {
       await j(await fetch('/v1/ai/providers/connect-key', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ providerId: 'opencode', apiKey: apiKey.trim() }) }));
       setApiKey('');
       await onRefresh();
-      setConnectedNotice('OpenCode connected. Choose an agent and model below.');
     } catch (error: any) {
       setSheetError(error.message || 'OpenCode could not be connected.');
     } finally { setBusy(false); }
   }
 
-  async function disconnectOpenCode() {
-    if (busy) return;
-    setBusy(true); setSheetError(''); setConnectedNotice('');
-    try {
-      await j(await fetch('/v1/ai/providers/opencode/disconnect', { method: 'POST' }));
-      await onRefresh();
-      setConnectedNotice('OpenCode disconnected. Your Orlynx conversation is unchanged.');
-    } catch (error: any) { setSheetError(error.message || 'OpenCode could not be disconnected.'); }
-    finally { setBusy(false); }
-  }
-
-  return <div className="sheet-backdrop" onClick={onClose}><div className="sheet ai-sheet" role="dialog" aria-modal="true" aria-label="Orlynx AI controls" onClick={(e) => e.stopPropagation()}>
-    <div className="sheet-heading"><div><p className="eyebrow">ORLYNX AI</p><h2>{connected ? 'AI controls' : 'Connect AI'}</h2><p className="screen-subtitle">{connected ? 'Choose the agent and model for your next turn.' : 'Connect OpenCode or use an available public model.'}</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></div>
+  return <aside className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
+    <div className="ai-switcher-header">
+      <div><b>AI</b><small>{connected ? 'Choose agent and model' : 'Connect AI to continue'}</small></div>
+      <button type="button" className="icon-button compact-icon" aria-label="Close AI switcher" onClick={onClose}><Icon name="close" size={15} /></button>
+    </div>
 
     {sheetError && <div className="screen-alert tone-fail ai-sheet-alert" role="alert"><span>{sheetError}</span></div>}
-    {connectedNotice && <div className="screen-alert tone-ok ai-sheet-alert" role="status"><span>{connectedNotice}</span></div>}
 
-    {!connected ? <section className="ai-connect-card">
-      <div className="ai-provider-lockup"><span className="ai-provider-mark"><span className="brand-mark small-mark" /></span><span><b>OpenCode</b><small>Your coding account</small></span><Badge tone="neutral">Not connected</Badge></div>
-      <ol className="ai-connect-steps">
-        <li><span>1</span><div><b>Get your OpenCode key</b><small>Open your OpenCode account in a new tab and create or copy an API key.</small></div></li>
-        <li><span>2</span><div><b>Paste it here</b><small>Orlynx encrypts it on the server and only passes it to your private workspace.</small></div></li>
-      </ol>
-      <a className="opencode-account-link" href="https://opencode.ai/auth" target="_blank" rel="noreferrer">Open OpenCode account <Icon name="external" /></a>
-      <form className="ai-key-form" onSubmit={connectOpenCode}>
-        <label>OpenCode API key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your key" autoComplete="off" spellCheck={false} /></label>
-        <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : 'Connect AI'}</Button>
-      </form>
-      <p className="ai-privacy-note"><Icon name="shield" />Your key is never shown again after it is saved.</p>
-    </section> : <>
-      <section className="ai-connected-card"><div className="ai-provider-lockup"><span className="ai-provider-mark connected"><Icon name="check" /></span><span><b>OpenCode</b><small>{accountConnected ? 'Connected to your Orlynx account' : 'Public models are available without a saved key'}</small></span><Badge tone="ok">{accountConnected ? 'Connected' : 'Public'}</Badge></div></section>
-
-      <section className="ai-control-section">
-        <div className="ai-section-heading"><div><b>Agent</b><small>Choose the runtime that handles coding work.</small></div></div>
-        <div className="ai-agent-list" role="list">
+    {!connected ? <form className="ai-quick-connect" onSubmit={connectOpenCode}>
+      <div><b>OpenCode</b><small>Paste your API key, or use the public models when available.</small></div>
+      <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenCode API key" autoComplete="off" spellCheck={false} />
+      <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : 'Connect'}</Button>
+    </form> : <>
+      <section className="ai-switcher-section">
+        <span className="ai-switcher-label">Agent</span>
+        <div className="ai-agent-pills" role="list">
           {adapters.length ? adapters.map((adapter: any) => {
             const selected = adapter.id === selectedAdapterId;
-            const stateLabel = adapter.state === 'ready' ? 'Ready' : adapter.state === 'failed' ? 'Unavailable' : adapter.state === 'starting' || adapter.state === 'installing' ? 'Starting' : adapter.state || 'Available';
-            return <button key={adapter.id} type="button" className={selected ? 'ai-choice selected' : 'ai-choice'} onClick={() => onSelectAdapter(adapter.id)} disabled={adapter.state === 'failed'}>
-              <span className="ai-choice-mark"><Icon name="agents" size={15} /></span>
-              <span><b>{adapter.displayName}</b><small>{stateLabel}</small></span>
-              {selected ? <span className="choice-check"><Icon name="check" size={14} /></span> : <Icon name="chevron" size={13} />}
+            const unavailable = adapter.state === 'failed';
+            return <button key={adapter.id} type="button" className={selected ? 'ai-agent-pill selected' : 'ai-agent-pill'} onClick={() => onSelectAdapter(adapter.id)} disabled={unavailable}>
+              <span className={`ai-control-state state-${adapter.state || 'available'}`} />
+              <span><b>{adapter.displayName}</b><small>{unavailable ? 'Unavailable' : adapter.state === 'starting' || adapter.state === 'installing' ? 'Starting' : 'Ready'}</small></span>
+              {selected && <Icon name="check" size={13} />}
             </button>;
-          }) : <div className="ai-model-wait compact"><div><b>Agent is loading…</b><small>Orlynx will refresh this automatically.</small></div></div>}
+          }) : <span className="small">Loading agent…</span>}
         </div>
       </section>
 
-      <section className="ai-control-section">
-        <div className="ai-section-heading"><div><b>Model</b><small>Used by the selected agent for this conversation.</small></div>{available.length > 6 && <span className="small">{filtered.length} available</span>}</div>
-        {available.length > 6 && <label className="search-field"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-        {available.length ? <div className="sheet-list model-list">{filtered.slice(0, 100).map((m: any) => <button key={m.id} className={m.id === selectedModelId ? 'project-list-row selected ai-model-row' : 'project-list-row ai-model-row'} onClick={() => onSelectModel(m.id)}><Icon name="agents" /><span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>{m.id === selectedModelId ? <span className="choice-check"><Icon name="check" size={14} /></span> : <Icon name="chevron" />}</button>)}{!filtered.length && <EmptyState title="No matching models" hint="Try another search." />}</div> : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
+      <section className="ai-switcher-section model-section">
+        <div className="ai-switcher-label-row"><span className="ai-switcher-label">Model</span><small>{filtered.length} available</small></div>
+        {available.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
+        {available.length
+          ? <div className="ai-model-compact-list">
+              {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
+                <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
+                {m.id === selectedModelId ? <Icon name="check" size={13} /> : null}
+              </button>)}
+              {!filtered.length && <p className="ai-switcher-empty">No matching models.</p>}
+            </div>
+          : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
       </section>
-
-      {accountConnected && <div className="ai-sheet-footer"><button className="text-button danger-text" onClick={disconnectOpenCode} disabled={busy}>Disconnect OpenCode</button></div>}
     </>}
-  </div></div>;
+  </aside>;
 }
 
 function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 'neutral'; text: string } | null; clearNotice: () => void }) {
