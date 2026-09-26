@@ -577,7 +577,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
   switch (command.type) {
     case 'health': {
       const adapters = await bridgeAdapterHealth();
-      return { bridge: 'ready', adapters, openCode: adapters.opencode?.state === 'ready' ? 'ready' : 'unavailable' };
+      return { bridge: 'ready', adapters };
     }
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
     case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
