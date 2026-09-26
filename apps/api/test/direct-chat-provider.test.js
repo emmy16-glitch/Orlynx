@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
 import { listZenModels } from '../src/zen.ts';
-import { turnsForMessage, needsRepositoryContext, executionPlaneFor } from '../src/direct-chat.ts';
+import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, createPromptEchoFilter } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
 const catalog = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
@@ -64,14 +64,32 @@ test('a queued run uses its own message, never a later queued follow-up', () => 
   assert.deepEqual(turnsForMessage(history, undefined, 'legacy task'), [{ role: 'user', content: 'legacy task' }]);
 });
 
-test('greetings/general questions need neither repository reads nor a machine', () => {
+test('greetings stay cheap while Ask/Plan become repository-aware', () => {
   for (const text of ['Hello', 'What is React?', 'How do I run npm install?']) {
     assert.equal(needsRepositoryContext(text), false);
     assert.equal(executionPlaneFor(text, 'build'), 'direct');
   }
+  assert.equal(shouldLoadRepositoryContext('Hello', 'plan', 'Orlynx'), false);
+  assert.equal(shouldLoadRepositoryContext('What is Orlynx exactly?', 'plan', 'Orlynx'), true);
+  assert.equal(shouldLoadRepositoryContext('What repo are you connected to?', 'ask', 'Orlynx'), true);
+  assert.equal(shouldLoadRepositoryContext('What is React?', 'ask', 'Orlynx'), true);
   assert.equal(needsRepositoryContext('Explain src/auth.ts'), true);
   assert.equal(needsRepositoryContext('What does this repository do?'), true);
   assert.equal(executionPlaneFor('Implement the fix in src/auth.ts', 'build'), 'workspace');
+});
+
+test('prompt echoes are removed without breaking natural greetings', () => {
+  assert.equal(cleanAssistantText('helloHello! What do you want to work on?', 'hello'), 'Hello! What do you want to work on?');
+  assert.equal(cleanAssistantText('what repo are u connected to currently?Currently connected to: emmy16-glitch/Orlynx', 'what repo are u connected to currently?'), 'Currently connected to: emmy16-glitch/Orlynx');
+  assert.equal(cleanAssistantText('Hello! How can I help?', 'Hello'), 'Hello! How can I help?');
+
+  const chunks = [];
+  const filter = createPromptEchoFilter('hello', (delta) => chunks.push(delta));
+  filter.push('hel');
+  filter.push('loHello');
+  filter.push('!');
+  filter.finish();
+  assert.equal(chunks.join(''), 'Hello!');
 });
 
 test('repeated historical failures never add error cards to the activity list', () => {
