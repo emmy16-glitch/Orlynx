@@ -167,8 +167,25 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       let lastState = workspace.state;
       let lastProgressAt = 0;
       while (Date.now() < deadline) {
-        workspace = await provider.get(workspace);
-        await repository.putWorkspace(workspace);
+        try {
+          workspace = await provider.get(workspace);
+          await repository.putWorkspace(workspace);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const fatal = /HTTP\s+(?:401|403|404)|permission|forbidden|not found/i.test(detail);
+          if (fatal) throw error;
+          if (Date.now() - lastProgressAt > 15_000) {
+            lastProgressAt = Date.now();
+            emit(input.sessionId, 'workspace.preparing', {
+              stage: 'codespace.wait',
+              state: workspace.state,
+              message: 'GitHub status is temporarily unavailable. Orlynx is still waiting for the development environment.',
+            });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          continue;
+        }
+
         if (workspace.state !== lastState) {
           lastState = workspace.state;
           emit(input.sessionId, 'workspace.preparing', {
