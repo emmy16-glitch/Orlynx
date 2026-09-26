@@ -1,128 +1,418 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { streamWithOfficialOpenCode, verifyProviderRuntime } from '../src/opencode-local.ts';
+import { resetOpenCodeRuntimeSessionsForTests, streamWithOfficialOpenCode, verifyProviderRuntime } from '../src/opencode-local.ts';
 import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
 import { encryptCredential } from '../src/credentials.ts';
 import { cleanLegacyAssistantText } from '../src/direct-chat.ts';
 
 const snapshot = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
+const input = () => ({ runtimeKey: 'test-session', userId: 'test-user', modelId: 'opencode/big-pickle', system: 'Be concise.', messages: [{ role: 'user', content: 'Hello' }], signal: new AbortController().signal, onDelta: () => {} });
+const frame = (content, finish_reason = null) => 'data: ' + JSON.stringify({ id: 'test', object: 'chat.completion.chunk', created: 1, model: 'big-pickle', choices: [{ index: 0, delta: content ? { content } : {}, finish_reason }] }) + '\n\n';
+const runtimeFrame = (type, properties = {}) => 'data: ' + JSON.stringify({ type, properties }) + '\n\n';
 
-const input = () => ({
-  runtimeKey: 'test-session',
-  userId: 'test-user',
-  modelId: 'opencode/big-pickle',
-  system: 'Be concise.',
-  messages: [{ role: 'user', content: 'Hello' }],
-  signal: new AbortController().signal,
-  onDelta: () => {},
-});
-
-const frame = (content, finish_reason = null) =>
-  'data: ' + JSON.stringify({
-    id: 'test',
-    object: 'chat.completion.chunk',
-    created: 1,
-    model: 'big-pickle',
-    choices: [{ index: 0, delta: content ? { content } : {}, finish_reason }],
-  }) + '\n\n';
-
-function mockProviderFetch(t, handler) {
-  const original = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) => {
-    const value = String(url);
-    if (value.includes('models.dev')) return Response.json({ opencode: snapshot });
-    return handler(url, init);
+function configureRuntime(t) {
+  resetOpenCodeRuntimeSessionsForTests();
+  const previous = {
+    url: process.env.ORLYNX_OPENCODE_RUNTIME_URL,
+    user: process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME,
+    password: process.env.ORLYNX_OPENCODE_RUNTIME_PASSWORD,
   };
+  process.env.ORLYNX_OPENCODE_RUNTIME_URL = 'https://runtime.test';
+  process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME = 'orlynx';
+  process.env.ORLYNX_OPENCODE_RUNTIME_PASSWORD = 'runtime-test-secret';
   t.after(() => {
-    globalThis.fetch = original;
-    setControlPlaneRepositoryForTests(undefined);
+    resetOpenCodeRuntimeSessionsForTests();
+    if (previous.url === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_URL; else process.env.ORLYNX_OPENCODE_RUNTIME_URL = previous.url;
+    if (previous.user === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME; else process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME = previous.user;
+    if (previous.password === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_PASSWORD; else process.env.ORLYNX_OPENCODE_RUNTIME_PASSWORD = previous.password;
   });
 }
 
-function streamed(text) {
-  return new Response(frame(text) + frame('', 'stop') + 'data: [DONE]\n\n', {
-    headers: { 'content-type': 'text/event-stream' },
-  });
+function runtimeAuth(init) {
+  return new Headers(init?.headers).get('authorization');
+}
+
+function mockFetch(t, handler, healthHandler) {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const value = String(url);
+    if (value.includes('models.dev')) return Response.json({ opencode: snapshot });
+    if (value === 'https://runtime.test/global/health') {
+      return healthHandler ? healthHandler(url, init) : Response.json({ healthy: true, version: 'test' });
+    }
+    return handler(url, init);
+  };
+  setControlPlaneRepositoryForTests({ getProviderConnection: async () => null });
+  t.after(() => { globalThis.fetch = original; setControlPlaneRepositoryForTests(undefined); });
 }
 
 test('all production provider modules load without an OpenCode CLI', async () => {
   await verifyProviderRuntime();
 });
 
-test('free Plan/Ask uses OpenCode Zen directly with public auth', async (t) => {
-  setControlPlaneRepositoryForTests({ getProviderConnection: async () => null });
+test('dedicated OpenCode runtime streams first delta before the response finishes', async (t) => {
+  configureRuntime(t);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let first;
+  const gotFirst = new Promise((resolve) => { first = resolve; });
+  const encoder = new TextEncoder();
 
-  mockProviderFetch(t, async (url, init = {}) => {
+  mockFetch(t, async (url, init = {}) => {
     const value = String(url);
-    assert.match(value, /^https:\/\/opencode\.ai\/zen\//);
-    assert.doesNotMatch(value, /orlynx-opencode-runtime|runtime\.test/);
-    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer public');
-    return streamed('Hello');
+    if (value.startsWith('https://runtime.test/session?')) {
+      assert.equal(runtimeAuth(init), 'Basic ' + Buffer.from('orlynx:runtime-test-secret').toString('base64'));
+      return Response.json([]);
+    }
+    if (value === 'https://runtime.test/session') {
+      assert.equal(runtimeAuth(init), 'Basic ' + Buffer.from('orlynx:runtime-test-secret').toString('base64'));
+      const body = JSON.parse(init.body);
+      assert.equal(body.metadata.orlynxConversationId, 'test-session');
+      return Response.json({ id: 'oc-session' });
+    }
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ async start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'oc-session', field: 'text', delta: 'Hello' })));
+        await gate;
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'oc-session', field: 'text', delta: ' there' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'oc-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/oc-session/prompt_async') {
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body.model, { providerID: 'opencode', modelID: 'big-pickle' });
+      assert.equal(body.messageID, undefined);
+      assert.equal(body.parts[0].text, 'Hello');
+      assert.doesNotMatch(body.parts[0].text, /Conversation so far|Respond naturally to the latest user message/);
+      return new Response(null, { status: 204 });
+    }
+    if (value === 'https://runtime.test/session/oc-session/abort') return Response.json(true);
+    throw new Error('Unexpected fetch ' + value);
   });
 
+  let completed = false;
   const chunks = [];
-  const result = await streamWithOfficialOpenCode({
-    ...input(),
-    onDelta: (delta) => chunks.push(delta),
-  });
-
-  assert.equal(result, 'Hello');
+  const result = streamWithOfficialOpenCode({ ...input(), onDelta: (text) => { chunks.push(text); first(); } }).then((text) => { completed = true; return text; });
+  await gotFirst;
+  assert.equal(completed, false);
   assert.deepEqual(chunks, ['Hello']);
+  release();
+  assert.equal(await result, 'Hello there');
 });
 
-test('free model ignores a stale saved Zen key', async (t) => {
-  process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
-  setControlPlaneRepositoryForTests({
-    getProviderConnection: async () => ({
-      state: 'connected',
-      credential: encryptCredential('stale-saved-key'),
-    }),
+test('explicit cancellation rejects instead of marking partial text complete', async (t) => {
+  configureRuntime(t);
+  const abort = new AbortController();
+  const encoder = new TextEncoder();
+
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'oc-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'oc-session', field: 'text', delta: 'partial' })));
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/oc-session/prompt_async') return new Response(null, { status: 204 });
+    if (value === 'https://runtime.test/session/oc-session/abort') return Response.json(true);
+    throw new Error('Unexpected fetch ' + value);
   });
 
-  mockProviderFetch(t, async (url, init = {}) => {
-    assert.match(String(url), /^https:\/\/opencode\.ai\/zen\//);
-    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer public');
-    return streamed('Public');
-  });
-
-  assert.equal(await streamWithOfficialOpenCode(input()), 'Public');
+  await assert.rejects(
+    streamWithOfficialOpenCode({ ...input(), signal: abort.signal, onDelta: () => abort.abort(new Error('Stopped by user')) }),
+    /Stopped by user/,
+  );
 });
 
-test('public provider rejection stays a public-access error', async (t) => {
-  setControlPlaneRepositoryForTests({ getProviderConnection: async () => null });
-  mockProviderFetch(t, async () => new Response('denied', { status: 403 }));
-
+test('runtime 403 preserves status and is not classified as paid quota or expired account', async (t) => {
+  configureRuntime(t);
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return new Response('private-runtime-detail', { status: 403 });
+    throw new Error('Unexpected fetch ' + value);
+  });
   await assert.rejects(streamWithOfficialOpenCode(input()), (error) => {
     assert.equal(error.statusCode, 403);
     assert.equal(error.publicAccess, true);
-    assert.doesNotMatch(error.message, /Reconnect|saved credential/i);
+    assert.doesNotMatch(error.message, /private-runtime-detail|quota|Reconnect/);
     return true;
   });
 });
 
-test('paid model receives the saved server-side credential', async (t) => {
-  process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
-  setControlPlaneRepositoryForTests({
-    getProviderConnection: async () => ({
-      state: 'connected',
-      credential: encryptCredential('saved-test-key'),
-    }),
+test('sleeping free runtime is awaited before the chat session is created', async (t) => {
+  configureRuntime(t);
+  const previousPoll = process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+  process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = '0';
+  t.after(() => {
+    if (previousPoll === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+    else process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = previousPoll;
   });
 
-  mockProviderFetch(t, async (url, init = {}) => {
-    assert.match(String(url), /^https:\/\/opencode\.ai\/zen\//);
-    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer saved-test-key');
-    return streamed('OK');
+  const encoder = new TextEncoder();
+  let healthCalls = 0;
+  const statuses = [];
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'awake-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'awake-session', field: 'text', delta: 'Awake' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'awake-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/awake-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  }, async () => {
+    healthCalls++;
+    return healthCalls === 1
+      ? new Response('starting', { status: 502 })
+      : Response.json({ healthy: true, version: 'test' });
   });
 
-  assert.equal(
-    await streamWithOfficialOpenCode({ ...input(), modelId: 'opencode/qwen3.8-max' }),
-    'OK',
-  );
+  assert.equal(await streamWithOfficialOpenCode({ ...input(), onStatus: (value) => statuses.push(value) }), 'Awake');
+  assert.equal(healthCalls, 2);
+  assert.ok(statuses.includes('Starting AI runtime…'));
+});
+
+test('lost cached OpenCode session is recreated with durable conversation context', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  let createCount = 0;
+  let secondTurn = false;
+  let restoredSystem = '';
+
+  mockFetch(t, async (url, init = {}) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') {
+      createCount++;
+      return Response.json({ id: createCount === 1 ? 'first-session' : 'recovered-session' });
+    }
+    if (value === 'https://runtime.test/session/first-session') {
+      secondTurn = true;
+      return new Response('gone', { status: 404 });
+    }
+    if (value === 'https://runtime.test/event') {
+      const id = secondTurn ? 'recovered-session' : 'first-session';
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: id, field: 'text', delta: 'OK' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: id, status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/first-session/prompt_async') return new Response(null, { status: 204 });
+    if (value === 'https://runtime.test/session/recovered-session/prompt_async') {
+      restoredSystem = JSON.parse(init.body).system;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  const base = input();
+  await streamWithOfficialOpenCode({ ...base, messages: [{ role: 'user', content: 'First question' }] });
+  await streamWithOfficialOpenCode({
+    ...base,
+    messages: [
+      { role: 'user', content: 'First question' },
+      { role: 'assistant', content: 'First answer' },
+      { role: 'user', content: 'Second question' },
+    ],
+  });
+
+  assert.equal(createCount, 2);
+  assert.match(restoredSystem, /orlynx_durable_history_json/);
+  assert.match(restoredSystem, /First question/);
+  assert.match(restoredSystem, /First answer/);
+  assert.doesNotMatch(restoredSystem, /Second question/);
+});
+
+test('legacy title-only OpenCode sessions are not reused', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  let creates = 0;
+  mockFetch(t, async (url, init = {}) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) {
+      return Response.json([{ id: 'legacy-session', title: 'Orlynx test-session' }]);
+    }
+    if (value === 'https://runtime.test/session') {
+      creates++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.metadata.orlynxConversationId, 'test-session');
+      return Response.json({ id: 'clean-session', metadata: body.metadata });
+    }
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'clean-session', field: 'text', delta: 'Clean' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'clean-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/clean-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  assert.equal(await streamWithOfficialOpenCode(input()), 'Clean');
+  assert.equal(creates, 1);
+});
+
+test('free runtime reuses one OpenCode session and sends only the newest user turn', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  let creates = 0;
+  let prompts = 0;
+  mockFetch(t, async (url, init = {}) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') {
+      creates++;
+      return Response.json({ id: 'shared-session' });
+    }
+    if (value === 'https://runtime.test/session/shared-session') return Response.json({ id: 'shared-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'shared-session', field: 'text', delta: 'OK' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'shared-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/shared-session/prompt_async') {
+      prompts++;
+      const body = JSON.parse(init.body);
+      const expected = prompts === 1 ? 'First question' : 'Second question';
+      assert.equal(body.parts[0].text, expected);
+      assert.doesNotMatch(body.parts[0].text, /Conversation so far/);
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  const base = input();
+  await streamWithOfficialOpenCode({ ...base, messages: [{ role: 'user', content: 'First question' }] });
+  await streamWithOfficialOpenCode({
+    ...base,
+    messages: [
+      { role: 'user', content: 'First question' },
+      { role: 'assistant', content: 'First answer' },
+      { role: 'user', content: 'Second question' },
+    ],
+  });
+  assert.equal(creates, 1);
+  assert.equal(prompts, 2);
 });
 
 test('legacy leaked transcript wrapper is removed before future history reuse', () => {
   const leaked = 'Conversation so far: User: hello Respond naturally to the latest user message. Do not repeat the transcript.Hi there';
   assert.equal(cleanLegacyAssistantText(leaked), 'Hi there');
+});
+
+test('free models ignore a stale saved account key and keep using the public runtime', async (t) => {
+  configureRuntime(t);
+  process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+  const encoder = new TextEncoder();
+  setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('stale-saved-key') }) });
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const value = String(url);
+    if (value.includes('models.dev')) return Response.json({ opencode: snapshot });
+    assert.doesNotMatch(value, /opencode\.ai\/zen/, 'free model should not use the stale saved Zen key');
+    if (value === 'https://runtime.test/global/health') return Response.json({ healthy: true });
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'public-runtime-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'public-runtime-session', field: 'text', delta: 'Public' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'public-runtime-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/public-runtime-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  };
+  t.after(() => { globalThis.fetch = original; setControlPlaneRepositoryForTests(undefined); });
+  assert.equal(await streamWithOfficialOpenCode(input()), 'Public');
+});
+
+test('paid model receives the saved server-side credential', async (t) => {
+  mockFetch(t, async (_url, init) => {
+    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer saved-test-key');
+    return new Response(frame('OK') + frame('', 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  });
+  process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+  setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('saved-test-key') }) });
+  assert.equal(await streamWithOfficialOpenCode({ ...input(), modelId: 'opencode/qwen3.8-max' }), 'OK');
+});
+
+test('Hello streams without repository/workspace requests and reload does not cancel it', async (t) => {
+  configureRuntime(t);
+  const { streamDirectRepositoryChat } = await import('../src/direct-chat.ts');
+  const { recoverInterruptedDirectRuns } = await import('../src/agents.ts');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let first;
+  const gotFirst = new Promise((resolve) => { first = resolve; });
+  const encoder = new TextEncoder();
+
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'oc-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ async start(stream) {
+        stream.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'oc-session', field: 'text', delta: 'Hello' })));
+        await gate;
+        stream.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'oc-session', field: 'text', delta: '!' })));
+        stream.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'oc-session', status: { type: 'idle' } })));
+        stream.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/oc-session/prompt_async') return new Response(null, { status: 204 });
+    if (value === 'https://runtime.test/session/oc-session/abort') return Response.json(true);
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgresql://test:test@localhost/test';
+  t.after(() => { if (previous === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previous; });
+  const task = { id: 'task-reload', runId: 'run-reload', plane: 'direct', state: 'running', updatedAt: new Date(0).toISOString() };
+  let writes = 0;
+  setControlPlaneRepositoryForTests({
+    getProviderConnection: async () => null,
+    listMessages: async () => [{ id: 'hello-message', role: 'user', text: 'Hello' }],
+    listTasks: async () => [task],
+    putTask: async () => { writes++; },
+  });
+  const response = streamDirectRepositoryChat({
+    runId: task.runId, messageId: 'hello-message', prompt: 'Hello', modelId: 'opencode/big-pickle', mode: 'ask',
+    session: { id: 'reload-session', userId: 'test-user', projectId: 'p', project: 'owner/repo', branch: 'main' },
+    onDelta: () => first(),
+  });
+  await gotFirst;
+  await recoverInterruptedDirectRuns('reload-session');
+  assert.equal(writes, 0);
+  assert.equal(task.state, 'running');
+  release();
+  assert.equal(await response, 'Hello!');
+});
+
+
+
+test('production starts a loopback OpenCode sidecar for free Plan/Ask', () => {
+  const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const buildScript = fs.readFileSync(new URL('../../../scripts/render-build.sh', import.meta.url), 'utf8');
+  const startScript = fs.readFileSync(new URL('../scripts/start-production.mjs', import.meta.url), 'utf8');
+  const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
+
+  assert.equal(packageJson.scripts.start, 'node scripts/start-production.mjs');
+  assert.match(buildScript, /opencode-ai@1\.18\.32/);
+  assert.match(startScript, /127\.0\.0\.1/);
+  assert.match(startScript, /OPENCODE_SERVER_PASSWORD/);
+  assert.match(startScript, /ORLYNX_OPENCODE_RUNTIME_URL/);
+  assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
 });
