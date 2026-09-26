@@ -18,9 +18,6 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
   return requiresMachine || actionRequest || mutatesRepo ? 'workspace' : 'direct';
 }
 
-export function executionPlaneWithExistingWorkspace(plane: ExecutionPlane, hasWorkspace: boolean): ExecutionPlane {
-  return hasWorkspace && plane === 'direct' ? 'workspace' : plane;
-}
 
 export function needsRepositoryContext(text: string): boolean {
   return /\b(repository|repo|codebase|this (?:project|app)|our (?:code|app)|readme|architecture|authentication flow)\b|[\w/-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/i.test(text);
