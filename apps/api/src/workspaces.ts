@@ -11,7 +11,7 @@ const provider = new GitHubCodespacesProvider();
 const activePreparations = new Map<string, Promise<WorkspaceRecord>>();
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
-  return /ssh server|error getting ssh server details/i.test(failureCode || '');
+  return /ssh server|error getting ssh server details|Codespace SSH did not become ready/i.test(failureCode || '');
 }
 
 export function workspaceNeedsCodespaceReplacement(failureCode?: string): boolean {
@@ -77,7 +77,10 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
   return preparation;
 }
 
-async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+async function prepareWorkspaceOnce(
+  input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
+  replacementDepth = 0,
+): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
   let refreshFallback: WorkspaceRecord | null = null;
@@ -304,6 +307,35 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
           return prepareWorkspaceOnce(input);
         } catch (replacementError) {
           console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
+        }
+      }
+
+      if (!refreshFallback && workspace.codespaceName && workspaceNeedsCodespaceReplacement(detail) && replacementDepth < 1) {
+        try {
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'codespace.replace',
+            message: 'The development environment could not establish SSH. Replacing it with a fresh Codespace…',
+          });
+          const brokenName = workspace.codespaceName;
+          const replacement = await provider.replace({
+            workspaceId: workspace.id,
+            sessionId: input.sessionId,
+            userId: input.userId,
+            projectId: input.projectId,
+            repositoryId: input.repositoryId,
+            branch: input.branch,
+          }, workspace);
+          await repository.putWorkspace(replacement);
+          await repository.putWorkspaceAgentAdapter({
+            workspaceId: workspace.id,
+            adapterId: 'opencode',
+            state: 'not_installed',
+            updatedAt: replacement.updatedAt,
+          });
+          console.warn(`[workspace] replaced broken Codespace after SSH failure session=${input.sessionId} old=${brokenName} new=${replacement.codespaceName || 'unknown'}`);
+          return prepareWorkspaceOnce(input, replacementDepth + 1);
+        } catch (replacementError) {
+          console.warn(`[workspace] automatic Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
       }
 

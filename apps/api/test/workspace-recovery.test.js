@@ -9,6 +9,7 @@ test('missing SSH server bootstrap failures request a Codespace rebuild', () => 
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
   assert.equal(workspaceNeedsSshRebuild('error getting ssh server details'), true);
   assert.equal(workspaceNeedsSshRebuild('GitHub Codespace did not become ready before the startup timeout.'), false);
+  assert.equal(workspaceNeedsSshRebuild('Codespace SSH did not become ready after 25 bootstrap attempts within 120 seconds.'), true);
 });
 
 test('missing or invisible Codespaces request automatic replacement', () => {
@@ -16,6 +17,7 @@ test('missing or invisible Codespaces request automatic replacement', () => {
   assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespaces request failed (HTTP 404): Not Found.'), true);
   assert.equal(workspaceNeedsCodespaceReplacement('Codespace bootstrap failed: failed to start SSH server'), true);
   assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespace did not become ready before the startup timeout.'), false);
+  assert.equal(workspaceNeedsCodespaceReplacement('Codespace SSH server is unavailable after 3 attempts.'), true);
 });
 
 test('bridge runtime revision marker distinguishes current and stale bridges', () => {
@@ -95,7 +97,7 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
 
 test('Codespace SSH bootstrap retries transient readiness races instead of one-shot timing out', () => {
   const source = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
-  assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 4 \* 60_000/);
+  assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 2 \* 60_000/);
   assert.match(source, /ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS \|\| 45_000/);
   assert.match(source, /Codespace SSH not ready yet/);
   assert.match(source, /bootstrap attempts/);
@@ -122,4 +124,21 @@ test('workspace OpenCode health accepts both generic adapter and legacy health s
   assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'ready' }), 'ready');
   assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'starting', adapters: { opencode: { state: 'ready' } } }), 'ready');
   assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', adapters: { opencode: { state: 'starting' } } }), 'starting');
+});
+
+
+test('new sessions do not inherit another session\'s Codespace runtime', () => {
+  const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
+  const createStart = source.indexOf('async create(');
+  const createEnd = source.indexOf('async replace(', createStart);
+  const createBlock = source.slice(createStart, createEnd);
+  assert.match(createBlock, /const existing = await this\.reusableForSession\(input\)/);
+  assert.doesNotMatch(createBlock, /reusableForProject\(input\)/);
+});
+
+test('SSH replacement recovery is automatic but bounded to one replacement per preparation', () => {
+  const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  assert.match(source, /replacementDepth = 0/);
+  assert.match(source, /workspaceNeedsCodespaceReplacement\(detail\) && replacementDepth < 1/);
+  assert.match(source, /return prepareWorkspaceOnce\(input, replacementDepth \+ 1\)/);
 });

@@ -169,11 +169,12 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const now = new Date().toISOString();
 
-    // Recover an exact Codespace if GitHub created it before Orlynx managed to
-    // persist its name (for example after a server restart). If a newer Orlynx
-    // session opens the same repository/branch, reuse an idle Orlynx-owned
-    // Codespace instead of consuming another account slot.
-    const existing = await this.reusableForSession(input) || await this.reusableForProject(input);
+    // Recover only the exact Codespace created for this session. Cross-session
+    // reuse looked efficient, but an old Codespace can remain visible through
+    // GitHub's REST API while its SSH/runtime transport is no longer usable.
+    // When quota is tight we reclaim an idle Orlynx Codespace and create a
+    // fresh environment instead of inheriting stale runtime state.
+    const existing = await this.reusableForSession(input);
     if (existing) {
       const recovered: WorkspaceRecord = {
         id: input.workspaceId,
