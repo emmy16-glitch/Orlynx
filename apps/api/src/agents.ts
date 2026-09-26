@@ -11,6 +11,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
+import { prepareWorkspace, workspaceNeedsCodespaceReplacement } from './workspaces.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -285,6 +286,25 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
     if (!readyWorkspace) return null;
     if (readyWorkspace.state === 'failed') {
+      const recoverableWorkspaceFailure = workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode);
+      if (recoverableWorkspaceFailure) {
+        console.warn(`[queue] repairing failed workspace before Build task session=${sessionId} workspace=${readyWorkspace.id} failure=${readyWorkspace.failureCode || 'unknown'}`);
+        void prepareWorkspace({
+          sessionId,
+          userId: readyWorkspace.userId,
+          projectId: readyWorkspace.projectId,
+          repositoryId: readyWorkspace.repositoryId,
+          branch: readyWorkspace.branch,
+        }).then(async (workspace) => {
+          if (workspace.state === 'ready' && workspace.bridgeState === 'ready') {
+            await promoteNextQueuedRun(sessionId);
+          }
+        }).catch((error) => {
+          console.warn(`[queue] workspace repair failed session=${sessionId} workspace=${readyWorkspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        });
+        return null;
+      }
+
       const now = new Date().toISOString();
       nextQueued.state = 'failed';
       nextQueued.updatedAt = now;
