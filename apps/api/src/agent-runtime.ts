@@ -1,4 +1,4 @@
-import type { AgentAdapterId, AgentMode } from '@orlynx/shared';
+import type { AgentAdapterId, AgentMode, ProjectSession } from '@orlynx/shared';
 import {
   abortOpenCodeSession,
   getOrCreateOpenCodeSession,
@@ -12,6 +12,7 @@ import {
 } from './opencode.js';
 import { openCodeCatalog, resolveModel } from './opencode-catalog.js';
 import { controlPlaneRepository } from './storage.js';
+import { cancelDirectRun, hasDirectRun, streamDirectRepositoryChat } from './direct-chat.js';
 
 export interface RuntimeSession { id: string; directory?: string }
 export interface RuntimeMessage { info: Record<string, any>; parts: Record<string, any>[] }
@@ -32,11 +33,23 @@ export interface AgentPromptOptions {
 
 export interface AgentAdapterCapabilities {
   workspace: boolean;
+  directChat: boolean;
   streaming: boolean;
   planMode: boolean;
   approvals: boolean;
   resumeSession: boolean;
   diff: boolean;
+}
+
+export interface AgentDirectChatInput {
+  runId: string;
+  messageId?: string;
+  prompt: string;
+  acceptedAt?: string;
+  session: ProjectSession & { userId: string; projectId: string };
+  modelId: string;
+  onDelta: (delta: string) => void;
+  onStatus?: (message: string) => void;
 }
 
 export interface AgentWorkspacePayloadInput {
@@ -67,6 +80,9 @@ export interface AgentRuntimeAdapter {
   parseModel(modelId: string): { providerID: string; modelID: string };
   publicAccessForModel(modelId: string): boolean | undefined;
   workspacePayload(input: AgentWorkspacePayloadInput): Record<string, unknown>;
+  streamDirectChat?(input: AgentDirectChatInput): Promise<string>;
+  hasDirectRun?(runId: string): boolean;
+  cancelDirectRun?(runId: string): boolean;
 }
 
 function parseProviderModel(modelId: string): { providerID: string; modelID: string } {
@@ -80,6 +96,7 @@ export const openCodeRuntime: AgentRuntimeAdapter = {
   displayName: 'OpenCode',
   capabilities: {
     workspace: true,
+    directChat: true,
     streaming: true,
     planMode: true,
     approvals: true,
@@ -103,6 +120,9 @@ export const openCodeRuntime: AgentRuntimeAdapter = {
     try { return resolveModel(openCodeCatalog(), modelId).free; }
     catch { return undefined; }
   },
+  streamDirectChat: (input) => streamDirectRepositoryChat(input),
+  hasDirectRun: (runId) => hasDirectRun(runId),
+  cancelDirectRun: (runId) => cancelDirectRun(runId),
   workspacePayload: (input) => {
     const model = parseProviderModel(input.modelId);
     const publicAccess = openCodeRuntime.publicAccessForModel(input.modelId);
