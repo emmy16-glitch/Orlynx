@@ -68,8 +68,8 @@ describe('workspace trust and AI control contract', () => {
 
   it('uses one authored agent/model control instead of native composer selects', () => {
     assert.match(src, /className="ai-control-trigger"/, 'unified AI control trigger missing');
-    assert.match(src, /<b>Agent<\/b>/, 'agent switcher section missing');
-    assert.match(src, /<b>Model<\/b>/, 'model switcher section missing');
+    assert.match(src, /className="ai-switcher-label">Agent<\/span>/, 'agent switcher section missing');
+    assert.match(src, /className="ai-switcher-label">Model<\/span>/, 'model switcher section missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
   });
