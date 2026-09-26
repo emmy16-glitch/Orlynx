@@ -296,7 +296,7 @@ export default function ProductionApp() {
 
   const openSession = useCallback(async (record: any) => {
     sourceRef.current?.close();
-    seqRef.current = Number(localStorage.getItem(seqKey(record.id)) || 0);
+    seqRef.current = 0;
     seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setDraftReply(''); setPushReview(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
     setSession(record); currentSessionRef.current = record;
@@ -306,6 +306,16 @@ export default function ProductionApp() {
     } catch {}
     setRecentProjects((previous) => { const next = [record.project, ...previous.filter((item) => item !== record.project)].filter((name) => name.includes('/')).slice(0, 8); try { localStorage.setItem(RECENTS, JSON.stringify(next)); } catch {} return next; });
     await refreshSession(record.id);
+    try {
+      const history = await j<any[]>(await fetch(`/v1/sessions/${record.id}/activity?limit=300`));
+      const ordered = [...history].filter((item) => item?.eventId).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+      setEvents(ordered);
+      seenRef.current = new Set(ordered.map((item) => item.eventId));
+      seqRef.current = ordered.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
+      try { localStorage.setItem(seqKey(record.id), String(seqRef.current)); } catch {}
+    } catch {
+      seqRef.current = Number(localStorage.getItem(seqKey(record.id)) || 0);
+    }
     setRestoring(false); connectEvents(record.id);
   }, [connectEvents, refreshSession]);
 
@@ -719,6 +729,14 @@ export default function ProductionApp() {
         }
       }
 
+      if (result.prefs?.mode || result.prefs?.permission) {
+        setAi((current: any) => ({
+          ...current,
+          ...(result.prefs.mode ? { mode: result.prefs.mode } : {}),
+          ...(result.prefs.permission ? { permission: result.prefs.permission } : {}),
+        }));
+      }
+
       if (result.appliesTo === 'next-turn') setError('A task is running. Your selection applies to the next turn.');
       await refreshAi(session.id);
     } catch (error: any) { setError(error.message || 'AI preference could not be saved.'); }
@@ -966,7 +984,7 @@ export default function ProductionApp() {
                     hint={failureSummary || 'Your conversation is preserved.'}
                     onRetry={() => {
                       if (modelProblem) {
-                        document.querySelector<HTMLSelectElement>('.inline-model-picker select')?.focus();
+                        setShowConnectAI(true);
                       } else {
                         void refreshSession(session.id);
                       }
