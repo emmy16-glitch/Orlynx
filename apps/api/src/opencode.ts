@@ -17,6 +17,16 @@ function projectsRoot(): string { return path.resolve(process.env.OPENCODE_PROJE
 export interface OpenCodeSession { id: string; directory: string; }
 export interface OpenCodeMessage { info: Record<string, any>; parts: Record<string, any>[]; }
 
+type WorkspaceBridgeHealth = Record<string, unknown> & {
+  bridge?: string;
+  openCode?: string;
+  adapters?: Record<string, { state?: string; reason?: string }>;
+};
+
+export function workspaceOpenCodeHealthState(health: WorkspaceBridgeHealth | null | undefined): string | undefined {
+  return health?.adapters?.opencode?.state || health?.openCode;
+}
+
 function configured(): boolean {
   if (process.env.VERCEL === '1') return false;
   if (!baseUrl()) return false;
@@ -95,8 +105,8 @@ export async function openCodeReadiness(project?: string, sessionId?: string): P
       return { connected: false, message: 'OpenCode adapter is not ready in this workspace.' };
     }
     try {
-      const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
-      return health.openCode === 'ready'
+      const health = await bridgeRequest<WorkspaceBridgeHealth>(workspace.id, 'health');
+      return workspaceOpenCodeHealthState(health) === 'ready'
         ? { connected: true, message: 'OpenCode in this workspace is ready.' }
         : { connected: false, message: 'AI is not ready in this cloud workspace.' };
     } catch {
@@ -114,8 +124,8 @@ export async function openCodeStatus(project?: string, sessionId?: string) {
     const workspace = session ? await controlPlaneRepository().getWorkspaceBySession(session.id) : null;
     if (!workspace || !(await durableOpenCodeReady(workspace))) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'OpenCode adapter is not ready in this workspace.' };
     try {
-      const health = await bridgeRequest<{ bridge?: string; openCode?: string }>(workspace.id, 'health');
-      if (health.openCode !== 'ready') throw new Error('OpenCode is unhealthy.');
+      const health = await bridgeRequest<WorkspaceBridgeHealth>(workspace.id, 'health');
+      if (workspaceOpenCodeHealthState(health) !== 'ready') throw new Error('OpenCode is unhealthy.');
       const [agents, providerData] = await Promise.all([
         request<Record<string, any>[]>(project, '/agent', {}, sessionId).catch(() => []),
         request<any>(project, '/provider', {}, sessionId).catch(() => ({ all: [], connected: [] })),

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workspaceNeedsSshRebuild, workspaceNeedsCodespaceReplacement, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
 import { codespaceMatchesProject, orlynxSessionId } from '../src/github-codespaces.ts';
+import { workspaceOpenCodeHealthState } from '../src/opencode.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
@@ -113,4 +114,12 @@ test('workspace startup retries transient GitHub status lookup failures', () => 
   const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
   assert.match(source, /GitHub status is temporarily unavailable/);
   assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
+});
+
+
+test('workspace OpenCode health accepts both generic adapter and legacy health schemas', () => {
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', adapters: { opencode: { state: 'ready' } } }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'ready' }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', openCode: 'starting', adapters: { opencode: { state: 'ready' } } }), 'ready');
+  assert.equal(workspaceOpenCodeHealthState({ bridge: 'ready', adapters: { opencode: { state: 'starting' } } }), 'starting');
 });
