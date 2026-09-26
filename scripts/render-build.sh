@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-npm ci
+npm ci --include=dev
 
 echo "[render-build] Installing local OpenCode sidecar..."
 npm install --prefix apps/api/.opencode-runtime --omit=dev --no-audit --no-fund opencode-ai@1.18.32
