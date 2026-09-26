@@ -1180,6 +1180,7 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [sheetError, setSheetError] = useState('');
+  const popoverRef = useRef<HTMLElement | null>(null);
   const openCode = providers.find((provider: any) => provider.id === 'opencode');
   const accountConnected = openCode?.state === 'connected';
   const available = models.filter((m) => m.status === 'available');
@@ -1189,9 +1190,16 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const filtered = available.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
+    const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const closeOnPointer = (event: PointerEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', closeOnKey);
+    window.addEventListener('pointerdown', closeOnPointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnKey);
+      window.removeEventListener('pointerdown', closeOnPointer);
+    };
   }, [onClose]);
 
   async function connectOpenCode(event: React.FormEvent) {
@@ -1207,7 +1215,7 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
     } finally { setBusy(false); }
   }
 
-  return <aside className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
+  return <aside ref={popoverRef} className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
     <div className="ai-switcher-header">
       <div><b>AI</b><small>{connected ? 'Choose agent and model' : 'Connect AI to continue'}</small></div>
       <button type="button" className="icon-button compact-icon" aria-label="Close AI switcher" onClick={onClose}><Icon name="close" size={15} /></button>
