@@ -55,3 +55,26 @@ describe('signed-out application bootstrap', () => {
     assert.match(src, /if \(integration\.github\?\.connected\) \{\s*refreshAi\(\)/, 'AI refresh is not gated by authenticated GitHub state');
   });
 });
+
+
+describe('workspace trust and AI control contract', () => {
+  const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+
+  it('restores recent durable activity before resuming the live stream', () => {
+    assert.match(src, /\/v1\/sessions\/\$\{record\.id\}\/activity\?limit=300/, 'workspace does not restore durable activity history');
+    assert.match(src, /setEvents\(ordered\)/, 'restored activity is not placed back into the timeline');
+    assert.match(src, /connectEvents\(record\.id\)/, 'live event stream is not resumed after restoration');
+  });
+
+  it('uses one authored agent/model control instead of native composer selects', () => {
+    assert.match(src, /className="ai-control-trigger"/, 'unified AI control trigger missing');
+    assert.match(src, /<b>Agent<\/b>/, 'agent switcher section missing');
+    assert.match(src, /<b>Model<\/b>/, 'model switcher section missing');
+    assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
+    assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
+  });
+
+  it('routes model recovery back into the unified AI controls', () => {
+    assert.match(src, /if \(modelProblem\) \{\s*setShowConnectAI\(true\);/, 'model recovery does not open AI controls');
+  });
+});
