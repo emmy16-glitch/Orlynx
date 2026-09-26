@@ -7,6 +7,48 @@ const active = new Map<string, AbortController>();
 
 export type ExecutionPlane = 'direct' | 'workspace';
 
+
+export function instantReplyFor(input: {
+  text: string;
+  mode: AgentMode;
+  project: string;
+  branch: string;
+}): string | null {
+  const text = input.text.trim();
+  const lower = text.toLowerCase();
+
+  if (/^(hi|hello|hey|yo|wass?up|what'?s up|good\s+(morning|afternoon|evening))[!.?\s]*$/i.test(text)) {
+    return `Hi — you're in **${input.project}** on **${input.branch}**. What do you want to work on?`;
+  }
+
+  if (/\b(what|which)\s+(repo|repository|project)\b[\s\S]{0,35}\b(connected|open|using|working|currently)\b|\bwhat\s+(repo|repository|project)\s+(are|r)\s+(you|u)\b/i.test(text)) {
+    return `Currently connected to **${input.project}** on **${input.branch}**.`;
+  }
+
+  if (/\bwhat\s+can\s+(you|u)\s+(actually\s+)?do\b|\bwhat\s+are\s+your\s+capabilities\b/i.test(text)) {
+    if (input.mode === 'build') {
+      return 'In **Build mode**, I can inspect the repository, run commands and tests in the development environment, edit files, and prepare changes. Simple questions stay in chat; execution work is sent to the workspace automatically.';
+    }
+    if (input.mode === 'plan') {
+      return 'In **Plan mode**, I can read repository context, explain the codebase, investigate issues, and produce implementation plans. I will not run commands or change files until you switch to **Build**.';
+    }
+    return 'In **Ask mode**, I can read repository context and answer questions about the codebase. I will not run commands or change files until you switch to **Build**.';
+  }
+
+  if (input.mode !== 'build' && executionPlaneFor(text, 'build') === 'workspace') {
+    const action = /\bpull\b/i.test(lower)
+      ? 'Pulling changes'
+      : /\b(git\s+status|status)\b/i.test(lower)
+        ? 'Checking Git status'
+        : /\b(start|run)\b[\s\S]{0,25}\b(local\s*host|localhost|server|app|dev)\b/i.test(lower)
+          ? 'Starting the local app/server'
+          : 'That request';
+    return `${action} needs the development environment, so it cannot run in **${input.mode === 'plan' ? 'Plan' : 'Ask'} mode**. Switch to **Build** and send the same request; Orlynx will route it straight to the workspace instead of asking the chat model.`;
+  }
+
+  return null;
+}
+
 export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane {
   if (mode === 'ask' || mode === 'plan') return 'direct';
   const value = text.toLowerCase();
@@ -77,6 +119,8 @@ export function turnsForMessage(history: ChatMessage[], messageId: string | unde
 }
 
 const contextCache = new Map<string, { expires: number; value: Promise<string> }>();
+const ROOT_CONTEXT_TTL_MS = 5 * 60_000;
+const FILE_CONTEXT_TTL_MS = 90_000;
 
 async function safeFile(project: string, branch: string, path: string, installationId?: number): Promise<string | null> {
   try {
@@ -123,7 +167,7 @@ async function repositoryContext(session: ProjectSession & { userId: string }, p
   if (existing && existing.expires > Date.now()) return existing.value;
   if (contextCache.size >= 32) contextCache.delete(contextCache.keys().next().value!);
   const value = loadRepositoryContext(session, paths);
-  contextCache.set(key, { expires: Date.now() + 60_000, value });
+  contextCache.set(key, { expires: Date.now() + (paths.length ? FILE_CONTEXT_TTL_MS : ROOT_CONTEXT_TTL_MS), value });
   void value.catch(() => contextCache.delete(key));
   return value;
 }
