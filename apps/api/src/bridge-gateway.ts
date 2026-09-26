@@ -9,7 +9,8 @@ import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
 import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose } from './workspaces.js';
 
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: { state?: string; reason?: string }; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeAdapterState = { state?: string; reason?: string };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: BridgeAdapterState; adapters?: Record<string, BridgeAdapterState>; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
@@ -24,13 +25,55 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   // A prior socket may close after its replacement has authenticated. Never
   // let that stale close (or a delayed READY) downgrade the new connection.
   if (current.connectionId !== claims.connectionId) return;
-  const openCodeState = detail.openCode?.state as typeof current.openCodeState | undefined;
-  const ready = state === 'ready' && openCodeState === 'ready';
-  const startupFailed = state === 'ready' && openCodeState === 'failed';
-  const reason = detail.openCode?.reason;
-  const failureCode = reason === 'existing_server_auth_mismatch' ? 'OpenCode is running with an older workspace password.' : reason === 'binary_unavailable' ? 'OpenCode could not run in the Codespace.' : 'OpenCode did not start in the Codespace.';
-  await repository.putWorkspace({ ...current, connectionId: claims.connectionId, bridgeState: state === 'disconnected' ? 'disconnected' : state, openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState), state: startupFailed || current.state === 'failed' ? 'failed' : ready ? 'ready' : state === 'disconnected' ? 'connecting' : current.state === 'bootstrapping' ? 'connecting' : current.state, failureCode: startupFailed ? failureCode : current.failureCode, repoRoot: detail.repoRoot || current.repoRoot, updatedAt: new Date().toISOString() });
-  if (ready) await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, type: 'workspace.ready', timestamp: new Date().toISOString(), payload: { provider: 'github-codespaces' } });
+  const now = new Date().toISOString();
+  const adapters = detail.adapters || (detail.openCode ? { opencode: detail.openCode } : {});
+  const openCodeState = (adapters.opencode?.state || detail.openCode?.state) as typeof current.openCodeState | undefined;
+  const workspaceReady = state === 'ready';
+  const nextWorkspaceState = workspaceReady
+    ? 'ready'
+    : state === 'disconnected'
+      ? 'connecting'
+      : current.state === 'bootstrapping'
+        ? 'connecting'
+        : current.state;
+
+  await repository.putWorkspace({
+    ...current,
+    connectionId: claims.connectionId,
+    bridgeState: state === 'disconnected' ? 'disconnected' : state,
+    // Legacy compatibility only. Generic adapter health is stored separately.
+    openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState),
+    state: nextWorkspaceState,
+    failureCode: workspaceReady ? undefined : current.failureCode,
+    repoRoot: detail.repoRoot || current.repoRoot,
+    updatedAt: now,
+  });
+
+  for (const [adapterId, adapter] of Object.entries(adapters)) {
+    const adapterState = ['not_installed','installing','starting','ready','busy','unavailable','failed'].includes(String(adapter.state))
+      ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
+      : 'unavailable';
+    await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state: adapterState, reason: adapter.reason, updatedAt: now });
+    await repository.appendEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: claims.sessionId,
+      workspaceId: claims.workspaceId,
+      type: 'state.delta',
+      timestamp: now,
+      payload: { scope: 'agent-adapter', adapterId, state: adapterState, ...(adapter.reason ? { reason: adapter.reason } : {}) },
+    });
+  }
+
+  if (workspaceReady) {
+    await repository.appendEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: claims.sessionId,
+      workspaceId: claims.workspaceId,
+      type: 'workspace.ready',
+      timestamp: now,
+      payload: { provider: 'github-codespaces', adapters },
+    });
+  }
 }
 
 async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
@@ -78,7 +121,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'READY') {
-        console.info(`[bridge] agent reported OpenCode ${message.openCode?.state === 'ready' ? 'ready' : 'unavailable'}: ${['existing_server_auth_mismatch', 'binary_unavailable', 'startup_timeout'].includes(message.openCode?.reason || '') ? message.openCode?.reason : 'none'}`);
+        const reported = message.adapters || (message.openCode ? { opencode: message.openCode } : {});
+        console.info(`[bridge] adapter states: ${Object.entries(reported).map(([id, value]) => `${id}=${value.state || 'unknown'}${value.reason ? `:${value.reason}` : ''}`).join(', ') || 'none'}`);
         await persistBridgeState(claims, 'ready', message);
 
         // Attachments can be uploaded before a cloud workspace exists. Once
@@ -125,7 +169,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           if (message.ok) {
             const responseText = String(message.result?.responseText || '');
             if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, createdAt: now });
-            if (message.result?.engineSessionId) await repository.putEngineSession(claims.sessionId, String(message.result.engineSessionId));
+            if (message.result?.engineSessionId) {
+              const adapterId = String(command.payload.adapterId || 'opencode');
+              await repository.putAgentSession(claims.sessionId, adapterId, String(message.result.engineSessionId));
+            }
             const rawDiff = Array.isArray(message.result?.diff) ? message.result.diff as Array<Record<string, unknown>> : [];
             const files = rawDiff.flatMap((item) => { const file = String(item.file || item.path || ''); if (!file || file.startsWith('/') || file.split('/').includes('..')) return []; return [{ path: file, action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const, before: typeof item.before === 'string' ? item.before : undefined, after: typeof item.after === 'string' ? item.after : undefined, diff: typeof item.diff === 'string' ? item.diff : undefined }]; });
             if (files.length) {
@@ -154,7 +201,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
             await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed. Review the result.' } });
           } else {
-            const detail = String(message.error || message.result?.error || 'OpenCode could not complete the task.');
+            const adapterId = String(command.payload.adapterId || 'opencode');
+            const detail = String(message.error || message.result?.error || `${adapterId} adapter could not complete the task.`);
             const errorKind = classifyError(detail);
             const error = errorKind === 'rate_limit'
               ? 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.'
