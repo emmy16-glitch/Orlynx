@@ -164,7 +164,7 @@ async function startManagedContainer(name) {
 }
 
 async function touchManagedActivity(name) {
-  await docker(['exec', name, 'sh', '-c', `mkdir -p "${ACTIVITY_FILE%/*}" && touch "${ACTIVITY_FILE}"`], {
+  await docker(['exec', name, 'sh', '-c', `mkdir -p /home/orlynx/.orlynx/runtime && touch "${ACTIVITY_FILE}"`], {
     allowFailure: true,
     timeoutMs: 5_000,
   });
