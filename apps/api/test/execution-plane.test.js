@@ -4,6 +4,7 @@ import { executionPlaneFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
+// Keep routing tests deterministic: these assertions require no live workspace.
 test('an existing Codespace never changes the mode/request execution decision', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
   assert.equal(executionPlaneFor('Explain this repo', 'ask'), 'direct');
@@ -27,6 +28,16 @@ test('runtime and mutating build work requests the development environment', () 
   assert.equal(executionPlaneFor('run it in codespace', 'build'), 'workspace');
   assert.equal(executionPlaneFor('git log --oneline -10', 'build'), 'workspace');
   assert.equal(executionPlaneFor('check the main repo and pull update', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('can you check the repo now', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('I switched you to build mode so check', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('start the local host', 'build'), 'workspace');
+});
+
+test('explanatory Build questions stay conversational unless they request changes', () => {
+  assert.equal(executionPlaneFor('How do I run npm install?', 'build'), 'direct');
+  assert.equal(executionPlaneFor('What does git status show?', 'build'), 'direct');
+  assert.equal(executionPlaneFor('Review this architecture and suggest improvements', 'build'), 'direct');
+  assert.equal(executionPlaneFor('Review this architecture and fix the problems', 'build'), 'workspace');
 });
 
 test('plan and ask modes remain direct even when the wording asks for execution', () => {

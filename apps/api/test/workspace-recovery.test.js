@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workspaceNeedsSshRebuild, workspaceNeedsCodespaceReplacement, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
+import { codespaceMatchesProject, orlynxSessionId } from '../src/github-codespaces.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
   assert.equal(workspaceNeedsSshRebuild('Codespace bootstrap failed: failed to start SSH server'), true);
@@ -56,4 +57,33 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
     assert.match(source, /--version/);
     assert.match(source, /OPENCODE_BIN=%s/);
   }
+});
+
+
+test('Orlynx-owned Codespaces can be identified for safe cross-session reuse', () => {
+  assert.equal(orlynxSessionId('Orlynx ses_abc123'), 'ses_abc123');
+  assert.equal(orlynxSessionId('My personal Codespace'), null);
+  assert.equal(orlynxSessionId('Orlynx random-name'), null);
+});
+
+test('Codespace project reuse requires the same repository and branch', () => {
+  const base = {
+    name: 'silver-space',
+    display_name: 'Orlynx ses_old',
+    state: 'Available',
+    repository: { id: 42 },
+    git_status: { ref: 'refs/heads/main' },
+  };
+  assert.equal(codespaceMatchesProject(base, 42, 'main'), true);
+  assert.equal(codespaceMatchesProject(base, 43, 'main'), false);
+  assert.equal(codespaceMatchesProject(base, 42, 'develop'), false);
+  assert.equal(codespaceMatchesProject({ ...base, state: 'Failed' }, 42, 'main'), false);
+});
+
+test('quota recovery waits for GitHub to finish stopping an old Codespace', () => {
+  const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
+  assert.match(source, /waitUntilStopped/);
+  assert.doesNotMatch(source, /setTimeout\(resolve, 1_500\)/);
+  assert.match(source, /reusableForProject/);
+  assert.match(source, /sessionHasActiveWork/);
 });

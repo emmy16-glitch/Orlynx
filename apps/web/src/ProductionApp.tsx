@@ -49,11 +49,21 @@ function repoUpdatedLabel(value?: string) {
   return `Updated ${new Date(stamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
 }
 
-function visibleChatText(role: string, text: string): string {
+function visibleChatText(role: string, text: string, prompt = ''): string {
   if (role !== 'assistant') return text;
   const marker = 'Respond naturally to the latest user message. Do not repeat the transcript.';
   const index = text.lastIndexOf(marker);
-  return index >= 0 ? text.slice(index + marker.length).trim() : text;
+  let cleaned = (index >= 0 ? text.slice(index + marker.length) : text)
+    .replace(/^\s*Conversation so far:[\s\S]*?Assistant:\s*/i, '')
+    .trim();
+  const request = prompt.trim();
+  if (!request || !cleaned.toLowerCase().startsWith(request.toLowerCase())) return cleaned;
+  const remainder = cleaned.slice(request.length);
+  const immediate = remainder[0] || '';
+  const looksLikeEcho = /[\p{L}\p{N}]/u.test(immediate)
+    || (request.length >= 12 && /^\s+\S/.test(remainder));
+  if (looksLikeEcho) cleaned = remainder.replace(/^[\s:–—-]+/, '').trimStart();
+  return cleaned;
 }
 
 export default function ProductionApp() {
@@ -994,8 +1004,11 @@ export default function ProductionApp() {
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
                   </div>
                 </div></div>}
-                {messages.map((message) => <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text)}</div></div></article>)}
-                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{draftReply}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
+                {messages.map((message, index) => {
+                  const priorUserPrompt = message.role === 'assistant' && messages[index - 1]?.role === 'user' ? String(messages[index - 1].text || '') : '';
+                  return <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text, priorUserPrompt)}</div></div></article>;
+                })}
+                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
                 {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
