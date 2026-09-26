@@ -151,7 +151,7 @@ describe('operation progress presentation', () => {
 
   it('renders normal background work as one inline progress stream', () => {
     assert.match(src, /function OperationProgress/);
-    assert.match(src, /className="workspace-progress"/);
+    assert.match(src, /workspace-progress \\${className}/);
     assert.match(src, /aria-label=\{\`\$\{title\} progress\`\}/);
     assert.match(src, /workspaceReadNotice && tab !== 'chat'/);
     assert.doesNotMatch(src, /workspacePreparing && \(cloudBusy \|\| lastRun\?\.plane === 'workspace'\) && <div className="screen-alert"/);
@@ -193,5 +193,31 @@ describe('progress streaming beyond Build mode', () => {
     assert.match(src, /Verifying installation…/);
     assert.match(src, /Fetching repositories…/);
     assert.match(src, /Preparing Orlynx…/);
+  });
+});
+
+
+describe('repository conversation continuity', () => {
+  const web = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+  const routes = fs.readFileSync(path.join(root, 'apps/api/src/routes.ts'), 'utf8');
+  const storage = fs.readFileSync(path.join(root, 'apps/api/src/storage.ts'), 'utf8');
+
+  it('reopens the existing repo and branch conversation instead of silently creating another chat', () => {
+    assert.match(web, /function preferredSessionIdFor/);
+    assert.match(web, /preferredSessionId: preferredSessionIdFor\(repo\.full, chosenBranch\)/);
+    assert.match(web, /preferredSessionId: preferredSessionIdFor\(selectedRepo\.full, branch\)/);
+    assert.match(routes, /const existing = preferred \|\| sessions\.find\(matchesProjectBranch\)/);
+    assert.match(routes, /resumed: true/);
+  });
+
+  it('advances session activity whenever a user message is accepted', () => {
+    assert.match(routes, /s\.updatedAt = msg\.createdAt/);
+    assert.match(routes, /updatedAt: msg\.createdAt/);
+  });
+
+  it('keeps resumed session identity metadata current', () => {
+    assert.match(storage, /installation_id=EXCLUDED\.installation_id/);
+    assert.match(storage, /project=EXCLUDED\.project/);
+    assert.match(storage, /branch=EXCLUDED\.branch/);
   });
 });
