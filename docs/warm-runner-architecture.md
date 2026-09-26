@@ -118,8 +118,8 @@ allocate container
 ## Background prewarming
 
 When the preferred provider is `orlynx-runner`, creating a durable repository
-session starts `prepareWorkspace()` asynchronously. The session response is
-not held open.
+session queues a `workspace_jobs` preparation with `allowFallback=false`. The
+session response never waits for infrastructure startup.
 
 This means the user can chat immediately while the execution workspace warms in
 parallel.
@@ -164,15 +164,25 @@ resource limits. Future hardening should add outbound network policy, ephemeral
 volumes, stronger secret isolation, image signing/provenance and optionally
 microVM isolation.
 
-## Next orchestration step
+## Durable orchestration
 
-The current API still owns `prepareWorkspace()` lifecycle promises. The next
-architecture milestone is a dedicated orchestrator worker with Postgres leases:
+Workspace lifecycle work is persisted in `workspace_jobs` before execution.
 
 ```text
-queued -> claimed -> lease_until -> preparing -> ready/running
+queued -> leased -> completed
+          |
+          +-> lease expires -> reclaimed by another worker
+          +-> transient error -> queued with retry delay
+          +-> terminal error -> failed
 ```
 
-If the worker dies, another worker can claim the expired lease and continue.
-That removes long-running infrastructure lifecycle ownership from the web
-process without changing the provider or bridge interfaces introduced here.
+The worker uses `FOR UPDATE SKIP LOCKED`, bounded leases, heartbeat renewal and
+retry backoff. Production runs `apps/api/dist/orchestrator-worker.js` as a
+separate background worker with `ORLYNX_ORCHESTRATOR_MODE=worker`.
+
+HTTP handlers, task promotion and bridge recovery only schedule durable jobs.
+`prepareWorkspace()` remains the provider executor behind the orchestrator.
+
+Inline mode exists only as a deployment/local-development compatibility path;
+it still writes the durable job first, so later worker adoption does not change
+the request contract.
