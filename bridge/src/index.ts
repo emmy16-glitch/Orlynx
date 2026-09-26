@@ -14,10 +14,12 @@ const CONNECTION_ID = process.env.ORLYNX_CONNECTION_ID || '';
 const REPO_ROOT = path.resolve(process.env.ORLYNX_REPO_ROOT || process.cwd());
 const OPENCODE_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD || '';
 const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || '';
+const GITHUB_TOKEN = process.env.ORLYNX_GITHUB_TOKEN || '';
 const OPENCODE_BIN = process.env.OPENCODE_BIN || 'opencode';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
+const ACTIVITY_FILE = path.join(os.homedir(), '.orlynx', 'runtime', 'activity');
 const OPENCODE_AUTH_MODE_FILE = path.join(os.homedir(), '.orlynx', 'runtime', 'opencode-auth-mode');
 
 type Command = { kind: 'COMMAND'; commandId: string; type: string; payload?: Record<string, unknown> };
@@ -49,11 +51,21 @@ function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
   try { fs.writeFileSync(`${COMMAND_JOURNAL}.tmp`, JSON.stringify(Object.fromEntries(completed)), { mode: 0o600 }); fs.renameSync(`${COMMAND_JOURNAL}.tmp`, COMMAND_JOURNAL); } catch {}
 }
+function touchActivity(): void {
+  try {
+    fs.mkdirSync(path.dirname(ACTIVITY_FILE), { recursive: true, mode: 0o700 });
+    const now = new Date();
+    if (!fs.existsSync(ACTIVITY_FILE)) fs.writeFileSync(ACTIVITY_FILE, '', { mode: 0o600 });
+    fs.utimesSync(ACTIVITY_FILE, now, now);
+  } catch {}
+}
+
 function sendCommandReply(ws: WebSocket, commandId: string, reply: CommandReply): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   try { ws.send(JSON.stringify({ kind: 'RESULT', commandId, ...reply })); } catch { /* a replacement socket will receive the durable retry */ }
 }
 function runCommandOnce(command: Command, ws: WebSocket): void {
+  touchActivity();
   const prior = completed.get(command.commandId);
   if (prior) { sendCommandReply(ws, command.commandId, prior); return; }
   const existing = inFlight.get(command.commandId);
@@ -85,8 +97,8 @@ function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   for (const [name, value] of Object.entries(process.env)) if (!/(ORLYNX_WORKSPACE_TOKEN|OPENCODE_SERVER_PASSWORD|TOKEN|SECRET|PRIVATE.?KEY|API.?KEY|CREDENTIAL)/i.test(name)) env[name] = value;
   return { ...env, ...extra };
 }
-function git(args: string[], timeout = 30_000) {
-  const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment() });
+function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
+  const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment(extraEnv) });
   if (result.error || result.status !== 0) throw new Error(output(result.stderr) || result.error?.message || `git exited ${result.status}`);
   return output(result.stdout);
 }
@@ -595,7 +607,17 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
     case 'git.commit': { const message = String(payload.message || '').trim().slice(0, 240); if (!message) throw new Error('Commit message is required.'); git(['add', '--all']); git(['commit', '-m', message], 60_000); return { sha: git(['rev-parse', 'HEAD']).trim() }; }
-    case 'git.push': { if (payload.approved !== true) throw new Error('Push requires an approved command.'); const branch = git(['branch', '--show-current']).trim(); if (!branch || branch === 'main' || branch === 'master') throw new Error('Direct push to the default branch is denied.'); return { output: git(['push', '--set-upstream', 'origin', branch], 120_000), branch }; }
+    case 'git.push': {
+      if (payload.approved !== true) throw new Error('Push requires an approved command.');
+      const branch = git(['branch', '--show-current']).trim();
+      if (!branch || branch === 'main' || branch === 'master') throw new Error('Direct push to the default branch is denied.');
+      const authEnv = GITHUB_TOKEN ? {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
+      } : {};
+      return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch };
+    }
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: ports() };
     case 'opencode.request': return opencodeRequest(payload);
@@ -661,6 +683,7 @@ function connect(delay = 0): void {
           });
           heartbeat ||= setInterval(async () => {
             if (ws.readyState !== WebSocket.OPEN) return;
+            if (activeAgents.size > 0 || terminals.size > 0) touchActivity();
             const currentAdapters = await bridgeAdapterHealth();
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
@@ -678,6 +701,7 @@ function connect(delay = 0): void {
 }
 
 export function start(): void {
+  touchActivity();
   if (!CONTROL.startsWith('wss://') || !token || !WORKSPACE_ID || !SESSION_ID || !USER_ID || !CONNECTION_ID) { console.error('[bridge] required secure workspace configuration is missing'); process.exitCode = 2; return; }
   connect();
 }

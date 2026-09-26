@@ -1,5 +1,6 @@
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
-import type { CreateWorkspaceInput, WorkspaceProvider } from './workspace-provider.js';
+import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider } from './workspace-provider.js';
+import { bootstrapWorkspace } from './runtime-worker.js';
 import { githubUserAccessToken } from './github.js';
 import { controlPlaneRepository } from './storage.js';
 import { spawn } from 'node:child_process';
@@ -52,6 +53,7 @@ export function codespaceMatchesProject(codespace: Codespace, repositoryId: numb
 }
 
 export class GitHubCodespacesProvider implements WorkspaceProvider {
+  readonly id = 'github-codespaces' as const;
   private async request<T>(userId: string, path: string, init: RequestInit = {}): Promise<T> {
     const token = await githubUserAccessToken(userId);
     const response = await fetch(`${API}${path}`, { ...init, headers: { ...headers(token), ...(init.headers as Record<string, string> || {}) }, signal: init.signal || AbortSignal.timeout(20_000) });
@@ -326,5 +328,9 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       if ((error as Error & { status?: number })?.status === 404) return;
       throw error;
     }
+  }
+
+  async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
+    await bootstrapWorkspace(workspace, values);
   }
 }
