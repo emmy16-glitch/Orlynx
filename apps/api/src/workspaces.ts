@@ -14,6 +14,12 @@ export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details/i.test(failureCode || '');
 }
 
+export function workspaceNeedsCodespaceReplacement(failureCode?: string): boolean {
+  const detail = failureCode || '';
+  return workspaceNeedsSshRebuild(detail)
+    || /getting full codespace details[\s\S]*404|GitHub Codespaces request failed \(HTTP 404|api\.github\.com\/user\/codespaces\//i.test(detail);
+}
+
 export function workspaceConnectionMatchesRevision(connectionId: string | undefined, revision: string): boolean {
   return Boolean(connectionId?.startsWith(`bridge-${revision}-`));
 }
@@ -75,6 +81,7 @@ export async function prepareWorkspace(input: { sessionId: string; userId: strin
 async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
+  let refreshFallback: WorkspaceRecord | null = null;
   try {
     if (workspace.state === 'creating' && !workspace.codespaceName) {
       emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting a development environment on GitHub…' });
@@ -85,7 +92,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
       // a newly requested GitHub Codespaces permission or after a transient
       // bootstrap failure.
       const previousFailure = workspace.failureCode || '';
-      if (workspace.codespaceName && workspaceNeedsSshRebuild(previousFailure)) {
+      if (workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure)) {
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'codespace.replace',
           message: 'Replacing the broken development environment with a fresh Codespace…',
@@ -120,6 +127,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     // the Codespace or touching repository files.
     const bridgePrefix = `bridge-${bridgeRuntimeRevision()}-`;
     if (workspaceNeedsRuntimeRefresh(workspace)) {
+      refreshFallback = workspace;
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'agent.refresh',
         message: 'Updating the Orlynx workspace runtime…',
@@ -235,6 +243,51 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     throw new Error('Orlynx could not connect to the development environment after the Codespace started.');
   } catch (error) {
     if (workspace) {
+      const detail = error instanceof Error ? error.message : 'workspace_start_failed';
+
+      // A bridge refresh is best-effort while a previously authenticated
+      // workspace is still healthy. If gh codespace ssh cannot see the
+      // Codespace but the REST API still can, restore the proven-good bridge
+      // instead of turning a refresh problem into a workspace outage.
+      if (refreshFallback && workspaceNeedsCodespaceReplacement(detail)) {
+        try {
+          const verified = await provider.get(refreshFallback);
+          if (workspaceFullyReady(verified)) {
+            const restored = { ...refreshFallback, updatedAt: new Date().toISOString() };
+            await repository.putWorkspace(restored);
+            console.warn(`[workspace] runtime refresh deferred after Codespace lookup/SSH mismatch session=${restored.sessionId} codespace=${restored.codespaceName || 'unknown'}`);
+            emit(input.sessionId, 'workspace.ready', {
+              workspaceId: restored.id,
+              message: 'Development environment ready. Runtime refresh will retry later.',
+            });
+            return restored;
+          }
+        } catch {
+          // The persisted Codespace name is genuinely stale or no longer
+          // visible. Fall through to replacement recovery below.
+        }
+
+        try {
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'codespace.replace',
+            message: 'The previous Codespace is no longer available. Starting a fresh development environment…',
+          });
+          const replacement = await provider.replace({
+            workspaceId: workspace.id,
+            sessionId: input.sessionId,
+            userId: input.userId,
+            projectId: input.projectId,
+            repositoryId: input.repositoryId,
+            branch: input.branch,
+          }, refreshFallback);
+          await repository.putWorkspace(replacement);
+          console.warn(`[workspace] replaced stale Codespace after refresh 404 session=${input.sessionId} old=${refreshFallback.codespaceName || 'unknown'} new=${replacement.codespaceName || 'unknown'}`);
+          return prepareWorkspaceOnce(input);
+        } catch (replacementError) {
+          console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
+        }
+      }
+
       // READY can race the final bootstrap read by a few seconds. Re-read the
       // durable row before persisting failure so a healthy late READY signal is
       // never overwritten by stale in-memory bootstrap state.
