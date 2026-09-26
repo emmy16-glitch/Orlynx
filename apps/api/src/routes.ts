@@ -215,29 +215,68 @@ router.get('/sessions', async (req, res) => {
 
 // POST /v1/sessions — create/resume project session (§14.1)
 router.post('/sessions', async (req, res) => {
-  const { project = '', branch = '', owner = '' } = req.body || {};
+  const { project = '', branch = '', owner = '', preferredSessionId = '' } = req.body || {};
   const installationId = requestInstallationId(req);
   if (!project || !branch || !owner || owner === 'local') return res.status(400).json({ error: 'Open an imported GitHub repository and branch to create a project session.' });
   if (!await githubRepositoryAuthorized(String(project), installationId)) return res.status(403).json({ error: 'This repository is not available to your GitHub connection.' });
   if (!durableStorageConfigured() && !importedRepositoryRoot(String(project))) return res.status(409).json({ error: 'Import this repository through the connected GitHub App before opening a project.' });
   if (!durableStorageConfigured() && importedRepositoryBranch(String(project)) !== String(branch)) return res.status(409).json({ error: 'The selected branch is not checked out locally. Import the branch again.' });
-  const id = `ses_${uuid().slice(0, 8)}`;
+
   const now = new Date().toISOString();
-  store.db.sessions[id] = { id, installationId, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
-  store.save();
+  const matchesProjectBranch = (session: any) =>
+    String(session.project || '').toLowerCase() === String(project).toLowerCase()
+    && String(session.branch || '') === String(branch);
+
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     const connection = await repository.getGitHubConnectionByInstallation(installationId);
     const githubRepo = (await githubListRepos(installationId)).find((item) => item.full.toLowerCase() === String(project).toLowerCase());
     if (!connection || !githubRepo) return res.status(409).json({ error: 'Reconnect GitHub before creating a durable project session.' });
-    const projectId = `prj_${connection.userId}_${githubRepo.id}`;
+    const projectId = 'prj_' + connection.userId + '_' + githubRepo.id;
     await repository.upsertProject({ id: projectId, userId: connection.userId, installationId, repositoryId: githubRepo.id, fullName: githubRepo.full, defaultBranch: githubRepo.defaultBranch });
-    await repository.putSession({ ...store.db.sessions[id], userId: connection.userId, projectId });
+
+    const sessions = await repository.listSessionsByUser(connection.userId, 50);
+    const preferred = preferredSessionId
+      ? sessions.find((session) => session.id === String(preferredSessionId) && matchesProjectBranch(session))
+      : undefined;
+    const existing = preferred || sessions.find(matchesProjectBranch);
+    if (existing) {
+      const resumed = { ...existing, installationId, owner, project: githubRepo.full, branch: String(branch), projectId, updatedAt: now };
+      store.db.sessions[resumed.id] = resumed;
+      store.save();
+      await repository.putSession(resumed);
+      console.info('[orlynx] resumed repository session=' + resumed.id + ' project=' + resumed.project + ' branch=' + resumed.branch);
+      return res.json({ ...resumed, resumed: true });
+    }
+
+    const id = 'ses_' + uuid().slice(0, 8);
+    const created = { id, installationId, project: githubRepo.full, owner, branch: String(branch), mode: 'repository' as const, workspaceId: null, createdAt: now, updatedAt: now };
+    store.db.sessions[id] = created;
+    store.save();
+    await repository.putSession({ ...created, userId: connection.userId, projectId });
+    emit(id, 'state.snapshot', { project: githubRepo.full, branch, mode: 'repository' });
+    return res.json(created);
   }
+
+  const inMemorySessions = Object.values(store.db.sessions)
+    .filter((session: any) => session.installationId === installationId && matchesProjectBranch(session))
+    .sort((a: any, b: any) => Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''));
+  const preferred = preferredSessionId
+    ? inMemorySessions.find((session: any) => session.id === String(preferredSessionId))
+    : undefined;
+  const existing = preferred || inMemorySessions[0];
+  if (existing) {
+    existing.updatedAt = now;
+    store.save();
+    return res.json({ ...existing, resumed: true });
+  }
+
+  const id = 'ses_' + uuid().slice(0, 8);
+  store.db.sessions[id] = { id, installationId, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
+  store.save();
   emit(id, 'state.snapshot', { project, branch, mode: 'repository' });
   res.json(store.db.sessions[id]);
 });
-
 router.get('/sessions/:id', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s || (!durableStorageConfigured() && !importedRepositoryRoot(s.project))) return res.status(404).json({ error: 'project session not found' });
@@ -299,7 +338,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (!selectedModel && !instantReply) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
-  s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
+  s.updatedAt = msg.createdAt;
+  s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: msg.createdAt };
   (store.db.messages[s.id] ||= []).push(msg);
   store.save();
 
