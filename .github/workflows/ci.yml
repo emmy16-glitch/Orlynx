@@ -50,8 +50,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check runner manager syntax
-        run: node --check runner-manager/index.mjs
+      - name: Check runner runtime scripts
+        run: |
+          node --check runner-manager/index.mjs
+          node --check runner-runtime/preview-proxy.mjs
 
       - name: Build runner runtime image
         run: docker build --file runner-runtime/Dockerfile --tag orlynx-runner-runtime:ci .
