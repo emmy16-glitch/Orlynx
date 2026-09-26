@@ -111,6 +111,7 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
     const openCodeApiKey = openCodeConnection?.state === 'connected' && openCodeConnection.credential
       ? decryptCredential(openCodeConnection.credential)
       : '';
+    const githubToken = await githubUserAccessToken(workspace.userId);
 
     await this.request<void>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/connect`, {
       method: 'POST',
@@ -123,6 +124,7 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
         connectionId: values.connectionId,
         openCodePassword: values.openCodePassword,
         openCodeApiKey,
+        githubToken,
       }),
       signal: AbortSignal.timeout(Math.max(15_000, Number(process.env.ORLYNX_RUNNER_CONNECT_TIMEOUT_MS || 30_000))),
     });
