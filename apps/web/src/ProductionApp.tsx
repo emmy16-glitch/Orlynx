@@ -689,6 +689,12 @@ export default function ProductionApp() {
     catch (error: any) { setBranches([]); setError(error.message || 'Branches could not be loaded.'); }
   }
 
+  function preferredSessionIdFor(project: string, targetBranch: string): string | undefined {
+    if (session?.project === project && session?.branch === targetBranch) return session.id;
+    try { return localStorage.getItem(sessionKey(project)) || undefined; }
+    catch { return undefined; }
+  }
+
   async function openRepository(repo: Repo) {
     setRepoBusy(true); setError(''); setSelectedRepo(repo);
     try {
@@ -698,7 +704,7 @@ export default function ProductionApp() {
       if (!chosenBranch) throw new Error('This repository does not have a branch to open yet.');
       setBranches(available); setBranch(chosenBranch);
       await j(await fetch('/v1/repos/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository: repo.full, branch: chosenBranch }) }));
-      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: repo.full, owner: repo.owner, branch: chosenBranch }) }));
+      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: repo.full, owner: repo.owner, branch: chosenBranch, preferredSessionId: preferredSessionIdFor(repo.full, chosenBranch) }) }));
       await openSession(record);
     } catch (error: any) {
       const message = String(error?.message || '');
@@ -721,7 +727,7 @@ export default function ProductionApp() {
     setRepoBusy(true); setError('');
     try {
       await j(await fetch('/v1/repos/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository: selectedRepo.full, branch }) }));
-      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: selectedRepo.full, owner: selectedRepo.owner, branch }) }));
+      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: selectedRepo.full, owner: selectedRepo.owner, branch, preferredSessionId: preferredSessionIdFor(selectedRepo.full, branch) }) }));
       await openSession(record);
     } catch (error: any) { setError(error.message || 'Import failed. GitHub was not changed.'); }
     finally { setRepoBusy(false); }
