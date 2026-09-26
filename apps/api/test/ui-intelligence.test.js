@@ -143,3 +143,28 @@ describe('chat and cloud reliability contract', () => {
     assert.match(src, /newestDeltaAt > partialCutoffRef\.current/);
   });
 });
+
+
+describe('workspace startup progress presentation', () => {
+  const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'apps/web/src/styles.css'), 'utf8');
+
+  it('renders normal workspace startup as one inline chat progress stream', () => {
+    assert.match(src, /function WorkspaceProgress/);
+    assert.match(src, /className="workspace-progress"/);
+    assert.match(src, /aria-label="Development environment progress"/);
+    assert.match(src, /workspaceReadNotice && tab !== 'chat'/);
+    assert.doesNotMatch(src, /workspacePreparing && \(cloudBusy \|\| lastRun\?\.plane === 'workspace'\) && <div className="screen-alert"/);
+  });
+
+  it('hides duplicate queued Build activity and task-saved receipts while startup progress is active', () => {
+    assert.match(src, /currentChatActivities\.length && !workspaceProgressActive/);
+    assert.match(src, /lastRun\?\.state === 'queued' && lastRun\?\.plane !== 'workspace'/);
+  });
+
+  it('keeps progress calm and non-danger styled', () => {
+    assert.match(css, /\.workspace-progress \{/);
+    assert.match(css, /\.workspace-progress-step\.retry/);
+    assert.doesNotMatch(css, /\.workspace-progress[\s\S]{0,900}var\(--danger\)/);
+  });
+});
