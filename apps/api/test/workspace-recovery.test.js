@@ -114,7 +114,7 @@ test('bridge disconnect recovery leaves idle Codespaces alone and repairs only a
 
 test('workspace startup retries transient GitHub status lookup failures', () => {
   const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
-  assert.match(source, /GitHub status is temporarily unavailable/);
+  assert.match(source, /Checking GitHub status again/);
   assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
 });
 
@@ -150,4 +150,17 @@ test('queued Build work repairs SSH-broken workspaces instead of being failed im
   assert.match(source, /repairing failed workspace before Build task/);
   assert.match(source, /void prepareWorkspace\(\{/);
   assert.match(source, /await promoteNextQueuedRun\(sessionId\)/);
+});
+
+
+test('workspace preparation emits concise user-facing startup stages', () => {
+  const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  for (const text of [
+    'Starting Codespace…',
+    'Waiting for GitHub…',
+    'Codespace online. Starting SSH…',
+    'Starting SSH and installing Orlynx bridge…',
+    'Orlynx bridge installed. Connecting…',
+    'Starting OpenCode…',
+  ]) assert.match(source, new RegExp(text.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&')));
 });

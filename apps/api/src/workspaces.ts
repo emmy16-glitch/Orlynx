@@ -87,7 +87,7 @@ async function prepareWorkspaceOnce(
   let refreshAdapterFallback: Awaited<ReturnType<typeof repository.listWorkspaceAgentAdapters>> = [];
   try {
     if (workspace.state === 'creating' && !workspace.codespaceName) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting a development environment on GitHub…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.create', message: 'Starting Codespace…' });
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {
@@ -98,7 +98,7 @@ async function prepareWorkspaceOnce(
       if (workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure)) {
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'codespace.replace',
-          message: 'Replacing the broken development environment with a fresh Codespace…',
+          message: 'SSH unavailable — starting a fresh Codespace…',
         });
         workspace = await provider.replace({
           workspaceId: workspace.id,
@@ -119,7 +119,7 @@ async function prepareWorkspaceOnce(
       }
     }
     if (workspace.state === 'stopped') {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.start', message: 'Waking the existing GitHub Codespace…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.start', message: 'Starting Codespace…' });
       workspace = { ...(await provider.start(workspace)), state: 'starting' };
       await repository.putWorkspace(workspace);
     }
@@ -134,7 +134,7 @@ async function prepareWorkspaceOnce(
       refreshAdapterFallback = await repository.listWorkspaceAgentAdapters(workspace.id);
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'agent.refresh',
-        message: 'Updating the Orlynx workspace runtime…',
+        message: 'Updating Orlynx runtime…',
       });
       workspace = {
         ...workspace,
@@ -165,7 +165,7 @@ async function prepareWorkspaceOnce(
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.wait', message: 'Waiting for GitHub to finish starting the Codespace…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'codespace.wait', message: 'Waiting for GitHub…' });
       const deadline = Date.now() + Math.max(90_000, Number(process.env.ORLYNX_CODESPACE_READY_TIMEOUT_MS || 4 * 60_000));
       let lastState = workspace.state;
       let lastProgressAt = 0;
@@ -182,7 +182,7 @@ async function prepareWorkspaceOnce(
             emit(input.sessionId, 'workspace.preparing', {
               stage: 'codespace.wait',
               state: workspace.state,
-              message: 'GitHub status is temporarily unavailable. Orlynx is still waiting for the development environment.',
+              message: 'Checking GitHub status again…',
             });
           }
           await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -195,10 +195,10 @@ async function prepareWorkspaceOnce(
             stage: 'codespace.state',
             state: workspace.state,
             message: workspace.state === 'connecting'
-              ? 'Codespace is online. Connecting Orlynx…'
+              ? 'Codespace online. Starting SSH…'
               : workspace.state === 'failed'
-                ? 'GitHub could not start the Codespace.'
-                : 'GitHub is preparing the Codespace…',
+                ? 'Codespace start failed. Preparing recovery…'
+                : 'Starting Codespace…',
           });
         }
         if (workspace.state === 'connecting' || workspace.state === 'failed') break;
@@ -207,7 +207,7 @@ async function prepareWorkspaceOnce(
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'codespace.wait',
             state: workspace.state,
-            message: 'GitHub is still preparing the development environment. Your task is saved and Orlynx will continue automatically.',
+            message: 'Waiting for GitHub…',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_500));
@@ -224,10 +224,11 @@ async function prepareWorkspaceOnce(
       await repository.putWorkspace(workspace);
       await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
-      emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: 'Connecting Orlynx to the development environment…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'ssh.start', message: 'Starting SSH and installing Orlynx bridge…' });
       console.info(`[workspace] bootstrapping session=${workspace.sessionId} workspace=${workspace.id} codespace=${workspace.codespaceName || 'unknown'}`);
       await bootstrapWorkspace(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
       console.info(`[workspace] bootstrap command completed session=${workspace.sessionId} workspace=${workspace.id}`);
+      emit(input.sessionId, 'workspace.preparing', { stage: 'bridge.connect', message: 'Orlynx bridge installed. Connecting…' });
       // The bridge can report READY before bootstrap returns. Read its state;
       // a post-bootstrap write would overwrite that newer READY transition.
       workspace = (await repository.getWorkspace(workspace.id)) || workspace;
@@ -244,8 +245,8 @@ async function prepareWorkspaceOnce(
             stage: 'agent.ready',
             state: finalWorkspace.state,
             message: finalWorkspace.bridgeState === 'ready'
-              ? 'Development environment connected. Preparing agent adapters…'
-              : 'Connecting Orlynx to the development environment…',
+              ? 'Starting OpenCode…'
+              : 'Connecting Orlynx bridge…',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_000));

@@ -66,6 +66,69 @@ function visibleChatText(role: string, text: string, prompt = ''): string {
   return cleaned;
 }
 
+type OperationProgressStep = {
+  key: string;
+  label: string;
+  tone: 'done' | 'active' | 'retry';
+};
+
+function operationProgressStep(event: any): OperationProgressStep | null {
+  const payload = event?.payload || {};
+  if (event?.type === 'workspace.preparing') {
+    const stage = String(payload.stage || 'workspace');
+    const label = String(payload.message || 'Preparing development environment…');
+    return { key: stage, label, tone: stage.includes('replace') ? 'retry' : 'active' };
+  }
+  if (event?.type === 'workspace.reconnecting') {
+    return { key: 'workspace.reconnecting', label: String(payload.message || 'Reconnecting development environment…'), tone: 'retry' };
+  }
+  if (event?.type === 'workspace.ready') {
+    return { key: 'workspace.ready', label: 'Development environment ready.', tone: 'done' };
+  }
+  if (event?.type === 'state.delta' && payload.scope === 'agent-adapter' && payload.adapterId === 'opencode') {
+    const state = String(payload.state || '');
+    if (state === 'installing') return { key: 'opencode.installing', label: 'Installing OpenCode…', tone: 'active' };
+    if (state === 'starting') return { key: 'opencode.starting', label: 'Starting OpenCode…', tone: 'active' };
+    if (state === 'ready') return { key: 'opencode.ready', label: 'OpenCode ready.', tone: 'done' };
+    if (state === 'busy') return { key: 'opencode.busy', label: 'OpenCode is starting the task…', tone: 'active' };
+    if (state === 'unavailable') return { key: 'opencode.unavailable', label: 'OpenCode unavailable — reconnecting…', tone: 'retry' };
+  }
+  if (event?.type === 'run.queued') {
+    const mode = String(payload.mode || '');
+    return { key: 'run.queued', label: mode === 'plan' ? 'Waiting to start planning…' : mode === 'ask' ? 'Waiting to answer…' : 'Waiting to start…', tone: 'active' };
+  }
+  if (event?.type === 'run.started') {
+    return { key: 'run.started', label: payload.plane === 'workspace' ? 'Development environment ready. Starting task…' : 'Starting AI…', tone: 'active' };
+  }
+  if ((event?.type === 'activity.started' || event?.type === 'activity.progress') && event?.runId) {
+    const text = String(payload.text || '').trim();
+    if (!text) return null;
+    if (payload.sourceType === 'opencode.retry' || /retry|reconnect|temporarily|busy/i.test(text)) {
+      return { key: 'run.retry', label: /retry/i.test(text) ? text : `${text} — retrying…`, tone: 'retry' };
+    }
+    const label = /^thinking[.…]*$/i.test(text) ? 'Preparing response…' : text;
+    return { key: `run.activity.${label.toLowerCase().replace(/[^a-z0-9]+/g, '.').slice(0, 48)}`, label, tone: 'active' };
+  }
+  return null;
+}
+
+function OperationProgress({ title, steps, className = '' }: { title: string; steps: OperationProgressStep[]; className?: string }) {
+  if (!steps.length) return null;
+  return <div className={`workspace-progress ${className}`.trim()} role="status" aria-live="polite" aria-label={`${title} progress`}>
+    <div className="workspace-progress-title"><span className="workspace-progress-pulse" />{title}</div>
+    <div className="workspace-progress-steps">
+      {steps.map((step, index) => {
+        const isLast = index === steps.length - 1;
+        const tone = isLast ? step.tone : 'done';
+        return <div className={`workspace-progress-step ${tone}`} key={`${step.key}-${index}`}>
+          <span className="workspace-progress-mark">{tone === 'done' ? <Icon name="check" size={12} /> : <span />}</span>
+          <span>{step.label}</span>
+        </div>;
+      })}
+    </div>
+  </div>;
+}
+
 export default function ProductionApp() {
   const [page, setPage] = useState<Page>('welcome');
   const [tab, setTab] = useState<Tab>('chat');
@@ -626,6 +689,12 @@ export default function ProductionApp() {
     catch (error: any) { setBranches([]); setError(error.message || 'Branches could not be loaded.'); }
   }
 
+  function preferredSessionIdFor(project: string, targetBranch: string): string | undefined {
+    if (session?.project === project && session?.branch === targetBranch) return session.id;
+    try { return localStorage.getItem(sessionKey(project)) || undefined; }
+    catch { return undefined; }
+  }
+
   async function openRepository(repo: Repo) {
     setRepoBusy(true); setError(''); setSelectedRepo(repo);
     try {
@@ -635,7 +704,7 @@ export default function ProductionApp() {
       if (!chosenBranch) throw new Error('This repository does not have a branch to open yet.');
       setBranches(available); setBranch(chosenBranch);
       await j(await fetch('/v1/repos/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository: repo.full, branch: chosenBranch }) }));
-      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: repo.full, owner: repo.owner, branch: chosenBranch }) }));
+      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: repo.full, owner: repo.owner, branch: chosenBranch, preferredSessionId: preferredSessionIdFor(repo.full, chosenBranch) }) }));
       await openSession(record);
     } catch (error: any) {
       const message = String(error?.message || '');
@@ -658,7 +727,7 @@ export default function ProductionApp() {
     setRepoBusy(true); setError('');
     try {
       await j(await fetch('/v1/repos/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository: selectedRepo.full, branch }) }));
-      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: selectedRepo.full, owner: selectedRepo.owner, branch }) }));
+      const record = await j<any>(await fetch('/v1/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: selectedRepo.full, owner: selectedRepo.owner, branch, preferredSessionId: preferredSessionIdFor(selectedRepo.full, branch) }) }));
       await openSession(record);
     } catch (error: any) { setError(error.message || 'Import failed. GitHub was not changed.'); }
     finally { setRepoBusy(false); }
@@ -975,6 +1044,47 @@ export default function ProductionApp() {
   const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
   const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
   const activities = useMemo(() => toActivities(events), [events]);
+  const operationProgressSteps = useMemo(() => {
+    const cutoff = lastRun?.startedAt ? Date.parse(lastRun.startedAt) : 0;
+    const steps: OperationProgressStep[] = [];
+    for (const event of events) {
+      const eventAt = Date.parse(event?.timestamp || '') || 0;
+      if (cutoff && eventAt + 2_000 < cutoff) continue;
+      if (event?.runId && lastRun?.id && event.runId !== lastRun.id) continue;
+      const step = operationProgressStep(event);
+      if (!step) continue;
+      const previous = steps[steps.length - 1];
+      if (previous?.key === step.key && previous?.label === step.label) {
+        steps[steps.length - 1] = step;
+      } else {
+        steps.push(step);
+      }
+    }
+    if (!steps.length && lastRun?.plane === 'workspace' && (workspacePreparing || workspaceDisconnected || cloudBusy)) {
+      steps.push({ key: 'workspace.start', label: 'Starting development environment…', tone: 'active' });
+    }
+    if (!steps.length && lastRun?.plane === 'direct' && ['queued', 'running'].includes(lastRun?.state)) {
+      steps.push({ key: 'direct.start', label: lastRun?.state === 'queued' ? 'Queued…' : 'Starting AI…', tone: 'active' });
+    }
+    return steps.slice(-7);
+  }, [cloudBusy, events, lastRun?.id, lastRun?.plane, lastRun?.startedAt, lastRun?.state, workspaceDisconnected, workspacePreparing]);
+  const operationProgressActive = Boolean(
+    lastRun
+    && ['queued', 'running'].includes(lastRun.state)
+    && (
+      lastRun.plane === 'workspace'
+        ? (!workspaceReady && (workspacePreparing || workspaceDisconnected || cloudBusy || operationProgressSteps.length > 0))
+        : !draftReply
+    )
+  );
+  const operationProgressTitle = lastRun?.plane === 'workspace'
+    ? 'Preparing development environment'
+    : lastRun?.mode === 'plan'
+      ? 'Preparing plan'
+      : lastRun?.mode === 'ask'
+        ? 'Preparing answer'
+        : 'Preparing response';
+
   const currentChatActivities = useMemo(() => {
     if (!lastRun?.id) return [];
     const current = chatActivities(activities).filter((item: any) => item.runId === lastRun.id);
@@ -1036,15 +1146,13 @@ export default function ProductionApp() {
           <nav className="project-tabs" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => { setTab(id); setOpenedFile(null); }}><Icon name={icon} size={16} /><span>{label}</span></button>)}</nav>
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
-          {workspaceReadNotice && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
+          {workspaceReadNotice && tab !== 'chat' && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert tone-neutral" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
           {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
-                {workspacePreparing && (cloudBusy || lastRun?.plane === 'workspace') && <div className="screen-alert" role="status"><span><b>Development environment</b> {workspaceReadNotice || (lastRun?.state === 'queued' ? 'This task needs runtime tools. Your message is saved and will start automatically.' : 'Starting only for the work that needs it…')}</span></div>}
                 {cloudIssue === 'permissions' && (cloudBusy || lastRun?.plane === 'workspace') && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
                 {cloudIssue === 'failed' && session.workspace?.state === 'failed' && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace couldn't start." hint={session.workspace?.failureCode?.startsWith('OpenCode') ? session.workspace.failureCode : "Your conversation is preserved. You can retry without reopening the project."} onRetry={() => startCloud()} />}
-                {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
                   <p className="setup-kicker">{!aiAccountConnected ? 'CONNECT AI' : ai.model ? 'READY TO CHAT' : 'CHOOSE MODEL'}</p>
                   <h2>{!aiAccountConnected ? 'Connect AI' : ai.model ? 'What should we work on?' : 'Choose your model'}</h2>
@@ -1065,8 +1173,9 @@ export default function ProductionApp() {
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
-                {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
+                {operationProgressActive && <OperationProgress title={operationProgressTitle} steps={operationProgressSteps} />}
+                {!!currentChatActivities.length && !operationProgressActive && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
+                {lastRun?.state === 'queued' && !operationProgressActive && <p className="run-receipt">Queued · Orlynx will continue automatically.</p>}
                 {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
@@ -1197,11 +1306,22 @@ export default function ProductionApp() {
               <div className="sync-visual" aria-hidden="true"><span className="sync-orbit" /><span className="sync-dot" /></div>
               <h1>Connecting your GitHub account…</h1>
               <p>We're verifying your access and bringing your repositories into Orlynx.</p>
-              <ul className="sync-steps premium">
-                <li className={syncStep === 'Verifying installation' ? 'active' : 'done'}><span>{syncStep === 'Verifying installation' ? '●' : '✓'}</span>Verifying installation</li>
-                <li className={syncStep === 'Fetching repositories' ? 'active' : syncStep === 'Finishing setup' || !syncStep ? 'done' : ''}><span>{syncStep === 'Fetching repositories' ? '●' : syncStep === 'Finishing setup' || !syncStep ? '✓' : '○'}</span>Fetching repositories</li>
-                <li className={syncStep === 'Finishing setup' ? 'active' : ''}><span>{syncStep === 'Finishing setup' ? '●' : '○'}</span>Preparing Orlynx</li>
-              </ul>
+              <OperationProgress
+                title="Connecting GitHub"
+                className="page-operation-progress"
+                steps={syncStep === 'Verifying installation'
+                  ? [{ key: 'github.verify', label: 'Verifying installation…', tone: 'active' }]
+                  : syncStep === 'Fetching repositories'
+                    ? [
+                        { key: 'github.verify', label: 'Verifying installation…', tone: 'done' },
+                        { key: 'github.repos', label: 'Fetching repositories…', tone: 'active' },
+                      ]
+                    : [
+                        { key: 'github.verify', label: 'Verifying installation…', tone: 'done' },
+                        { key: 'github.repos', label: 'Fetching repositories…', tone: 'done' },
+                        { key: 'github.finish', label: 'Preparing Orlynx…', tone: 'active' },
+                      ]}
+              />
             </section> : <section className="repo-flow-screen">
               <header className="repo-flow-header"><div className="flow-brand"><span className="brand-mark" /><b>Orlynx</b></div><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></header>
               {!integration.github?.connected ? <div className="github-connect-empty">
