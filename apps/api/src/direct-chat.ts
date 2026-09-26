@@ -64,50 +64,6 @@ export function cleanAssistantText(text: string, prompt = ''): string {
   return remainder.replace(/^[\s:–—-]+/, '').trimStart();
 }
 
-export function createPromptEchoFilter(prompt: string, onDelta: (delta: string) => void) {
-  const target = prompt.trim();
-  let probe = '';
-  let decided = !target;
-
-  return {
-    push(delta: string) {
-      if (!delta) return;
-      if (decided) { onDelta(delta); return; }
-      probe += delta;
-      const candidate = probe.trimStart();
-      const candidateLower = candidate.toLowerCase();
-      const targetLower = target.toLowerCase();
-
-      if (candidate.length < target.length && targetLower.startsWith(candidateLower)) return;
-      if (candidateLower.startsWith(targetLower)) {
-        const remainder = candidate.slice(target.length);
-        if (!remainder) return;
-        const immediate = remainder[0] || '';
-        const looksLikeEcho = /[\p{L}\p{N}]/u.test(immediate)
-          || (target.length >= 12 && /^\s+\S/.test(remainder));
-        if (looksLikeEcho) {
-          decided = true;
-          const cleaned = remainder.replace(/^[\s:–—-]+/, '');
-          probe = '';
-          if (cleaned) onDelta(cleaned);
-          return;
-        }
-      }
-
-      decided = true;
-      const visible = probe;
-      probe = '';
-      if (visible) onDelta(visible);
-    },
-    finish() {
-      if (decided || !probe) return;
-      const visible = cleanAssistantText(probe, target);
-      probe = '';
-      decided = true;
-      if (visible) onDelta(visible);
-    },
-  };
-}
 
 export function turnsForMessage(history: ChatMessage[], messageId: string | undefined, prompt: string) {
   const end = messageId ? history.findIndex((message) => message.id === messageId) : -1;
@@ -224,7 +180,6 @@ export async function streamDirectRepositoryChat(input: {
       'Be concise, practical, and repository-aware.',
       context,
     ].join('\n\n');
-    const echoFilter = createPromptEchoFilter(input.prompt, input.onDelta);
     const raw = await streamWithOfficialOpenCode({
       runtimeKey: input.session.id,
       userId: input.session.userId,
@@ -234,10 +189,9 @@ export async function streamDirectRepositoryChat(input: {
       requestId: input.messageId || input.runId,
       onTiming: (stage, ms) => { timings[stage] = Math.round(ms); },
       signal: controller.signal,
-      onDelta: echoFilter.push,
+      onDelta: input.onDelta,
       onStatus: input.onStatus,
     });
-    echoFilter.finish();
     return cleanAssistantText(raw, input.prompt);
   } finally {
     timings.totalMs = Math.round(performance.now() - started);
