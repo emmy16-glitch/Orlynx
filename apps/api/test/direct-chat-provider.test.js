@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
 import { listZenModels } from '../src/zen.ts';
-import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText } from '../src/direct-chat.ts';
+import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, instantReplyFor } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
 const catalog = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
@@ -72,7 +72,7 @@ test('greetings stay cheap while Ask/Plan become repository-aware', () => {
   assert.equal(shouldLoadRepositoryContext('Hello', 'plan', 'Orlynx'), false);
   assert.equal(shouldLoadRepositoryContext('What is Orlynx exactly?', 'plan', 'Orlynx'), true);
   assert.equal(shouldLoadRepositoryContext('What repo are you connected to?', 'ask', 'Orlynx'), true);
-  assert.equal(shouldLoadRepositoryContext('What is React?', 'ask', 'Orlynx'), true);
+  assert.equal(shouldLoadRepositoryContext('What is React?', 'ask', 'Orlynx'), false);
   assert.equal(needsRepositoryContext('Explain src/auth.ts'), true);
   assert.equal(needsRepositoryContext('What does this repository do?'), true);
   assert.equal(executionPlaneFor('Implement the fix in src/auth.ts', 'build'), 'workspace');
@@ -102,4 +102,32 @@ test('catalog remains visible when stored credential cannot decrypt', async () =
   const models = await listZenModels();
   assert.ok(models.length > 100);
   assert.ok(models.some((model) => model.free && model.status === 'available'));
+});
+
+
+test('deterministic chat turns bypass the model', () => {
+  assert.match(
+    instantReplyFor({ text: 'what repo are you connected to currently?', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
+    /emmy16-glitch\/Orlynx.*main/i,
+  );
+  assert.match(
+    instantReplyFor({ text: 'can u pull changes from main??', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
+    /Switch to \*\*Build\*\*/i,
+  );
+  assert.match(
+    instantReplyFor({ text: 'hello', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
+    /Orlynx.*main/i,
+  );
+  assert.equal(
+    instantReplyFor({ text: 'Explain the authentication architecture', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
+    null,
+  );
+});
+
+test('direct history and repo context are intentionally bounded for free-model latency', () => {
+  const src = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
+  assert.match(src, /\.slice\(-8\)/);
+  assert.match(src, /\.slice\(-6_000\)/);
+  assert.match(src, /24_000/);
+  assert.match(src, /ROOT_CONTEXT_TTL_MS = 5 \* 60_000/);
 });
