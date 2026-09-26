@@ -48,6 +48,7 @@ export interface AgentDirectChatInput {
   acceptedAt?: string;
   session: ProjectSession & { userId: string; projectId: string };
   modelId: string;
+  mode: AgentMode;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
 }
