@@ -26,7 +26,7 @@ export function createBridgeToken(input: Omit<BridgeClaims, 'v' | 'iat' | 'exp'>
   return `${body}.${signature(body).toString('base64url')}`;
 }
 
-export function verifyBridgeToken(token: string): BridgeClaims {
+function verifyBridgeTokenWithExpiryGrace(token: string, expiryGraceSeconds: number): BridgeClaims {
   const [body, signatureText, extra] = token.split('.');
   if (!body || !signatureText || extra) throw new Error('Bridge credential is invalid.');
   const expected = signature(body);
@@ -36,6 +36,18 @@ export function verifyBridgeToken(token: string): BridgeClaims {
   let claims: BridgeClaims;
   try { claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as BridgeClaims; } catch { throw new Error('Bridge credential is invalid.'); }
   const now = Math.floor(Date.now() / 1000);
-  if (claims.v !== 1 || !claims.workspaceId || !claims.sessionId || !claims.userId || !claims.connectionId || claims.iat > now + 30 || claims.exp <= now) throw new Error('Bridge credential expired or is invalid.');
+  const expiredTooLongAgo = claims.exp <= now - Math.max(0, expiryGraceSeconds);
+  if (claims.v !== 1 || !claims.workspaceId || !claims.sessionId || !claims.userId || !claims.connectionId || claims.iat > now + 30 || expiredTooLongAgo) {
+    throw new Error('Bridge credential expired or is invalid.');
+  }
   return claims;
+}
+
+export function verifyBridgeToken(token: string): BridgeClaims {
+  return verifyBridgeTokenWithExpiryGrace(token, 0);
+}
+
+export function verifyBridgeReconnectToken(token: string, expiryGraceSeconds = 15 * 60): BridgeClaims {
+  if (expiryGraceSeconds < 0 || expiryGraceSeconds > 30 * 60) throw new Error('Bridge reconnect grace is invalid.');
+  return verifyBridgeTokenWithExpiryGrace(token, expiryGraceSeconds);
 }

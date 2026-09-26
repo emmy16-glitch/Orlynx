@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
-import { createBridgeToken, verifyBridgeToken, type BridgeClaims } from './bridge-auth.js';
+import { createBridgeToken, verifyBridgeReconnectToken, verifyBridgeToken, type BridgeClaims } from './bridge-auth.js';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 import { classifyError } from './ai.js';
@@ -94,11 +94,23 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
 
 async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   let claims: BridgeClaims;
-  try { claims = verifyBridgeToken(bearer(request)); }
-  catch { console.warn('[bridge] handshake rejected: credential'); ws.close(1008, 'unauthorized'); return; }
+  let reconnectGraceUsed = false;
+  const token = bearer(request);
+  try {
+    claims = verifyBridgeToken(token);
+  } catch {
+    try {
+      claims = verifyBridgeReconnectToken(token);
+      reconnectGraceUsed = true;
+    } catch {
+      console.warn('[bridge] handshake rejected: credential');
+      ws.close(1008, 'unauthorized');
+      return;
+    }
+  }
   try { await persistBridgeState(claims, 'connecting'); }
   catch { console.warn('[bridge] handshake rejected: workspace scope or storage'); ws.close(1008, 'workspace scope rejected'); return; }
-  console.info('[bridge] credential accepted');
+  console.info(reconnectGraceUsed ? '[bridge] expired reconnect credential accepted and will be rotated' : '[bridge] credential accepted');
 
   let active = true;
   let authenticatedHello = false;
