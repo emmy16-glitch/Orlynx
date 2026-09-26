@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import { decryptCredential } from './credentials.js';
 import { githubUserAccessToken } from './github.js';
@@ -21,6 +22,21 @@ function runnerToken(): string {
 
 export function orlynxRunnerConfigured(): boolean {
   return runnerBaseUrl().startsWith('https://') && Boolean(runnerToken());
+}
+
+function runnerPublicUrl(): string {
+  return (process.env.ORLYNX_RUNNER_PUBLIC_URL || runnerBaseUrl()).replace(/\/$/, '');
+}
+
+function signedPreviewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
+  if (!workspace.runnerId || !Number.isInteger(port) || port <= 1024 || port > 65535) return undefined;
+  const base = runnerPublicUrl();
+  const secret = runnerToken();
+  if (!base.startsWith('https://') || !secret) return undefined;
+  const expires = Math.floor(Date.now() / 1000) + Math.max(60, Number(process.env.ORLYNX_PREVIEW_TOKEN_TTL_SECONDS || 600));
+  const material = `${workspace.runnerId}:${port}:${expires}`;
+  const signature = crypto.createHmac('sha256', secret).update(material).digest('base64url');
+  return `${base}/preview/${encodeURIComponent(workspace.runnerId)}/${port}/?t=${expires}.${signature}`;
 }
 
 function mapState(value?: string): WorkspaceState {
@@ -168,5 +184,9 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
   async replace(input: CreateWorkspaceInput, workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
     await this.destroy(workspace).catch(() => {});
     return this.create(input);
+  }
+
+  previewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
+    return signedPreviewUrl(workspace, port);
   }
 }
