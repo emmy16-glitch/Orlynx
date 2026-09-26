@@ -241,6 +241,13 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   async getStatus(workspace: WorkspaceRecord) { return (await this.get(workspace)).state; }
   async destroy(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) return;
-    await this.request<void>(workspace.userId, `/user/codespaces/${encodeURIComponent(workspace.codespaceName)}`, { method: 'DELETE' });
+    try {
+      await this.request<void>(workspace.userId, `/user/codespaces/${encodeURIComponent(workspace.codespaceName)}`, { method: 'DELETE' });
+    } catch (error) {
+      // Replacement is idempotent: if GitHub already deleted the persisted
+      // Codespace, there is nothing left to destroy.
+      if ((error as Error & { status?: number })?.status === 404) return;
+      throw error;
+    }
   }
 }
