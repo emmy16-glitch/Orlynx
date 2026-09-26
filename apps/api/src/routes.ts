@@ -251,7 +251,7 @@ router.get('/sessions/:id', async (req, res) => {
 router.post('/sessions/:id/messages', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const { text = '', clientId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
+  const { text = '', clientId = '', adapterId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
   if (!String(text).trim()) return res.status(400).json({ error: 'empty message' });
 
   if (clientId) {
@@ -289,8 +289,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
     ? await hydrateSessionPrefs(s.id, s.project)
     : getSessionPrefs(s.id, s.project);
   const effectiveMode = (mode ? String(mode) : prefs.mode) as 'build' | 'plan' | 'ask';
+  const selectedAdapterId = adapterId ? String(adapterId) : prefs.adapterId || 'opencode';
+  const selectedAdapter = getAgentAdapter(selectedAdapterId);
   let plane = executionPlaneFor(String(text), effectiveMode);
-  const selectedAdapter = getAgentAdapter(prefs.adapterId || 'opencode');
   if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
   if (!selectedModel) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
@@ -310,11 +311,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
 
-    // Once a project has a real development environment, reuse that same
-    // OpenCode runtime for conversational turns too. This keeps Ask/Plan/simple
-    // Build chat on the project runtime instead of depending on the separate
-    // free-model service, while projects that have never started a workspace
-    // still avoid creating one just for a greeting.
+    // Once a project has a real development environment, reuse that project's
+    // selected agent adapter for conversational turns too. Projects that have
+    // never started a workspace can still use an adapter's direct-chat path.
     let workspace = await repository.getWorkspaceBySession(s.id);
     plane = executionPlaneWithExistingWorkspace(plane, Boolean(workspace));
 
@@ -378,7 +377,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   console.info(`[orlynx] sid=${s.id} message received plane=${plane} len=${String(text).length}`);
   let run;
   try {
-    run = await startRun(s.id, s.project, text, prefs.adapterId || 'opencode', {
+    run = await startRun(s.id, s.project, text, selectedAdapterId, {
       modelId: selectedModel,
       mode: effectiveMode,
       plane,
