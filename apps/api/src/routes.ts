@@ -20,7 +20,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
-import { getAgentAdapter } from './agent-runtime.js';
+import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 
 export const router = Router();
 
@@ -353,7 +353,6 @@ router.post('/sessions/:id/messages', async (req, res) => {
           ...workspace,
           state: 'connecting',
           bridgeState: 'disconnected',
-          openCodeState: 'unavailable',
           connectionId: undefined,
           updatedAt: new Date().toISOString(),
         };
@@ -619,7 +618,7 @@ router.post('/sessions/:id/cloud/reconnect', async (req, res) => {
     const repository = controlPlaneRepository(); const current = await repository.getWorkspaceBySession(s.id); const durable = await repository.getSession(s.id);
     const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
     if (!current || !durable || !githubRepo) return res.status(404).json({ error: 'Cloud workspace not found.' });
-    await repository.putWorkspace({ ...current, state: 'connecting', bridgeState: 'disconnected', openCodeState: 'unavailable', connectionId: undefined, updatedAt: new Date().toISOString() });
+    await repository.putWorkspace({ ...current, state: 'connecting', bridgeState: 'disconnected' , connectionId: undefined, updatedAt: new Date().toISOString() });
     emit(s.id, 'workspace.reconnecting', { workspaceId: current.id });
     return res.status(202).json(await prepareWorkspace({ sessionId: s.id, userId: durable.userId, projectId: durable.projectId, repositoryId: githubRepo.id, branch: s.branch }));
   } catch (error) { return res.status(502).json({ error: 'Workspace connection interrupted.', retryable: true, diagnostic: error instanceof Error ? error.message : 'Reconnect failed.' }); }
@@ -983,11 +982,34 @@ router.get('/ai/overview', async (req, res) => {
     const userId = await requestUserId(req) || undefined;
     const snapshot = await listProviderConnections(s?.project, userId, sessionId || undefined);
     const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
-    console.info(`[ai-overview] session=${sessionId || '-'} user=${userId ? 'resolved' : 'missing'} models=${snapshot.models.length} available=${snapshot.models.filter((model) => model.status === 'available').length} providers=${snapshot.providers.length}`);
+    const prefs = sessionId && s
+      ? (durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project))
+      : undefined;
+    const workspace = durableStorageConfigured() && s
+      ? await controlPlaneRepository().getWorkspaceBySession(s.id)
+      : null;
+    const persistedAdapters = workspace
+      ? await controlPlaneRepository().listWorkspaceAgentAdapters(workspace.id)
+      : [];
+    const persistedById = new Map(persistedAdapters.map((adapter) => [adapter.adapterId, adapter]));
+    const adapters = listAgentAdapters().map((adapter) => {
+      const persisted = persistedById.get(adapter.id);
+      return {
+        id: adapter.id,
+        displayName: adapter.displayName,
+        state: persisted?.state || (adapter.capabilities.directChat ? 'available' : 'not_installed'),
+        reason: persisted?.reason,
+        capabilities: adapter.capabilities,
+      };
+    });
+    const adapterId = prefs?.adapterId || adapters[0]?.id || 'opencode';
+    console.info(`[ai-overview] session=${sessionId || '-'} user=${userId ? 'resolved' : 'missing'} adapter=${adapterId} models=${snapshot.models.length} available=${snapshot.models.filter((model) => model.status === 'available').length} providers=${snapshot.providers.length}`);
     res.json({
       state: status.state,
       message: status.message,
       model: status.model,
+      adapterId,
+      adapters,
       mode: status.mode,
       permission: status.permission,
       providers: status.providers,
@@ -1061,6 +1083,7 @@ router.put('/ai/session/:id', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
     if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
+    if (req.body?.adapterId !== undefined) getAgentAdapter(String(req.body.adapterId));
     const prefs = setSessionPrefs(s.id, {
       ...(req.body?.adapterId !== undefined ? { adapterId: String(req.body.adapterId) || 'opencode' } : {}),
       ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
