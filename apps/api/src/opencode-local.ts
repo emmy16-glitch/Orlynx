@@ -16,6 +16,8 @@ let runtimePrewarmPromise: Promise<boolean> | null = null;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
+  runtimePrewarmAt = 0;
+  runtimePrewarmPromise = null;
 }
 
 async function initialize(npm: string, baseURL: string, apiKey: string, id: string): Promise<LanguageModel> {
