@@ -168,7 +168,8 @@ async function connectWorkspace(name, body) {
   const bridgeToken = String(body.bridgeToken || '');
   const openCodePassword = String(body.openCodePassword || '');
   const openCodeApiKey = String(body.openCodeApiKey || '');
-  if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword) throw new Error('invalid bridge configuration');
+  const githubToken = String(body.githubToken || '');
+  if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword || !githubToken) throw new Error('invalid bridge configuration');
   if (!(await inspect(name))) throw new Error('runner not found');
 
   const values = {
@@ -181,6 +182,7 @@ async function connectWorkspace(name, body) {
     OPENCODE_SERVER_PASSWORD: openCodePassword,
     ORLYNX_REPO_ROOT: '/workspace/repo',
     OPENCODE_API_KEY: openCodeApiKey,
+    ORLYNX_GITHUB_TOKEN: githubToken,
   };
   const exports = Object.entries(values)
     .map(([key, value]) => `export ${key}="$(printf '%s' '${Buffer.from(String(value)).toString('base64')}' | base64 -d)"`)
