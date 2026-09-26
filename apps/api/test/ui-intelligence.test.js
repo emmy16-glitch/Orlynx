@@ -105,6 +105,7 @@ describe('theme integrity contract', () => {
   it('applies the chosen theme before React paints', () => {
     assert.match(html, /localStorage\.getItem\('orlynx:theme'\)/, 'theme is not restored before first paint');
     assert.match(html, /document\.documentElement\.dataset\.theme/, 'resolved theme is not applied to the root element');
+    assert.match(html, /meta\[name="theme-color"\]/, 'browser theme color is not synchronized before paint');
   });
 
   it('overrides the high-specificity mobile workspace bar in dark mode', () => {
