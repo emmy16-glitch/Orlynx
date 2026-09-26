@@ -439,22 +439,31 @@ export async function streamWithOfficialOpenCode(input: {
   const started = performance.now();
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
 
-  // Direct Ask/Plan chat stays inside the persistent API. Free models use
-  // OpenCode's public credential directly through the AI SDK and therefore do
-  // not depend on a separate sleeping runtime service or on the user's saved
-  // Zen key. Paid models still require the saved server-side credential.
-  let auth: { apiKey: string; publicAccess: boolean };
+  // OpenCode's free tier must be invoked from an actual OpenCode process.
+  // Production starts a loopback-only OpenCode sidecar beside the API, so
+  // Plan/Ask stays off Codespaces without depending on a second Render service.
   if (resolved.free) {
-    auth = resolveAuth(true);
-  } else {
-    let savedKey: string | undefined;
-    try {
-      savedKey = await savedOpenCodeAccountKey(input.userId);
-    } catch {
-      throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
-    }
-    auth = resolveAuth(false, savedKey);
+    return streamFreeModelThroughOpenCodeRuntime({
+      runtimeKey: input.runtimeKey,
+      requestId: input.requestId,
+      modelId: input.modelId,
+      system: input.system,
+      messages: input.messages,
+      signal: input.signal,
+      onDelta: input.onDelta,
+      onStatus: input.onStatus,
+      onTiming: input.onTiming,
+    });
   }
+
+  let savedKey: string | undefined;
+  try {
+    savedKey = await savedOpenCodeAccountKey(input.userId);
+  } catch {
+    throw new ProviderRequestError('Your saved OpenCode connection can no longer be decrypted. Reconnect OpenCode to use paid models.', 401, false);
+  }
+
+  const auth = resolveAuth(false, savedKey);
   input.signal.throwIfAborted();
   // Scope cached clients to user + credential fingerprint. Rotation cannot reuse
   // the old client. Never log this fingerprint or the credential.
