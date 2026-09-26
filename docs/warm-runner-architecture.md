@@ -177,6 +177,28 @@ runner failure
 
 The user task remains durable throughout the transition.
 
+## Capacity and idle reuse
+
+The runner manager enforces a bounded number of simultaneously running
+workspaces with `ORLYNX_RUNNER_MAX_WORKSPACES`.
+
+Each bridge updates a private activity timestamp whenever a workspace command is
+handled and while an agent/PTY remains active. The manager therefore does not
+guess activity from browser connections.
+
+```text
+active workspace
+  -> no activity for ORLYNX_RUNNER_IDLE_SECONDS
+  -> container stopped (checkout preserved)
+  -> later request can restart it quickly
+  -> stopped for ORLYNX_RUNNER_RECLAIM_SECONDS
+  -> container removed and disk reclaimed
+```
+
+When runner capacity is full, runner provisioning fails cleanly. A Build job
+with fallback enabled can then continue through GitHub Codespaces; passive
+prewarming does not spend that fallback.
+
 ## Security boundary
 
 Do not turn the runner manager into one shared shell process. Repository code is
