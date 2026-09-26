@@ -9,11 +9,21 @@ import {
   openCodeSessionStatus,
   openCodeStatus,
   promptOpenCode,
-  type OpenCodeMessage,
-  type OpenCodeSession,
 } from './opencode.js';
 import { openCodeCatalog, resolveModel } from './opencode-catalog.js';
 import { controlPlaneRepository } from './storage.js';
+
+export interface RuntimeSession { id: string; directory?: string }
+export interface RuntimeMessage { info: Record<string, any>; parts: Record<string, any>[] }
+export interface AgentRuntimeStatus {
+  configured: boolean;
+  connected: boolean;
+  message: string;
+  agents?: Record<string, any>[];
+  providers?: Record<string, any>[];
+  connectedProviders?: string[];
+  [key: string]: unknown;
+}
 
 export interface AgentPromptOptions {
   model?: { providerID: string; modelID: string };
@@ -45,10 +55,10 @@ export interface AgentRuntimeAdapter {
   readonly capabilities: AgentAdapterCapabilities;
   readonly bridgeRunCommand: string;
   readonly bridgeCancelCommand: string;
-  status(project?: string, sessionId?: string): ReturnType<typeof openCodeStatus>;
-  readiness(project?: string, sessionId?: string): ReturnType<typeof openCodeReadiness>;
-  getOrCreateSession(orlynxSessionId: string, project: string): Promise<OpenCodeSession>;
-  messages(project: string, engineSessionId: string): Promise<OpenCodeMessage[]>;
+  status(project?: string, sessionId?: string): Promise<AgentRuntimeStatus>;
+  readiness(project?: string, sessionId?: string): Promise<{ connected: boolean; message: string }>;
+  getOrCreateSession(orlynxSessionId: string, project: string): Promise<RuntimeSession>;
+  messages(project: string, engineSessionId: string): Promise<RuntimeMessage[]>;
   sessionStatus(project: string, engineSessionId: string): Promise<Record<string, any>>;
   diff(project: string, engineSessionId: string): Promise<Record<string, any>[]>;
   prompt(project: string, engineSessionId: string, text: string, options?: AgentPromptOptions): Promise<void>;
@@ -133,4 +143,3 @@ export async function getWorkspaceAdapterState(workspaceId: string, adapterId: A
   return controlPlaneRepository().getWorkspaceAgentAdapter(workspaceId, adapterId);
 }
 
-export type RuntimeMessage = OpenCodeMessage;
