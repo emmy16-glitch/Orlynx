@@ -75,10 +75,9 @@ export function needsRepositoryContext(text: string): boolean {
 export function shouldLoadRepositoryContext(text: string, mode: AgentMode, projectName = ''): boolean {
   if (/^\s*(hi|hello|hey|yo|good\s+(?:morning|afternoon|evening)|thanks?|thank you)[!.?\s]*$/i.test(text)) return false;
   const lower = text.toLowerCase();
-  if (mode === 'ask' || mode === 'plan') return true;
   return needsRepositoryContext(text)
     || (projectName ? lower.includes(projectName.toLowerCase()) : false)
-    || /\b(what do (?:you|u) think|thoughts?|opinion|review)\b/i.test(text);
+    || /\b(what do (?:you|u) think|thoughts?|opinion|review)\b[\s\S]{0,80}\b(repo|repository|project|code|app|architecture)\b/i.test(text);
 }
 
 export function cleanLegacyAssistantText(text: string): string {
@@ -110,10 +109,10 @@ export function cleanAssistantText(text: string, prompt = ''): string {
 export function turnsForMessage(history: ChatMessage[], messageId: string | undefined, prompt: string) {
   const end = messageId ? history.findIndex((message) => message.id === messageId) : -1;
   const bounded = end >= 0 ? history.slice(0, end) : [];
-  return [...bounded.filter((message) => message.role === 'user' || message.role === 'assistant').slice(-15)
+  return [...bounded.filter((message) => message.role === 'user' || message.role === 'assistant').slice(-8)
     .map((message) => ({
       role: message.role as 'user' | 'assistant',
-      content: (message.role === 'assistant' ? cleanLegacyAssistantText(message.text) : message.text).slice(-12_000),
+      content: (message.role === 'assistant' ? cleanLegacyAssistantText(message.text) : message.text).slice(-6_000),
     })),
     { role: 'user' as const, content: prompt }];
 }
@@ -133,20 +132,20 @@ async function loadRepositoryContext(session: ProjectSession, paths: string[]): 
   if (paths.length) {
     const files = await Promise.all(paths.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
     return [`Repository: ${session.project}`, `Branch: ${session.branch}`,
-      ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 55_000);
+      ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 24_000);
   }
   let root: { name: string; dir: boolean }[] = [];
   try { root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId); } catch {}
-  const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 120);
+  const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 80);
   const candidates = ['README.md','README','ARCHITECTURE.md','DESIGN.md','AGENTS.md','HOSTING.md','package.json','pyproject.toml','requirements.txt','Cargo.toml','go.mod','pom.xml','build.gradle','docker-compose.yml','compose.yml']
     .filter((name) => root.some((item) => !item.dir && item.name.toLowerCase() === name.toLowerCase()))
-    .slice(0, 8);
+    .slice(0, 5);
   const loaded = await Promise.all(candidates.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
   const snippets: string[] = [];
   let used = 0;
   for (const item of loaded) {
-    if (!item.content || used >= 55_000) continue;
-    const remaining = 55_000 - used;
+    if (!item.content || used >= 24_000) continue;
+    const remaining = 24_000 - used;
     const content = item.content.slice(0, remaining);
     snippets.push(`--- ${item.name} ---\n${content}`);
     used += content.length;
