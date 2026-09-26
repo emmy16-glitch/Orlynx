@@ -19,7 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { cancelDirectRun, executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneWithExistingWorkspace } from './direct-chat.js';
 import { getAgentAdapter } from './agent-runtime.js';
 
 export const router = Router();
@@ -290,6 +290,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
     : getSessionPrefs(s.id, s.project);
   const effectiveMode = (mode ? String(mode) : prefs.mode) as 'build' | 'plan' | 'ask';
   let plane = executionPlaneFor(String(text), effectiveMode);
+  const selectedAdapter = getAgentAdapter(prefs.adapterId || 'opencode');
+  if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
   if (!selectedModel) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
@@ -691,7 +693,9 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
       await repository.putTask(task);
       const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
       if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
-      if (task.plane === 'direct') cancelDirectRun(task.runId || req.params.runId);
+      if (task.plane === 'direct') {
+        try { getAgentAdapter(task.adapterId || 'opencode').cancelDirectRun?.(task.runId || req.params.runId); } catch {}
+      }
       emit(task.sessionId, 'run.failed', { cancelled: true, taskId: task.id }, task.runId);
       await promoteNextQueuedRun(task.sessionId).catch(() => null);
     }
