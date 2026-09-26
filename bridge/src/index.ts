@@ -608,14 +608,23 @@ function connect(delay = 0): void {
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
         if (message.kind === 'AUTHENTICATED') {
-          const openCode = await openCodeStartup;
           if (ws.readyState !== WebSocket.OPEN) return;
-          const adapters = { opencode: openCode };
-          ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, adapters, openCode }));
+          // Workspace readiness is independent of any agent adapter. Make shell,
+          // files, Git and ports available immediately; adapters report their
+          // own lifecycle asynchronously.
+          ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, adapters: { opencode: { state: 'starting' } } }));
+          void openCodeStartup.then((adapter) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId: 'opencode', adapter }));
+          }).catch((error) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId: 'opencode', adapter: { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 160) : 'startup_failed' } }));
+          });
           heartbeat ||= setInterval(async () => {
             if (ws.readyState !== WebSocket.OPEN) return;
             const currentAdapters = await bridgeAdapterHealth();
-            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { adapters: currentAdapters } } }));
+            for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
+              ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
+            }
+            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready' } } }));
           }, 15_000);
         }
         return;
