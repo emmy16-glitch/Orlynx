@@ -112,3 +112,34 @@ describe('theme integrity contract', () => {
     assert.match(css, /html\[data-theme="dark"\] \.is-workspace \.composer[\s\S]*?background:/, 'dark composer override missing');
   });
 });
+
+
+describe('chat and cloud reliability contract', () => {
+  const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+
+  it('starts or reconnects a cloud workspace once and observes progress instead of POST-looping', () => {
+    const start = src.indexOf('async function startCloud(');
+    const end = src.indexOf('async function stopRun()', start);
+    const block = src.slice(start, end);
+    assert.match(block, /fetch\(\`\/v1\/sessions\/\$\{sessionId\}\/cloud/);
+    assert.doesNotMatch(block, /while \(workspace\?\.state/);
+    assert.doesNotMatch(block, /setTimeout\(resolve, 2_000\)/);
+    assert.match(src, /setInterval\(async \(\) =>[\s\S]*?\/v1\/sessions\/\$\{encodeURIComponent\(session\.id\)\}/);
+  });
+
+  it('preserves first streamed tokens when run.started and message.delta share a frame', () => {
+    assert.match(src, /pendingRef\.current\.splice\(0\)\.sort/);
+    assert.match(src, /if \(item\.type === 'run\.started'\)[\s\S]*?deltas\.length = 0/);
+    assert.match(src, /if \(item\.type === 'message\.delta'\)/);
+    assert.match(src, /if \(replaceDraft\) setDraftReply\(deltas\.join\(''\)\)/);
+  });
+
+  it('makes session refresh single-flight and prevents stale partial snapshots from rewinding SSE text', () => {
+    assert.match(src, /sessionRefreshesRef = useRef\(new Map<string, Promise<void>>\(\)\)/);
+    assert.match(src, /const inFlight = sessionRefreshesRef\.current\.get\(id\)/);
+    assert.match(src, /snapshotUpdatedAt < cutoff && current/);
+    assert.match(src, /current\.startsWith\(snapshot\)/);
+    assert.match(src, /snapshot\.startsWith\(current\)/);
+    assert.match(src, /newestDeltaAt > partialCutoffRef\.current/);
+  });
+});
