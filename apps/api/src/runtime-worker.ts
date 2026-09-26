@@ -114,7 +114,7 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
 
 async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
   const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
-  const totalTimeoutMs = Math.max(90_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 4 * 60_000));
+  const totalTimeoutMs = Math.max(90_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 2 * 60_000));
   const attemptTimeoutMs = Math.min(
     60_000,
     Math.max(20_000, Number(process.env.ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS || 45_000)),
@@ -182,9 +182,20 @@ async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, 
 
     lastDetail = result.detail;
     if (result.fatal) throw new Error(result.detail || 'Codespace bootstrap failed.');
+
+    const brokenSshServer = /failed to start ssh server|error getting ssh server details|ssh server unavailable/i.test(result.detail);
+    if (brokenSshServer && attempt >= 3) {
+      throw new Error(`Codespace SSH server is unavailable after ${attempt} attempts: ${result.detail.slice(-1200)}`);
+    }
+
     if (Date.now() >= deadline) break;
 
-    console.info(`[workspace] Codespace SSH not ready yet workspace=${workspace.id} attempt=${attempt}; retrying`);
+    if (attempt === 1 || attempt % 5 === 0) {
+      const detail = result.detail.replace(/\s+/g, ' ').slice(-280);
+      console.info(`[workspace] Codespace SSH not ready yet workspace=${workspace.id} attempt=${attempt}${detail ? ` detail=${detail}` : ''}; retrying`);
+    } else {
+      console.info(`[workspace] Codespace SSH not ready yet workspace=${workspace.id} attempt=${attempt}; retrying`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 3_000));
   }
 
