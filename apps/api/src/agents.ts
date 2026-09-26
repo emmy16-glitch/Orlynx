@@ -236,10 +236,32 @@ async function executeDirectTask(
 }
 
 const promotions = new Map<string, Promise<AgentRun | null>>();
+const promotionWakeups = new Set<string>();
+
 export function promoteNextQueuedRun(sessionId: string): Promise<AgentRun | null> {
   const existing = promotions.get(sessionId);
-  if (existing) return existing;
-  const pending = promoteNextQueuedRunInner(sessionId).finally(() => promotions.delete(sessionId));
+  if (existing) {
+    // Do not drop readiness/queue wake-ups that arrive while another promotion
+    // pass is still reading durable state. Re-run once the current pass settles.
+    promotionWakeups.add(sessionId);
+    return existing;
+  }
+
+  const pending = (async () => {
+    let latest: AgentRun | null = null;
+    do {
+      promotionWakeups.delete(sessionId);
+      const promoted = await promoteNextQueuedRunInner(sessionId);
+      if (promoted) latest = promoted;
+    } while (promotionWakeups.delete(sessionId));
+    return latest;
+  })().finally(() => {
+    promotions.delete(sessionId);
+    // Cover the narrow race where a wake-up lands after the loop condition but
+    // before the single-flight entry is removed.
+    if (promotionWakeups.delete(sessionId)) void promoteNextQueuedRun(sessionId);
+  });
+
   promotions.set(sessionId, pending);
   return pending;
 }
@@ -286,7 +308,10 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
     const adapterId = nextQueued.adapterId || 'opencode';
     const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);
-    if (!adapterState || ['not_installed', 'installing', 'starting', 'busy', 'unavailable'].includes(adapterState.state)) return null;
+    if (!adapterState || ['not_installed', 'installing', 'starting', 'busy', 'unavailable'].includes(adapterState.state)) {
+      console.info(`[queue] waiting session=${sessionId} task=${nextQueued.id} adapter=${adapterId} state=${adapterState?.state || 'missing'}`);
+      return null;
+    }
     if (adapterState.state === 'failed') {
       const now = new Date().toISOString();
       nextQueued.state = 'failed';
@@ -313,6 +338,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
   const task = await repository.claimQueuedTask(sessionId, nextQueued.id);
   if (!task) return null;
+  console.info(`[queue] promoted session=${sessionId} task=${task.id} adapter=${task.adapterId || 'opencode'} plane=${task.plane || 'workspace'}`);
 
   let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
   try {
