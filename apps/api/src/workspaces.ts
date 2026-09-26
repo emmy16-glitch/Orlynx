@@ -35,7 +35,7 @@ export function workspaceFullyReady(workspace: Pick<WorkspaceRecord, 'state' | '
 
 export function workspaceStartupPending(workspace: Pick<WorkspaceRecord, 'state' | 'bridgeState'>): boolean {
   if (workspaceFullyReady(workspace) || workspace.state === 'failed' || workspace.state === 'stopped' || workspace.state === 'stopping') return false;
-  return ['bootstrapping', 'connecting'].includes(workspace.state) || workspace.bridgeState === 'connecting';
+  return ['creating', 'starting', 'bootstrapping', 'connecting'].includes(workspace.state) || workspace.bridgeState === 'connecting';
 }
 
 export function shouldRecoverTransientBridgeClose(authenticated: boolean, code: number): boolean {
