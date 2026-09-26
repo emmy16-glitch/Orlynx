@@ -4,6 +4,7 @@ import { executionPlaneFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
+// Keep routing tests deterministic: these assertions require no live workspace.
 test('an existing Codespace never changes the mode/request execution decision', () => {
   assert.equal(executionPlaneFor('Hello', 'build'), 'direct');
   assert.equal(executionPlaneFor('Explain this repo', 'ask'), 'direct');
