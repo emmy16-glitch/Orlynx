@@ -3426,3 +3426,9 @@ html[data-theme="light"] .composer-options-panel {
     padding-left: 10px;
   }
 }
+
+.workspace-progress.page-operation-progress {
+  max-width: 520px;
+  margin: 24px auto 0;
+  text-align: left;
+}
