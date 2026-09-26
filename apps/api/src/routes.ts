@@ -19,7 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor } from './direct-chat.js';
+import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
 
@@ -295,7 +295,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
   let plane = executionPlaneFor(String(text), effectiveMode);
   if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
-  if (!selectedModel) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
+  const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
+  if (!selectedModel && !instantReply) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
@@ -304,13 +305,59 @@ router.post('/sessions/:id/messages', async (req, res) => {
 
   let workspaceId: string | undefined;
   let automaticWorkspaceInput: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string } | undefined;
+  let durableSession: any = null;
 
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
     await repository.putMessage(msg);
-    const durableSession = await repository.getSession(s.id);
+    durableSession = await repository.getSession(s.id);
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+  }
+
+  if (instantReply) {
+    const now = new Date().toISOString();
+    const runId = `run_${uuid().slice(0, 8)}`;
+    const taskId = `task_${uuid()}`;
+    const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: instantReply, createdAt: now };
+    const run = {
+      id: runId, sessionId: s.id, engine: selectedAdapterId, plane: 'direct' as const,
+      model: selectedModel || undefined, mode: effectiveMode, permission: prefs.permission,
+      state: 'completed' as const, activity: 'Ready', startedAt: now, finishedAt: now,
+    };
+    (store.db.messages[s.id] ||= []).push(assistant);
+    (store.db.runs[s.id] ||= []).push(run as any);
+    store.save();
+
+    if (durableStorageConfigured()) {
+      const repository = controlPlaneRepository();
+      await repository.putMessage(assistant);
+      await repository.putTask({
+        id: taskId,
+        sessionId: s.id,
+        workspaceId: 'direct',
+        plane: 'direct',
+        runId,
+        messageId: msg.id,
+        state: 'completed',
+        prompt: String(text),
+        modelId: selectedModel || undefined,
+        adapterId: selectedAdapterId,
+        mode: effectiveMode,
+        permission: prefs.permission,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    emit(s.id, 'message.end', { taskId, instant: true }, runId);
+    emit(s.id, 'run.completed', { taskId, summary: 'Answered locally.', instant: true }, runId);
+    console.info(`[orlynx] sid=${s.id} instant reply mode=${effectiveMode} len=${String(text).length}`);
+    return res.json({ message: msg, run, plane: 'direct', instant: true });
+  }
+
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
 
     // Execution plane is determined by the current mode + request, not by
     // whether this project happens to have an existing Codespace. Ask/Plan and
