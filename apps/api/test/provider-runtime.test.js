@@ -312,15 +312,31 @@ test('legacy leaked transcript wrapper is removed before future history reuse', 
   assert.equal(cleanLegacyAssistantText(leaked), 'Hi there');
 });
 
-test('connected account bypasses the sleeping free runtime for free models', async (t) => {
-  mockFetch(t, async (url, init) => {
-    assert.doesNotMatch(String(url), /runtime\.test/, 'connected free model unexpectedly used the auxiliary runtime');
-    assert.equal(new Headers(init.headers).get('authorization'), 'Bearer saved-test-key');
-    return new Response(frame('Connected') + frame('', 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
-  });
+test('free models ignore a stale saved account key and keep using the public runtime', async (t) => {
+  configureRuntime(t);
   process.env.ORLYNX_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
-  setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('saved-test-key') }) });
-  assert.equal(await streamWithOfficialOpenCode(input()), 'Connected');
+  const encoder = new TextEncoder();
+  setControlPlaneRepositoryForTests({ getProviderConnection: async () => ({ state: 'connected', credential: encryptCredential('stale-saved-key') }) });
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const value = String(url);
+    if (value.includes('models.dev')) return Response.json({ opencode: snapshot });
+    assert.doesNotMatch(value, /opencode\.ai\/zen/, 'free model should not use the stale saved Zen key');
+    if (value === 'https://runtime.test/global/health') return Response.json({ healthy: true });
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'public-runtime-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('message.part.delta', { sessionID: 'public-runtime-session', field: 'text', delta: 'Public' })));
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'public-runtime-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/public-runtime-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  };
+  t.after(() => { globalThis.fetch = original; setControlPlaneRepositoryForTests(undefined); });
+  assert.equal(await streamWithOfficialOpenCode(input()), 'Public');
 });
 
 test('paid model receives the saved server-side credential', async (t) => {
