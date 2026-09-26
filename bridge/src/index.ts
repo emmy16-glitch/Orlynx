@@ -19,6 +19,7 @@ const OPENCODE_BIN = process.env.OPENCODE_BIN || 'opencode';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
+const ACTIVITY_FILE = path.join(os.homedir(), '.orlynx', 'runtime', 'activity');
 const OPENCODE_AUTH_MODE_FILE = path.join(os.homedir(), '.orlynx', 'runtime', 'opencode-auth-mode');
 
 type Command = { kind: 'COMMAND'; commandId: string; type: string; payload?: Record<string, unknown> };
@@ -50,11 +51,21 @@ function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
   try { fs.writeFileSync(`${COMMAND_JOURNAL}.tmp`, JSON.stringify(Object.fromEntries(completed)), { mode: 0o600 }); fs.renameSync(`${COMMAND_JOURNAL}.tmp`, COMMAND_JOURNAL); } catch {}
 }
+function touchActivity(): void {
+  try {
+    fs.mkdirSync(path.dirname(ACTIVITY_FILE), { recursive: true, mode: 0o700 });
+    const now = new Date();
+    if (!fs.existsSync(ACTIVITY_FILE)) fs.writeFileSync(ACTIVITY_FILE, '', { mode: 0o600 });
+    fs.utimesSync(ACTIVITY_FILE, now, now);
+  } catch {}
+}
+
 function sendCommandReply(ws: WebSocket, commandId: string, reply: CommandReply): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   try { ws.send(JSON.stringify({ kind: 'RESULT', commandId, ...reply })); } catch { /* a replacement socket will receive the durable retry */ }
 }
 function runCommandOnce(command: Command, ws: WebSocket): void {
+  touchActivity();
   const prior = completed.get(command.commandId);
   if (prior) { sendCommandReply(ws, command.commandId, prior); return; }
   const existing = inFlight.get(command.commandId);
@@ -672,6 +683,7 @@ function connect(delay = 0): void {
           });
           heartbeat ||= setInterval(async () => {
             if (ws.readyState !== WebSocket.OPEN) return;
+            if (activeAgents.size > 0 || terminals.size > 0) touchActivity();
             const currentAdapters = await bridgeAdapterHealth();
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
@@ -689,6 +701,7 @@ function connect(delay = 0): void {
 }
 
 export function start(): void {
+  touchActivity();
   if (!CONTROL.startsWith('wss://') || !token || !WORKSPACE_ID || !SESSION_ID || !USER_ID || !CONNECTION_ID) { console.error('[bridge] required secure workspace configuration is missing'); process.exitCode = 2; return; }
   connect();
 }
