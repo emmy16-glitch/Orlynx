@@ -22,6 +22,7 @@ import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
+import { shouldPrewarmWorkspace } from './workspace-providers.js';
 
 export const router = Router();
 
@@ -233,6 +234,21 @@ router.post('/sessions', async (req, res) => {
     const projectId = `prj_${connection.userId}_${githubRepo.id}`;
     await repository.upsertProject({ id: projectId, userId: connection.userId, installationId, repositoryId: githubRepo.id, fullName: githubRepo.full, defaultBranch: githubRepo.defaultBranch });
     await repository.putSession({ ...store.db.sessions[id], userId: connection.userId, projectId });
+
+    // Warm runners are prepared as soon as the repository opens, while chat
+    // remains immediately usable. Codespaces are intentionally not prewarmed
+    // here because their cold-start/cost profile is the fallback path.
+    if (shouldPrewarmWorkspace()) {
+      void prepareWorkspace({
+        sessionId: id,
+        userId: connection.userId,
+        projectId,
+        repositoryId: githubRepo.id,
+        branch: String(branch),
+      }).catch((error) => {
+        console.warn(`[workspace] background prewarm failed session=${id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      });
+    }
   }
   emit(id, 'state.snapshot', { project, branch, mode: 'repository' });
   res.json(store.db.sessions[id]);
