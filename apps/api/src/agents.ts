@@ -394,7 +394,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
     const connection = await adapter.readiness(session.project, sessionId);
     if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable for this workspace.`);
-    const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId);
+    const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId, adapter.status);
     emit(sessionId, 'activity.started', { taskId: task.id, text: 'Development environment ready', adapterId: adapter.id }, run.id);
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
@@ -544,7 +544,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   }
   const connection = await adapter.readiness(project, sessionId);
   if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable.`);
-  const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), project, sessionId);
+  const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), project, sessionId, adapter.status);
   const engineSession = await adapter.getOrCreateSession(sessionId, project);
   const before = await adapter.messages(project, engineSession.id);
   const previousAssistantId = [...before].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
