@@ -50,10 +50,10 @@ function sessionForProject(project?: string, sessionId?: string) {
     .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''))[0];
 }
 
-async function durableOpenCodeReady(workspace: { id: string; state: string; bridgeState: string; openCodeState: string } | null): Promise<boolean> {
+async function durableOpenCodeReady(workspace: { id: string; state: string; bridgeState: string } | null): Promise<boolean> {
   if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') return false;
   const adapter = await controlPlaneRepository().getWorkspaceAgentAdapter(workspace.id, 'opencode');
-  return adapter ? adapter.state === 'ready' : workspace.openCodeState === 'ready';
+  return adapter?.state === 'ready';
 }
 
 async function request<T>(project: string, apiPath: string, init: RequestInit = {}, sessionId?: string): Promise<T> {

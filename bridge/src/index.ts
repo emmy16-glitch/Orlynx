@@ -18,6 +18,7 @@ const OPENCODE_BIN = process.env.OPENCODE_BIN || 'opencode';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
+const OPENCODE_AUTH_MODE_FILE = path.join(os.homedir(), '.orlynx', 'runtime', 'opencode-auth-mode');
 
 type Command = { kind: 'COMMAND'; commandId: string; type: string; payload?: Record<string, unknown> };
 type CommandReply = { ok: boolean; result?: Record<string, unknown>; error?: string };
@@ -30,7 +31,19 @@ const activeAgents = new Map<string, string>();
 type OpenCodeAuthMode = 'public' | 'account';
 type AdapterLifecycle = { state: 'starting' | 'ready' | 'failed' | 'unavailable'; reason?: string };
 let openCodeAuthMode: OpenCodeAuthMode | undefined;
+try {
+  const savedMode = fs.readFileSync(OPENCODE_AUTH_MODE_FILE, 'utf8').trim();
+  if (savedMode === 'public' || savedMode === 'account') openCodeAuthMode = savedMode;
+} catch {}
 let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
+
+function rememberOpenCodeAuthMode(mode: OpenCodeAuthMode | undefined): void {
+  openCodeAuthMode = mode;
+  try {
+    if (mode) fs.writeFileSync(OPENCODE_AUTH_MODE_FILE, mode, { mode: 0o600 });
+    else fs.unlinkSync(OPENCODE_AUTH_MODE_FILE);
+  } catch {}
+}
 try { for (const [id, value] of Object.entries(JSON.parse(fs.readFileSync(COMMAND_JOURNAL, 'utf8')) as Record<string, CommandReply>)) completed.set(id, value); } catch {}
 function remember(id: string, value: CommandReply) {
   completed.set(id, value); while (completed.size > 500) completed.delete(completed.keys().next().value!);
@@ -135,7 +148,7 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
   if (forceRestart) {
     stopStaleOpenCode();
     if (!(await waitForOpenCodeToStop())) return { state: 'failed', reason: 'existing_server_auth_mismatch' };
-    openCodeAuthMode = undefined;
+    rememberOpenCodeAuthMode(undefined);
   }
 
   const initialHealth = await openCodeHealth();
@@ -168,7 +181,7 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const health = await openCodeHealth();
     if (health === 'ready') {
-      openCodeAuthMode = useAccountKey ? 'account' : 'public';
+      rememberOpenCodeAuthMode(useAccountKey ? 'account' : 'public');
       return { state: 'ready' };
     }
     if (health === 'unauthorized') return { state: 'failed', reason: 'existing_server_auth_mismatch' };
@@ -184,13 +197,22 @@ async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
   if (openCodeAuthMode === desired && await openCodeHealth() === 'ready') return false;
 
   const started = await startOpenCode(desired === 'account', true);
-  openCodeLifecycle = started;
-  if (started.state !== 'ready') {
-    throw new Error(started.reason === 'account_key_unavailable'
-      ? 'Connect your OpenCode account before using this paid model.'
-      : 'OpenCode could not switch authentication mode in the Codespace.');
+  if (started.state === 'ready') {
+    openCodeLifecycle = { state: 'ready' };
+    return true;
   }
-  return true;
+
+  // Authentication-mode switching belongs to this run. A failed switch must
+  // not poison the whole adapter if an already-running OpenCode server remains
+  // healthy for other models/tasks.
+  const health = await openCodeHealth();
+  openCodeLifecycle = health === 'ready'
+    ? { state: 'ready' }
+    : { state: 'unavailable', reason: started.reason || (health === 'unauthorized' ? 'auth_mismatch' : 'auth_switch_failed') };
+
+  throw new Error(started.reason === 'account_key_unavailable'
+    ? 'Connect your OpenCode account before using this paid model.'
+    : 'OpenCode could not switch authentication mode in the Codespace.');
 }
 async function opencodeRequest(payload: Record<string, unknown>) {
   const method = String(payload.method || 'GET').toUpperCase();
@@ -555,7 +577,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
   switch (command.type) {
     case 'health': {
       const adapters = await bridgeAdapterHealth();
-      return { bridge: 'ready', adapters, openCode: adapters.opencode?.state === 'ready' ? 'ready' : 'unavailable' };
+      return { bridge: 'ready', adapters };
     }
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
     case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }

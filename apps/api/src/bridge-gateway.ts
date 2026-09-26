@@ -7,10 +7,10 @@ import { decryptCredential } from './credentials.js';
 import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
-import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose } from './workspaces.js';
+import { markWorkspaceConnectionLost, prepareWorkspace, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 
 type BridgeAdapterState = { state?: string; reason?: string };
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; openCode?: BridgeAdapterState; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 const activeSockets = new Map<string, WebSocket>();
 
 function bearer(request: http.IncomingMessage): string {
@@ -27,9 +27,6 @@ async function persistAdapterState(claims: BridgeClaims, adapterId: string, adap
     : 'unavailable';
   const now = new Date().toISOString();
   await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, updatedAt: now });
-  if (adapterId === 'opencode') {
-    await repository.putWorkspace({ ...current, openCodeState: state, updatedAt: now });
-  }
   await repository.appendEvent({
     eventId: `evt_${uuid()}`,
     sessionId: claims.sessionId,
@@ -48,8 +45,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   // let that stale close (or a delayed READY) downgrade the new connection.
   if (current.connectionId !== claims.connectionId) return;
   const now = new Date().toISOString();
-  const adapters = detail.adapters || (detail.openCode ? { opencode: detail.openCode } : {});
-  const openCodeState = (adapters.opencode?.state || detail.openCode?.state) as typeof current.openCodeState | undefined;
+  const adapters = detail.adapters || {};
   const workspaceReady = state === 'ready';
   const nextWorkspaceState = workspaceReady
     ? 'ready'
@@ -63,8 +59,6 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
     ...current,
     connectionId: claims.connectionId,
     bridgeState: state === 'disconnected' ? 'disconnected' : state,
-    // Legacy compatibility only. Generic adapter health is stored separately.
-    openCodeState: openCodeState || (state === 'disconnected' ? 'unavailable' : current.openCodeState),
     state: nextWorkspaceState,
     failureCode: workspaceReady ? undefined : current.failureCode,
     repoRoot: detail.repoRoot || current.repoRoot,
@@ -109,7 +103,12 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   let active = true;
   let authenticatedHello = false;
   const helloTimeout = setTimeout(() => { if (!authenticatedHello) ws.close(1008, 'hello timeout'); }, 15_000);
+  const previousSocket = activeSockets.get(claims.workspaceId);
   activeSockets.set(claims.workspaceId, ws);
+  if (previousSocket && previousSocket !== ws && previousSocket.readyState === previousSocket.OPEN) {
+    console.info(`[bridge] retiring previous socket workspace=${claims.workspaceId}`);
+    previousSocket.close(1000, 'replaced by newer workspace connection');
+  }
   const repository = controlPlaneRepository();
   // A durable "sent" command is eligible for delivery retry after its lease
   // expires. Never re-execute that retry on the same transport: it is only
@@ -151,7 +150,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'READY') {
-        const reported = message.adapters || (message.openCode ? { opencode: message.openCode } : {});
+        const reported = message.adapters || {};
         console.info(`[bridge] adapter states: ${Object.entries(reported).map(([id, value]) => `${id}=${value.state || 'unknown'}${value.reason ? `:${value.reason}` : ''}`).join(', ') || 'none'}`);
         await persistBridgeState(claims, 'ready', message);
 
@@ -173,6 +172,19 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 : attachment.contentBase64,
             },
           }));
+        }
+        const currentWorkspace = await repository.getWorkspace(claims.workspaceId);
+        if (currentWorkspace && workspaceNeedsRuntimeRefresh(currentWorkspace)) {
+          console.info(`[bridge] stale runtime revision detected on reconnect; refreshing workspace=${claims.workspaceId}`);
+          void prepareWorkspace({
+            sessionId: currentWorkspace.sessionId,
+            userId: currentWorkspace.userId,
+            projectId: currentWorkspace.projectId,
+            repositoryId: currentWorkspace.repositoryId,
+            branch: currentWorkspace.branch,
+          }).then(() => promoteNextQueuedRun(claims.sessionId))
+            .catch((error) => console.warn(`[bridge] automatic runtime refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+          return;
         }
         void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after READY failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         return;
@@ -316,9 +328,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
 }
 
-// Existing workspaces can still send OpenCode's full provider catalog until
-// they reconnect with the compact bridge. Accept that bounded legacy reply.
-const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
+// Bridge messages are bounded. Provider/model catalogs are normalized before
+// crossing this socket, so oversized legacy payload compatibility is gone.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
 export function attachBridgeGateway(server: http.Server): void {
   server.on('upgrade', (request, socket, head) => {

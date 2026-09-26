@@ -88,8 +88,6 @@ export interface ControlPlaneRepository {
   getChangeSet(id: string): Promise<ChangeSet | null>;
   getAgentSession(sessionId: string, adapterId: string): Promise<string | null>;
   putAgentSession(sessionId: string, adapterId: string, engineSessionId: string): Promise<void>;
-  getEngineSession(sessionId: string): Promise<string | null>;
-  putEngineSession(sessionId: string, engineSessionId: string): Promise<void>;
   recordWebhookDelivery(deliveryId: string, event: string): Promise<boolean>;
   recordAudit(value: { id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail?: Record<string, unknown>; createdAt: string }): Promise<void>;
   listAudit(sessionId: string, limit?: number): Promise<Array<{ id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail: Record<string, unknown>; createdAt: string }>>;
@@ -115,7 +113,7 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
-  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, opencode_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS task_events (event_id text PRIMARY KEY, sequence bigint NOT NULL, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id text, run_id text, workspace_id text, type text NOT NULL, payload jsonb NOT NULL, timestamp timestamptz NOT NULL, UNIQUE(session_id, sequence))`,
   `CREATE INDEX IF NOT EXISTS task_events_replay_idx ON task_events(session_id, sequence)`,
@@ -126,11 +124,24 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS attachments (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, filename text NOT NULL, safe_name text NOT NULL, mime text NOT NULL, size bigint NOT NULL, hash text, blob_url text, created_at timestamptz NOT NULL)`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS content_base64 text`,
   `CREATE TABLE IF NOT EXISTS bridge_commands (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL, result jsonb, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS engine_sessions (session_id text PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS agent_sessions (session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, adapter_id text NOT NULL, engine_session_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(session_id,adapter_id))`,
-  `INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id,updated_at) SELECT session_id,'opencode',engine_session_id,updated_at FROM engine_sessions ON CONFLICT (session_id,adapter_id) DO NOTHING`,
   `CREATE TABLE IF NOT EXISTS workspace_agent_adapters (workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, adapter_id text NOT NULL, state text NOT NULL, reason text, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,adapter_id))`,
-  `INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,updated_at) SELECT id,'opencode',opencode_state,updated_at FROM workspaces ON CONFLICT (workspace_id,adapter_id) DO NOTHING`,
+  `DO $ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='engine_sessions') THEN
+        INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id,updated_at)
+        SELECT session_id,'opencode',engine_session_id,updated_at FROM engine_sessions
+        ON CONFLICT (session_id,adapter_id) DO NOTHING;
+        DROP TABLE engine_sessions;
+      END IF;
+    END $`,
+  `DO $ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='workspaces' AND column_name='opencode_state') THEN
+        INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,updated_at)
+        SELECT id,'opencode',opencode_state,updated_at FROM workspaces
+        ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,updated_at=EXCLUDED.updated_at;
+        ALTER TABLE workspaces DROP COLUMN opencode_state;
+      END IF;
+    END $`,
   `CREATE TABLE IF NOT EXISTS change_sets (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS webhook_deliveries (delivery_id text PRIMARY KEY, event text NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
@@ -159,7 +170,7 @@ function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
     id: String(row.id), sessionId: String(row.session_id), userId: String(row.user_id), projectId: String(row.project_id),
     provider: 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined,
     repositoryId: Number(row.repository_id), branch: String(row.branch), state: row.state as WorkspaceRecord['state'],
-    bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'], openCodeState: row.opencode_state as WorkspaceRecord['openCodeState'],
+    bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'],
     connectionId: row.connection_id ? String(row.connection_id) : undefined, repoRoot: row.repo_root ? String(row.repo_root) : undefined,
     failureCode: row.failure_code ? String(row.failure_code) : undefined, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
   };
@@ -307,7 +318,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,repository_id,branch,state,bridge_state,opencode_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.openCodeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET codespace_name=EXCLUDED.codespace_name,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,opencode_state=EXCLUDED.opencode_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET codespace_name=EXCLUDED.codespace_name,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
@@ -360,13 +371,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async putAgentSession(sessionId: string, adapterId: string, engineSessionId: string) {
     await this.initialize();
     await this.sql`INSERT INTO agent_sessions (session_id,adapter_id,engine_session_id) VALUES (${sessionId},${adapterId},${engineSessionId}) ON CONFLICT (session_id,adapter_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`;
-    if (adapterId === 'opencode') await this.sql`INSERT INTO engine_sessions (session_id,engine_session_id) VALUES (${sessionId},${engineSessionId}) ON CONFLICT (session_id) DO UPDATE SET engine_session_id=EXCLUDED.engine_session_id,updated_at=now()`;
   }
-  async getEngineSession(sessionId: string) {
-    await this.initialize();
-    return await this.getAgentSession(sessionId, 'opencode') || rows<{ engine_session_id: string }>(await this.sql`SELECT engine_session_id FROM engine_sessions WHERE session_id=${sessionId}`)[0]?.engine_session_id || null;
-  }
-  async putEngineSession(sessionId: string, engineSessionId: string) { await this.putAgentSession(sessionId, 'opencode', engineSessionId); }
   async recordWebhookDelivery(deliveryId: string, event: string) {
     await this.initialize();
     const result = rows<{ delivery_id: string }>(await this.sql`INSERT INTO webhook_deliveries (delivery_id,event) VALUES (${deliveryId},${event}) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`);

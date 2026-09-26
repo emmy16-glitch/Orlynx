@@ -129,9 +129,10 @@ The project experience is chat-first. On mobile the primary project navigation i
 Chat · Files · Changes · More
 ```
 
-AI model/mode/access controls live near the composer. OpenCode, Codespaces, bridge
-credentials and provider plumbing are implementation details and should not become
-top-level user navigation.
+Agent/model/mode/access controls live near the composer. The Agent picker selects
+the registered coding adapter (OpenCode is Adapter #1 today) independently from
+the model picker. Codespaces, bridge credentials and provider plumbing remain
+implementation details rather than top-level navigation.
 
 The event presentation pipeline in `apps/web/src/ui/mapping.ts` turns low-level
 runtime output into summary → evidence → raw detail. Private model reasoning is not

@@ -110,7 +110,6 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
         branch: input.branch,
         state: mappedState(existing.state),
         bridgeState: 'disconnected',
-        openCodeState: 'not_installed',
         createdAt: now,
         updatedAt: now,
       };
@@ -156,7 +155,6 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       branch: input.branch,
       state: mappedState(result.state),
       bridgeState: 'disconnected',
-      openCodeState: 'not_installed',
       createdAt: now,
       updatedAt: now,
     };
@@ -216,7 +214,6 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       ...workspace,
       state: 'starting' as const,
       bridgeState: 'disconnected' as const,
-      openCodeState: 'not_installed' as const,
       connectionId: undefined,
       failureCode: undefined,
       updatedAt: new Date().toISOString(),
@@ -230,7 +227,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   async stop(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) throw new Error('Workspace has no Codespace name.');
     await this.request<Codespace>(workspace.userId, `/user/codespaces/${encodeURIComponent(workspace.codespaceName)}/stop`, { method: 'POST' });
-    return { ...workspace, state: 'stopped' as const, bridgeState: 'disconnected' as const, openCodeState: 'unavailable' as const, updatedAt: new Date().toISOString() };
+    return { ...workspace, state: 'stopped' as const, bridgeState: 'disconnected' as const , updatedAt: new Date().toISOString() };
   }
   async get(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) return workspace;

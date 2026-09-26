@@ -61,7 +61,6 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
     branch: input.branch,
     state: 'creating',
     bridgeState: 'disconnected',
-    openCodeState: 'not_installed',
     createdAt: now,
     updatedAt: now,
   };
@@ -108,7 +107,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         }, workspace);
         await repository.putWorkspace(workspace);
       } else {
-        workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', openCodeState: 'not_installed', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
+        workspace = { ...workspace, state: workspace.codespaceName ? 'starting' : 'creating', bridgeState: 'disconnected', connectionId: undefined, failureCode: undefined, updatedAt: new Date().toISOString() };
         await repository.putWorkspace(workspace);
         workspace = workspace.codespaceName
           ? await provider.get(workspace)
@@ -138,7 +137,6 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         ...workspace,
         state: 'connecting',
         bridgeState: 'disconnected',
-        openCodeState: 'unavailable',
         connectionId: undefined,
         updatedAt: new Date().toISOString(),
       };
@@ -156,7 +154,6 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         ...workspace,
         state: 'connecting',
         bridgeState: 'disconnected',
-        openCodeState: 'unavailable',
         connectionId: undefined,
         updatedAt: new Date().toISOString(),
       };
@@ -203,7 +200,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
     const staleBridge = Boolean(workspace.connectionId && workspace.bridgeState === 'disconnected' && connectionAge > 30_000);
     if (workspace.state === 'connecting' && workspace.bridgeState !== 'ready' && (!workspace.connectionId || staleBridge)) {
       const connectionId = `${bridgePrefix}${uuid()}`;
-      workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', openCodeState: 'installing', connectionId, updatedAt: new Date().toISOString() };
+      workspace = { ...workspace, state: 'bootstrapping', bridgeState: 'connecting', connectionId, updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
@@ -260,9 +257,6 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
             for (const adapter of refreshAdapterFallback) {
               await repository.putWorkspaceAgentAdapter({ ...adapter, updatedAt: restored.updatedAt });
             }
-            if (!refreshAdapterFallback.length && restored.openCodeState === 'ready') {
-              await repository.putWorkspaceAgentAdapter({ workspaceId: restored.id, adapterId: 'opencode', state: 'ready', updatedAt: restored.updatedAt });
-            }
             console.warn(`[workspace] runtime refresh deferred after Codespace lookup/SSH mismatch session=${restored.sessionId} codespace=${restored.codespaceName || 'unknown'}`);
             emit(input.sessionId, 'workspace.ready', {
               workspaceId: restored.id,
@@ -305,7 +299,7 @@ async function prepareWorkspaceOnce(input: { sessionId: string; userId: string; 
         emit(input.sessionId, 'workspace.ready', { workspaceId: current.id, message: 'Development environment ready.' });
         return current;
       }
-      workspace = { ...current, state: 'failed', bridgeState: 'disconnected', openCodeState: current.openCodeState === 'starting' ? 'failed' : current.openCodeState, failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
+      workspace = { ...current, state: 'failed', bridgeState: 'disconnected', failureCode: error instanceof Error ? error.message.slice(0, 160) : 'workspace_start_failed', updatedAt: new Date().toISOString() };
       await repository.putWorkspace(workspace);
       emit(input.sessionId, 'workspace.preparing', {
         stage: 'failed',
@@ -325,7 +319,6 @@ export async function markWorkspaceConnectionLost(workspaceId: string): Promise<
     ...workspace,
     state: 'connecting',
     bridgeState: 'disconnected',
-    openCodeState: 'unavailable',
     connectionId: undefined,
     updatedAt: new Date().toISOString(),
   };
