@@ -1,20 +1,18 @@
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
-import type { AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } from '@orlynx/shared';
+import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } from '@orlynx/shared';
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { openCodeRuntime, type RuntimeMessage } from './agent-runtime.js';
+import { getAgentAdapter, openCodeRuntime, type RuntimeMessage } from './agent-runtime.js';
 import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { openCodeReadiness } from './opencode.js';
 import { ProviderRequestError } from './opencode-local.js';
-import { openCodeCatalog, resolveModel } from './opencode-catalog.js';
 import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
 
-export type Engine = 'opencode';
+export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
 const activeOpenCodeSessions = new Map<string, { project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
@@ -39,12 +37,6 @@ export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefine
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
   return Boolean(workspace && workspace.state === 'ready' && workspace.bridgeState === 'ready');
-}
-
-export function workspaceOpenCodePublicAccess(modelId: string): boolean | undefined {
-  if (!modelId.toLowerCase().startsWith('opencode/')) return undefined;
-  try { return resolveModel(openCodeCatalog(), modelId).free; }
-  catch { return undefined; }
 }
 
 export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()): boolean {
@@ -323,11 +315,10 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       throw error;
     }
 
-    const [providerID, ...rest] = modelId.split('/');
-    if (!providerID || !rest.length) throw new Error('Unknown model. Choose a model from the available list.');
-    const provider = providerID;
-    const model = { providerID, modelID: rest.join('/') };
-    const openCodePublicAccess = workspaceOpenCodePublicAccess(modelId);
+    const adapterId = task.adapterId || prefs.adapterId || 'opencode';
+    const adapter = getAgentAdapter(adapterId);
+    const parsedModel = adapter.parseModel(modelId);
+    const provider = parsedModel.providerID;
     const startedAt = new Date().toISOString();
 
     if (!run) {
@@ -335,7 +326,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       run = {
         id: runId,
         sessionId,
-        engine: 'opencode',
+        engine: adapter.id,
         plane: task.plane || 'workspace',
         provider,
         model: modelId,
@@ -364,7 +355,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     }
     store.save();
 
-    emit(sessionId, 'run.started', { taskId: task.id, plane: task.plane || 'workspace', engine: 'opencode', provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'run.started', { taskId: task.id, plane: task.plane || 'workspace', engine: adapter.id, provider, model: modelId, mode, permission }, run.id);
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
     if (task.plane === 'direct') {
@@ -384,11 +375,11 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       return run;
     }
 
-    const connection = await openCodeReadiness(session.project, sessionId);
-    if (!connection.connected) throw new Error(connection.message || 'OpenCode is unavailable for this workspace.');
-    const resolvedAgent = await resolveAgentForMode(mode, openCodeRuntime.defaultAgent(), session.project, sessionId);
-    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Development environment ready' }, run.id);
-    if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note }, run.id);
+    const connection = await adapter.readiness(session.project, sessionId);
+    if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable for this workspace.`);
+    const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId);
+    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Development environment ready', adapterId: adapter.id }, run.id);
+    if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
     const guardedText = [
       permission !== 'full' ? readOnlyInstruction() : '',
@@ -396,17 +387,17 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       mode === 'ask' ? readOnlyInstruction() : '',
       task.prompt,
     ].filter(Boolean).join('\n\n');
-    const engineSessionId = await repository.getEngineSession(sessionId);
-    await queueBridgeCommand(workspace.id, 'agent.run', {
+    const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
+    const payload = adapter.workspacePayload({
+      modelId,
       taskId: task.id,
       runId: run.id,
       sessionId,
       engineSessionId,
       text: guardedText,
-      model,
       agent: resolvedAgent.agent,
-      ...(openCodePublicAccess !== undefined ? { openCodePublicAccess } : {}),
-    }, timeoutMs);
+    });
+    await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
     return run;
   } catch (error) {
     const now = new Date().toISOString();
@@ -416,7 +407,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     task.updatedAt = now;
     await repository.putTask(task);
     if (!run && task.runId) {
-      run = { id: task.runId, sessionId, engine: 'opencode', plane: task.plane || 'workspace', state: 'failed', activity: 'Needs attention', startedAt: task.createdAt, finishedAt: now, errorKind };
+      run = { id: task.runId, sessionId, engine: task.adapterId || 'opencode', plane: task.plane || 'workspace', state: 'failed', activity: 'Needs attention', startedAt: task.createdAt, finishedAt: now, errorKind };
       (store.db.runs[sessionId] ||= []).push(run);
     } else if (run) {
       run.state = 'failed';
