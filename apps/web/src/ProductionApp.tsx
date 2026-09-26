@@ -4,6 +4,7 @@ import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
 import { ActivityDetailToggle, useActivityDetailMode } from './ui/workstream';
+import './curated.css';
 import { toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
