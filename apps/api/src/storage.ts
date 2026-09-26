@@ -53,6 +53,7 @@ export interface WorkspaceJobRecord {
   reason?: string;
   workerId?: string;
   leaseUntil?: string;
+  availableAt?: string;
   attempt: number;
   error?: string;
   createdAt: string;
@@ -89,7 +90,8 @@ export interface ControlPlaneRepository {
   enqueueWorkspaceJob(value: WorkspaceJobRecord): Promise<boolean>;
   claimWorkspaceJobs(workerId: string, limit?: number, leaseSeconds?: number): Promise<WorkspaceJobRecord[]>;
   completeWorkspaceJob(id: string): Promise<void>;
-  retryWorkspaceJob(id: string, error: string): Promise<void>;
+  renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds?: number): Promise<boolean>;
+  retryWorkspaceJob(id: string, error: string, delaySeconds?: number): Promise<void>;
   failWorkspaceJob(id: string, error: string): Promise<void>;
   putWorkspaceAgentAdapter(value: WorkspaceAgentAdapterRecord): Promise<void>;
   getWorkspaceAgentAdapter(workspaceId: string, adapterId: string): Promise<WorkspaceAgentAdapterRecord | null>;
@@ -137,7 +139,8 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
   `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, runner_id text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runner_id text`,
-  `CREATE TABLE IF NOT EXISTS workspace_jobs (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind text NOT NULL, state text NOT NULL, allow_fallback boolean NOT NULL DEFAULT true, reason text, worker_id text, lease_until timestamptz, attempt integer NOT NULL DEFAULT 0, error text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS workspace_jobs (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind text NOT NULL, state text NOT NULL, allow_fallback boolean NOT NULL DEFAULT true, reason text, worker_id text, lease_until timestamptz, available_at timestamptz NOT NULL DEFAULT now(), attempt integer NOT NULL DEFAULT 0, error text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
+  `ALTER TABLE workspace_jobs ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now()`,
   `CREATE UNIQUE INDEX IF NOT EXISTS workspace_jobs_active_idx ON workspace_jobs(workspace_id,kind) WHERE state IN ('queued','leased')`,
   `CREATE INDEX IF NOT EXISTS workspace_jobs_claim_idx ON workspace_jobs(state,lease_until,created_at)`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
@@ -225,6 +228,7 @@ function mapWorkspaceJob(row: Record<string, unknown>): WorkspaceJobRecord {
     reason: row.reason ? String(row.reason) : undefined,
     workerId: row.worker_id ? String(row.worker_id) : undefined,
     leaseUntil: row.lease_until ? iso(row.lease_until) : undefined,
+    availableAt: row.available_at ? iso(row.available_at) : undefined,
     attempt: Number(row.attempt || 0),
     error: row.error ? String(row.error) : undefined,
     createdAt: iso(row.created_at),
@@ -384,8 +388,8 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async enqueueWorkspaceJob(v: WorkspaceJobRecord) {
     await this.initialize();
     const result = await this.sql.query(
-      `INSERT INTO workspace_jobs (id,workspace_id,session_id,kind,state,allow_fallback,reason,attempt,error,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,'queued',$5,$6,0,NULL,$7,$8)
+      `INSERT INTO workspace_jobs (id,workspace_id,session_id,kind,state,allow_fallback,reason,available_at,attempt,error,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'queued',$5,$6,now(),0,NULL,$7,$8)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [v.id, v.workspaceId, v.sessionId, v.kind, v.allowFallback, v.reason || null, v.createdAt, v.updatedAt],
@@ -408,7 +412,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     const result = await this.sql.query(
       `WITH candidate AS (
          SELECT id FROM workspace_jobs
-         WHERE state='queued' OR (state='leased' AND lease_until < now())
+         WHERE (state='queued' AND available_at <= now()) OR (state='leased' AND lease_until < now())
          ORDER BY created_at,id
          LIMIT $1
          FOR UPDATE SKIP LOCKED
@@ -425,9 +429,23 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     await this.sql`UPDATE workspace_jobs SET state='completed',worker_id=NULL,lease_until=NULL,error=NULL,updated_at=now() WHERE id=${id}`;
   }
-  async retryWorkspaceJob(id: string, error: string) {
+  async renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds = 90) {
     await this.initialize();
-    await this.sql`UPDATE workspace_jobs SET state='queued',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id}`;
+    const safeLease = Math.max(30, Math.min(Number(leaseSeconds) || 90, 600));
+    const result = await this.sql.query(
+      `UPDATE workspace_jobs SET lease_until=now() + ($3 * interval '1 second'),updated_at=now()
+       WHERE id=$1 AND state='leased' AND worker_id=$2 RETURNING id`,
+      [id, workerId, safeLease],
+    );
+    return rows<Record<string, unknown>>(result).length > 0;
+  }
+  async retryWorkspaceJob(id: string, error: string, delaySeconds = 3) {
+    await this.initialize();
+    const safeDelay = Math.max(1, Math.min(Number(delaySeconds) || 3, 300));
+    await this.sql.query(
+      `UPDATE workspace_jobs SET state='queued',worker_id=NULL,lease_until=NULL,available_at=now() + ($3 * interval '1 second'),error=$2,updated_at=now() WHERE id=$1`,
+      [id, error.slice(0,1000), safeDelay],
+    );
   }
   async failWorkspaceJob(id: string, error: string) {
     await this.initialize();
