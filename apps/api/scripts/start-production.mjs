@@ -62,4 +62,31 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('exit', () => { try { child?.kill('SIGTERM'); } catch {} });
 
 startSidecar();
+
+async function waitForSidecar() {
+  const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+  const deadline = Date.now() + 30_000;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseURL}/global/health`, {
+        headers: { Authorization: authorization, Accept: 'application/json' },
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.ok) {
+        console.log('[opencode-local] ready');
+        return;
+      }
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  console.error(`[opencode-local] failed readiness check: ${lastError || 'timeout'}`);
+  try { child?.kill('SIGTERM'); } catch {}
+  process.exit(1);
+}
+
+await waitForSidecar();
 await import('../dist/index.js');
