@@ -40,31 +40,49 @@ Avoid:
 
 ## Core light palette
 
-- Canvas: #FBF8F3
-- Elevated background: #FFFDF9
-- Surface: #FFFDFA
-- Muted surface: #F4EFE8
-- Primary ink: #1D1C1A
-- Muted ink: #716D67
-- Subtle ink: #9A948D
-- Border: #E5DED5
-- Strong border: #D4C9BD
-- Primary CTA: #242321
-- Warm accent: #8A6247
-- Warm accent surface: #F3E3D3
-- Success: #2F9F69
-- Warning: #C98935
-- Danger: #D75A54
-- Working/info: #3D78C5
+- Canvas: #F7F5F1
+- Elevated background: #FFFFFF
+- Surface: #FFFFFF
+- Muted surface: #EFEEE9
+- Primary ink: #181B20
+- Muted ink: #5F6874
+- Subtle ink: #7D8794
+- Border: #D9DDE3
+- Strong border: #C4CAD2
+- Primary CTA: #181B20
+- Warm accent: #9A654A
+- Warm accent surface: #F0E3DA
+- Success: #2F7D66
+- Warning: #B98434
+- Danger: #C95555
+- Working/info: #3F6FA8
 
-Runtime tokens live in `apps/web/src/ui/tokens.css`. Durable changes to these values should update this file and the runtime tokens together.
+## Core dark palette
+
+- Canvas: #111318
+- Elevated background: #15181E
+- Surface: #191D23
+- Elevated surface: #20252D
+- Primary ink: #F5F7FA
+- Muted ink: #AAB2BD
+- Subtle ink: #7D8794
+- Border: #2D333C
+- Strong border: #3C4552
+- Warm accent: #D5A585
+- Success: #6CC4A4
+- Warning: #E2B05A
+- Danger: #E17A7A
+- Working/info: #7AA2D1
+
+Runtime tokens live in `apps/web/src/ui/tokens.css`. Durable changes to these values should update this file and the runtime tokens together. Product surfaces must use semantic tokens rather than hard-coded light-only colors.
 
 ## Typography
 
-Primary UI: Inter/system sans stack.
-Code/data: SFMono/Consolas/Liberation Mono/Menlo.
+Headings and brand moments: Manrope 600–700.
+Primary UI and long-form/chat text: Source Sans 3 400–700.
+Code, commands, file paths and technical metadata: IBM Plex Mono 400–600.
 
-Use strong negative tracking only for major headings. Body text remains calm and readable.
+The three roles should remain visibly distinct but balanced. Monospace is reserved for actual code/data, not as a general “technical” decoration. Use strong negative tracking only for major headings. Body text remains calm and readable.
 
 ## Geometry
 
@@ -92,12 +110,17 @@ Repository switching belongs in the project header. Settings, Terminal, Preview 
 
 ## AI controls
 
-Normal project UI exposes:
+Normal project UI exposes one compact AI control that opens a single, coherent selection surface for:
+- Agent
 - Model
+
+Mode and access remain separate because they answer different questions:
 - Mode: Build / Plan / Ask
 - Access: Full project access / Ask first / Read only
 
-OpenCode is an implementation detail and belongs only in advanced diagnostics/settings.
+Do not use long native browser selects for agent/model choice. The control must show the current agent and model, expose adapter readiness truthfully, and scale cleanly when additional agents are added.
+
+OpenCode account/provider details belong inside the AI management surface or advanced settings. The main workspace should present the user-facing agent name and current state, not infrastructure jargon.
 
 ## Activity
 
