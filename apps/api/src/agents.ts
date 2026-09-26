@@ -10,7 +10,7 @@ import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
-import { cancelDirectRun, executionPlaneFor, hasDirectRun, streamDirectRepositoryChat, type ExecutionPlane } from './direct-chat.js';
+import type { ExecutionPlane } from './direct-chat.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -126,6 +126,7 @@ async function executeDirectTask(
   task: TaskRecord,
   run: AgentRun,
   modelId: string,
+  adapter: AgentRuntimeAdapter,
 ): Promise<void> {
   if (!session) return;
   executingDirectTasks.add(task.id);
@@ -159,7 +160,8 @@ async function executeDirectTask(
   heartbeat.unref?.();
 
   try {
-    const responseText = await streamDirectRepositoryChat({
+    if (!adapter.streamDirectChat) throw new Error(`${adapter.displayName} does not support direct chat without a development environment.`);
+    const responseText = await adapter.streamDirectChat({
       runId: run.id,
       messageId: task.messageId,
       prompt: task.prompt,
@@ -377,7 +379,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
     if (task.plane === 'direct') {
       emit(sessionId, 'activity.started', { taskId: task.id, text: 'Thinking…' }, run.id);
-      void executeDirectTask(session, task, run, modelId);
+      void executeDirectTask(session, task, run, modelId, adapter);
       return run;
     }
 
@@ -444,7 +446,10 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
   const tasks = await repository.listTasks(sessionId);
   let recovered = false;
   for (const task of tasks) {
-    if (task.plane !== 'direct' || task.state !== 'running' || !task.runId || hasDirectRun(task.runId) || executingDirectTasks.has(task.id)) continue;
+    if (task.plane !== 'direct' || task.state !== 'running' || !task.runId || executingDirectTasks.has(task.id)) continue;
+    let directStillRunning = false;
+    try { directStillRunning = Boolean(getAgentAdapter(task.adapterId || 'opencode').hasDirectRun?.(task.runId)); } catch {}
+    if (directStillRunning) continue;
     // Another instance or an in-flight startup may own a fresh heartbeat.
     if (Date.now() - Date.parse(task.updatedAt) < 30_000) continue;
     // After process death an upstream request cannot be resumed safely. Keep
@@ -681,7 +686,9 @@ async function captureDiff(sessionId: string, project: string, runId: string, en
 export async function cancelRun(sessionId: string, runId: string) {
   const run = (store.db.runs[sessionId] || []).find((item) => item.id === runId);
   if (!run || run.state !== 'running') return run;
-  if (run.plane === 'direct') cancelDirectRun(runId);
+  if (run.plane === 'direct') {
+    try { getAgentAdapter(run.engine).cancelDirectRun?.(runId); } catch {}
+  }
   const active = activeAgentSessions.get(runId);
   if (active) {
     active.cancelled = true;
