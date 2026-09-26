@@ -145,26 +145,53 @@ describe('chat and cloud reliability contract', () => {
 });
 
 
-describe('workspace startup progress presentation', () => {
+describe('operation progress presentation', () => {
   const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'apps/web/src/styles.css'), 'utf8');
 
-  it('renders normal workspace startup as one inline chat progress stream', () => {
-    assert.match(src, /function WorkspaceProgress/);
+  it('renders normal background work as one inline progress stream', () => {
+    assert.match(src, /function OperationProgress/);
     assert.match(src, /className="workspace-progress"/);
-    assert.match(src, /aria-label="Development environment progress"/);
+    assert.match(src, /aria-label=\{\`\$\{title\} progress\`\}/);
     assert.match(src, /workspaceReadNotice && tab !== 'chat'/);
     assert.doesNotMatch(src, /workspacePreparing && \(cloudBusy \|\| lastRun\?\.plane === 'workspace'\) && <div className="screen-alert"/);
   });
 
   it('hides duplicate queued Build activity and task-saved receipts while startup progress is active', () => {
-    assert.match(src, /currentChatActivities\.length && !workspaceProgressActive/);
-    assert.match(src, /lastRun\?\.state === 'queued' && lastRun\?\.plane !== 'workspace'/);
+    assert.match(src, /currentChatActivities\.length && !operationProgressActive/);
+    assert.match(src, /lastRun\?\.state === 'queued' && !operationProgressActive/);
   });
 
   it('keeps progress calm and non-danger styled', () => {
     assert.match(css, /\.workspace-progress \{/);
     assert.match(css, /\.workspace-progress-step\.retry/);
     assert.doesNotMatch(css, /\.workspace-progress[\s\S]{0,900}var\(--danger\)/);
+  });
+});
+
+
+describe('progress streaming beyond Build mode', () => {
+  const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
+
+  it('uses the progress stream for direct Plan, Ask and conversational responses before first text arrives', () => {
+    assert.match(src, /lastRun\.plane === 'workspace'[\s\S]*?: !draftReply/);
+    assert.match(src, /lastRun\?\.mode === 'plan'[\s\S]*?'Preparing plan'/);
+    assert.match(src, /lastRun\?\.mode === 'ask'[\s\S]*?'Preparing answer'/);
+    assert.match(src, /event\?\.type === 'activity\.started' \|\| event\?\.type === 'activity\.progress'/);
+    assert.match(src, /Starting AI…/);
+    assert.match(src, /Preparing response…/);
+  });
+
+  it('shows recoverable retries as progress and keeps terminal errors separate', () => {
+    assert.match(src, /payload\.sourceType === 'opencode\.retry'/);
+    assert.match(src, /tone: 'retry'/);
+    assert.match(src, /run\.failed/);
+  });
+
+  it('reuses the same progress component for GitHub connection and sync', () => {
+    assert.match(src, /title="Connecting GitHub"/);
+    assert.match(src, /Verifying installation…/);
+    assert.match(src, /Fetching repositories…/);
+    assert.match(src, /Preparing Orlynx…/);
   });
 });
