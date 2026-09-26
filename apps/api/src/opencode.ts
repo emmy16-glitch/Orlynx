@@ -17,7 +17,7 @@ function projectsRoot(): string { return path.resolve(process.env.OPENCODE_PROJE
 export interface OpenCodeSession { id: string; directory: string; }
 export interface OpenCodeMessage { info: Record<string, any>; parts: Record<string, any>[]; }
 
-type WorkspaceBridgeHealth = {
+type WorkspaceBridgeHealth = Record<string, unknown> & {
   bridge?: string;
   openCode?: string;
   adapters?: Record<string, { state?: string; reason?: string }>;
