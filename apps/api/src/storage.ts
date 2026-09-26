@@ -261,7 +261,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putSession(v: ProjectSession & { userId: string; projectId: string }) {
     await this.initialize();
-    await this.sql`INSERT INTO sessions (id,user_id,project_id,installation_id,project,owner,branch,mode,workspace_id,checkpoint,created_at,updated_at) VALUES (${v.id},${v.userId},${v.projectId},${v.installationId || null},${v.project},${v.owner || null},${v.branch},${v.mode},${v.workspaceId},${JSON.stringify(v.checkpoint || null)},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET mode=EXCLUDED.mode,workspace_id=EXCLUDED.workspace_id,checkpoint=EXCLUDED.checkpoint,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO sessions (id,user_id,project_id,installation_id,project,owner,branch,mode,workspace_id,checkpoint,created_at,updated_at) VALUES (${v.id},${v.userId},${v.projectId},${v.installationId || null},${v.project},${v.owner || null},${v.branch},${v.mode},${v.workspaceId},${JSON.stringify(v.checkpoint || null)},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET user_id=EXCLUDED.user_id,project_id=EXCLUDED.project_id,installation_id=EXCLUDED.installation_id,project=EXCLUDED.project,owner=EXCLUDED.owner,branch=EXCLUDED.branch,mode=EXCLUDED.mode,workspace_id=EXCLUDED.workspace_id,checkpoint=EXCLUDED.checkpoint,updated_at=EXCLUDED.updated_at`;
   }
   async getSession(id: string) {
     await this.initialize();
