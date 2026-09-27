@@ -133,6 +133,14 @@ describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)
   it('TEST 8: opening the same preview preserves navigation context', () => {
     assert.match(app(), /if \(port === previewPortSel && previewStack\.length\) \{ setTab\('preview'\); return; \}/);
   });
+
+  it('stale selected ports cannot drift from the iframe/server truth', () => {
+    const src = app();
+    assert.match(src, /previewPortSel !== null[\s\S]*?usablePorts\.find/);
+    assert.match(src, /if \(previewPortSel === null \|\| usablePorts\.some/);
+    assert.match(src, /setPreviewPortSel\(null\); setPreviewStack\(\[\]\); setPreviewIdx\(-1\)/);
+    assert.match(src, /setPreviewStack\(\[replacement\.url\]\); setPreviewIdx\(0\)/);
+  });
 });
 
 describe('preview surface (§§196-197, 206, 211-213, 219-221, 232, 234)', () => {
