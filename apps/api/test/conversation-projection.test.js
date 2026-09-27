@@ -310,14 +310,16 @@ describe('conversation projection: results and failures', () => {
 });
 
 describe('conversation projection: presentation contract', () => {
-  it('TEST 19: main transcript uses summary/collapsed presentation', () => {
+  it('TEST 19: main transcript uses typed parts with collapsed presentation', () => {
     const app = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
-    const product = fs.readFileSync(path.join(webSrc, 'ui/product.tsx'), 'utf8');
-    assert.match(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
-    assert.doesNotMatch(app, /<TaskActivityRow item=\{item\} detailMode="code"/);
-    assert.match(product, /const \[showEvidence, setShowEvidence\] = React\.useState\(false\)/);
-    assert.match(product, /const \[showRaw, setShowRaw\] = React\.useState\(false\)/);
-    assert.doesNotMatch(product, /useState\(detailMode === 'code' \|\| isCurrent\)/);
+    const parts = fs.readFileSync(path.join(webSrc, 'ui/tool-parts.tsx'), 'utf8');
+    // Work renders through the typed part registry inside thread turns —
+    // never through a single generic activity row.
+    assert.match(app, /<PartRow part=\{part\} \/>/);
+    assert.doesNotMatch(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
+    assert.match(parts, /useDisclosure\(false\)/);
+    assert.match(parts, /const \[open, setOpen\] = React\.useState\(defaultOpen\)/);
+    assert.doesNotMatch(parts, /useDisclosure\(true\)/);
   });
 
   it('TEST 20: raw output renders in a bounded scrollable detail container', () => {
@@ -415,8 +417,9 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
   });
 
   it('71: streaming keeps a single subtle cue', () => {
+    // The stream caret renders once inside the owning turn's live reply text.
     const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
-    assert.ok(streamLine?.includes('reply.text'));
+    assert.ok(streamLine?.includes('turn.liveReply.text'));
     assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
   });
 });

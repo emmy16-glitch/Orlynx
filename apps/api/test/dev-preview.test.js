@@ -93,7 +93,8 @@ describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)
     const src = pane();
     assert.doesNotMatch(src, /port detected|workspace port|health check/i);
     assert.match(src, /Development server started/);
-    assert.match(app(), /<ServerPreviewAction command=\{[^}]*\} output=\{item\.rawOutput\}/);
+    // Preview actions attach to the typed work part that owns the command.
+    assert.match(app(), /<ServerPreviewAction command=\{[^}]*\} output=\{part\.item\.rawOutput\}/);
   });
 
   it('TEST 3/4/16: chat action selects the tab, port and URL deterministically', () => {

@@ -13,7 +13,8 @@ const css = () => fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
 
 describe('contextual message actions (§§142-143, 161, 171-173)', () => {
   it('assistant responses carry a quiet attached action row', () => {
-    assert.match(app(), /<AssistantMessageActions text=\{cleanText\}/);
+    // Thread turns attach actions to the durable assistant message they own.
+    assert.match(app(), /<AssistantMessageActions text=\{visibleChatText\('assistant', durable\.text, priorUserPrompt\)\}/);
     assert.match(product(), /className="message-actions" role="group" aria-label="Response actions"/);
     assert.match(css(), /\.message-actions \{[\s\S]*?opacity: 0\.78/);
   });
@@ -28,23 +29,25 @@ describe('contextual message actions (§§142-143, 161, 171-173)', () => {
   });
 
   it('user messages get minimal Copy + Edit & resend only', () => {
-    assert.match(app(), /<UserMessageActions text=\{cleanText\} onEdit=\{/);
+    assert.match(app(), /<UserMessageActions text=\{userText\} onEdit=\{/);
     assert.match(product(), /aria-label="Edit and resend as a new message"/);
   });
 
   it('technical activity rows are not given message action bars', () => {
-    assert.doesNotMatch(product(), /TaskActivityRow[\s\S]{0,500}?AssistantMessageActions/);
+    // Typed work parts render through the part registry; message actions
+    // attach only to the turn's durable assistant response.
+    assert.doesNotMatch(product(), /PartRow[\s\S]{0,500}?AssistantMessageActions/);
     const src = app();
-    const activityRow = src.indexOf('<TaskActivityRow item={item}');
-    assert.ok(activityRow > 0);
-    assert.doesNotMatch(src.slice(activityRow - 200, activityRow + 200), /MessageActions/);
+    const partRow = src.indexOf('<PartRow part={part} />');
+    assert.ok(partRow > 0);
+    assert.doesNotMatch(src.slice(partRow - 200, partRow + 200), /MessageActions/);
   });
 });
 
 describe('retry semantics (§§144-149, 175-178, 183, 185)', () => {
   it('retry attaches to the latest response and never streams', () => {
     assert.match(product(), /const showRetry = !props\.runActive && props\.isLatest && Boolean\(props\.userPrompt\)/);
-    assert.match(app(), /onRetry=\{\(\) => retryMessage\(message\.id, priorUserPrompt\)\}/);
+    assert.match(app(), /onRetry=\{\(\) => retryMessage\(durable\.id, priorUserPrompt\)\}/);
   });
 
   it('retry is idempotent with pending/failed states', () => {
