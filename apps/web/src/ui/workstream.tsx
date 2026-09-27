@@ -4,9 +4,9 @@ import { runTone, toActivities } from './mapping';
 import { TaskActivityRow, type ActivityDetailMode } from './product';
 import { Badge, Button, Card, Icon } from './primitives';
 
-const ACTIVITY_DETAIL_KEY = 'orlynx:activity-detail-mode';
+const ACTIVITY_DETAIL_KEY = 'orlynx:activity-detail-mode:v2';
 
-export function useActivityDetailMode(defaultMode: ActivityDetailMode = 'summary') {
+export function useActivityDetailMode(defaultMode: ActivityDetailMode = 'code') {
   const [mode, setMode] = useState<ActivityDetailMode>(() => {
     if (typeof window === 'undefined') return defaultMode;
     try {
@@ -28,15 +28,14 @@ export function ActivityDetailToggle({ mode, onChange }: { mode: ActivityDetailM
   </div>;
 }
 
-export function AgentWorkStream({ events, defaultDetailMode = 'summary' }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number; runId?: string; timestamp?: string }[]; defaultDetailMode?: ActivityDetailMode }) {
+export function AgentWorkStream({ events, defaultDetailMode = 'code' }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number; runId?: string; timestamp?: string }[]; defaultDetailMode?: ActivityDetailMode }) {
   const [expanded, setExpanded] = useState(false);
   const [detailMode, setDetailMode] = useActivityDetailMode(defaultDetailMode);
   const items = useMemo(() => toActivities(events), [events]);
   if (!items.length) return <div className="small" role="status">No agent activity yet.</div>;
   const currentIndex = items.reduce((current, item, index) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const startAt = expanded ? 0 : Math.max(0, Math.min(items.length - 7, currentIndex >= 0 ? currentIndex - 3 : items.length - 7));
-  const visible = expanded ? items : items.slice(startAt, Math.max(startAt + 7, currentIndex + 1));
-  const hidden = items.length - visible.length;
+  const visible = expanded ? items : items.slice(-100);
+  const hidden = Math.max(0, items.length - visible.length);
   const last = items[items.length - 1];
   const announcement = last.state === 'failed' ? `${last.title}${last.summary ? `. ${last.summary}` : ''}`
     : last.state === 'success' && ['test', 'build', 'agent', 'error'].includes(last.category) ? `${last.title}${last.summary ? `. ${last.summary}` : ''}`
