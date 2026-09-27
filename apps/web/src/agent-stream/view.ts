@@ -57,6 +57,29 @@ function activityCategory(activity: AgentStreamActivity): ActivityCategory {
 }
 
 function makeActivity(activity: AgentStreamActivity): ActivityItem {
+  const category = activityCategory(activity);
+  let title = activity.title;
+  let summary = activity.summary;
+  let evidence = activity.evidence;
+  if (activity.kind === 'receipt') {
+    const command = typeof activity.evidence?.command === 'string' ? activity.evidence.command : '';
+    const counts = category === 'test' ? parseTestCounts(activity.rawOutput || '') : undefined;
+    const failed = activity.state === 'failed' || (counts?.failed || 0) > 0;
+    if (category === 'test') {
+      title = failed ? 'Tests failed' : 'Tests passed';
+      if (counts) summary = [
+        counts.passed !== undefined ? `${counts.passed} passed` : '',
+        counts.failed !== undefined ? `${counts.failed} failed` : '',
+        counts.skipped !== undefined ? `${counts.skipped} skipped` : '',
+        counts.failures?.[0] ? `Main issue: ${counts.failures[0]}` : '',
+      ].filter(Boolean).join(' · ');
+      evidence = { ...(evidence || {}), ...(counts || {}) };
+    } else if (category === 'build') {
+      title = failed ? 'Build failed' : 'Build completed';
+    } else if (/health|curl/i.test(command)) {
+      title = failed ? 'Service health check failed' : 'Service health check passed';
+    }
+  }
   return {
     key: activity.id,
     id: activity.id,
@@ -64,14 +87,14 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
     taskId: activity.taskId,
     sequence: activity.sequence,
     timestamp: activity.timestamp,
-    category: activityCategory(activity),
+    category,
     state: activity.state,
-    title: activity.title,
-    summary: activity.summary,
-    evidence: activity.evidence,
+    title,
+    summary,
+    evidence,
     rawOutput: activity.rawOutput,
-    rawRef: undefined,
-    collapsible: Boolean(activity.evidence || activity.rawOutput),
+    rawRef: `stream:${activity.id}`,
+    collapsible: Boolean(evidence || activity.rawOutput),
   };
 }
 
