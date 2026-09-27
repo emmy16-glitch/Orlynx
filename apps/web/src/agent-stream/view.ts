@@ -138,6 +138,7 @@ function makeTool(tool: AgentStreamTool): ActivityItem {
     summary,
     evidence: Object.keys(evidence).length ? evidence : undefined,
     rawOutput: tool.output || tool.error,
+    rawRef: `stream:tool:${tool.id}`,
     collapsible: Boolean(Object.keys(evidence).length || tool.output || tool.error),
   };
 }
