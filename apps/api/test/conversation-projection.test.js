@@ -315,9 +315,9 @@ describe('conversation projection: presentation contract', () => {
     const parts = fs.readFileSync(path.join(webSrc, 'ui/tool-parts.tsx'), 'utf8');
     // Work renders through the typed part registry inside thread turns —
     // never through a single generic activity row.
-    assert.match(app, /<PartRow part=\{part\} \/>/);
+    assert.match(app, /<PartRow part=\{part\} onResolveApproval=\{resolveApproval\} \/>/);
     assert.doesNotMatch(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
-    assert.match(parts, /useDisclosure\(false\)/);
+    assert.match(parts, /useDisclosure\(part\.kind === 'approval' && part\.item\.state === 'waiting'\)/);
     assert.match(parts, /const \[open, setOpen\] = React\.useState\(defaultOpen\)/);
     assert.doesNotMatch(parts, /useDisclosure\(true\)/);
   });
