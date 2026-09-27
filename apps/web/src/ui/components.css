@@ -33,6 +33,7 @@
 .ox-activity:not([data-state="active"]):not([data-state="fail"]) { color: var(--foreground-muted); }
 .ox-activity-content { min-width: 0; flex: 1; }
 .ox-activity-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 650; }
+.ox-activity-time { margin-left: auto; flex: none; color: var(--foreground-subtle); font-size: var(--text-meta); font-weight: 500; font-variant-numeric: tabular-nums; }
 .ox-current-label { flex: none; font-size: var(--text-meta); font-weight: 650; color: var(--agent-working); }
 .ox-activity[data-current="true"] { margin: 2px -8px; padding: 10px 8px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--agent-working) 6%, transparent); }
 .ox-activity[data-state="active"]:not([data-current="true"]) .mark { animation: none; color: var(--foreground-subtle); border-color: var(--border); }
