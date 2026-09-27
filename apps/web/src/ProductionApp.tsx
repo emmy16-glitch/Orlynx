@@ -7,6 +7,7 @@ import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatA
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
+import { applyLiveReplyEvents, reconcileLiveRepliesFromRuns, type LiveReply } from './ui/live-replies';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -83,7 +84,7 @@ export default function ProductionApp() {
   const [branches, setBranches] = useState<string[]>([]);
   const [branch, setBranch] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
-  const [draftReply, setDraftReply] = useState('');
+  const [liveReplies, setLiveReplies] = useState<Record<string, LiveReply>>({});
   const [events, setEvents] = useState<any[]>([]);
   const [files, setFiles] = useState<any[]>([]);
   const [folder, setFolder] = useState('');
@@ -153,7 +154,6 @@ export default function ProductionApp() {
   const pendingRef = useRef<any[]>([]);
   const rafRef = useRef<number | null>(null);
   const runRef = useRef<any>(null);
-  const partialCutoffRef = useRef(0);
   const sessionRefreshesRef = useRef(new Map<string, Promise<void>>());
   const ptyRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
@@ -246,26 +246,10 @@ export default function ProductionApp() {
       const latestRun = runData.slice(-1)[0] || null;
       setLastRun(latestRun); runRef.current = latestRun;
 
-      const streamingRun = [...runData].reverse().find((candidate: any) => candidate.state === 'running' && candidate.partialText);
-      if (streamingRun?.partialText) {
-        const snapshot = String(streamingRun.partialText);
-        const snapshotUpdatedAt = Date.parse(streamingRun.partialUpdatedAt || '') || 0;
-        const cutoff = partialCutoffRef.current;
-
-        // SSE is the hot path. A slower HTTP refresh must never replace newer
-        // streamed text with an older partial snapshot. A newly queued follow-up
-        // must not erase the response that is still streaming ahead of it.
-        setDraftReply((current) => {
-          if (snapshotUpdatedAt < cutoff && current) return current;
-          if (current && current.startsWith(snapshot)) return current;
-          if (current && snapshot.startsWith(current)) return snapshot;
-          return snapshotUpdatedAt >= cutoff ? snapshot : current;
-        });
-        partialCutoffRef.current = Math.max(cutoff, snapshotUpdatedAt);
-      } else if (!runData.some((candidate: any) => candidate.state === 'running')) {
-        setDraftReply('');
-        partialCutoffRef.current = 0;
-      }
+      // Reconcile every live reply independently. Direct chat can bypass a
+      // queued workspace task, so two runs may overlap; one global draft string
+      // would corrupt their streamed text.
+      setLiveReplies((current) => reconcileLiveRepliesFromRuns(current, runData, messageData));
 
       setSession(details); currentSessionRef.current = details;
       refreshIntegrations().catch(() => {});
@@ -289,28 +273,15 @@ export default function ProductionApp() {
       const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
       setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-500));
 
-      // Preserve event order. A run.started and its first message.delta can
-      // arrive in the same animation frame; clearing the draft after appending
-      // deltas used to erase the first streamed token.
-      let replaceDraft = false;
-      let newestDeltaAt = partialCutoffRef.current;
-      const deltas: string[] = [];
+      // Preserve event order per run. A run.started and its first delta may
+      // share a frame, while another direct/workspace run can stream at the
+      // same time. Each run owns one live assistant bubble.
+      setLiveReplies((current) => applyLiveReplyEvents(current, batch));
       const terminalChunks: string[] = [];
       for (const item of batch) {
         if (item.type === 'run.started') {
-          replaceDraft = true;
           setError('');
-          deltas.length = 0;
-          partialCutoffRef.current = 0;
-          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
-        }
-
-        if (item.type === 'message.delta') {
-          const deltaAt = Date.parse(item.timestamp || '') || 0;
-          if (deltaAt > partialCutoffRef.current) {
-            deltas.push(String(item.payload?.delta || ''));
-            newestDeltaAt = Math.max(newestDeltaAt, deltaAt);
-          }
+          setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp, messageId: item.payload?.messageId });
         }
         if (item.payload?.sourceType === 'pty.output') terminalChunks.push(String(item.payload?.data || ''));
 
@@ -340,10 +311,6 @@ export default function ProductionApp() {
       // (heartbeats, stream markers, snapshots) never moves the viewport.
       if (!nearBottomRef.current && batch.some((item) => isFollowWorthyEvent(item.type, item.payload))) setNewActivity(true);
 
-      if (replaceDraft && !deltas.length) setDraftReply('');
-      else if (replaceDraft) setDraftReply(deltas.join(''));
-      else if (deltas.length) setDraftReply((previous) => previous + deltas.join(''));
-      if (newestDeltaAt > partialCutoffRef.current) partialCutoffRef.current = newestDeltaAt;
       if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
     });
@@ -377,7 +344,7 @@ export default function ProductionApp() {
   const openSession = useCallback(async (record: any) => {
     sourceRef.current?.close();
     seqRef.current = 0;
-    seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setDraftReply(''); setPushReview(null);
+    seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setLiveReplies({}); setPushReview(null);
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
@@ -622,7 +589,7 @@ export default function ProductionApp() {
     if (!nearBottomRef.current || tab !== 'chat' || page !== 'workspace') return;
     const frame = requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
     return () => cancelAnimationFrame(frame);
-  }, [messages.length, draftReply, events.length, tab, page]);
+  }, [messages.length, Object.values(liveReplies).reduce((sum, reply) => sum + reply.text.length, 0), events.length, tab, page]);
 
   const [composerFocused, setComposerFocused] = useState(false);
   const composerBoxRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1235,7 +1202,13 @@ export default function ProductionApp() {
                   const cancelledLatest = isLatestAssistant && lastRun?.state === 'cancelled';
                   return <article className="message-row assistant-message" key={entry.key}><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><AssistantMessageActions text={cleanText} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={failedLatest} runCancelled={cancelledLatest} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[message.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(message.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} /></div></article>;
                 })}
-                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{running ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{running && <span className="stream-caret" />}</div></div></article>}
+                {Object.values(liveReplies).filter((reply) => reply.text).sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt)).map((reply) => {
+                  const prompt = reply.messageId
+                    ? String(messages.find((message) => message.id === reply.messageId)?.text || '')
+                    : String([...messages].reverse().find((message) => message.role === 'user')?.text || '');
+                  const active = reply.state === 'running' || reply.state === 'queued';
+                  return <article className="message-row assistant-message" key={`live:${reply.runId}`}><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{active ? 'Responding…' : reply.state === 'failed' ? 'Partial response · interrupted' : reply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', reply.text, prompt)}{active && <span className="stream-caret" />}</div></div></article>;
+                })}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
               </section>}
