@@ -367,6 +367,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   let streamFallbackNotified = false;
   const textParts = new Map<string, string>();
   const toolStates = new Map<string, string>();
+  const toolOutputs = new Map<string, string>();
 
   const emitRetry = (status: Record<string, any>) => {
     const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
@@ -387,13 +388,10 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     const status = String(state.status || '');
     const id = String(part.callID || part.id || part.tool || '');
     if (!id || !status) return;
-    const marker = `${status}:${String(state.time?.end || '')}:${String(state.output || state.error || '').length}`;
-    if (toolStates.get(id) === marker) return;
-    toolStates.set(id, marker);
 
     // OpenCode tool parts carry observable inputs in state.input/part.input.
-    // Preserve only small, user-verifiable execution metadata — never hidden
-    // reasoning — so Build mode can show the command/file being worked on.
+    // Forward the observable execution metadata and output as it changes so the
+    // Orlynx timeline mirrors the engine instead of waiting for completion.
     const input = state.input && typeof state.input === 'object'
       ? state.input as Record<string, any>
       : part.input && typeof part.input === 'object'
@@ -415,14 +413,47 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
       tool: toolName,
       callId: id,
       title,
-      ...(command ? { command: command.slice(0, 1_200) } : {}),
-      ...(filePath ? { path: filePath.slice(0, 800) } : {}),
-      ...(code ? { code: code.slice(0, 8_000) } : {}),
+      ...(command ? { command: command.slice(0, 4_000) } : {}),
+      ...(filePath ? { path: filePath.slice(0, 1_200) } : {}),
+      ...(code ? { code: code.slice(0, 24_000) } : {}),
     };
-    if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
-    else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
-    else if (status === 'completed') bridgeEvent(ws, 'tool.completed', { ...common, out: String(state.output || '').slice(0, 8_000) }, taskId, runId);
-    else if (status === 'error') bridgeEvent(ws, 'tool.failed', { ...common, error: String(state.error || 'Tool failed.').slice(0, 2_000) }, taskId, runId);
+
+    const previousStatus = toolStates.get(id);
+    if (status !== previousStatus) {
+      toolStates.set(id, status);
+      if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
+      else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
+    }
+
+    const currentOutput = String(state.output || '');
+    const previousOutput = toolOutputs.get(id) || '';
+    if (currentOutput !== previousOutput) {
+      const appendOnly = currentOutput.startsWith(previousOutput);
+      const delta = appendOnly ? currentOutput.slice(previousOutput.length) : currentOutput;
+      // Keep each WebSocket/event frame bounded while preserving the complete
+      // observable output as an ordered sequence of chunks.
+      const chunkSize = 12_000;
+      for (let offset = 0; offset < delta.length; offset += chunkSize) {
+        bridgeEvent(ws, 'tool.output', {
+          ...common,
+          outDelta: delta.slice(offset, offset + chunkSize),
+          replace: !appendOnly && offset === 0,
+        }, taskId, runId);
+      }
+      toolOutputs.set(id, currentOutput);
+    }
+
+    if (status === 'completed' && previousStatus !== 'completed') {
+      bridgeEvent(ws, 'tool.completed', {
+        ...common,
+        ...(typeof state.time?.end === 'number' ? { endedAt: state.time.end } : {}),
+      }, taskId, runId);
+    } else if (status === 'error' && previousStatus !== 'error') {
+      bridgeEvent(ws, 'tool.failed', {
+        ...common,
+        error: String(state.error || 'Tool failed.').slice(0, 8_000),
+      }, taskId, runId);
+    }
   };
 
   const reconcile = async () => {
