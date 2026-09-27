@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // Orlynx canonical agent protocol — server-authoritative boundary.
 //
 // Direction of travel (never reversed):
@@ -114,9 +115,34 @@ export function scopeToolCallId(runId: string | undefined, rawId: string): strin
   return `${run}:${rawId}`;
 }
 
-/** Idempotency key for bridge EVENT persistence (replay-safe). */
-export function bridgeEventKey(sessionId: string, runId: string | undefined, type: string, payload: Record<string, unknown>): string {
-  const call = String(payload.toolCallId || payload.callId || '');
-  const seq = String(payload.seq || payload.sequence || '');
-  return `bridge:${sessionId}:${runId || '-'}:${type}:${call}:${seq}:${JSON.stringify(payload).length}`;
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Stable idempotency key for a bridge EVENT frame.
+ *
+ * Provider/bridge retries may deliver the same frame more than once. The
+ * durable event ledger must preserve one semantic event rather than assigning
+ * a fresh UUID on every delivery. A source event id wins; otherwise hash the
+ * canonical event content.
+ */
+export function bridgeEventKey(
+  sessionId: string,
+  runId: string | undefined,
+  type: string,
+  payload: Record<string, unknown>,
+  sourceEventId?: string,
+): string {
+  const source = sourceEventId
+    ? `source:${sourceEventId}`
+    : createHash('sha256').update(stableJson({ runId: runId || null, type, payload })).digest('hex').slice(0, 32);
+  return `bridge:${sessionId}:${source}`;
 }
