@@ -626,6 +626,17 @@ export default function ProductionApp() {
     return () => window.clearInterval(timer);
   }, [session?.id, integration.workspace?.previewAvailable, online, refreshPorts, runs, tab]);
 
+  async function resolveApproval(approvalId: string, decision: 'allow_once' | 'deny') {
+    if (!session?.id) throw new Error('Open a project before resolving permissions.');
+    await j(await fetch(`/v1/sessions/${session.id}/approvals/${encodeURIComponent(approvalId)}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    }));
+    await refreshSession(session.id);
+    if (decision === 'allow_once') void refreshPorts();
+  }
+
   async function loadRepositories() {
     setRepoBusy(true); setError('');
     try { const response = await j<any>(await fetch('/v1/repos')); setIntegration((current: any) => ({ ...current, github: response.connection })); setRepos(response.github || []); setSelectedRepo(null); setBranches([]); }
@@ -1214,7 +1225,7 @@ export default function ProductionApp() {
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
                       {turn.liveReply && !durable && <div className="message-text">{visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '')}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
                       {durable && <div className="message-text">{visibleChatText('assistant', durable.text, priorUserPrompt)}</div>}
-                      {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
+                      {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} />}
                     </div></article>}
                   </div>;
