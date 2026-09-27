@@ -180,7 +180,8 @@ describe('normalized agent activity presentation', () => {
     const fs = await import('node:fs');
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     assert.match(app, /buildConversationTimeline\(messages, transcriptActivities\)/);
-    assert.match(app, /preserveStreamingReply = runs\.some/);
+    assert.match(app, /applyLiveReplyEvents\(current, batch\)/);
+    assert.match(app, /Object\.values\(liveReplies\)/);
     assert.match(app, /activity\?limit=500/);
     assert.match(app, /transcript-activity-row/);
     assert.doesNotMatch(app, /currentChatActivities/);
