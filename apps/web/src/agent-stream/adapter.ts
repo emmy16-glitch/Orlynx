@@ -73,20 +73,6 @@ function toolCallId(event: RawEvent): string {
   return rawId.startsWith(`${scope}:`) ? rawId : `${scope}:${rawId}`;
 }
 
-function semanticType(payload: Record<string, unknown>, fallback?: AgentPartKind): AgentPartKind | undefined {
-  const value = str(payload.semanticType);
-  const allowed = new Set<AgentPartKind>(['terminal','file-change','file-read','test-result','build-result','git','preview','approval','error','status','generic']);
-  return value && allowed.has(value as AgentPartKind) ? value as AgentPartKind : fallback;
-}
-
-function workspaceProjectionState(value: unknown): 'preparing' | 'reconnecting' | 'ready' | 'stopped' | 'failed' {
-  const state = str(value).toLowerCase();
-  if (state === 'ready') return 'ready';
-  if (state === 'stopped' || state === 'stopping') return 'stopped';
-  if (state === 'failed') return 'failed';
-  if (state === 'reconnecting' || state === 'connecting') return 'reconnecting';
-  return 'preparing';
-}
 
 function phaseId(event: RawEvent): string {
   const raw = str(event.payload?.sourceType).toLowerCase();
@@ -185,7 +171,6 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
         semanticType: semanticType(payload, 'terminal'),
-        semanticType: 'terminal',
         ok: (num(payload.exitCode ?? payload.code) ?? 0) === 0,
         output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
         exitCode: num(payload.exitCode ?? payload.code),
@@ -226,16 +211,19 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
       }];
     }
     case 'preview.ready':
-    case 'preview.state':
+    case 'preview.state': {
+      const projected = event.type === 'preview.ready' ? 'ready' : workspaceState(payload);
+      const state = projected === 'reconnecting' ? 'preparing' : projected;
       return [{
         ...common,
         type: 'PREVIEW_STATE',
         activityId: `preview:${event.runId || event.workspaceId || event.sessionId || 'session'}:${num(payload.port) || 'app'}`,
-        state: event.type === 'preview.ready' ? 'ready' : workspaceProjectionState(payload.state) === 'reconnecting' ? 'preparing' : workspaceProjectionState(payload.state),
+        state,
         port: num(payload.port),
         url: str(payload.url) || undefined,
         message: str(payload.message) || undefined,
       }];
+    }
     case 'permission.request':
       return [{
         ...common,
@@ -268,7 +256,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
     case 'run.state':
       return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: str(payload.state) || undefined, value: { ...payload, scope: 'run' } }];
     case 'workspace.state':
-      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: workspaceProjectionState(payload.state), message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: workspaceState(payload), message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
     case 'extension.event':
       return [{ ...common, type: 'OTHER', rawType: str(payload.sourceType) || 'extension', payload }];
     case 'tool.completed':
@@ -277,7 +265,6 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
-        semanticType: semanticType(payload),
         semanticType: semanticType(payload),
         ok: event.type === 'tool.completed',
         error: str(payload.error || payload.message) || undefined,
