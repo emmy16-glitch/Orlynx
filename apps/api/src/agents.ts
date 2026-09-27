@@ -699,19 +699,51 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
   }
 }
 
+function toolSemanticType(toolName: string, command: string, filePath: string): string {
+  const text = `${toolName} ${command}`.toLowerCase();
+  if (/vitest|jest|pytest|mocha|playwright|(^|\s)test(\s|$)|npm test|pnpm test|yarn test/.test(text)) return 'test-result';
+  if (/build|compile|tsc|webpack|vite build|next build/.test(text)) return 'build-result';
+  if (/git\b|commit|checkout|branch|merge|rebase|push|pull/.test(text)) return 'git';
+  if (filePath && /read|cat|view|inspect|open|grep|search/.test(text)) return 'file-read';
+  if (filePath && /write|edit|patch|apply|create|delete|remove|replace/.test(text)) return 'file-change';
+  if (/vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|serve|preview/.test(text)) return 'preview';
+  if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
+  return 'generic';
+}
+
 function collectToolEvents(sessionId: string, runId: string, message: RuntimeMessage, toolStates: Map<string, string>) {
   for (const part of message.parts) {
     if (part.type !== 'tool') continue;
     const toolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
     const state = String(part.state?.status || 'running');
+    const input = part.state?.input && typeof part.state.input === 'object'
+      ? part.state.input as Record<string, unknown>
+      : part.input && typeof part.input === 'object'
+        ? part.input as Record<string, unknown>
+        : {};
+    const tool = String(part.tool || 'OpenCode action');
+    const command = typeof (input.command ?? input.cmd ?? input.script ?? input.shell) === 'string'
+      ? String(input.command ?? input.cmd ?? input.script ?? input.shell)
+      : '';
+    const filePath = typeof (input.filePath ?? input.path ?? input.file ?? input.filename) === 'string'
+      ? String(input.filePath ?? input.path ?? input.file ?? input.filename)
+      : '';
+    const semanticType = toolSemanticType(tool, command, filePath);
+    const metadata = {
+      tool,
+      toolCallId: toolId,
+      semanticType,
+      ...(command ? { command } : {}),
+      ...(filePath ? { path: filePath } : {}),
+    };
     const prior = toolStates.get(toolId);
-    if (!prior) emit(sessionId, 'tool.started', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId }, runId);
+    if (!prior) emit(sessionId, 'tool.started', metadata, runId);
     if (state === 'completed' && prior !== 'completed') {
-      emit(sessionId, 'tool.completed', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId, out: String(part.state?.output || '') }, runId);
+      emit(sessionId, 'tool.completed', { ...metadata, out: String(part.state?.output || '') }, runId);
     } else if (state === 'error' && prior !== 'error') {
-      emit(sessionId, 'tool.failed', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId, error: String(part.state?.error || 'Action failed.'), out: String(part.state?.output || '') }, runId);
+      emit(sessionId, 'tool.failed', { ...metadata, error: String(part.state?.error || 'Action failed.'), out: String(part.state?.output || '') }, runId);
     } else if (state === 'running' && prior !== 'running') {
-      emit(sessionId, 'tool.output', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId }, runId);
+      emit(sessionId, 'tool.output', metadata, runId);
     }
     toolStates.set(toolId, state);
   }
