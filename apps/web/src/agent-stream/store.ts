@@ -274,6 +274,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: event.waiting ? 'waiting' : 'running',
         name: event.name || prior?.name || 'tool',
+        semanticType: event.semanticType || prior?.semanticType,
         title: event.title || prior?.title,
         command: event.command || prior?.command,
         path: event.path || prior?.path,
@@ -324,6 +325,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         ...prior,
         sequence: event.sequence,
         state: event.ok ? 'success' : 'failed',
+        semanticType: event.semanticType || prior.semanticType,
         output: output ? output.slice(-200_000) : output,
         error: event.ok ? undefined : friendlyFailure(event.error) || event.error || 'Action failed.',
         exitCode: event.exitCode ?? prior.exitCode,
@@ -385,6 +387,37 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         title,
         summary: event.state === 'ready' ? undefined : event.message ? compact(event.message, 180) : undefined,
         evidence: event.provider ? { provider: event.provider } : prior?.evidence,
+      });
+      return;
+    }
+
+    case 'PREVIEW_STATE': {
+      const prior = state.activities[event.activityId];
+      const title = event.state === 'ready' ? 'Development server ready'
+        : event.state === 'failed' ? 'Preview unavailable'
+          : event.state === 'stopped' ? 'Development server stopped'
+            : 'Starting development server';
+      const activityState: AgentStreamActivity['state'] = event.state === 'ready' ? 'success'
+        : event.state === 'failed' ? 'failed'
+          : event.state === 'stopped' ? 'cancelled'
+            : 'running';
+      putActivity(state, {
+        id: event.activityId,
+        runId: event.runId,
+        taskId: event.taskId,
+        sequence: event.sequence,
+        startedSequence: prior?.startedSequence || event.sequence,
+        timestamp: prior?.timestamp || event.timestamp,
+        state: activityState,
+        kind: 'preview',
+        title,
+        summary: event.port ? `Port ${event.port}` : event.message ? compact(event.message, 180) : undefined,
+        evidence: {
+          semanticType: 'preview',
+          ...(event.port ? { port: event.port } : {}),
+          ...(event.url ? { url: event.url } : {}),
+          ...(event.message ? { message: event.message } : {}),
+        },
       });
       return;
     }
@@ -528,9 +561,16 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: event.resolved ? 'success' : 'waiting',
         kind: 'approval',
-        title: event.resolved ? 'Approval resolved' : 'Waiting for approval',
+        title: event.resolved
+          ? event.decision === 'deny' || event.decision === 'denied' ? 'Permission denied' : 'Approval resolved'
+          : 'Waiting for approval',
         summary: event.detail || event.action,
-        evidence: event.action ? { action: event.action } : undefined,
+        evidence: {
+          semanticType: 'approval',
+          ...(event.approvalId ? { approvalId: event.approvalId } : {}),
+          ...(event.action ? { action: event.action } : {}),
+          ...(event.decision ? { decision: event.decision } : {}),
+        },
       });
       return;
     }
