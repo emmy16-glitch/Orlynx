@@ -124,20 +124,28 @@ OpenCode account/provider details belong inside the AI management surface or adv
 
 ## Activity
 
-Main conversation shows observable work, not private reasoning. Build mode is deliberately transparent: the user should be able to follow commands, files, patches, tests and resulting state without opening a separate IDE.
+The Chat tab is the execution surface. Conversation and observable agent work are one chronological transcript rather than separate chat and “activity” panels.
 
-The activity stream has two remembered presentation modes:
+For Build, Plan and Ask, preserve every observable event the product receives in order. Typical transcript labels include **Thought**, **Read**, **Search**, **Run command**, **Run tests**, **Build**, **Edit**, **Git**, **Workspace**, **Approval**, **Error**, **Response** and **Status**.
 
-- **Summary** — concise human progress with details on demand.
-- **Code** — automatically reveals observable command/file/code evidence while work runs. Build uses this as the fresh-user default; Plan and Ask stay summary-first unless the user has chosen otherwise.
+“Thought” is a short user-visible progress/status summary supplied by the agent or Orlynx orchestration. It is never private chain-of-thought or hidden model reasoning.
 
-Both modes keep the same evidence hierarchy:
+The transcript contract is:
 
-Layer 1: concise human progress and one clearly emphasized current step.
-Layer 2: structured execution evidence — command, path, changed files, bounded code/diff snippets, exit/test results.
-Layer 3: raw stdout/stderr behind explicit progressive disclosure.
+- user messages, execution events and assistant responses share one ordered timeline;
+- command/file/tool input is visible when known;
+- stdout/stderr streams into the active command block while it is running;
+- file edits and diffs remain attached to the action that produced them;
+- retries, provider/workspace transitions and failures remain visible where they occurred;
+- completed history stays scrollable instead of being overwritten by the current status;
+- the newest active action is visually emphasized without hiding earlier actions;
+- follow-up messages can be submitted while work is running and appear as queued turns without erasing the current streamed response;
+- a normal informational status must not use danger/red presentation; red is reserved for an actual failure requiring attention.
 
-Queue labels must describe what is waiting when Orlynx knows it (for example, waiting to run tests or a Git command) rather than using generic “Action is queued” copy. Completed history is visually quieter than the one current step. Technical detail is evidence of observable work; private reasoning is never shown.
+Detailed execution is the default presentation. A concise Summary view may remain available as an optional user choice, but it must not change or discard the underlying event history.
+
+Model response text streams directly into the assistant message. Do not duplicate every token as activity rows. Technical output, tool events, status summaries, errors, commands, files, diffs and lifecycle transitions belong in the observable transcript.
+
 
 ## Interaction states
 
