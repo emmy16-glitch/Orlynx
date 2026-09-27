@@ -1,198 +1,160 @@
-# Canonical agent stream architecture
+# Orlynx agent protocol + conversation architecture (v2)
 
-Orlynx no longer lets raw runtime/provider events define the chat UI.
-
-The browser now consumes one Orlynx-owned canonical agent stream inspired by
-the strongest common patterns in AG-UI, Cline, OpenHands, assistant-ui/tool-ui
-and similar open agent interfaces. The implementation is original Orlynx code;
-no third-party source is copied into this repository.
-
-## Why this exists
-
-The old UI projection had gradually become a second event engine:
+Orlynx conversations are produced by a server-authoritative canonical agent
+protocol and projected in the browser as a thread of turns with typed message
+parts. Raw provider/bridge/workspace events never dictate UI behavior
+directly.
 
 ```text
-raw SSE event
-  -> large switch in mapping.ts
-  -> separate live-reply reducer
-  -> activity rows
-  -> React transcript
+RawProviderEvent
+      ↓  AgentAdapter (server boundary)
+CanonicalAgentEvent (protocol v1)
+      ↓  Session/EventStore (durable, sequenced, idempotent)
+SSE / snapshot replay
+      ↓  ThreadProjection (turns owned by run IDs)
+Typed message parts
+      ↓  Part renderer registry
+Conversation UI
 ```
 
-That made lifecycle identity easy to lose. A single logical tool could have
-requested/started/output/completed fragments, workspace heartbeats could turn
-into chat history, and live text had a different reducer from tool activity.
+The implementation is original Orlynx code. Architectural patterns were
+studied in AG-UI, ACP, Cline, OpenHands, assistant-ui/tool-ui, LangGraph
+Agent Chat UI and Bolt.diy/E2B Surf; no third-party source is copied into
+this repository. See "Design influences" at the end.
 
-The new boundary is:
+## Agent protocol boundary
 
-```text
-durable OrlynxEvent ledger / SSE replay
-              |
-              v
-      provider compatibility adapter
-      apps/web/src/agent-stream/adapter.ts
-              |
-              v
-       CanonicalAgentEvent
-              |
-              v
-      deterministic stream store
-      apps/web/src/agent-stream/store.ts
-              |
-              +---------------------+
-              |                     |
-              v                     v
-       activity selector       live-text selector
-              |                     |
-              +----------+----------+
-                         v
-                      React UI
-```
+`packages/shared/src/index.ts` declares the versioned vocabulary:
 
-The durable backend event ledger remains the source for recovery and audit.
-The canonical stream is the browser's semantic projection.
+- `CANONICAL_PROTOCOL_VERSION = 1`.
+- `EventType`: run lifecycle (`run.queued/started/completed/failed/state`),
+  messages (`message.start/delta/end`), tools
+  (`tool.requested/started/progress/output/completed/failed`), terminal
+  (`terminal.started/output/exited`), files (`file.changed/files.changed`),
+  results (`test.result/build.result`), preview (`preview.ready/state`),
+  delegation (`subagent.started/finished`), permissions
+  (`permission.request/resolved`, `approval.required/resolved`), workspace
+  (`workspace.*`), state (`state.snapshot/delta`), product
+  (`changes.updated/receipt.created`) and `extension.event`.
+- `AgentAdapterHandle`: the provider boundary every agent implements —
+  `startSession/sendPrompt/cancelRun/resumeRun/handlePermission/capabilities`.
+  OpenCode implements it; a future ACP-compatible agent implements the same
+  surface without touching chat UI, session core or transport.
 
-## Canonical lifecycle
+`apps/api/src/agent-protocol.ts` is the server-side adapter:
 
-The browser understands a deliberately small event vocabulary:
+- `normalizeBridgeEvent(type, payload)` maps provider event names to canonical
+  durable types. Unknown provider events become `extension.event` carrying
+  `sourceType` + payload — semantics are preserved for debug/telemetry and
+  never silently flattened into generic progress.
+- Heartbeats (`heartbeat`, `ping`, adapter/bridge heartbeats) are telemetry and
+  are never persisted as history.
+- `scopeToolCallId(runId, rawId)` keeps provider tool-call IDs namespaced per
+  run, so call id `"1"` in run A can never merge with call id `"1"` in run B.
 
-- run: `RUN_QUEUED`, `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`
-- assistant text: `TEXT_START`, `TEXT_CONTENT`, `TEXT_END`
-- tools: `TOOL_START`, `TOOL_UPDATE`, `TOOL_END`
-- process activity: `ACTIVITY_START`, `ACTIVITY_UPDATE`, `ACTIVITY_END`
-- workspace: `WORKSPACE_STATE`
-- state: `STATE_SNAPSHOT`, `STATE_DELTA`
-- product results: `CHANGES_UPDATED`, `RECEIPT`, `APPROVAL`
+## Bridge preserves semantics
 
-Provider-specific event names stop at the adapter.
+`apps/api/src/bridge-gateway.ts` canonicalizes every bridge `EVENT` frame
+through `normalizeBridgeEvent` before appending to the durable ledger. The old
+behavior — an allowlist of ~7 types with everything else collapsed into
+`activity.progress` — is gone. Terminal output, file changes, test/build
+results, preview readiness, permission requests and subagent lifecycles each
+persist under their own canonical type.
 
-## Stable identity
+## Session / event store / transport
 
-Identity is the core contract.
+- The durable `OrlynxEvent` ledger (Postgres in production, bounded JSON
+  fallback in development) is the source for recovery and audit.
+- Every event has a stable `eventId` and a monotonically increasing session
+  `sequence`. SSE (`/v1/sessions/:id/events?after=<sequence>`) is the hot
+  path; reconnect replays missed events without duplicates.
+- `apps/api/src/events.ts` bounds inline payloads so runaway command output
+  cannot exhaust storage or mobile browsers; full diffs live in change sets.
+- Recovery model: `snapshot at sequence N + events N+1… = current state`.
+  `reconcileAgentStream()` applies durable run snapshots (partial text, run
+  state) only when they are newer than live SSE state — a stale snapshot can
+  never rewind fresher streamed text.
 
-- a run owns its response message;
-- a response message owns one incremental text stream;
-- a tool call owns one tool lifecycle;
-- provider tool-call IDs are scoped to the run;
-- workspace startup/recovery owns one workspace activity;
-- infrastructure state has one semantic identity per scope.
+## Browser: adapter → store → thread → parts
 
-An update mutates the same semantic object. It does not create a new chat card.
+`apps/web/src/agent-stream/`:
 
-## Streaming
+- `adapter.ts` — compatibility boundary for pre-v1 durable history. New
+  server emissions already arrive canonical, so this layer only translates
+  legacy envelopes (including `pty.output` → tool update, `permission.*` →
+  approval, `preview.*` → preview state, unknown → extension/debug).
+- `store.ts` — deterministic reducer. One logical tool owns one lifecycle
+  (`TOOL_START → TOOL_UPDATE* → TOOL_END`) mutating in place; workspace
+  startup/recovery owns one activity; infrastructure heartbeats stay
+  state-only while actionable failures (`Model unavailable`, `AI connection
+  needs attention`, `Connection issue`) surface once and resolve in place.
+  Event IDs make replay idempotent; sequence (not timestamp) orders text.
+- `thread.ts` — thread projection. Each run owns its message stream, tool
+  calls, activities and result, grouped by `runId`/`userMessageId` — never by
+  timestamp merging alone. Overlapping runs (direct + workspace) keep
+  separate bubbles and separate work lists.
+- `parts.ts` — typed message parts: `terminal`, `file-change`, `file-read`,
+  `test-result`, `build-result`, `git`, `preview`, `approval`, `error`,
+  `status`, `generic`. Pure classifier, unit-tested.
+- `view.ts` — canonical selectors (`selectActivities`, `selectLiveReplies`).
+  React performs no raw-event switching.
 
-SSE remains the hot transport. Events are still batched once per animation
-frame by `ProductionApp.tsx`.
+`apps/web/src/ui/tool-parts.tsx` is the renderer registry: each part kind
+gets a purpose-built collapsed row plus a typed detail panel (terminal shows
+command + bounded output; tests show pass/fail counts with failures first;
+file changes show per-file actions + diffs; approvals stay interactive).
+`generic` is fallback only, never the default. Every expandable row exposes
+a persistent chevron (`aria-expanded`/`aria-controls`), raw output is
+bounded (~220–320px, internal scroll, copy-safe), and only the current
+running part animates — completed rows are static. Reduced motion is
+respected.
 
-Text ordering uses the durable session sequence, not timestamps. Multiple chunks
-can therefore share one timestamp without being dropped. Replayed event IDs are
-idempotent.
+`ProductionApp.tsx` renders thread turns: user message → assistant response
+(live stream or durable text) → compact supporting work → message actions
+(`Copy / Retry|Resume / ⋯`). Sending (`submitting`) and running (work bar
+with `■ Stop`) are separate states; Stop waits for backend cancellation.
 
-A direct response and a workspace response can overlap without concatenating:
-each run has its own canonical message stream.
+## Runtime / Preview boundary
 
-HTTP run snapshots are recovery only. `reconcileAgentStream()` will extend an
-older stream when the snapshot is newer, but an older snapshot cannot rewind
-newer SSE text.
+Runtime execution is not the conversation. Preview has one source of truth:
+the workspace's live forwarded-port state (`/ports` → usable previews →
+Preview tab, `View preview` action, external open). Chat server-ready state
+never guesses readiness from a string, process death invalidates Ready, and
+the forwarded URL (never remote `localhost`) is what the user opens.
 
-The transient stream is removed only after the durable assistant message exists.
+Direct (instant) chat bypasses workspace startup entirely; Build tasks
+acknowledge immediately (`Preparing workspace`) while the warm Render runner
+(or Codespaces fallback) prepares. Ask/plan modes never touch mutable
+runtime state.
 
-## Tools and progress
+## Migration
 
-Tool events follow one lifecycle:
-
-```text
-TOOL_START
-   |
-TOOL_UPDATE  (0..n)
-   |
-TOOL_END
-```
-
-The same tool row evolves in place. Raw output stays attached to that tool and
-is bounded in the browser projection so runaway terminal output cannot freeze a
-mobile device. The durable ledger retains the source events.
-
-Provider progress is normalized into semantic phases. Low-level provider status
-names do not create an activity per tick.
-
-## Infrastructure versus conversation
-
-Steady infrastructure is state, not chat:
-
-- adapter ready heartbeat: hidden
-- bridge connected heartbeat: hidden
-- state snapshot: hidden
-- message stream start/end markers: hidden
-
-Actionable failures become semantic UI:
-
-- AI runtime unavailable
-- model unavailable
-- AI connection needs attention
-- connection issue
-
-Recovery updates the same object instead of adding another error/success pair.
-
-## UI projection
-
-The UI selector exposes:
-
-1. persisted user/assistant messages;
-2. live assistant messages;
-3. compact semantic activity rows.
-
-Technical evidence remains inspectable. Any row with evidence has a permanently
-visible chevron disclosure in its title row. Details are collapsed by default,
-and raw output stays in a bounded internal scroller.
-
-The main transcript no longer uses the words "Thought" as a label for generic
-agent activity. Generic safe process state is labelled "Working"; no hidden
-chain-of-thought is exposed.
-
-## Scroll and composer
-
-The existing smart live-follow model remains intact:
-
-- while the user follows the live edge, streaming content stays in view;
-- intentional upward scrolling pauses follow;
-- new content does not drag the user back;
-- returning to the live edge resumes follow.
-
-The compact expanding composer and its Send/submitting/Stop state machines are
-independent of stream state.
-
-## Preview
-
-Preview remains a sibling runtime projection rather than part of the chat event
-protocol. Its source of truth is the workspace's live forwarded-port state.
-Build activity can cause faster reconciliation, but the Preview tab never
-guesses readiness from a chat string.
-
-## Compatibility and migration
-
-The backend still emits the current durable `OrlynxEvent` taxonomy. This lets
-the new frontend architecture land without a destructive database/event-schema
-migration.
-
-`apps/web/src/ui/mapping.ts` is now only a compatibility facade. New streaming
-behavior belongs under `apps/web/src/agent-stream/`.
-
-A later backend protocol version can emit the canonical lifecycle directly. At
-that point the compatibility adapter can become much smaller without changing
-React or the stream store.
+No destructive event-history migration was performed. Legacy durable events
+flow through the compatibility adapter into the same canonical store; new
+sessions emit the canonical vocabulary directly from the server. The old
+timestamp-merged timeline (`buildConversationTimeline`) and the single
+generic activity row remain available only as compatibility exports — the
+transcript no longer uses them.
 
 ## Design influences
 
-The architecture combines ideas rather than cloning one project:
+- AG-UI: small canonical run/message/tool/state lifecycle, stable IDs,
+  extension/custom events instead of silent drops.
+- ACP: explicit agent boundary (sessions, tool calls/results, permissions,
+  cancel/resume, capability negotiation) with OpenCode as one adapter.
+- Cline: agent execution separated from session/core state and transport;
+  the chat component is not the orchestrator.
+- OpenHands: runtime actions/observations exist independently of how they
+  are presented.
+- assistant-ui/tool-ui: conversation-first threads, typed message parts,
+  structured per-tool renderers with progressive disclosure.
+- LangGraph Agent Chat UI: resumable streams, re-attachment, snapshot +
+  idempotent replay recovery.
+- Bolt.diy/E2B Surf: chat → code work → terminal → dev server → Preview →
+  chat is one workflow with one Preview source of truth.
 
-- AG-UI: explicit run/text/tool/state lifecycle and stable IDs;
-- Cline: session orchestration separated from agent/runtime events;
-- OpenHands: runtime events separated from client presentation;
-- assistant-ui/tool-ui: message-first UI, structured tools and progressive
-  disclosure;
-- modern coding-agent clients: durable recovery, resumable streams, compact
-  execution evidence and a conversation-first hierarchy.
-
-The Orlynx backend durability, Render warm runner, OpenCode bridge, Preview
-gateway and repository safety model remain Orlynx-specific.
+What Orlynx intentionally does differently: the canonical vocabulary is
+persisted server-side in the existing durable `OrlynxEvent` ledger (no new
+database or transport was introduced), identity scoping and thread
+projection live beside the current SSE/snapshot recovery model, and
+Preview/runtime truth stays outside the chat event protocol entirely.

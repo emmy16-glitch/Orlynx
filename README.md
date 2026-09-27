@@ -134,11 +134,47 @@ the registered coding adapter (OpenCode is Adapter #1 today) independently from
 the model picker. Codespaces, bridge credentials and provider plumbing remain
 implementation details rather than top-level navigation.
 
-The event presentation pipeline in `apps/web/src/ui/mapping.ts` turns low-level
-runtime output into summary → evidence → raw detail. Private model reasoning is not
-rendered.
+The conversation pipeline is a server-authoritative canonical agent protocol
+projected as a thread of turns with typed message parts. Private model
+reasoning is never rendered; safe process labels (`Inspecting repository`,
+`Running tests`) describe work instead.
 
-Production deployments are triggered from `main` to the connected Render web service. The persistent Node process owns HTTP, SSE and `/bridge` WebSocket traffic; GitHub Codespaces remains the execution plane.
+```text
+provider event → AgentAdapter → canonical event → durable ledger → SSE
+      → thread projection (turns owned by run IDs) → typed part renderers
+```
+
+Key modules:
+
+| Layer | Location |
+| --- | --- |
+| Versioned protocol vocabulary + adapter boundary | `packages/shared/src/index.ts` (`CANONICAL_PROTOCOL_VERSION`, `EventType`, `AgentAdapterHandle`) |
+| Server-side canonicalization + bridge semantic preservation | `apps/api/src/agent-protocol.ts`, `apps/api/src/bridge-gateway.ts` |
+| Session core, queue, persistence, recovery | `apps/api/src/agents.ts`, `apps/api/src/events.ts`, `apps/api/src/storage.ts` |
+| OpenCode adapter (Adapter #1) | `apps/api/src/agent-runtime.ts`, `apps/api/src/opencode*.ts` |
+| Instant direct-chat lane | `apps/api/src/direct-chat.ts` |
+| Browser compatibility adapter + deterministic store | `apps/web/src/agent-stream/adapter.ts`, `store.ts` |
+| Thread projection + typed parts | `apps/web/src/agent-stream/thread.ts`, `parts.ts` |
+| Typed tool/part renderer registry | `apps/web/src/ui/tool-parts.tsx` |
+| Transcript, composer, Preview wiring | `apps/web/src/ProductionApp.tsx`, `apps/web/src/ui/preview*.tsx` |
+
+Each user request owns a turn: user message → assistant response (streamed
+live, then durable) → compact supporting work (terminal, file changes, test
+results, approvals) → quiet message actions (`Copy / Retry|Resume / ⋯`).
+One logical tool is one UI object that mutates in place; completed work is
+static and only the current activity animates. See
+[docs/canonical-agent-stream.md](docs/canonical-agent-stream.md) for the full
+contract, including identity rules, replay/recovery, permissions, Stop/Cancel
+semantics and the open-source patterns it draws on (AG-UI, ACP, Cline,
+OpenHands, assistant-ui/tool-ui, LangGraph, Bolt-style Preview loop).
+
+Production deployments are triggered from `main` to the connected Render web
+service (Render dashboard → Orlynx production service; pushes to `main` build
+and deploy through `scripts/render-build.sh`). The persistent Node process
+owns HTTP, SSE and `/bridge` WebSocket traffic. The warm Render runner is the
+preferred execution plane with GitHub Codespaces as fallback. Orlynx is not a
+Vercel architecture: do not deploy it to Vercel or reintroduce Vercel into the
+runtime path.
 
 ## Production configuration
 
@@ -148,17 +184,21 @@ encryption and bridge signing. Secrets must remain server-side.
 
 ## Documentation
 
-- [Render production](docs/render-production.md)
+- [Agent protocol + conversation architecture](docs/canonical-agent-stream.md) — canonical events, adapter boundary, thread/parts/renderers, recovery
+- [Render production](docs/render-production.md) — production hosting, build, environment, deploy checks
+- [Production architecture](docs/production-architecture.md) — control plane, execution plane, networking
+- [Warm runner architecture](docs/warm-runner-architecture.md) — preferred runner, prewarm, fallback
 - [System integration](docs/system-integration.md)
 - [Session lifecycle](docs/session-lifecycle.md)
 - [Streaming and reconnect](docs/streaming-and-reconnect.md)
-- [Workspace runtime](docs/workspace-runtime.md)
-- [GitHub App integration](docs/github-app-integration.md)
-- [GitHub App manifest](docs/github-app-manifest.md)
-- [Agent activity presentation](docs/agent-activity-presentation.md)
-- [Design system](docs/orlynx-design-system.md)
-- [UI architecture](docs/orlynx-ui-architecture.md)
-- [Responsive behavior](docs/orlynx-responsive-behavior.md)
+- [Chat scroll behavior](docs/chat-scroll-behavior.md)
+- [Direct chat architecture](docs/direct-chat-architecture.md)
+- [Workspace runtime](docs/workspace-runtime.md) / [Cloud workspace lifecycle](docs/cloud-workspace-lifecycle.md)
+- [Agent engine](docs/agent-engine.md) / [Agent permissions](docs/agent-permissions.md) / [Agent UI guidelines](docs/agent-ui-guidelines.md) / [Agent activity presentation](docs/agent-activity-presentation.md)
+- [GitHub App integration](docs/github-app-integration.md) / [App manifest](docs/github-app-manifest.md)
+- [Design system](docs/orlynx-design-system.md) / [UI architecture](docs/orlynx-ui-architecture.md) / [Component registry](docs/orlynx-component-registry.md) / [Responsive behavior](docs/orlynx-responsive-behavior.md) / [Screens](docs/orlynx-screen-inventory.md)
+- [AI connections](docs/ai-connections.md) / [Model switching](docs/model-switching.md) / [UI intelligence](docs/ui-intelligence-layer.md)
+- [Secrets and environment](docs/secrets-and-environment.md)
 - [End-to-end verification](docs/end-to-end-verification.md)
 
 See [direct chat architecture](docs/direct-chat-architecture.md) for provider dependencies, model routing, authentication, streaming and production verification.
