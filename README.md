@@ -148,7 +148,7 @@ Key modules:
 
 | Layer | Location |
 | --- | --- |
-| Versioned protocol vocabulary + adapter boundary | `packages/shared/src/index.ts` (`CANONICAL_PROTOCOL_VERSION`, `EventType`, `AgentAdapterHandle`) |
+| Versioned protocol vocabulary + adapter boundary | `packages/shared/src/index.ts` (`CANONICAL_PROTOCOL_VERSION`, `EventType`, `AgentAdapterCapabilities`) |
 | Server-side canonicalization + bridge semantic preservation | `apps/api/src/agent-protocol.ts`, `apps/api/src/bridge-gateway.ts` |
 | Session core, queue, persistence, recovery | `apps/api/src/agents.ts`, `apps/api/src/events.ts`, `apps/api/src/storage.ts` |
 | OpenCode adapter (Adapter #1) | `apps/api/src/agent-runtime.ts`, `apps/api/src/opencode*.ts` |
