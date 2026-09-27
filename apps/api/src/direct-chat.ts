@@ -1,6 +1,6 @@
 import type { AgentMode, ChatMessage, EventType, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
-import { githubRepositoryFile, githubRepositoryFiles } from './github.js';
+import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEntry } from './github.js';
 import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
@@ -144,72 +144,216 @@ export function turnsForMessage(history: ChatMessage[], messageId: string | unde
 }
 
 const contextCache = new Map<string, { expires: number; value: Promise<string> }>();
-const ROOT_CONTEXT_TTL_MS = 5 * 60_000;
-const FILE_CONTEXT_TTL_MS = 90_000;
+const repositoryMapCache = new Map<string, { expires: number; value: Promise<{ entries: GitHubRepositoryTreeEntry[]; truncated: boolean }> }>();
+const REPOSITORY_MAP_TTL_MS = 5 * 60_000;
+const CONTEXT_TTL_MS = 90_000;
+const REPOSITORY_MAP_CHAR_BUDGET = 20_000;
+const REPOSITORY_CONTENT_CHAR_BUDGET = 44_000;
+const MAX_RELEVANT_FILES = 14;
+const MAX_FILE_EXCERPT = 12_000;
+
+const ignoredRepositorySegments = new Set([
+  '.git', 'node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.cache', '.turbo',
+  'vendor', 'target', '.venv', 'venv', '__pycache__', '.pytest_cache', 'Pods',
+]);
+const lowSignalFiles = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|composer\.lock|.*\.(?:map|min\.js|png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|eot))$/i;
+const architectureNames = new Set([
+  'readme.md', 'readme', 'architecture.md', 'design.md', 'agents.md', 'hosting.md',
+  'package.json', 'pyproject.toml', 'requirements.txt', 'cargo.toml', 'go.mod',
+  'pom.xml', 'build.gradle', 'dockerfile', 'docker-compose.yml', 'compose.yml',
+  'tsconfig.json', 'vite.config.ts', 'vite.config.js', 'next.config.js', 'next.config.mjs',
+]);
+const entrypointNames = /^(?:index|main|server|app|routes|router|worker|bootstrap|config)\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/i;
+const sourceLike = /\.(?:tsx?|jsx?|mjs|cjs|json|py|rs|go|java|kt|kts|cs|php|rb|sh|bash|sql|graphql|ya?ml|toml|md|css|scss|html?)$/i;
+
+function usefulRepositoryBlob(entry: GitHubRepositoryTreeEntry): boolean {
+  if (entry.type !== 'blob') return false;
+  const segments = entry.path.split('/');
+  if (segments.some((segment) => ignoredRepositorySegments.has(segment))) return false;
+  if (lowSignalFiles.test(entry.path)) return false;
+  if (typeof entry.size === 'number' && entry.size > 1_000_000) return false;
+  const base = segments.at(-1)?.toLowerCase() || '';
+  return architectureNames.has(base) || sourceLike.test(entry.path) || !base.includes('.');
+}
+
+function promptTerms(prompt: string): string[] {
+  const stop = new Set(['this','that','with','from','what','when','where','which','would','could','should','about','into','your','have','does','repo','repository','project','code','file','files','app','application','please','check','explain','think']);
+  return [...new Set((prompt.toLowerCase().match(/[a-z0-9_@.-]{3,}/g) || [])
+    .map((term) => term.replace(/^@/, ''))
+    .filter((term) => !stop.has(term)))].slice(0, 18);
+}
+
+function explicitPromptPaths(prompt: string): string[] {
+  return [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|mjs|cjs|json|py|rs|go|java|kt|kts|cs|php|rb|sh|sql|ya?ml|toml|md|css|scss|html?)\b/g) || [])]
+    .filter((path) => !path.split('/').includes('..'))
+    .slice(0, 8);
+}
+
+function repositoryArea(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length > 1 ? parts[0] : '(root)';
+}
+
+function pathScore(path: string, prompt: string, explicit: Set<string>): number {
+  const lower = path.toLowerCase();
+  const base = lower.split('/').at(-1) || lower;
+  let score = 0;
+  if (explicit.has(lower)) score += 2_000;
+  if (architectureNames.has(base)) score += 420;
+  if (entrypointNames.test(base)) score += 280;
+  if (lower.split('/').length === 1) score += 100;
+  if (/\/(?:src|app|api|server|client|web|backend|frontend|bridge|runtime|packages?)\//i.test('/' + lower + '/')) score += 70;
+  if (/test|spec|fixture|mock/i.test(lower)) score -= /test|spec/i.test(prompt) ? 0 : 45;
+  for (const term of promptTerms(prompt)) {
+    if (lower.includes(term)) score += term.length >= 7 ? 150 : 90;
+    if (base.startsWith(term)) score += 50;
+  }
+  return score;
+}
+
+function compactRepositoryMap(entries: GitHubRepositoryTreeEntry[], truncated: boolean): {
+  text: string;
+  files: GitHubRepositoryTreeEntry[];
+  fileCount: number;
+  folderCount: number;
+  areas: string[];
+} {
+  const files = entries.filter(usefulRepositoryBlob);
+  const folders = entries.filter((entry) => entry.type === 'tree');
+  const areaCounts = new Map<string, number>();
+  for (const file of files) {
+    const area = repositoryArea(file.path);
+    areaCounts.set(area, (areaCounts.get(area) || 0) + 1);
+  }
+  const areas = [...areaCounts.keys()].sort((a, b) => a.localeCompare(b));
+  const overview = [
+    `Whole repository map: ${files.length} relevant files across ${folders.length} folders${truncated ? ' (GitHub marked the recursive tree as truncated)' : ''}.`,
+    'Top-level areas:',
+    ...[...areaCounts.entries()].sort((a, b) => b[1] - a[1]).map(([area, count]) => `- ${area}: ${count} file${count === 1 ? '' : 's'}`),
+  ];
+
+  const orderedPaths = [...files].sort((a, b) => {
+    const aDepth = a.path.split('/').length;
+    const bDepth = b.path.split('/').length;
+    if (aDepth !== bDepth) return aDepth - bDepth;
+    return a.path.localeCompare(b.path);
+  }).map((entry) => entry.path);
+
+  let pathBlock = 'Repository files:\n';
+  let omitted = 0;
+  for (let index = 0; index < orderedPaths.length; index += 1) {
+    const line = `- ${orderedPaths[index]}\n`;
+    if (overview.join('\n').length + pathBlock.length + line.length > REPOSITORY_MAP_CHAR_BUDGET) {
+      omitted = orderedPaths.length - index;
+      break;
+    }
+    pathBlock += line;
+  }
+  if (omitted) pathBlock += `- … ${omitted} additional paths omitted from the prompt map; their directory counts remain included above.\n`;
+
+  return {
+    text: [...overview, pathBlock.trimEnd()].join('\n'),
+    files,
+    fileCount: files.length,
+    folderCount: folders.length,
+    areas,
+  };
+}
+
+function chooseRepositoryFiles(files: GitHubRepositoryTreeEntry[], prompt: string): string[] {
+  const explicit = new Set(explicitPromptPaths(prompt).map((path) => path.toLowerCase()));
+  const useful = files.filter(usefulRepositoryBlob);
+  const selected: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (path?: string) => {
+    if (!path || seen.has(path) || selected.length >= MAX_RELEVANT_FILES) return;
+    seen.add(path);
+    selected.push(path);
+  };
+
+  // Explicitly named files always win.
+  for (const path of explicitPromptPaths(prompt)) {
+    const exact = useful.find((entry) => entry.path.toLowerCase() === path.toLowerCase());
+    if (exact) add(exact.path);
+  }
+
+  // Always include architectural anchors, including nested package manifests.
+  for (const entry of [...useful].sort((a, b) => pathScore(b.path, prompt, explicit) - pathScore(a.path, prompt, explicit))) {
+    const base = entry.path.split('/').at(-1)?.toLowerCase() || '';
+    if (architectureNames.has(base) && (entry.path.split('/').length <= 3 || /architecture|design|agents|readme/.test(base))) add(entry.path);
+    if (selected.length >= Math.min(7, MAX_RELEVANT_FILES)) break;
+  }
+
+  // Give every major top-level area a representative entry point when space permits.
+  const areas = [...new Set(useful.map((entry) => repositoryArea(entry.path)))].filter((area) => area !== '(root)');
+  for (const area of areas) {
+    const representative = useful
+      .filter((entry) => repositoryArea(entry.path) === area)
+      .sort((a, b) => pathScore(b.path, prompt, explicit) - pathScore(a.path, prompt, explicit))[0];
+    add(representative?.path);
+    if (selected.length >= 10) break;
+  }
+
+  // Fill the remainder with prompt-relevant files across the whole tree.
+  for (const entry of [...useful].sort((a, b) => {
+    const diff = pathScore(b.path, prompt, explicit) - pathScore(a.path, prompt, explicit);
+    return diff || a.path.localeCompare(b.path);
+  })) add(entry.path);
+
+  return selected;
+}
 
 async function safeFile(project: string, branch: string, path: string, installationId?: number): Promise<string | null> {
   try {
     const text = await githubRepositoryFile(project, branch, path, installationId);
-    return text.slice(0, 30_000);
+    return text.slice(0, MAX_FILE_EXCERPT);
   } catch { return null; }
 }
 
+async function repositoryMap(session: ProjectSession & { userId?: string }): Promise<{ entries: GitHubRepositoryTreeEntry[]; truncated: boolean }> {
+  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch]);
+  const existing = repositoryMapCache.get(key);
+  if (existing && existing.expires > Date.now()) return existing.value;
+  if (repositoryMapCache.size >= 24) repositoryMapCache.delete(repositoryMapCache.keys().next().value!);
+  const value = githubRepositoryTree(session.project, session.branch, session.installationId);
+  repositoryMapCache.set(key, { expires: Date.now() + REPOSITORY_MAP_TTL_MS, value });
+  void value.catch(() => repositoryMapCache.delete(key));
+  return value;
+}
+
 async function loadRepositoryContext(
-  session: ProjectSession,
-  paths: string[],
+  session: ProjectSession & { userId?: string },
+  prompt: string,
   onActivity?: (type: EventType, payload: Record<string, unknown>) => void,
 ): Promise<string> {
-  if (paths.length) {
-    const files = await Promise.all(paths.map(async (name) => {
-      const callId = `direct-read:${name}`;
-      onActivity?.('tool.started', { tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github' });
-      const content = await safeFile(session.project, session.branch, name, session.installationId);
-      onActivity?.(content == null ? 'tool.failed' : 'tool.completed', {
-        tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github',
-        ...(content == null ? { error: 'File could not be read from GitHub.' } : {}),
-      });
-      return { name, content };
-    }));
-    return [`Repository: ${session.project}`, `Branch: ${session.branch}`,
-      ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 24_000);
-  }
-  let root: { name: string; dir: boolean }[] = [];
-  const rootCallId = 'direct-list:root';
-  onActivity?.('tool.started', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github' });
-  try {
-    root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId);
-    onActivity?.('tool.completed', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github' });
-  } catch {
-    onActivity?.('tool.failed', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github', error: 'Repository root could not be read from GitHub.' });
-  }
-  const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 80);
-  const candidates = ['README.md','README','ARCHITECTURE.md','DESIGN.md','AGENTS.md','HOSTING.md','package.json','pyproject.toml','requirements.txt','Cargo.toml','go.mod','pom.xml','build.gradle','docker-compose.yml','compose.yml']
-    .filter((name) => root.some((item) => !item.dir && item.name.toLowerCase() === name.toLowerCase()))
-    .slice(0, 5);
-  const loaded = await Promise.all(candidates.map(async (name) => {
-    const callId = `direct-read:${name}`;
-    onActivity?.('tool.started', { tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github' });
-    const content = await safeFile(session.project, session.branch, name, session.installationId);
-    onActivity?.(content == null ? 'tool.failed' : 'tool.completed', {
-      tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github',
-      ...(content == null ? { error: 'File could not be read from GitHub.' } : {}),
-    });
-    return { name, content };
-  }));
-  const snippets: string[] = [];
+  onActivity?.('activity.progress', { text: 'Understanding repository…', sourceType: 'repository.map' });
+  const tree = await repositoryMap(session);
+  const map = compactRepositoryMap(tree.entries, tree.truncated);
+  const selected = chooseRepositoryFiles(map.files, prompt);
+  const selectedAreas = [...new Set(selected.map(repositoryArea))];
+  onActivity?.('activity.progress', {
+    text: `Repository mapped · ${map.fileCount} files · ${map.folderCount} folders · inspecting ${selected.length} key files across ${selectedAreas.length} areas`,
+    sourceType: 'repository.map',
+  });
+
+  const loaded = await Promise.all(selected.map(async (path) => ({ path, content: await safeFile(session.project, session.branch, path, session.installationId) })));
+  const excerpts: string[] = [];
   let used = 0;
   for (const item of loaded) {
-    if (!item.content || used >= 24_000) continue;
-    const remaining = 24_000 - used;
+    if (!item.content || used >= REPOSITORY_CONTENT_CHAR_BUDGET) continue;
+    const remaining = REPOSITORY_CONTENT_CHAR_BUDGET - used;
     const content = item.content.slice(0, remaining);
-    snippets.push(`--- ${item.name} ---\n${content}`);
+    excerpts.push(`--- ${item.path} ---\n${content}`);
     used += content.length;
   }
+
   return [
     `Repository: ${session.project}`,
     `Branch: ${session.branch}`,
-    names.length ? `Root entries:\n${names.join('\n')}` : 'Root listing could not be loaded from GitHub.',
-    ...snippets,
+    map.text,
+    selected.length ? `Representative/relevant source excerpts selected from the whole map:\n${selected.map((path) => `- ${path}`).join('\n')}` : '',
+    ...excerpts,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -218,14 +362,14 @@ async function repositoryContext(
   prompt: string,
   onActivity?: (type: EventType, payload: Record<string, unknown>) => void,
 ): Promise<string> {
-  const paths = [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/g) || [])]
-    .filter((path) => !path.split('/').includes('..')).slice(0, 3);
-  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch, paths]);
+  const explicit = explicitPromptPaths(prompt);
+  const terms = promptTerms(prompt);
+  const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch, explicit, terms]);
   const existing = contextCache.get(key);
   if (existing && existing.expires > Date.now()) return existing.value;
   if (contextCache.size >= 32) contextCache.delete(contextCache.keys().next().value!);
-  const value = loadRepositoryContext(session, paths, onActivity);
-  contextCache.set(key, { expires: Date.now() + (paths.length ? FILE_CONTEXT_TTL_MS : ROOT_CONTEXT_TTL_MS), value });
+  const value = loadRepositoryContext(session, prompt, onActivity);
+  contextCache.set(key, { expires: Date.now() + CONTEXT_TTL_MS, value });
   void value.catch(() => contextCache.delete(key));
   return value;
 }
@@ -258,7 +402,6 @@ export async function streamDirectRepositoryChat(input: {
     const contextStarted = performance.now();
     const projectName = input.session.project.split('/').pop() || '';
     const needsContext = shouldLoadRepositoryContext(input.prompt, input.mode, projectName);
-    if (needsContext) input.onStatus?.('Reading repository…');
     const context = needsContext ? await repositoryContext(input.session, input.prompt, input.onActivity)
       : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
     controller.signal.throwIfAborted();
@@ -271,9 +414,9 @@ export async function streamDirectRepositoryChat(input: {
     const system = [
       'You are Orlynx AI, assisting inside a GitHub-native coding workspace.',
       modeInstruction,
-      'For this direct chat turn you have read-only access to the current GitHub repository context supplied below, but you do not have a shell or mutable checkout.',
+      'For this direct chat turn you have a recursive map of the current GitHub repository plus selected source excerpts from across that map. You do not have a shell or mutable checkout.',
       'The Repository and Branch lines below are authoritative for the project currently open in Orlynx. Never claim that you do not know which repository is open when those lines are present.',
-      'When repository context is present, answer from it directly. If a specific file was unavailable, say that specific file could not be read instead of claiming the whole repository is unavailable.',
+      'Use the whole-repository map to reason about the project globally, then use the supplied source excerpts for implementation details. Do not reduce the project to only the excerpted files. If a detail depends on file contents not included in the excerpts, distinguish that uncertainty instead of pretending you inspected that content.',
       'Do not claim you ran commands, tests, builds, or changed files unless the execution plane actually did so.',
       input.mode === 'build'
         ? 'If the user asks for machine execution or repository mutation, explain that Orlynx will use the development environment for that work.'
