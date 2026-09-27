@@ -2295,6 +2295,69 @@ button, input, textarea, select { font: inherit; }
   flex: none;
   border-radius: 12px;
   padding: 0;
+  transition: transform var(--motion-fast) var(--motion-ease), background var(--motion-fast) var(--motion-ease);
+}
+.composer-send.ox-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+/* Primary working indicator: one calm global cue above the composer while a
+   real user-requested run is unresolved. Never driven by heartbeats. */
+.active-work-bar {
+  position: fixed;
+  z-index: 10;
+  right: 0;
+  bottom: 92px;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.active-work-pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  max-width: calc(100vw - 24px);
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-small);
+}
+.active-work-pill .ox-spinner {
+  flex: none;
+}
+.active-work-pill[data-state="waiting"] {
+  color: var(--agent-waiting);
+}
+.active-work-pill[data-state="working"] {
+  color: var(--foreground);
+}
+.active-work-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+.active-work-stop.ox-btn {
+  min-height: 44px;
+  flex: none;
+}
+.is-workspace.has-active-work .new-activity {
+  bottom: 168px;
+}
+@media (max-width: 760px) {
+  .active-work-bar {
+    bottom: calc(182px + env(safe-area-inset-bottom));
+  }
+  .is-workspace.has-active-work .new-activity {
+    bottom: calc(238px + env(safe-area-inset-bottom));
+  }
+  .active-work-pill {
+    padding: 5px 6px 5px 12px;
+  }
 }
 .message-row {
   width: 100%;
@@ -3346,21 +3409,26 @@ html[data-theme="light"] .composer-options-panel {
 
 
 /* Inline execution transcript — observable agent work lives in the conversation. */
+.conversation {
+  min-width: 0;
+  overflow-x: clip;
+}
 .transcript-activity-row {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
   align-items: start;
-  margin: 10px 0 14px;
+  margin: 3px 0 5px;
+  min-width: 0;
 }
 .transcript-activity-avatar {
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
-  margin-top: 20px;
+  margin-top: 2px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 7px;
   color: var(--foreground-muted);
   background: var(--surface);
 }
@@ -3368,11 +3436,11 @@ html[data-theme="light"] .composer-options-panel {
   min-width: 0;
 }
 .transcript-event-heading {
-  min-height: 20px;
+  min-height: 18px;
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 2px 5px;
+  margin: 0 2px 1px;
   color: var(--foreground-subtle);
   font-size: 10px;
   font-weight: 700;
@@ -3394,17 +3462,18 @@ html[data-theme="light"] .composer-options-panel {
 }
 .transcript-activity-shell > .ox-activity {
   margin: 0;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface);
+  padding: 5px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 .transcript-activity-shell > .ox-activity[data-current="true"] {
   margin: 0;
-  padding: 11px 12px;
-  border-color: color-mix(in srgb, var(--agent-working) 38%, var(--border));
-  background: color-mix(in srgb, var(--agent-working) 5%, var(--surface));
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--agent-working) 5%, transparent);
 }
 .transcript-activity-shell .ox-activity-title {
   font-size: var(--text-small);
@@ -3432,7 +3501,7 @@ html[data-theme="light"] .composer-options-panel {
 }
 .transcript-activity-shell .ox-raw pre {
   min-height: 38px;
-  max-height: 360px;
+  max-height: 320px;
   margin: 8px 0 0;
   padding: 10px 11px;
   border: 1px solid var(--border);
@@ -3442,16 +3511,22 @@ html[data-theme="light"] .composer-options-panel {
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-width: 100%;
 }
 .transcript-activity-row.category-agent .transcript-activity-shell > .ox-activity {
-  background: color-mix(in srgb, var(--surface-muted) 60%, var(--surface));
+  background: transparent;
 }
 .transcript-activity-row.category-error .transcript-event-kind,
 .transcript-activity-row.category-error .ox-activity-title {
   color: var(--danger);
 }
 .transcript-activity-row.category-error .transcript-activity-shell > .ox-activity {
-  border-color: color-mix(in srgb, var(--danger) 34%, var(--border));
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 4%, transparent);
 }
 .transcript-activity-row.category-test .transcript-event-kind,
 .transcript-activity-row.category-build .transcript-event-kind,
@@ -3467,27 +3542,39 @@ html[data-theme="light"] .composer-options-panel {
 }
 
 @media (max-width: 760px) {
+  .conversation {
+    overflow-x: clip;
+  }
   .transcript-activity-row {
-    grid-template-columns: 26px minmax(0, 1fr);
-    gap: 8px;
-    margin: 8px 0 12px;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 6px;
+    margin: 3px 0 5px;
   }
   .transcript-activity-avatar {
-    width: 24px;
-    height: 24px;
-    margin-top: 20px;
-    border-radius: 7px;
+    width: 22px;
+    height: 22px;
+    margin-top: 2px;
+    border-radius: 6px;
+  }
+  .transcript-activity-shell {
+    min-width: 0;
+    max-width: 100%;
   }
   .transcript-activity-shell > .ox-activity,
   .transcript-activity-shell > .ox-activity[data-current="true"] {
-    padding: 10px;
+    padding: 5px 0;
+    min-width: 0;
+  }
+  .transcript-activity-row.category-error .transcript-activity-shell > .ox-activity {
+    padding: 8px;
   }
   .transcript-event-heading {
-    margin-bottom: 4px;
+    margin-bottom: 1px;
   }
   .transcript-activity-shell .ox-raw pre {
-    max-height: 300px;
+    max-height: 240px;
     font-size: 11px;
+    max-width: 100%;
   }
 }
 

@@ -32,6 +32,13 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
   const rows: ActivityItem[] = [];
   const activeTools = new Map<string, ActivityItem>();
   const filePaths = new Map<string, string[]>();
+  // Semantic lifecycle state. Raw heartbeats update these in place; only
+  // meaningful transitions project a visible row. Nothing here deletes raw
+  // events — the ledger keeps everything, the transcript shows what matters.
+  const adapterStates = new Map<string, string>();
+  const adapterRows = new Map<string, ActivityItem>();
+  let workspaceRow: ActivityItem | null = null;
+  const finishedRuns = new Set<string>();
 
   const put = (event: RuntimeEvent, category: ActivityCategory, state: ActivityLifecycle, title: string, summary?: string, evidence?: Record<string, unknown>, rawOutput?: string) => {
     const item: ActivityItem = {
@@ -56,34 +63,79 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'message.delta':
         break; // text chunks render directly in the live assistant message.
       case 'message.start':
-        put(event, 'agent', 'running', 'Response stream started', str(p.model) || undefined, {
-          ...(str(p.plane) ? { plane: str(p.plane) } : {}),
-          ...(str(p.model) ? { model: str(p.model) } : {}),
-        });
-        break;
       case 'message.end':
-        put(event, 'agent', 'success', 'Response stream completed');
-        break;
+        break; // streaming telemetry: the live assistant message already shows this.
       case 'state.snapshot':
-        put(event, 'cloud', 'success', 'Session state loaded', [str(p.project), str(p.branch)].filter(Boolean).join(' · ') || undefined, {
-          ...(str(p.mode) ? { mode: str(p.mode) } : {}),
-        });
-        break;
+        break; // session restoration infrastructure, not conversation history.
       case 'state.delta': {
-        const adapterId = str(p.adapterId);
-        const state = str(p.state);
-        const title = p.scope === 'agent-adapter'
-          ? `${adapterId || 'AI'} adapter: ${state || 'updated'}`
-          : 'Runtime state updated';
-        const lifecycle: ActivityLifecycle = /failed|unavailable|error/i.test(state)
-          ? 'failed'
-          : /ready|connected|completed/i.test(state)
-            ? 'success'
-            : 'running';
-        put(event, 'agent', lifecycle, title, str(p.reason) || undefined, {
-          ...(str(p.scope) ? { scope: str(p.scope) } : {}),
-          ...(adapterId ? { adapterId } : {}),
-          ...(state ? { state } : {}),
+        // Infrastructure state (heartbeats, polling, transport) is tracked as
+        // current state, not transcript history. Repeated identical states —
+        // e.g. 100x "ready" — must not create new rows.
+        const scope = str(p.scope);
+        const adapterId = str(p.adapterId) || 'orlynx-ai';
+        const rawState = str(p.state).toLowerCase();
+        const reason = str(p.reason || p.error || p.message);
+        const previous = adapterStates.get(scope === 'agent-adapter' ? adapterId : scope || 'runtime');
+        const key = scope === 'agent-adapter' ? adapterId : scope || 'runtime';
+        if (scope === 'agent-adapter') {
+          const kind = adapterKind(rawState, reason);
+          if (rawState && rawState === previous) break; // steady-state heartbeat: invisible.
+          adapterStates.set(key, rawState);
+          const existing = adapterRows.get(key);
+          if (kind === 'steady') {
+            // STARTING -> READY (or ERROR -> READY) resolves the in-flight
+            // row; bare READY with no pending transition stays invisible.
+            if (existing && (existing.state === 'running' || existing.state === 'failed')) {
+              existing.state = 'success';
+              existing.title = 'Orlynx AI ready';
+              existing.summary = undefined;
+              existing.sequence = event.sequence || existing.sequence;
+              existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
+            }
+            break;
+          }
+          if (kind === 'transitional') {
+            const title = previous && adapterAttention(previous) ? 'Reconnecting AI' : 'Starting Orlynx AI';
+            if (existing && existing.state === 'running') {
+              existing.title = title;
+              existing.sequence = event.sequence || existing.sequence;
+              existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
+              break;
+            }
+            const item = put(event, 'agent', 'running', title, reason || undefined, {
+              ...(adapterId ? { adapterId } : {}),
+              ...(rawState ? { state: rawState } : {}),
+            });
+            adapterRows.set(key, item);
+            break;
+          }
+          // Attention states (unavailable/auth/model/rate-limit) are actionable
+          // and stay visible, coalesced into one row per adapter.
+          const title = adapterAttentionTitle(rawState, reason);
+          if (existing) {
+            existing.state = 'failed';
+            existing.title = title;
+            existing.summary = friendlyFailure(reason) || existing.summary;
+            existing.evidence = { ...(existing.evidence || {}), ...(adapterId ? { adapterId } : {}), ...(rawState ? { state: rawState } : {}) };
+            existing.sequence = event.sequence || existing.sequence;
+            existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
+            break;
+          }
+          const item = put(event, 'agent', 'failed', title, friendlyFailure(reason), {
+            ...(adapterId ? { adapterId } : {}),
+            ...(rawState ? { state: rawState } : {}),
+          });
+          adapterRows.set(key, item);
+          break;
+        }
+        // Non-adapter infrastructure (bridge health, polling, transport): hidden
+        // unless it carries a failure the user must act on.
+        if (!/fail|error|unavailable|disconnect|offline|interrupt|expired|denied/i.test(`${rawState} ${reason}`)) break;
+        if (rawState && rawState === previous) break;
+        adapterStates.set(key, rawState);
+        put(event, 'error', 'failed', 'Connection issue', friendlyFailure(reason) || 'The workspace connection needs attention.', {
+          ...(scope ? { scope } : {}),
+          ...(rawState ? { state: rawState } : {}),
         });
         break;
       }
@@ -104,7 +156,13 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         break;
       }
       case 'activity.started': {
-        put(event, 'agent', 'running', humanActivity(str(p.text)), undefined,
+        const title = humanActivity(str(p.text));
+        const prior = [...rows].reverse().find((r) => r.runId === event.runId && r.category === 'agent' && r.state === 'running');
+        if (prior && prior.title === title) {
+          prior.sequence = event.sequence || prior.sequence;
+          break;
+        }
+        put(event, 'agent', 'running', title, undefined,
           str(p.sourceType) ? { sourceType: str(p.sourceType) } : undefined);
         break;
       }
@@ -120,6 +178,15 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
           ...(typeof p.nextAt === 'number' ? { nextAt: Number(p.nextAt) } : {}),
           ...(typeof p.attempt === 'number' ? { attempt: Number(p.attempt) } : {}),
         };
+        // Same-phase progress updates the in-flight row instead of opening a
+        // new one every few seconds.
+        const prior = [...rows].reverse().find((r) => r.runId === event.runId && r.category === 'agent' && r.state === 'running');
+        if (prior && prior.title === title) {
+          if (summary) prior.summary = summary;
+          if (Object.keys(evidence).length) prior.evidence = { ...(prior.evidence || {}), ...evidence };
+          prior.sequence = event.sequence || prior.sequence;
+          break;
+        }
         put(event, 'agent', 'running', title, summary, Object.keys(evidence).length ? evidence : undefined);
         break;
       }
@@ -136,8 +203,22 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       }
       case 'tool.started': {
         const category = classifyTool(tool, command);
-        if (previous?.state === 'waiting') previous.state = 'success';
-        const item = put(event, category, 'running', titleFor(category, tool, command, str(p.title)), undefined,
+        const title = titleFor(category, tool, command, str(p.title));
+        const summary = command ? compact(command, 120) : pathSummary(p);
+        if (previous?.state === 'waiting') {
+          // requested -> started is one logical action: evolve the same row.
+          previous.state = 'running';
+          previous.category = category;
+          previous.title = title;
+          if (summary) previous.summary = summary;
+          previous.evidence = toolEvidence(p, tool, command);
+          previous.sequence = event.sequence || previous.sequence;
+          previous.rawRef = event.eventId ? `event:${event.eventId}` : previous.rawRef;
+          previous.collapsible = true;
+          activeTools.set(activeKey, previous);
+          break;
+        }
+        const item = put(event, category, 'running', title, summary,
           toolEvidence(p, tool, command));
         activeTools.set(activeKey, item);
         break;
@@ -240,16 +321,41 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         break;
       }
       case 'workspace.preparing': case 'workspace.reconnecting': {
+        // Workspace startup is one coherent lifecycle: evolve a single row
+        // through queued/preparing/connecting/recovery instead of a wall of
+        // nearly identical cards.
         const message = str(p.message);
-        put(event, 'cloud', 'running', event.type === 'workspace.preparing' ? 'Preparing workspace' : 'Reconnecting to workspace',
-          message && !/^Preparing workspace/i.test(message) ? message : undefined);
+        const detail = message && !/^Preparing workspace/i.test(message) ? message : undefined;
+        const recovering = event.type === 'workspace.reconnecting' && /fail|interrupt|could not|stale|lost|expire/i.test(message)
+          || /ssh|recover|replacement|fresh codespace|fresh environment|could not establish/i.test(message);
+        const title = recovering ? 'Recovering workspace'
+          : event.type === 'workspace.reconnecting' ? 'Reconnecting to workspace' : 'Preparing workspace';
+        const summary = recovering && !detail ? 'Starting a fresh environment…' : detail || defaultWorkspaceHint(title);
+        if (workspaceRow && workspaceRow.state === 'running') {
+          workspaceRow.title = title;
+          if (summary) workspaceRow.summary = summary;
+          workspaceRow.sequence = event.sequence || workspaceRow.sequence;
+          workspaceRow.rawRef = event.eventId ? `event:${event.eventId}` : workspaceRow.rawRef;
+          break;
+        }
+        workspaceRow = put(event, 'cloud', 'running', title, summary);
         break;
       }
       case 'workspace.ready': {
-        const pending = [...rows].reverse().find((r) => r.category === 'cloud' && r.state === 'running');
-        if (pending) pending.state = 'success';
-        put(event, 'cloud', 'success', 'Development environment ready',
-          str(p.provider) ? `Provider: ${str(p.provider)}` : undefined,
+        if (workspaceRow && workspaceRow.state === 'running') {
+          // Resolve the in-flight preparation row; no second "ready" card.
+          workspaceRow.state = 'success';
+          workspaceRow.title = 'Workspace ready';
+          workspaceRow.summary = undefined;
+          workspaceRow.evidence = str(p.provider) ? { provider: str(p.provider) } : workspaceRow.evidence;
+          workspaceRow.sequence = event.sequence || workspaceRow.sequence;
+          workspaceRow.rawRef = event.eventId ? `event:${event.eventId}` : workspaceRow.rawRef;
+          workspaceRow.collapsible = Boolean(workspaceRow.evidence);
+          break;
+        }
+        const last = rows.length ? rows[rows.length - 1] : undefined;
+        if (last?.category === 'cloud' && last.state === 'success' && last.title === 'Workspace ready') break; // duplicate ready: invisible.
+        workspaceRow = put(event, 'cloud', 'success', 'Workspace ready', undefined,
           str(p.provider) ? { provider: str(p.provider) } : undefined);
         break;
       }
@@ -262,20 +368,26 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       }
       case 'run.completed': {
         for (const row of rows) if (row.runId === event.runId && (row.state === 'running' || row.state === 'waiting')) row.state = 'success';
+        const doneKey = `completed:${event.runId || 'session'}`;
+        if (event.runId && finishedRuns.has(doneKey)) break; // replayed completion: no duplicate card.
+        if (event.runId) finishedRuns.add(doneKey);
         put(event, 'agent', 'success', 'Work completed', str(p.summary) || 'Ready for review');
         break;
       }
       case 'run.failed': {
         for (const row of rows) if (row.runId === event.runId && (row.state === 'running' || row.state === 'waiting')) row.state = p.cancelled ? 'cancelled' : 'failed';
+        const failKey = `failed:${event.runId || 'session'}:${str(p.error || p.message).slice(0, 80)}`;
+        if (event.runId && finishedRuns.has(failKey)) break; // replayed failure: no duplicate card.
+        if (event.runId) finishedRuns.add(failKey);
         const failureText = str(p.error || p.message);
         const runtimeUnavailable = /OpenCode runtime.*(?:HTTP\s+(?:502|503|504)|unavailable|did not become ready|could not start)/i.test(failureText);
         const title = p.cancelled
           ? 'Work stopped'
           : runtimeUnavailable ? 'AI runtime unavailable'
           : p.errorKind === 'rate_limit' ? 'Model is busy'
-          : p.errorKind === 'auth' ? 'Reconnect OpenCode'
+          : p.errorKind === 'auth' ? 'Reconnect AI'
           : p.errorKind === 'model' ? 'Model unavailable'
-          : p.errorKind === 'quota' ? 'OpenCode quota reached'
+          : p.errorKind === 'quota' ? 'AI quota reached'
           : 'Work needs attention';
         put(event, p.cancelled ? 'agent' : 'error', p.cancelled ? 'cancelled' : 'failed', title, friendlyFailure(failureText), {
           ...(str(p.errorKind) ? { errorKind: str(p.errorKind) } : {}),
@@ -287,6 +399,40 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
     }
   }
   return rows.slice(-500);
+}
+
+/** Classify an agent-adapter infrastructure state for visibility decisions. */
+function adapterKind(state: string, reason: string): 'steady' | 'transitional' | 'attention' {
+  const text = `${state} ${reason}`.toLowerCase();
+  if (/fail|unavailable|error|auth|model|rate.?limit|quota|exceed|too many|reject|expired|forbidden|unauthor|needs.?attention|not.?available/.test(text)) return 'attention';
+  if (/start|install|connect|reconnect|busy|work|load|prepar|pending|waiting|retry/.test(text)) return 'transitional';
+  return 'steady';
+}
+function adapterAttention(state: string): boolean {
+  return adapterKind(state, '') === 'attention';
+}
+/** User-facing wording for adapter attention states; never leaks "adapter". */
+function adapterAttentionTitle(state: string, reason: string): string {
+  const text = `${state} ${reason}`.toLowerCase();
+  if (/auth|credential|reconnect|401|403|expired|forbidden|sign.?in/.test(text)) return 'Authentication required';
+  if (/rate.?limit|too many|busy|retry|429/.test(text)) return 'Model is busy';
+  if (/quota|credit|billing|payment/.test(text)) return 'AI quota reached';
+  if (/model.*(unavailable|unknown|not .*available)|not .*model/.test(text)) return 'Model unavailable';
+  return 'AI runtime unavailable';
+}
+/** Compact one-line hint for collapsed workspace rows. */
+function defaultWorkspaceHint(title: string): string | undefined {
+  if (title === 'Recovering workspace') return 'Starting a fresh environment…';
+  if (title === 'Reconnecting to workspace') return 'Connecting…';
+  return 'Starting development environment…';
+}
+/** Compact one-line hint for collapsed read/search rows. */
+function pathSummary(p: Record<string, unknown>): string | undefined {
+  const path = str(p.path);
+  const title = str(p.title);
+  if (path) return compact(path, 120);
+  if (title) return compact(title, 120);
+  return undefined;
 }
 
 function humanActivity(text: string): string {
@@ -426,6 +572,7 @@ export function activityTranscriptLabel(item: ActivityItem): string {
   if (item.category === 'approval') return 'Approval';
   if (item.category === 'error') return 'Error';
   if (item.category === 'agent') {
+    if (/orlynx ai|reconnecting ai|authentication|model|runtime unavailable|quota/i.test(item.title)) return 'AI';
     if (/review|inspect|plan|think|reason|working|request/i.test(item.title)) return 'Thought';
     if (/response/i.test(item.title)) return 'Response';
     return 'Status';

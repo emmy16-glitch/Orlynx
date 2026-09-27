@@ -868,11 +868,15 @@ export default function ProductionApp() {
     } finally { setCloudBusy(false); }
   }
 
+  const [stopping, setStopping] = useState(false);
   async function stopRun() {
+    if (stopping) return;
     const running = events.slice().reverse().find((event) => event.type === 'run.started')?.runId || lastRun?.id;
     if (!session || !running) return;
+    setStopping(true);
     try { await j(await fetch(`/v1/agent-runs/${running}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) })); await refreshSession(session.id); }
     catch (error: any) { setError(error.message || 'The current task could not be stopped.'); }
+    finally { setStopping(false); }
   }
 
   useEffect(() => {
@@ -985,6 +989,13 @@ export default function ProductionApp() {
   const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
   const conversationTimeline = useMemo(() => buildConversationTimeline(messages, transcriptActivities), [messages, transcriptActivities]);
   const currentActivityId = [...transcriptActivities].reverse().find((item: any) => item.state === 'running' || item.state === 'waiting')?.id;
+  const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
+  // Genuine user-requested work only: semantic activities + run state. Adapter
+  // heartbeats project no rows, so they can never drive this indicator.
+  const runActive = runs.some((candidate: any) => candidate.state === 'running' || candidate.state === 'queued') || lastRun?.state === 'running' || lastRun?.state === 'queued';
+  const waitingForUser = currentActivity?.state === 'waiting';
+  const showWorkBar = tab === 'chat' && Boolean(currentActivity || runActive);
+  const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
   const running = runs.some((candidate: any) => candidate.state === 'running') || transcriptActivities.some((event: any) => event.state === 'running');
   const globalNav = [
     ['home', 'Home', 'home'], ['projects', 'Projects', 'folder'], ['settings', 'Settings', 'settings'],
@@ -1024,7 +1035,7 @@ export default function ProductionApp() {
     onClose={() => setShowConnectAI(false)}
   /> : null;
   return (
-    <div className={`orlynx-app ${page === 'workspace' ? 'is-workspace' : ''} ${page === 'welcome' ? 'is-welcome' : ''} ${page === 'github' ? 'is-github' : ''}`}>
+    <div className={`orlynx-app ${page === 'workspace' ? 'is-workspace' : ''} ${page === 'welcome' ? 'is-welcome' : ''} ${page === 'github' ? 'is-github' : ''} ${showWorkBar ? 'has-active-work' : ''}`}>
       {page !== 'welcome' && page !== 'github' && page !== 'workspace' && onboarded && <aside className="sidebar">
         <button className="brand-lockup" onClick={() => setPage(session ? 'home' : 'github')}><span className="brand-mark" /><span><b>Orlynx</b><small>Your development workspace</small></span></button>
         <nav className="side-nav" aria-label="Main navigation">{globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} />{label}</button>)}</nav>
@@ -1069,7 +1080,7 @@ export default function ProductionApp() {
                           <span className="transcript-event-kind">{activityTranscriptLabel(item)}</span>
                           {item.timestamp && <time>{new Date(item.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>}
                         </div>
-                        <TaskActivityRow item={item} detailMode="code" isCurrent={item.id === currentActivityId} />
+                        <TaskActivityRow item={item} detailMode="summary" isCurrent={item.id === currentActivityId} />
                       </div>
                     </div>;
                   }
@@ -1123,6 +1134,7 @@ export default function ProductionApp() {
             <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); setNewActivity(false); }}>↓ New activity</Button></div>}
+              {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span>{runActive && <Button type="button" tone="ghost" className="active-work-stop" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}>{stopping ? 'Stopping…' : <><span aria-hidden>■</span> Stop</>}</Button>}</div></div>}
               {tab === 'chat' && <form className="composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea
   value={composer}
   onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }}
@@ -1165,7 +1177,7 @@ export default function ProductionApp() {
           </div></div>
         : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
     </div>
-  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div>{(lastRun?.state === 'running' || lastRun?.state === 'queued') && <Button type="button" tone="ghost" onClick={stopRun}>Cancel</Button>}<Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}><Icon name="send" /></Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
+  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}

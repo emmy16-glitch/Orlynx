@@ -27,7 +27,16 @@
 .ox-activity { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border: 0; }
 .ox-activity .mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; border: 1px solid var(--border); flex: none; }
 .ox-activity[data-state="done"] .mark { color: var(--agent-success); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); }
-.ox-activity[data-state="active"] .mark { color: var(--agent-working); border-color: var(--agent-working); animation: ox-pulse 1.6s infinite; }
+.ox-activity[data-state="active"] .mark { color: var(--agent-working); border-color: var(--agent-working); }
+/* One motion language: only the CURRENT unresolved activity rotates (calm
+   1.1s ring). Queued/waiting rows stay static; success/failure never animate. */
+.ox-activity[data-current="true"][data-state="active"] .mark {
+  border-color: color-mix(in srgb, var(--agent-working) 28%, var(--border));
+  border-top-color: var(--agent-working);
+  color: var(--agent-working);
+  animation: ox-spin 1.1s linear infinite;
+}
+.ox-activity[data-current="true"][data-state="active"] .mark svg { display: none; }
 .ox-activity[data-state="todo"] .mark { color: var(--foreground-subtle); }
 .ox-activity[data-state="fail"] .mark { color: var(--agent-failed); border-color: var(--agent-failed); }
 .ox-activity:not([data-state="active"]):not([data-state="fail"]) { color: var(--foreground-muted); }
@@ -102,6 +111,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ox-activity[data-state="active"] .mark, .ox-badge[data-tone="work"] .dot { animation: none; }
+  .ox-activity .mark, .ox-badge[data-tone="work"] .dot, .ox-spinner { animation: none; }
   .ox-stream, .ox-btn { transition: none; }
 }

@@ -187,16 +187,18 @@ describe('normalized agent activity presentation', () => {
     assert.doesNotMatch(app, /workstream-wrap/);
   });
 
-  it('defaults to detailed live execution while retaining the optional summary view', async () => {
+  it('defaults to summary/collapsed live execution while retaining the optional code view', async () => {
     const fs = await import('node:fs');
     const source = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
     const stream = fs.readFileSync(new URL('../../web/src/ui/workstream.tsx', import.meta.url), 'utf8');
-    assert.match(source, /detailMode === 'code' \|\| showRaw/);
+    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+    assert.match(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
+    assert.doesNotMatch(source, /useState\(detailMode === 'code' \|\| isCurrent\)/);
     assert.match(source, /ox-activity-time/);
     assert.match(source, /ox-inline-diff/);
     assert.match(stream, /Summary/);
     assert.match(stream, /Code/);
-    assert.match(stream, /defaultMode: ActivityDetailMode = 'code'/);
+    assert.match(stream, /defaultMode: ActivityDetailMode = 'summary'/);
     assert.match(stream, /orlynx:activity-detail-mode:v2/);
     assert.match(stream, /aria-live="polite"/);
   });

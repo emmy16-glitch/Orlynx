@@ -6,7 +6,7 @@ import { Badge, Button, Card, Icon } from './primitives';
 
 const ACTIVITY_DETAIL_KEY = 'orlynx:activity-detail-mode:v2';
 
-export function useActivityDetailMode(defaultMode: ActivityDetailMode = 'code') {
+export function useActivityDetailMode(defaultMode: ActivityDetailMode = 'summary') {
   const [mode, setMode] = useState<ActivityDetailMode>(() => {
     if (typeof window === 'undefined') return defaultMode;
     try {
@@ -28,7 +28,7 @@ export function ActivityDetailToggle({ mode, onChange }: { mode: ActivityDetailM
   </div>;
 }
 
-export function AgentWorkStream({ events, defaultDetailMode = 'code' }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number; runId?: string; timestamp?: string }[]; defaultDetailMode?: ActivityDetailMode }) {
+export function AgentWorkStream({ events, defaultDetailMode = 'summary' }: { events: { type: string; payload?: Record<string, unknown>; eventId?: string; sequence?: number; runId?: string; timestamp?: string }[]; defaultDetailMode?: ActivityDetailMode }) {
   const [expanded, setExpanded] = useState(false);
   const [detailMode, setDetailMode] = useActivityDetailMode(defaultDetailMode);
   const items = useMemo(() => toActivities(events), [events]);
