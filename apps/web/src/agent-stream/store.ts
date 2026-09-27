@@ -560,8 +560,15 @@ export function reconcileAgentStream(
   persistedMessages: any[],
 ): AgentStreamState {
   const state = clone(current);
-  const durableAssistantIds = new Set(
-    persistedMessages.filter((message) => message?.role === 'assistant').map((message) => String(message.id || '')),
+  const durableRunIds = new Set(
+    persistedMessages
+      .filter((message) => message?.role === 'assistant')
+      .flatMap((message) => {
+        const explicit = String(message?.runId || '');
+        if (explicit) return [explicit];
+        const id = String(message?.id || '');
+        return id.startsWith('msg_') ? [id.slice(4)] : [];
+      }),
   );
 
   for (const run of runs || []) {
@@ -569,7 +576,6 @@ export function reconcileAgentStream(
     if (!runId) continue;
     const existingRun = state.runs[runId];
     const messageId = existingRun?.messageId || `assistant:${runId}`;
-    const durableId = `msg_${runId}`;
     const terminal = ['completed', 'failed', 'cancelled'].includes(String(run.state || ''));
 
     state.runs[runId] = {
@@ -587,7 +593,7 @@ export function reconcileAgentStream(
       errorKind: String(run.errorKind || existingRun?.errorKind || '') || undefined,
     };
 
-    if (terminal && durableAssistantIds.has(durableId)) {
+    if (terminal && durableRunIds.has(runId)) {
       delete state.messages[messageId];
       continue;
     }
