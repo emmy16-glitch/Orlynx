@@ -7,32 +7,40 @@ const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${s
 });
 
 describe('normalized agent activity presentation', () => {
-  it('coalesces activity lifecycle updates into one stable, observable action', () => {
+  it('preserves ordered activity progress instead of collapsing the live stream', () => {
     const rows = toActivities([
-      event(1, 'run.started'),
+      event(1, 'run.started', { plane: 'workspace', mode: 'build', model: 'opencode/free' }),
       event(2, 'activity.started', { text: 'Reading files' }),
       event(3, 'activity.progress', { text: 'Reasoning over repository' }),
       event(4, 'activity.progress', { text: 'Updating middleware' }),
       event(5, 'run.completed', { summary: 'Ready for review' }),
     ]);
-    const agent = rows.find((row) => row.category === 'agent' && row.title === 'Updating files');
-    assert.ok(agent);
-    assert.equal(agent.state, 'success');
-    assert.equal(rows.filter((row) => row.category === 'agent').length, 1);
-    assert.ok(rows.every((row) => !/reasoning|thinking/i.test(row.title)));
+    const agentRows = rows.filter((row) => row.category === 'agent');
+    assert.deepEqual(agentRows.map((row) => row.title), [
+      'Build task started',
+      'Inspecting the repository',
+      'Reviewing the request',
+      'Updating files',
+      'Work completed',
+    ]);
+    assert.ok(agentRows.every((row) => row.state === 'success'));
+    assert.deepEqual(agentRows.map((row) => row.sequence), [1, 2, 3, 4, 5]);
   });
 
-  it('keeps one activity row as an admitted prompt moves from queued to running', () => {
+  it('keeps queue admission, start, progress and completion as ordered observable steps', () => {
     const rows = toActivities([
-      event(1, 'run.queued', { position: 1 }),
-      event(2, 'run.started'),
+      event(1, 'run.queued', { position: 1, mode: 'build', plane: 'workspace' }),
+      event(2, 'run.started', { plane: 'workspace', mode: 'build' }),
       event(3, 'activity.progress', { text: 'Reading files' }),
       event(4, 'run.completed', { summary: 'Ready for review' }),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].category, 'agent');
-    assert.equal(rows[0].state, 'success');
-    assert.equal(rows[0].title, 'Inspecting the repository');
+    assert.deepEqual(rows.map((row) => row.title), [
+      'Waiting to start Build task',
+      'Build task started',
+      'Inspecting the repository',
+      'Work completed',
+    ]);
+    assert.ok(rows.every((row) => row.state === 'success'));
   });
 
   it('labels queued Build work and preserves observable command/path evidence', () => {
@@ -42,7 +50,9 @@ describe('normalized agent activity presentation', () => {
 
     const command = toActivities([
       event(2, 'tool.started', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', title: 'git status', callId: 'cmd-1' }),
-      event(3, 'tool.completed', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', callId: 'cmd-1', out: '## main...origin/main' }),
+      event(3, 'tool.output', { tool: 'bash', command: 'git status -sb', callId: 'cmd-1', outDelta: '## main' }),
+      event(4, 'tool.output', { tool: 'bash', command: 'git status -sb', callId: 'cmd-1', outDelta: '...origin/main' }),
+      event(5, 'tool.completed', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', callId: 'cmd-1' }),
     ])[0];
     assert.equal(command.category, 'git');
     assert.equal(command.title, 'Inspecting Git state');
@@ -107,26 +117,28 @@ describe('normalized agent activity presentation', () => {
     assert.equal(rows[0].state, 'success');
   });
 
-  it('bounds long sessions and sorts out-of-order events without repeating replayed ids', () => {
+  it('bounds long sessions while retaining the latest ordered progress events without duplicate replay', () => {
     const events = Array.from({ length: 150 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
     const rows = toActivities([...events].reverse().concat(events[0]));
-    assert.equal(rows.length, 1, 'same run activity is reconciled to its latest state');
-    assert.equal(rows[0].title, 'step 149');
+    assert.equal(rows.length, 100);
+    assert.equal(rows[0].title, 'step 50');
+    assert.equal(rows.at(-1)?.title, 'step 149');
+    assert.deepEqual(rows.map((row) => row.sequence), Array.from({ length: 100 }, (_, i) => i + 51));
     const many = toActivities(Array.from({ length: 150 }, (_, i) => event(i + 1, 'workspace.stopped', {}, `run-${i}`)));
     assert.equal(many.length, 100);
   });
 
-  it('keeps structured/raw output behind separate explicit controls and has a concise live status', async () => {
+  it('defaults to detailed live execution while retaining the optional summary view', async () => {
     const fs = await import('node:fs');
     const source = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
     const stream = fs.readFileSync(new URL('../../web/src/ui/workstream.tsx', import.meta.url), 'utf8');
-    assert.match(source, /View results/);
-    assert.match(source, /Show raw output/);
+    assert.match(source, /detailMode === 'code' \|\| showRaw/);
+    assert.match(source, /ox-activity-time/);
     assert.match(source, /ox-inline-diff/);
     assert.match(stream, /Summary/);
     assert.match(stream, /Code/);
-    assert.match(stream, /orlynx:activity-detail-mode/);
+    assert.match(stream, /defaultMode: ActivityDetailMode = 'code'/);
+    assert.match(stream, /orlynx:activity-detail-mode:v2/);
     assert.match(stream, /aria-live="polite"/);
-    assert.match(stream, /statusLabel/);
   });
 });
