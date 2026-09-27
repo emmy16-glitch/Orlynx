@@ -3,11 +3,12 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, TaskActivityRow, UserMessageActions } from './ui/product';
-import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
+import { buildConversationTimeline, chatActivities, selectActivities, selectLiveReplies } from './ui/mapping';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
-import { applyLiveReplyEvents, reconcileLiveRepliesFromRuns, type LiveReply } from './ui/live-replies';
+import { emptyAgentStreamState } from './agent-stream/protocol';
+import { applyRawAgentEvents, rebuildAgentStream, reconcileAgentStream } from './agent-stream/store';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -84,8 +85,7 @@ export default function ProductionApp() {
   const [branches, setBranches] = useState<string[]>([]);
   const [branch, setBranch] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
-  const [liveReplies, setLiveReplies] = useState<Record<string, LiveReply>>({});
-  const [events, setEvents] = useState<any[]>([]);
+  const [agentStream, setAgentStream] = useState(() => emptyAgentStreamState());
   const [files, setFiles] = useState<any[]>([]);
   const [folder, setFolder] = useState('');
   const [fileFilter, setFileFilter] = useState('');
@@ -246,10 +246,10 @@ export default function ProductionApp() {
       const latestRun = runData.slice(-1)[0] || null;
       setLastRun(latestRun); runRef.current = latestRun;
 
-      // Reconcile every live reply independently. Direct chat can bypass a
-      // queued workspace task, so two runs may overlap; one global draft string
-      // would corrupt their streamed text.
-      setLiveReplies((current) => reconcileLiveRepliesFromRuns(current, runData, messageData));
+      // Cline/OpenHands-style session reconciliation: durable run snapshots
+      // repair/recover the canonical stream, while SSE remains the hot path.
+      // Each run owns its own text/tool/activity lifecycle.
+      setAgentStream((current) => reconcileAgentStream(current, runData, messageData));
 
       setSession(details); currentSessionRef.current = details;
       refreshIntegrations().catch(() => {});
@@ -271,12 +271,9 @@ export default function ProductionApp() {
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
-      setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-500));
-
-      // Preserve event order per run. A run.started and its first delta may
-      // share a frame, while another direct/workspace run can stream at the
-      // same time. Each run owns one live assistant bubble.
-      setLiveReplies((current) => applyLiveReplyEvents(current, batch));
+      // Raw provider/workspace envelopes stop at the canonical stream adapter.
+      // React never reasons directly about message/tool lifecycle fragments.
+      setAgentStream((current) => applyRawAgentEvents(current, batch));
       const terminalChunks: string[] = [];
       for (const item of batch) {
         if (item.type === 'run.started') {
@@ -344,7 +341,7 @@ export default function ProductionApp() {
   const openSession = useCallback(async (record: any) => {
     sourceRef.current?.close();
     seqRef.current = 0;
-    seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setLiveReplies({}); setPushReview(null);
+    seenRef.current = new Set(); pendingRef.current = []; setAgentStream(emptyAgentStreamState()); setPushReview(null);
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
@@ -354,17 +351,19 @@ export default function ProductionApp() {
       localStorage.setItem(sessionKey(record.project), record.id);
     } catch {}
     setRecentProjects((previous) => { const next = [record.project, ...previous.filter((item) => item !== record.project)].filter((name) => name.includes('/')).slice(0, 8); try { localStorage.setItem(RECENTS, JSON.stringify(next)); } catch {} return next; });
-    await refreshSession(record.id);
     try {
       const history = await j<any[]>(await fetch(`/v1/sessions/${record.id}/activity?limit=500`));
       const ordered = [...history].filter((item) => item?.eventId).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
-      setEvents(ordered);
+      setAgentStream(rebuildAgentStream(ordered));
       seenRef.current = new Set(ordered.map((item) => item.eventId));
       seqRef.current = ordered.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
       try { localStorage.setItem(seqKey(record.id), String(seqRef.current)); } catch {}
     } catch {
       seqRef.current = Number(localStorage.getItem(seqKey(record.id)) || 0);
     }
+    // Reconcile the replayed event model with durable messages/run snapshots
+    // after replay, so partialText cannot be appended twice during restore.
+    await refreshSession(record.id);
     setRestoring(false); connectEvents(record.id);
   }, [connectEvents, refreshSession]);
 
@@ -589,7 +588,7 @@ export default function ProductionApp() {
     if (!nearBottomRef.current || tab !== 'chat' || page !== 'workspace') return;
     const frame = requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
     return () => cancelAnimationFrame(frame);
-  }, [messages.length, Object.values(liveReplies).reduce((sum, reply) => sum + reply.text.length, 0), events.length, tab, page]);
+  }, [messages.length, Object.values(agentStream.messages).reduce((sum, reply) => sum + reply.text.length, 0), agentStream.order.length, tab, page]);
 
   const [composerFocused, setComposerFocused] = useState(false);
   const composerBoxRef = useRef<HTMLTextAreaElement | null>(null);
@@ -906,7 +905,10 @@ export default function ProductionApp() {
   const [stopping, setStopping] = useState(false);
   async function stopRun() {
     if (stopping) return;
-    const running = events.slice().reverse().find((event) => event.type === 'run.started')?.runId || lastRun?.id;
+    const runningRuns = Object.values(agentStream.runs)
+      .filter((run) => run.state === 'running')
+      .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''));
+    const running = runningRuns[runningRuns.length - 1]?.id || lastRun?.id;
     if (!session || !running) return;
     setStopping(true);
     try { await j(await fetch(`/v1/agent-runs/${running}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) })); await refreshSession(session.id); }
@@ -1020,15 +1022,16 @@ export default function ProductionApp() {
   const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state) && !workspaceDisconnected);
   const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
   const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
-  const activities = useMemo(() => toActivities(events), [events]);
+  const activities = useMemo(() => selectActivities(agentStream), [agentStream]);
   const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
+  const liveReplies = useMemo(() => selectLiveReplies(agentStream, messages), [agentStream, messages]);
   const conversationTimeline = useMemo(() => buildConversationTimeline(messages, transcriptActivities), [messages, transcriptActivities]);
   const currentActivityId = [...transcriptActivities].reverse().find((item: any) => item.state === 'running' || item.state === 'waiting')?.id;
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
   const runActive = runs.some((candidate: any) => candidate.state === 'running' || candidate.state === 'queued') || lastRun?.state === 'running' || lastRun?.state === 'queued';
-  const waitingForUser = currentActivity?.state === 'waiting';
+  const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
   const showWorkBar = tab === 'chat' && Boolean(currentActivity || runActive);
   const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
@@ -1195,12 +1198,7 @@ export default function ProductionApp() {
                   if (entry.kind === 'activity') {
                     const item = entry.activity;
                     return <div className={`transcript-activity-row category-${item.category}`} key={entry.key}>
-                      <span className="transcript-activity-avatar" aria-hidden><Icon name="agents" size={14} /></span>
                       <div className="transcript-activity-shell">
-                        <div className="transcript-event-heading">
-                          <span className="transcript-event-kind">{activityTranscriptLabel(item)}</span>
-                          {item.timestamp && <time>{new Date(item.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>}
-                        </div>
                         <TaskActivityRow item={item} detailMode="summary" isCurrent={item.id === currentActivityId} />
                         <ServerPreviewAction command={typeof item.evidence?.command === 'string' ? item.evidence.command : ''} output={item.rawOutput} activityState={item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} />
                       </div>
@@ -1219,11 +1217,11 @@ export default function ProductionApp() {
                   const cancelledLatest = isLatestAssistant && lastRun?.state === 'cancelled';
                   return <article className="message-row assistant-message" key={entry.key}><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><AssistantMessageActions text={cleanText} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={failedLatest} runCancelled={cancelledLatest} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[message.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(message.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} /></div></article>;
                 })}
-                {Object.values(liveReplies).filter((reply) => reply.text).sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt)).map((reply) => {
-                  const prompt = reply.messageId
-                    ? String(messages.find((message) => message.id === reply.messageId)?.text || '')
+                {liveReplies.map((reply) => {
+                  const prompt = reply.userMessageId
+                    ? String(messages.find((message) => message.id === reply.userMessageId)?.text || '')
                     : String([...messages].reverse().find((message) => message.role === 'user')?.text || '');
-                  const active = reply.state === 'running' || reply.state === 'queued';
+                  const active = reply.state === 'streaming';
                   return <article className="message-row assistant-message" key={`live:${reply.runId}`}><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{active ? 'Responding…' : reply.state === 'failed' ? 'Partial response · interrupted' : reply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', reply.text, prompt)}{active && <span className="stream-caret" />}</div></div></article>;
                 })}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}

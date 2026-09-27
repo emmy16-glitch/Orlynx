@@ -1,46 +1,36 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
 
 const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${sequence}`) => ({
   eventId, sessionId: 'session-a', runId, sequence, timestamp: new Date(sequence * 1000).toISOString(), type, payload,
 });
 
-describe('normalized agent activity presentation', () => {
-  it('preserves ordered activity progress instead of collapsing the live stream', () => {
+describe('canonical agent activity presentation', () => {
+  it('coalesces same-phase progress into one evolving semantic activity', () => {
     const rows = toActivities([
-      event(1, 'run.started', { plane: 'workspace', mode: 'build', model: 'opencode/free' }),
+      event(1, 'run.started', { plane: 'workspace', mode: 'build', model: 'opencode/free', messageId: 'u1' }),
       event(2, 'activity.started', { text: 'Reading files' }),
       event(3, 'activity.progress', { text: 'Reasoning over repository' }),
       event(4, 'activity.progress', { text: 'Updating middleware' }),
       event(5, 'run.completed', { summary: 'Ready for review' }),
     ]);
-    const agentRows = rows.filter((row) => row.category === 'agent');
-    assert.deepEqual(agentRows.map((row) => row.title), [
-      'Build task started',
-      'Inspecting the repository',
-      'Reviewing the request',
-      'Updating files',
-      'Work completed',
-    ]);
-    assert.ok(agentRows.every((row) => row.state === 'success'));
-    assert.deepEqual(agentRows.map((row) => row.sequence), [1, 2, 3, 4, 5]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Updating files');
+    assert.equal(rows[0].state, 'success');
+    assert.equal(rows[0].sequence, 2);
   });
 
-  it('keeps queue admission, start, progress and completion as ordered observable steps', () => {
+  it('keeps one queue lifecycle plus the actual semantic work', () => {
     const rows = toActivities([
       event(1, 'run.queued', { position: 1, mode: 'build', plane: 'workspace' }),
-      event(2, 'run.started', { plane: 'workspace', mode: 'build' }),
+      event(2, 'run.started', { plane: 'workspace', mode: 'build', messageId: 'u1' }),
       event(3, 'activity.progress', { text: 'Reading files' }),
       event(4, 'run.completed', { summary: 'Ready for review' }),
     ]);
-    assert.deepEqual(rows.map((row) => row.title), [
-      'Waiting to start Build task',
-      'Build task started',
-      'Inspecting the repository',
-      'Work completed',
-    ]);
-    assert.deepEqual(rows.map((row) => row.state), ['queued', 'success', 'success', 'success']);
+    assert.deepEqual(rows.map((row) => row.title), ['Build task started', 'Inspecting the repository']);
+    assert.deepEqual(rows.map((row) => row.state), ['success', 'success']);
   });
 
   it('labels queued Build work and preserves observable command/path evidence', () => {
@@ -59,21 +49,22 @@ describe('normalized agent activity presentation', () => {
     assert.equal(command.evidence?.command, 'git status -sb');
     assert.equal(command.evidence?.path, '/workspaces/Echoo-main');
     assert.equal(command.rawOutput, '## main...origin/main');
+    assert.match(command.rawRef || '', /^stream:tool:/);
   });
 
-  it('projects bounded code changes into inline diff evidence', () => {
+  it('projects code changes into inline evidence without a raw-event card', () => {
     const [row] = toActivities([event(1, 'changes.updated', {
       changeId: 'chg-1',
       count: 1,
       files: [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }],
     })]);
     assert.equal(row.category, 'file');
-    assert.equal(row.title, 'Code changes ready');
+    assert.equal(row.title, 'Updated files');
     assert.equal(row.summary, '1 file changed');
     assert.deepEqual(row.evidence?.files, [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }]);
   });
 
-  it('turns test receipts into counts and human-first failures while retaining raw output by reference', () => {
+  it('turns test receipts into counts and human-first failures', () => {
     const raw = '4 failed\n22 passed\n0 skipped\n✕ Duplicate message created';
     const [result] = toActivities([event(1, 'receipt.created', { cmd: 'npm test', code: 1, out: raw })]);
     assert.equal(result.category, 'test');
@@ -82,27 +73,19 @@ describe('normalized agent activity presentation', () => {
     assert.equal(result.summary, '22 passed · 4 failed · 0 skipped · Main issue: Duplicate message created');
     assert.deepEqual(result.evidence?.failures, ['Duplicate message created']);
     assert.equal(result.rawOutput, raw);
-    assert.equal(result.rawRef, 'event:evt-1');
+    assert.match(result.rawRef || '', /^stream:/);
     assert.equal(parseTestCounts('# pass 8\n# fail 0\n# skipped 2')?.passed, 8);
   });
 
-  it('groups changed files and prevents duplicate event replay from duplicating evidence', () => {
-    const one = event(1, 'file.changed', { path: 'src/a.ts', action: 'modify' });
-    const rows = toActivities([one, one, event(2, 'file.changed', { path: 'src/b.ts', action: 'create' })]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].summary, '2 files changed');
-    assert.deepEqual(rows[0].evidence?.files, [{ path: 'src/a.ts', action: 'modify' }, { path: 'src/b.ts', action: 'create' }]);
-  });
-
-  it('correlates command start and failure, translating timeout while preserving details', () => {
+  it('correlates command start and failure into one row with friendly timeout detail', () => {
     const rows = toActivities([
       event(1, 'tool.started', { tool: 'exec', cmd: 'npm run test', toolCallId: 'call-1' }),
       event(2, 'tool.failed', { tool: 'exec', toolCallId: 'call-1', error: 'shell tool terminated after timeout 15000ms' }),
     ]);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Running tests');
-    assert.equal(rows[0].summary, 'The command timed out. The process may still be running.');
-    assert.equal(rows[0].rawOutput, 'shell tool terminated after timeout 15000ms');
+    assert.equal(rows[0].title, 'Tests failed');
+    assert.equal(rows[0].summary, 'The operation timed out. It may still be running.');
+    assert.equal(rows[0].rawOutput, rows[0].summary);
   });
 
   it('reconciles a test receipt into its running command instead of adding a second card', () => {
@@ -117,31 +100,36 @@ describe('normalized agent activity presentation', () => {
     assert.equal(rows[0].state, 'success');
   });
 
-  it('bounds long sessions to the durable 500-event window while retaining ordered progress without duplicate replay', () => {
-    const events = Array.from({ length: 650 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
-    const rows = toActivities([...events].reverse().concat(events[0]));
-    assert.equal(rows.length, 500);
-    assert.equal(rows[0].title, 'step 150');
-    assert.equal(rows.at(-1)?.title, 'step 649');
-    assert.deepEqual(rows.map((row) => row.sequence), Array.from({ length: 500 }, (_, i) => i + 151));
-    const many = toActivities(Array.from({ length: 650 }, (_, i) => event(i + 1, 'workspace.stopped', {}, `run-${i}`)));
-    assert.equal(many.length, 500);
+  it('high-frequency progress and workspace status stay bounded by semantic identity', () => {
+    const progress = Array.from({ length: 650 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
+    const rows = toActivities([...progress].reverse().concat(progress[0]));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'step 649');
+    assert.equal(rows[0].sequence, 1);
+
+    const workspace = toActivities(Array.from({ length: 650 }, (_, i) => event(i + 1, 'workspace.preparing', { message: `stage ${i}` }, 'run-long')));
+    assert.equal(workspace.length, 1);
+    assert.equal(workspace[0].summary, 'stage 649');
   });
 
-  it('keeps failures in the chat timeline instead of filtering them into a separate hidden path', () => {
+  it('keeps failures in chat while normal completion remains implicit', () => {
     const rows = toActivities([
-      event(1, 'run.started', { plane: 'workspace' }),
+      event(1, 'run.started', { plane: 'workspace', messageId: 'u1' }),
       event(2, 'run.failed', { error: 'command failed', errorKind: 'engine', recoverable: true }),
     ]);
     const visible = chatActivities(rows);
-    assert.equal(visible.length, rows.length);
-    assert.equal(visible.at(-1)?.state, 'failed');
-    assert.equal(visible.at(-1)?.title, 'Work needs attention');
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0].state, 'failed');
+    assert.equal(visible[0].title, 'AI runtime unavailable');
+
+    const completed = toActivities([
+      event(1, 'run.started', { plane: 'workspace', messageId: 'u1' }),
+      event(2, 'run.completed', { summary: 'done' }),
+    ]);
+    assert.equal(completed.length, 0);
   });
 
-
-
-  it('interleaves messages and observable execution into one chronological transcript', () => {
+  it('interleaves messages and semantic execution chronologically', () => {
     const messages = [
       { id: 'u1', role: 'user', text: 'Run the tests', createdAt: '2026-09-27T05:00:00.000Z' },
       { id: 'a1', role: 'assistant', text: 'Tests pass.', createdAt: '2026-09-27T05:00:05.000Z' },
@@ -157,7 +145,7 @@ describe('normalized agent activity presentation', () => {
       ? `message:${entry.message.role}`
       : `activity:${activityTranscriptLabel(entry.activity)}`), [
       'message:user',
-      'activity:Thought',
+      'activity:Working',
       'activity:Run tests',
       'message:assistant',
     ]);
@@ -165,7 +153,7 @@ describe('normalized agent activity presentation', () => {
     assert.equal(testRow?.kind === 'activity' ? testRow.activity.rawOutput : '', '8 passed\n');
   });
 
-  it('uses OpenCode-like labels without exposing private reasoning', () => {
+  it('uses process labels without exposing hidden reasoning content', () => {
     const rows = toActivities([
       event(1, 'activity.progress', { text: 'Reviewing the request' }),
       event(2, 'activity.progress', { text: 'Understanding repository…', sourceType: 'repository.map' }),
@@ -173,34 +161,25 @@ describe('normalized agent activity presentation', () => {
       event(4, 'tool.started', { tool: 'bash', command: 'npm run dev', callId: 'cmd-1' }),
       event(5, 'run.failed', { error: 'Vite failed to start' }),
     ]);
-    assert.deepEqual(rows.map(activityTranscriptLabel), ['Thought', 'Repository', 'Read', 'Run command', 'Error']);
+    assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
-  it('chat owns the execution transcript and preserves a running reply when a follow-up is queued', async () => {
-    const fs = await import('node:fs');
+  it('chat consumes canonical stream selectors rather than raw lifecycle reducers', () => {
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     assert.match(app, /buildConversationTimeline\(messages, transcriptActivities\)/);
-    assert.match(app, /applyLiveReplyEvents\(current, batch\)/);
-    assert.match(app, /Object\.values\(liveReplies\)/);
+    assert.match(app, /applyRawAgentEvents\(current, batch\)/);
+    assert.match(app, /selectLiveReplies\(agentStream, messages\)/);
     assert.match(app, /activity\?limit=500/);
     assert.match(app, /transcript-activity-row/);
-    assert.doesNotMatch(app, /currentChatActivities/);
-    assert.doesNotMatch(app, /workstream-wrap/);
+    assert.doesNotMatch(app, /applyLiveReplyEvents/);
   });
 
-  it('defaults to summary/collapsed live execution while retaining the optional code view', async () => {
-    const fs = await import('node:fs');
+  it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {
     const source = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
-    const stream = fs.readFileSync(new URL('../../web/src/ui/workstream.tsx', import.meta.url), 'utf8');
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     assert.match(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
-    assert.doesNotMatch(source, /useState\(detailMode === 'code' \|\| isCurrent\)/);
-    assert.match(source, /ox-activity-time/);
-    assert.match(source, /ox-inline-diff/);
-    assert.match(stream, /Summary/);
-    assert.match(stream, /Code/);
-    assert.match(stream, /defaultMode: ActivityDetailMode = 'summary'/);
-    assert.match(stream, /orlynx:activity-detail-mode:v2/);
-    assert.match(stream, /aria-live="polite"/);
+    assert.match(source, /className="ox-activity-disclosure"/);
+    assert.match(source, /aria-label=\{showEvidence \? `Hide details for/);
+    assert.doesNotMatch(source, />View code & details</);
   });
 });
