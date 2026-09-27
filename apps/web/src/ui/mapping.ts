@@ -58,51 +58,37 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       case 'run.queued': {
         const buildWorkspace = p.mode === 'build' && p.plane === 'workspace';
         const title = buildWorkspace ? 'Waiting to start Build task' : p.mode === 'plan' ? 'Waiting to start planning' : 'Queued';
-        const item = put(event, 'agent', 'queued', title, typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically');
-        item.key = `agent:${event.runId || 'session'}`;
+        put(event, 'agent', 'queued', title, typeof p.position === 'number' ? `Position ${p.position} · starts automatically` : 'Starts automatically');
         break;
       }
       case 'run.started': {
-        const runKey = `agent:${event.runId || 'session'}`;
-        const existing = rows.find((row) => row.key === runKey);
-        if (existing) {
-          existing.state = 'running';
-          existing.title = 'Starting work';
-          existing.summary = undefined;
-          existing.sequence = event.sequence || existing.sequence;
-          existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
-        } else {
-          const item = put(event, 'agent', 'running', 'Starting work');
-          item.key = runKey;
-        }
+        put(event, 'agent', 'running', p.plane === 'workspace' ? 'Build task started' : 'Response started',
+          [str(p.mode), str(p.model)].filter(Boolean).join(' · ') || undefined,
+          {
+            ...(str(p.plane) ? { plane: str(p.plane) } : {}),
+            ...(str(p.provider) ? { provider: str(p.provider) } : {}),
+            ...(str(p.permission) ? { permission: str(p.permission) } : {}),
+          });
         break;
       }
-      case 'activity.started': case 'activity.progress': {
-        const runKey = `agent:${event.runId || 'session'}`;
-        const existing = rows.find((r) => r.key === runKey);
+      case 'activity.started': {
+        put(event, 'agent', 'running', humanActivity(str(p.text)), undefined,
+          str(p.sourceType) ? { sourceType: str(p.sourceType) } : undefined);
+        break;
+      }
+      case 'activity.progress': {
         const retrying = p.sourceType === 'opencode.retry';
         const title = retrying ? 'AI provider busy — retrying' : humanActivity(str(p.text));
         const summary = retrying
           ? [str(p.text), typeof p.attempt === 'number' ? `attempt ${Number(p.attempt) + 1}` : ''].filter(Boolean).join(' · ')
-          : undefined;
-        const evidence = retrying
-          ? {
-              ...(str(p.provider) ? { provider: str(p.provider) } : {}),
-              ...(typeof p.nextAt === 'number' ? { nextAt: Number(p.nextAt) } : {}),
-            }
-          : undefined;
-        if (existing) {
-          existing.title = title;
-          existing.state = 'running';
-          existing.summary = summary || existing.summary;
-          existing.evidence = evidence ? { ...(existing.evidence || {}), ...evidence } : existing.evidence;
-          existing.sequence = event.sequence || existing.sequence;
-          existing.rawRef = event.eventId ? `event:${event.eventId}` : existing.rawRef;
-          existing.collapsible = Boolean(existing.evidence || existing.rawOutput);
-        } else {
-          const item = put(event, 'agent', 'running', title, summary, evidence);
-          item.key = runKey;
-        }
+          : str(p.text) && humanActivity(str(p.text)) !== str(p.text).replace(/[.!…]+$/, '') ? str(p.text) : undefined;
+        const evidence = {
+          ...(str(p.sourceType) ? { sourceType: str(p.sourceType) } : {}),
+          ...(str(p.provider) ? { provider: str(p.provider) } : {}),
+          ...(typeof p.nextAt === 'number' ? { nextAt: Number(p.nextAt) } : {}),
+          ...(typeof p.attempt === 'number' ? { attempt: Number(p.attempt) } : {}),
+        };
+        put(event, 'agent', 'running', title, summary, Object.keys(evidence).length ? evidence : undefined);
         break;
       }
       case 'activity.completed': {
@@ -112,20 +98,27 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       }
       case 'tool.requested': {
         const category = classifyTool(tool, command);
-        put(event, category, 'waiting', waitingTitle(tool, command), command ? compact(command, 120) : undefined, toolEvidence(p, tool, command));
+        const item = put(event, category, 'waiting', waitingTitle(tool, command), command ? compact(command, 120) : undefined, toolEvidence(p, tool, command));
+        activeTools.set(activeKey, item);
         break;
       }
       case 'tool.started': {
         const category = classifyTool(tool, command);
+        if (previous?.state === 'waiting') previous.state = 'success';
         const item = put(event, category, 'running', titleFor(category, tool, command, str(p.title)), undefined,
           toolEvidence(p, tool, command));
         activeTools.set(activeKey, item);
         break;
       }
       case 'tool.output': {
-        if (previous && (typeof p.out === 'string' || typeof p.stderr === 'string')) {
-          previous.rawOutput = [str(p.out), str(p.stderr)].filter(Boolean).join('\n');
-          previous.collapsible = true;
+        if (previous) {
+          const delta = str(p.outDelta);
+          if (p.replace) previous.rawOutput = delta;
+          else if (delta) previous.rawOutput = `${previous.rawOutput || ''}${delta}`;
+          else if (typeof p.out === 'string' || typeof p.stderr === 'string') previous.rawOutput = [str(p.out), str(p.stderr)].filter(Boolean).join('\n');
+          previous.sequence = event.sequence || previous.sequence;
+          previous.rawRef = event.eventId ? `event:${event.eventId}` : previous.rawRef;
+          previous.collapsible = Boolean(previous.rawOutput);
         }
         break;
       }
@@ -222,8 +215,10 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       }
       case 'workspace.ready': {
         const pending = [...rows].reverse().find((r) => r.category === 'cloud' && r.state === 'running');
-        if (pending) { pending.state = 'success'; pending.title = 'Development environment ready'; pending.sequence = event.sequence || pending.sequence; }
-        else put(event, 'cloud', 'success', 'Development environment ready');
+        if (pending) pending.state = 'success';
+        put(event, 'cloud', 'success', 'Development environment ready',
+          str(p.provider) ? `Provider: ${str(p.provider)}` : undefined,
+          str(p.provider) ? { provider: str(p.provider) } : undefined);
         break;
       }
       case 'workspace.stopped': put(event, 'cloud', 'success', 'Workspace stopped'); break;
@@ -234,13 +229,12 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
         break;
       }
       case 'run.completed': {
-        for (const row of rows) if (row.runId === event.runId && row.state === 'running') row.state = 'success';
-        if (!rows.some((r) => r.runId === event.runId && r.category === 'agent')) put(event, 'agent', 'success', 'Work completed', str(p.summary) || 'Ready for review');
+        for (const row of rows) if (row.runId === event.runId && (row.state === 'running' || row.state === 'waiting')) row.state = 'success';
+        put(event, 'agent', 'success', 'Work completed', str(p.summary) || 'Ready for review');
         break;
       }
       case 'run.failed': {
-        for (const row of rows) if (row.runId === event.runId && row.state === 'running') row.state = p.cancelled ? 'cancelled' : 'failed';
-        const agentRow = [...rows].reverse().find((row) => row.runId === event.runId && row.category === 'agent');
+        for (const row of rows) if (row.runId === event.runId && (row.state === 'running' || row.state === 'waiting')) row.state = p.cancelled ? 'cancelled' : 'failed';
         const failureText = str(p.error || p.message);
         const runtimeUnavailable = /OpenCode runtime.*(?:HTTP\s+(?:502|503|504)|unavailable|did not become ready|could not start)/i.test(failureText);
         const title = p.cancelled
@@ -251,9 +245,10 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
           : p.errorKind === 'model' ? 'Model unavailable'
           : p.errorKind === 'quota' ? 'OpenCode quota reached'
           : 'Work needs attention';
-        const summary = friendlyFailure(failureText);
-        if (agentRow) { agentRow.state = p.cancelled ? 'cancelled' : 'failed'; agentRow.title = title; agentRow.summary = summary; }
-        else put(event, p.cancelled ? 'agent' : 'error', p.cancelled ? 'cancelled' : 'failed', title, summary);
+        put(event, p.cancelled ? 'agent' : 'error', p.cancelled ? 'cancelled' : 'failed', title, friendlyFailure(failureText), {
+          ...(str(p.errorKind) ? { errorKind: str(p.errorKind) } : {}),
+          ...(p.recoverable ? { recoverable: true } : {}),
+        });
         break;
       }
       default: break;
