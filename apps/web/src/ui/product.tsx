@@ -21,12 +21,14 @@ export type ActivityDetailMode = 'summary' | 'code';
 
 export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = false }: { item: ActivityItem; detailMode?: ActivityDetailMode; isCurrent?: boolean }) {
   const [showEvidence, setShowEvidence] = React.useState(detailMode === 'code');
-  const [showRaw, setShowRaw] = React.useState(false);
+  const [showRaw, setShowRaw] = React.useState(detailMode === 'code' || isCurrent);
   React.useEffect(() => {
-    if (detailMode === 'code') setShowEvidence(true);
-  }, [detailMode, item.id]);
+    if (detailMode === 'code' || isCurrent) setShowEvidence(true);
+    if (detailMode === 'code' || (isCurrent && item.rawOutput)) setShowRaw(true);
+  }, [detailMode, item.id, item.rawOutput, isCurrent]);
 
-  const { title, summary, evidence, rawOutput, category, state } = item;
+  const { title, summary, evidence, rawOutput, category, state, timestamp } = item;
+  const timeLabel = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
   const uiState = toState(state);
   const files = Array.isArray(evidence?.files) ? evidence.files as { path: string; action?: string; diff?: string }[] : [];
   const failures = Array.isArray(evidence?.failures) ? evidence.failures as string[] : [];
@@ -58,8 +60,8 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
     </div>}
     {failures.length > 0 && <ul className="ox-failure-list">{failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>}
     {rawOutput && <div className="ox-raw">
-      <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>
-      {showRaw && <pre aria-label="Raw command output">{rawOutput}</pre>}
+      {detailMode !== 'code' && <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>}
+      {(detailMode === 'code' || showRaw) && <pre aria-label="Raw command output">{rawOutput}</pre>}
     </div>}
   </div> : null;
 
@@ -67,7 +69,7 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
     <div className="ox-activity" data-state={uiState} data-current={isCurrent ? 'true' : undefined}>
       <span className="mark" aria-hidden>{uiState === 'done' ? <Icon name="check" /> : uiState === 'fail' ? <Icon name="x" /> : uiState === 'active' && isCurrent ? <Icon name="dot" /> : <Icon name="ring" />}</span>
       <div className="ox-activity-content">
-        <div className="ox-activity-title"><span>{title}</span>{isCurrent && <span className="ox-current-label">Current</span>}</div>
+        <div className="ox-activity-title"><span>{title}</span>{timeLabel && <time className="ox-activity-time">{timeLabel}</time>}{isCurrent && <span className="ox-current-label">Current</span>}</div>
         {summary && <div className="small">{summary}</div>}
         {detailMode === 'summary' && (hasEvidence || rawOutput) && <Button tone="ghost" className="ox-detail-toggle" aria-expanded={showEvidence} onClick={() => setShowEvidence((value) => !value)}>{showEvidence ? 'Hide details' : category === 'file' ? 'View files' : category === 'test' ? 'View results' : category === 'approval' ? 'Review request' : technical ? 'View code & details' : 'View details'}</Button>}
         {details}
