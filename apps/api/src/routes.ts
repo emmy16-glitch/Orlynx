@@ -716,9 +716,14 @@ router.post('/sessions/:id/exec', async (req, res) => {
   const gate = canPerform(s.id, 'terminal.exec', { cmd: String(cmd) });
   if (!gate.allowed) return res.status(403).json({ error: gate.reason });
   if (gate.needsApproval && !approved) {
-    emit(s.id, 'approval.required', { action: 'terminal.exec', cmd: String(cmd).slice(0, 200) });
-    if (durableStorageConfigured()) { const now = new Date().toISOString(); await controlPlaneRepository().putApproval({ id: `approval_${uuid()}`, sessionId: s.id, action: 'terminal.exec', state: 'pending', context: { cmd: String(cmd).slice(0, 200) }, createdAt: now }); }
-    return res.status(409).json({ error: 'Approval required before running this command.', approvalRequired: true, cmd: String(cmd).slice(0, 200) });
+    const approvalId = `approval_${uuid()}`;
+    const command = String(cmd).slice(0, 200);
+    const now = new Date().toISOString();
+    if (durableStorageConfigured()) {
+      await controlPlaneRepository().putApproval({ id: approvalId, sessionId: s.id, action: 'terminal.exec', state: 'pending', context: { cmd: command }, createdAt: now });
+    }
+    emit(s.id, 'approval.required', { approvalId, action: 'terminal.exec', cmd: command, detail: `Run ${command}` });
+    return res.status(409).json({ error: 'Approval required before running this command.', approvalRequired: true, approvalId, cmd: command });
   }
   if (durableStorageConfigured()) {
     const workspace = await getWorkspace(s.id);
@@ -739,6 +744,55 @@ router.post('/sessions/:id/exec', async (req, res) => {
 });
 
 // agent runs
+router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
+  const session = ownedSession(req, req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.status(503).json({ error: 'Durable approval storage is not configured.' });
+
+  const decision = String(req.body?.decision || '');
+  if (!['allow_once', 'deny'].includes(decision)) return res.status(400).json({ error: 'decision must be allow_once or deny' });
+
+  const repository = controlPlaneRepository();
+  const approval = await repository.getApproval(req.params.approvalId);
+  if (!approval || approval.sessionId !== session.id) return res.status(404).json({ error: 'approval not found' });
+  if (approval.state !== 'pending') return res.json({ approval, deduplicated: true });
+
+  const now = new Date().toISOString();
+  if (decision === 'deny') {
+    const denied = { ...approval, state: 'denied', resolvedAt: now };
+    await repository.putApproval(denied);
+    emit(session.id, 'approval.resolved', { approvalId: approval.id, action: approval.action, decision: 'deny', detail: 'Permission denied.' });
+    emit(session.id, 'permission.resolved', { approvalId: approval.id, action: approval.action, decision: 'deny' });
+    await recordAudit(req, session.id, 'approval.resolve', 'denied', { approvalId: approval.id, action: approval.action });
+    return res.json({ approval: denied });
+  }
+
+  if (approval.action !== 'terminal.exec') {
+    return res.status(409).json({ error: 'This approval type cannot be executed from chat yet.' });
+  }
+
+  const workspace = await getWorkspace(session.id);
+  if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
+    return res.status(503).json({ error: 'The project workspace is not ready yet.' });
+  }
+
+  const command = String(approval.context.cmd || '');
+  if (!command.trim()) return res.status(409).json({ error: 'The pending command is missing.' });
+  const parts = command.trim().split(/\s+/);
+  try {
+    const result = await bridgeRequest(workspace.id, 'command.exec', { command: parts.shift(), args: parts });
+    const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
+    await repository.putApproval(approvedRecord);
+    emit(session.id, 'approval.resolved', { approvalId: approval.id, action: approval.action, decision: 'allow_once', detail: 'Approved once.' });
+    emit(session.id, 'permission.resolved', { approvalId: approval.id, action: approval.action, decision: 'allow_once' });
+    emit(session.id, 'receipt.created', { approvalId: approval.id, cmd: command, ...result });
+    await recordAudit(req, session.id, 'approval.resolve', 'approved_once', { approvalId: approval.id, action: approval.action });
+    return res.json({ approval: approvedRecord, result });
+  } catch (error) {
+    return res.status(502).json({ error: error instanceof Error ? error.message : 'The approved command could not be completed.' });
+  }
+});
+
 router.post('/sessions/:id/agent-runs', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
