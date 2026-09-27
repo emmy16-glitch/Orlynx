@@ -408,3 +408,62 @@ export { toState };
 export function chatActivities(items: ActivityItem[]): ActivityItem[] {
   return items;
 }
+
+
+export type ConversationTimelineEntry =
+  | { kind: 'message'; key: string; timestamp: string; message: { id: string; role: string; text: string; createdAt: string } }
+  | { kind: 'activity'; key: string; timestamp: string; activity: ActivityItem };
+
+export function activityTranscriptLabel(item: ActivityItem): string {
+  if (item.category === 'search') return /search/i.test(item.title) ? 'Search' : 'Read';
+  if (item.category === 'command') return 'Run command';
+  if (item.category === 'test') return 'Run tests';
+  if (item.category === 'build') return 'Build';
+  if (item.category === 'file') return /change|update|edit|file/i.test(item.title) ? 'Edit' : 'File';
+  if (item.category === 'git') return 'Git';
+  if (item.category === 'cloud') return 'Workspace';
+  if (item.category === 'approval') return 'Approval';
+  if (item.category === 'error') return 'Error';
+  if (item.category === 'agent') {
+    if (/review|inspect|plan|think|reason|working|request/i.test(item.title)) return 'Thought';
+    if (/response/i.test(item.title)) return 'Response';
+    return 'Status';
+  }
+  return 'Activity';
+}
+
+export function buildConversationTimeline(
+  messages: Array<{ id: string; role: string; text: string; createdAt: string }>,
+  activities: ActivityItem[],
+): ConversationTimelineEntry[] {
+  const messageEntries: ConversationTimelineEntry[] = messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => ({
+      kind: 'message',
+      key: `message:${message.id}`,
+      timestamp: message.createdAt,
+      message,
+    }));
+  const activityEntries: ConversationTimelineEntry[] = activities.map((activity) => ({
+    kind: 'activity',
+    key: `activity:${activity.key}`,
+    timestamp: activity.timestamp,
+    activity,
+  }));
+
+  const weight = (entry: ConversationTimelineEntry): number => {
+    if (entry.kind === 'activity') return 1;
+    return entry.message.role === 'user' ? 0 : 2;
+  };
+
+  return [...messageEntries, ...activityEntries].sort((a, b) => {
+    const at = Date.parse(a.timestamp || '') || 0;
+    const bt = Date.parse(b.timestamp || '') || 0;
+    if (at !== bt) return at - bt;
+    const aw = weight(a);
+    const bw = weight(b);
+    if (aw !== bw) return aw - bw;
+    if (a.kind === 'activity' && b.kind === 'activity') return (a.activity.sequence || 0) - (b.activity.sequence || 0);
+    return a.key.localeCompare(b.key);
+  });
+}
