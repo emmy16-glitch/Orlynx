@@ -126,9 +126,11 @@ OpenCode account/provider details belong inside the AI management surface or adv
 
 The Chat tab is the execution surface. Conversation and observable agent work are one chronological transcript rather than separate chat and “activity” panels.
 
-For Build, Plan and Ask, preserve every observable event the product receives in order. Typical transcript labels include **Thought**, **Read**, **Search**, **Run command**, **Run tests**, **Build**, **Edit**, **Git**, **Workspace**, **Approval**, **Error**, **Response** and **Status**.
+For Build, Plan and Ask, preserve every observable event the product receives in order. Typical transcript labels include **Thought**, **Repository**, **Read**, **Search**, **Run command**, **Run tests**, **Build**, **Edit**, **Git**, **Workspace**, **Approval**, **Error**, **Response** and **Status**.
 
 “Thought” is a short user-visible progress/status summary supplied by the agent or Orlynx orchestration. It is never private chain-of-thought or hidden model reasoning.
+
+For repository-aware Ask/Plan turns, Orlynx should not present itself as reading only a small “context” bundle. It builds a recursive map of the current branch, understands the major project areas and entry points, and then loads representative/relevant source excerpts across that whole map. The transcript presents this as **Repository · Understanding repository**, not “Read context.” Large repositories remain bounded for model latency, so structural understanding can cover the whole tree while source contents are selected intelligently rather than pretending every byte fits into one model request.
 
 The transcript contract is:
 
