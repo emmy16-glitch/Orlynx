@@ -16,6 +16,8 @@ export interface PersistedChatMessage {
   role: string;
   text: string;
   createdAt: string;
+  /** Explicit server-owned relationship. Legacy rows may still omit this. */
+  runId?: string;
 }
 
 export interface ThreadTurn {
@@ -53,12 +55,13 @@ export function buildThread(
     return turn;
   };
 
-  // 1. Durable messages own turns. Assistant durability key is msg_<runId>.
+  // 1. Durable messages own turns. New rows carry explicit runId. The
+  // msg_<runId> convention remains only as a legacy-history fallback.
   const assistantByRun = new Map<string, PersistedChatMessage>();
   for (const message of messages) {
-    if (message.role === 'assistant' && message.id.startsWith('msg_')) {
-      assistantByRun.set(message.id.slice(4), message);
-    }
+    if (message.role !== 'assistant') continue;
+    const runId = message.runId || (message.id.startsWith('msg_') ? message.id.slice(4) : '');
+    if (runId) assistantByRun.set(runId, message);
   }
   // User messages: each starts (or joins) a turn. Run linkage comes from the
   // stream's run.userMessageId when available.
