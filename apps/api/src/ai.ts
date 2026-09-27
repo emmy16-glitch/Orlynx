@@ -397,6 +397,10 @@ export function readOnlyInstruction(): string {
   return '[Orlynx access: READ ONLY. Inspect, search and explain only. Do NOT create, modify or delete files, run mutating commands, install packages, commit or push. If the task needs changes, explain what you would do and stop.]';
 }
 
+export function buildAskFirstInstruction(): string {
+  return '[Orlynx access: BUILD / ASK FIRST. You may inspect and search files, run read-only diagnostics, run tests, and start or stop local development servers so the user can verify the project. Do NOT create, modify or delete project files, install or uninstall packages, commit, push, or perform destructive commands unless this task has been explicitly granted project-change access. If a change is required without that approval, show what needs changing and ask for approval before editing.]';
+}
+
 export function planInstruction(): string {
   return '[Orlynx mode: PLAN. Inspect the project and produce a concrete plan. Do NOT modify files, run mutating commands, commit or push unless the user explicitly asks you to proceed.]';
 }
