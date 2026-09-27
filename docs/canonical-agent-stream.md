@@ -8,7 +8,7 @@ directly.
 ```text
 RawProviderEvent
       ↓  AgentAdapter (server boundary)
-CanonicalAgentEvent (protocol v1)
+StreamProjectionEvent (protocol v1)
       ↓  Session/EventStore (durable, sequenced, idempotent)
 SSE / snapshot replay
       ↓  ThreadProjection (turns owned by run IDs)
