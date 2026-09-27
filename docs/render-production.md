@@ -80,8 +80,18 @@ See [warm runner architecture](warm-runner-architecture.md).
 
 ## Orchestrator worker
 
-For production, run workspace lifecycle orchestration in a separate persistent
-Render background worker using the same build artifact and environment:
+The current Render rollout uses `apps/api/scripts/production-start.mjs` as the
+service start supervisor. It launches the API and the durable orchestrator as
+separate child processes from the same deployed artifact whenever Postgres is
+configured. The child environment is forced to
+`ORLYNX_ORCHESTRATOR_MODE=worker`, so HTTP handlers only persist workspace jobs
+and the orchestrator process claims them with leases.
+
+This keeps the existing service's secrets/configuration intact and avoids
+duplicating sensitive GitHub/credential settings during rollout.
+
+For a later infrastructure split, the orchestrator can still run as its own
+persistent Render background worker using the same build artifact and environment:
 
 ```text
 Build: npm run render:build
