@@ -226,6 +226,7 @@ export interface OrlynxEvent {
 
 // UI-facing projection of runtime events. Provider-specific payloads are normalized
 // before they reach the primary work stream; rawRef points back to the source event.
+export type AgentPartKind = 'terminal' | 'file-change' | 'file-read' | 'test-result' | 'build-result' | 'git' | 'preview' | 'approval' | 'error' | 'status' | 'generic';
 export type ActivityCategory = 'agent' | 'search' | 'file' | 'command' | 'test' | 'build' | 'git' | 'cloud' | 'preview' | 'approval' | 'error';
 export type ActivityLifecycle = 'queued' | 'running' | 'success' | 'failed' | 'waiting' | 'cancelled';
 export interface ActivityEvent {
