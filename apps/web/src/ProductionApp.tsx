@@ -3,7 +3,7 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, TaskActivityRow, UserMessageActions } from './ui/product';
-import { activityTranscriptLabel, buildConversationTimeline, chatActivities, selectActivities, selectLiveReplies } from './ui/mapping';
+import { buildConversationTimeline, chatActivities, selectActivities, selectLiveReplies } from './ui/mapping';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
@@ -86,7 +86,6 @@ export default function ProductionApp() {
   const [branch, setBranch] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
   const [agentStream, setAgentStream] = useState(() => emptyAgentStreamState());
-  const [events, setEvents] = useState<any[]>([]);
   const [files, setFiles] = useState<any[]>([]);
   const [folder, setFolder] = useState('');
   const [fileFilter, setFileFilter] = useState('');
@@ -272,8 +271,6 @@ export default function ProductionApp() {
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
-      setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-500));
-
       // Raw provider/workspace envelopes stop at the canonical stream adapter.
       // React never reasons directly about message/tool lifecycle fragments.
       setAgentStream((current) => applyRawAgentEvents(current, batch));
@@ -344,7 +341,7 @@ export default function ProductionApp() {
   const openSession = useCallback(async (record: any) => {
     sourceRef.current?.close();
     seqRef.current = 0;
-    seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setAgentStream(emptyAgentStreamState()); setPushReview(null);
+    seenRef.current = new Set(); pendingRef.current = []; setAgentStream(emptyAgentStreamState()); setPushReview(null);
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
@@ -357,7 +354,6 @@ export default function ProductionApp() {
     try {
       const history = await j<any[]>(await fetch(`/v1/sessions/${record.id}/activity?limit=500`));
       const ordered = [...history].filter((item) => item?.eventId).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
-      setEvents(ordered);
       setAgentStream(rebuildAgentStream(ordered));
       seenRef.current = new Set(ordered.map((item) => item.eventId));
       seqRef.current = ordered.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
@@ -592,7 +588,7 @@ export default function ProductionApp() {
     if (!nearBottomRef.current || tab !== 'chat' || page !== 'workspace') return;
     const frame = requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
     return () => cancelAnimationFrame(frame);
-  }, [messages.length, Object.values(agentStream.messages).reduce((sum, reply) => sum + reply.text.length, 0), events.length, tab, page]);
+  }, [messages.length, Object.values(agentStream.messages).reduce((sum, reply) => sum + reply.text.length, 0), agentStream.order.length, tab, page]);
 
   const [composerFocused, setComposerFocused] = useState(false);
   const composerBoxRef = useRef<HTMLTextAreaElement | null>(null);
@@ -909,7 +905,10 @@ export default function ProductionApp() {
   const [stopping, setStopping] = useState(false);
   async function stopRun() {
     if (stopping) return;
-    const running = events.slice().reverse().find((event) => event.type === 'run.started')?.runId || lastRun?.id;
+    const running = Object.values(agentStream.runs)
+      .filter((run) => run.state === 'running')
+      .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''))
+      .at(-1)?.id || lastRun?.id;
     if (!session || !running) return;
     setStopping(true);
     try { await j(await fetch(`/v1/agent-runs/${running}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) })); await refreshSession(session.id); }
