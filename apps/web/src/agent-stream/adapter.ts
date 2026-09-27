@@ -101,6 +101,7 @@ export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
         type: 'TOOL_START',
         toolCallId: toolCallId(event),
         name: str(payload.tool || payload.name) || 'tool',
+        waiting: event.type === 'tool.requested',
         title: str(payload.title) || undefined,
         command: str(payload.command || payload.cmd) || undefined,
         path: str(payload.path) || undefined,
