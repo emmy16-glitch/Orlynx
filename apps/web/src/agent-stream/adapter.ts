@@ -1,0 +1,177 @@
+import type { OrlynxEvent } from '@orlynx/shared';
+import type { CanonicalAgentEvent } from './protocol';
+
+type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
+  type: string;
+  payload?: Record<string, unknown>;
+};
+
+const str = (value: unknown) => typeof value === 'string' ? value : '';
+const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+function base(event: RawEvent) {
+  return {
+    eventId: String(event.eventId || `legacy:${event.runId || event.sessionId || 'session'}:${event.sequence || 0}:${event.type}`),
+    sessionId: String(event.sessionId || ''),
+    runId: event.runId ? String(event.runId) : undefined,
+    taskId: event.taskId ? String(event.taskId) : undefined,
+    workspaceId: event.workspaceId ? String(event.workspaceId) : undefined,
+    sequence: Number(event.sequence || 0),
+    timestamp: String(event.timestamp || new Date(0).toISOString()),
+  };
+}
+
+function messageId(event: RawEvent): string {
+  return str(event.payload?.messageId)
+    || (event.runId ? `assistant:${event.runId}` : `assistant:${event.sessionId || 'session'}:${event.sequence || 0}`);
+}
+
+function toolCallId(event: RawEvent): string {
+  const payload = event.payload || {};
+  const tool = str(payload.tool || payload.name) || 'tool';
+  const command = str(payload.command || payload.cmd);
+  return str(payload.toolCallId || payload.callId)
+    || `${event.runId || event.sessionId || 'session'}:${tool}:${command || 'call'}`;
+}
+
+function phaseId(event: RawEvent): string {
+  const source = str(event.payload?.sourceType) || 'agent';
+  return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
+}
+
+function workspaceId(event: RawEvent): string {
+  return `workspace:${event.workspaceId || event.sessionId || 'session'}`;
+}
+
+export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
+  const payload = event.payload || {};
+  const common = base(event);
+
+  switch (event.type) {
+    case 'run.queued':
+      return [{ ...common, type: 'RUN_QUEUED', position: num(payload.position), plane: str(payload.plane) || undefined, mode: str(payload.mode) as any || undefined }];
+    case 'run.started':
+      return [{
+        ...common,
+        type: 'RUN_STARTED',
+        messageId: messageId(event),
+        userMessageId: str(payload.messageId) || undefined,
+        plane: str(payload.plane) || undefined,
+        model: str(payload.model) || undefined,
+        mode: str(payload.mode) as any || undefined,
+        permission: str(payload.permission) as any || undefined,
+      }];
+    case 'run.completed':
+      return [{ ...common, type: 'RUN_FINISHED', summary: str(payload.summary) || undefined }];
+    case 'run.failed':
+      return [{
+        ...common,
+        type: 'RUN_ERROR',
+        error: str(payload.error || payload.message) || undefined,
+        errorKind: str(payload.errorKind) || undefined,
+        cancelled: Boolean(payload.cancelled),
+        retryable: Boolean(payload.retryable),
+      }];
+
+    case 'message.start':
+      return [{ ...common, type: 'TEXT_START', messageId: messageId(event), role: 'assistant' }];
+    case 'message.delta': {
+      const delta = str(payload.delta);
+      return delta ? [{ ...common, type: 'TEXT_CONTENT', messageId: messageId(event), delta }] : [];
+    }
+    case 'message.end':
+      return [{ ...common, type: 'TEXT_END', messageId: messageId(event) }];
+
+    case 'tool.requested':
+    case 'tool.started':
+      return [{
+        ...common,
+        type: 'TOOL_START',
+        toolCallId: toolCallId(event),
+        name: str(payload.tool || payload.name) || 'tool',
+        title: str(payload.title) || undefined,
+        command: str(payload.command || payload.cmd) || undefined,
+        path: str(payload.path) || undefined,
+        code: str(payload.code) || undefined,
+      }];
+    case 'tool.output':
+      return [{
+        ...common,
+        type: 'TOOL_UPDATE',
+        toolCallId: toolCallId(event),
+        delta: str(payload.outDelta) || undefined,
+        output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
+        replace: Boolean(payload.replace),
+      }];
+    case 'tool.completed':
+    case 'tool.failed':
+      return [{
+        ...common,
+        type: 'TOOL_END',
+        toolCallId: toolCallId(event),
+        ok: event.type === 'tool.completed',
+        error: str(payload.error || payload.message) || undefined,
+        output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
+        exitCode: num(payload.exitCode ?? payload.code),
+        files: Array.isArray(payload.files) ? payload.files : undefined,
+      }];
+
+    case 'activity.started':
+      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: str(payload.sourceType) || undefined }];
+    case 'activity.progress':
+      return [{ ...common, type: 'ACTIVITY_UPDATE', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: str(payload.sourceType) || undefined, detail: payload }];
+    case 'activity.completed':
+      return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined }];
+
+    case 'workspace.preparing':
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'preparing', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+    case 'workspace.reconnecting':
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'reconnecting', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+    case 'workspace.ready':
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'ready', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+    case 'workspace.stopped':
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'stopped', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+
+    case 'state.snapshot':
+      return [{ ...common, type: 'STATE_SNAPSHOT', scope: str(payload.scope) || 'session', value: payload }];
+    case 'state.delta':
+      return [{ ...common, type: 'STATE_DELTA', scope: str(payload.scope) || 'session', state: str(payload.state) || undefined, value: payload }];
+
+    case 'changes.updated':
+      return [{
+        ...common,
+        type: 'CHANGES_UPDATED',
+        activityId: `changes:${event.runId || str(payload.changeId) || event.sessionId || event.sequence}`,
+        changeId: str(payload.changeId) || undefined,
+        files: Array.isArray(payload.files) ? payload.files : [],
+        count: num(payload.count),
+      }];
+    case 'receipt.created':
+      return [{
+        ...common,
+        type: 'RECEIPT',
+        activityId: `receipt:${event.runId || event.sessionId || 'session'}:${event.sequence || 0}`,
+        command: str(payload.command || payload.cmd) || undefined,
+        output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
+        exitCode: num(payload.exitCode ?? payload.code),
+      }];
+    case 'approval.required':
+    case 'approval.resolved':
+      return [{
+        ...common,
+        type: 'APPROVAL',
+        activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        resolved: event.type === 'approval.resolved',
+        action: str(payload.action) || undefined,
+        detail: str(payload.detail || payload.message) || undefined,
+      }];
+    default:
+      return [{ ...common, type: 'OTHER', rawType: event.type, payload }];
+  }
+}
+
+export function normalizeOrlynxEvents(events: RawEvent[]): CanonicalAgentEvent[] {
+  const deduped = [...new Map(events.filter(Boolean).map((event) => [String(event.eventId || `${event.sequence}:${event.type}`), event])).values()]
+    .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+  return deduped.flatMap(normalizeOrlynxEvent);
+}
