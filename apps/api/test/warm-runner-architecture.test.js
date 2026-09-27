@@ -179,3 +179,17 @@ test('legacy runtime worker image uses Node 24', () => {
   assert.match(dockerfile, /^FROM node:24-bookworm-slim/m);
   assert.doesNotMatch(dockerfile, /^FROM node:20-/m);
 });
+
+
+test('Render direct runner provides a single isolated workspace without nested Docker', () => {
+  const source = fs.readFileSync(new URL('../../../runner-direct/index.mjs', import.meta.url), 'utf8');
+  assert.match(source, /service: 'orlynx-direct-runner'/);
+  assert.match(source, /capacity: 1/);
+  assert.match(source, /git', \['clone', '--filter=blob:none'/);
+  assert.match(source, /GIT_CONFIG_KEY_0: 'http\.https:\/\/github\.com\/\.extraheader'/);
+  assert.match(source, /spawn\(process\.execPath, \[BRIDGE_PATH\]/);
+  assert.match(source, /OPENCODE_BIN/);
+  assert.match(source, /validPreviewToken/);
+  assert.match(source, /server\.on\('upgrade'/);
+  assert.doesNotMatch(source, /spawn\('docker'/);
+});
