@@ -48,20 +48,16 @@ Orlynx control plane (Render)
       +-- workspace orchestration
       |
       v
-GitHub Codespace
+Render warm runner (preferred)
       |
-      v
-authenticated Orlynx workspace bridge
+      +-- authenticated Orlynx workspace bridge
+      |    +-- PTY / Git / filesystem
+      |    +-- preview-port discovery
+      |    +-- OpenCode (Adapter #1)
+      |    +-- future agent adapters
       |
-      +-- workspace core
-      |    +-- PTY
-      |    +-- Git
-      |    +-- filesystem
-      |    +-- preview ports
-      |
-      +-- agent adapters
-           +-- OpenCode (Adapter #1)
-           +-- future: Cline / others
+      +-- GitHub Codespaces fallback
+           (used only when runner fallback is needed)
 ```
 
 ### GitHub
@@ -86,16 +82,18 @@ as production truth on hosted deployments.
 
 ### Remote execution
 
-Real execution happens in a GitHub Codespace. Orlynx provisions it with the user's
-GitHub authorization and bootstraps the workspace bridge. The workspace becomes
-ready when the Codespace and authenticated bridge are usable; agent runtimes have
-their own independent health lifecycle.
+Real execution prefers the prewarmed Render runner. Orlynx prepares the
+repository there and connects the authenticated workspace bridge; GitHub
+Codespaces remains a fallback execution provider rather than the normal startup
+path. A workspace is ready only when the selected provider and authenticated
+bridge are usable, and agent runtimes keep their own independent health
+lifecycle.
 
 The bridge provides the real PTY, filesystem, Git operations, command execution
-and preview-port discovery. Agent runtimes are registered behind
-`apps/api/src/agent-runtime.ts`. OpenCode is Adapter #1. If OpenCode fails,
-workspace shell/files/Git remain available and only OpenCode-assigned tasks are
-affected.
+and preview-port discovery regardless of the selected workspace provider. Agent
+runtimes are registered behind `apps/api/src/agent-runtime.ts`. OpenCode is
+Adapter #1. If OpenCode fails, workspace shell/files/Git remain available and
+only OpenCode-assigned tasks are affected.
 
 ### Events, queueing and mobile recovery
 
