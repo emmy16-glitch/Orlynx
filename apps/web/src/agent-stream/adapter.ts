@@ -73,8 +73,10 @@ function toolCallId(event: RawEvent): string {
   return rawId.startsWith(`${scope}:`) ? rawId : `${scope}:${rawId}`;
 }
 
-function semanticType(payload: Record<string, unknown>, fallback?: string): any {
-  return str(payload.semanticType) || fallback || undefined;
+function semanticType(payload: Record<string, unknown>, fallback?: AgentPartKind): AgentPartKind | undefined {
+  const value = str(payload.semanticType);
+  const allowed = new Set<AgentPartKind>(['terminal','file-change','file-read','test-result','build-result','git','preview','approval','error','status','generic']);
+  return value && allowed.has(value as AgentPartKind) ? value as AgentPartKind : fallback;
 }
 
 function workspaceProjectionState(value: unknown): 'preparing' | 'reconnecting' | 'ready' | 'stopped' | 'failed' {
