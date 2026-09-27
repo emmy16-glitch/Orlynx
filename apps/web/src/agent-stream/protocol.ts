@@ -16,7 +16,7 @@ export type CanonicalAgentEvent =
   | (Base & { type: 'TEXT_START'; messageId: string; role: 'assistant' })
   | (Base & { type: 'TEXT_CONTENT'; messageId: string; delta: string })
   | (Base & { type: 'TEXT_END'; messageId: string })
-  | (Base & { type: 'TOOL_START'; toolCallId: string; name: string; title?: string; command?: string; path?: string; code?: string })
+  | (Base & { type: 'TOOL_START'; toolCallId: string; name: string; waiting?: boolean; title?: string; command?: string; path?: string; code?: string })
   | (Base & { type: 'TOOL_UPDATE'; toolCallId: string; output?: string; delta?: string; replace?: boolean })
   | (Base & { type: 'TOOL_END'; toolCallId: string; ok: boolean; error?: string; output?: string; exitCode?: number; files?: unknown[] })
   | (Base & { type: 'ACTIVITY_START'; activityId: string; text: string; sourceType?: string })
