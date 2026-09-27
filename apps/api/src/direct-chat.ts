@@ -1,4 +1,4 @@
-import type { AgentMode, ChatMessage, ProjectSession } from '@orlynx/shared';
+import type { AgentMode, ChatMessage, EventType, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
 import { githubRepositoryFile, githubRepositoryFiles } from './github.js';
 import { streamWithOfficialOpenCode } from './opencode-local.js';
@@ -157,7 +157,7 @@ async function safeFile(project: string, branch: string, path: string, installat
 async function loadRepositoryContext(
   session: ProjectSession,
   paths: string[],
-  onActivity?: (type: string, payload: Record<string, unknown>) => void,
+  onActivity?: (type: EventType, payload: Record<string, unknown>) => void,
 ): Promise<string> {
   if (paths.length) {
     const files = await Promise.all(paths.map(async (name) => {
@@ -216,7 +216,7 @@ async function loadRepositoryContext(
 async function repositoryContext(
   session: ProjectSession & { userId: string },
   prompt: string,
-  onActivity?: (type: string, payload: Record<string, unknown>) => void,
+  onActivity?: (type: EventType, payload: Record<string, unknown>) => void,
 ): Promise<string> {
   const paths = [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/g) || [])]
     .filter((path) => !path.split('/').includes('..')).slice(0, 3);
@@ -240,7 +240,7 @@ export async function streamDirectRepositoryChat(input: {
   mode: AgentMode;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
-  onActivity?: (type: string, payload: Record<string, unknown>) => void;
+  onActivity?: (type: EventType, payload: Record<string, unknown>) => void;
 }): Promise<string> {
   const controller = new AbortController();
   active.set(input.runId, controller);
