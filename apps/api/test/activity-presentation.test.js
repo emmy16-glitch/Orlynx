@@ -189,7 +189,7 @@ describe('canonical agent activity presentation', () => {
     assert.match(registry, /generic: \(part, onResolveApproval\)/);
     assert.match(registry, /ApprovalDetail part=\{part\} onResolveApproval=\{onResolveApproval\}/);
     assert.match(registry, /Allow once/);
-    assert.match(registry, />Deny</);
+    assert.match(registry, /'Deny'/);
   });
 
   it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {
