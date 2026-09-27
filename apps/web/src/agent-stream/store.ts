@@ -272,7 +272,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         sequence: event.sequence,
         startedSequence: prior?.startedSequence || event.sequence,
         timestamp: prior?.timestamp || event.timestamp,
-        state: 'running',
+        state: event.waiting ? 'waiting' : 'running',
         name: event.name || prior?.name || 'tool',
         title: event.title || prior?.title,
         command: event.command || prior?.command,
