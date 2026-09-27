@@ -626,6 +626,54 @@ export async function githubRepositoryFiles(fullName: string, branch: string, di
   return body.filter((item) => item.name !== '.git').map((item) => ({ name: item.name, dir: item.type === 'dir', modified: false }));
 }
 
+export interface GitHubRepositoryTreeEntry {
+  path: string;
+  type: 'blob' | 'tree';
+  size?: number;
+}
+
+export interface GitHubRepositoryTree {
+  entries: GitHubRepositoryTreeEntry[];
+  truncated: boolean;
+}
+
+export async function githubRepositoryTree(fullName: string, branch: string, installationId?: number): Promise<GitHubRepositoryTree> {
+  const repo = await findRepository(fullName, installationId);
+  const token = await installationToken(repo.installationId);
+  const owner = encodeURIComponent(repo.owner);
+  const name = encodeURIComponent(repo.name);
+  const refPath = branch.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  if (!refPath) throw new Error('Repository branch is required.');
+
+  // Resolve branch -> commit -> tree explicitly. This works for branch names
+  // containing slashes and avoids treating a commit SHA as a tree SHA.
+  const refResponse = await fetch(`${API}/repos/${owner}/${name}/git/ref/heads/${refPath}`, { headers: githubHeaders(token) });
+  if (!refResponse.ok) throw new Error(`GitHub could not resolve repository branch (HTTP ${refResponse.status}).`);
+  const refBody = await refResponse.json() as { object?: { sha?: string } };
+  const commitSha = refBody.object?.sha;
+  if (!commitSha) throw new Error('GitHub branch response did not include a commit SHA.');
+
+  const commitResponse = await fetch(`${API}/repos/${owner}/${name}/git/commits/${encodeURIComponent(commitSha)}`, { headers: githubHeaders(token) });
+  if (!commitResponse.ok) throw new Error(`GitHub could not resolve repository commit (HTTP ${commitResponse.status}).`);
+  const commitBody = await commitResponse.json() as { tree?: { sha?: string } };
+  const treeSha = commitBody.tree?.sha;
+  if (!treeSha) throw new Error('GitHub commit response did not include a tree SHA.');
+
+  const treeResponse = await fetch(`${API}/repos/${owner}/${name}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, { headers: githubHeaders(token) });
+  if (!treeResponse.ok) throw new Error(`GitHub could not map repository files (HTTP ${treeResponse.status}).`);
+  const body = await treeResponse.json() as {
+    truncated?: boolean;
+    tree?: Array<{ path?: string; type?: string; size?: number }>;
+  };
+
+  const entries = (body.tree || []).flatMap((item): GitHubRepositoryTreeEntry[] => {
+    if (!item.path || (item.type !== 'blob' && item.type !== 'tree')) return [];
+    if (item.path.split('/').includes('.git')) return [];
+    return [{ path: item.path, type: item.type, ...(typeof item.size === 'number' ? { size: item.size } : {}) }];
+  });
+  return { entries, truncated: Boolean(body.truncated) };
+}
+
 export async function githubRepositoryFile(fullName: string, branch: string, filename: string, installationId?: number): Promise<string> {
   const repo = await findRepository(fullName, installationId); const token = await installationToken(repo.installationId);
   const clean = filename.replace(/^\/+/, ''); if (!clean || clean.split('/').includes('..')) throw new Error('path escape denied');
