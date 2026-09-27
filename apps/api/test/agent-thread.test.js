@@ -132,3 +132,87 @@ test('failed and cancelled runs preserve partial text', () => {
   ]);
   assert.equal(selectLiveReplies(cancelled)[0].text, 'half answer');
 });
+
+
+test('server semanticType is authoritative over command-name heuristics', () => {
+  const state = applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('sem-1', 1, 'run.started', { messageId: 'user-1' }),
+    runA('sem-2', 2, 'tool.started', { tool: 'exec', toolCallId: 'opaque', semanticType: 'file-read', command: 'mystery-command' }),
+    runA('sem-3', 3, 'tool.completed', { tool: 'exec', toolCallId: 'opaque', semanticType: 'file-read' }),
+  ]);
+  const part = toThreadPart(selectActivities(state)[0]);
+  assert.equal(part.kind, 'file-read');
+});
+
+test('workspace.state preserves ready failed and stopped rather than always preparing', () => {
+  const ready = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('ws-1', 1, 'workspace.state', { state: 'ready', provider: 'orlynx-runner' }),
+  ]))[0];
+  assert.equal(ready.title, 'Workspace ready');
+  assert.equal(ready.state, 'success');
+
+  const failed = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('ws-2', 1, 'workspace.state', { state: 'failed', message: 'boot failed' }),
+  ]))[0];
+  assert.equal(failed.title, 'Workspace needs attention');
+  assert.equal(failed.state, 'failed');
+
+  const stopped = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('ws-3', 1, 'workspace.state', { state: 'stopped' }),
+  ]))[0];
+  assert.equal(stopped.title, 'Workspace stopped');
+  assert.equal(stopped.state, 'cancelled');
+});
+
+test('singular file.changed retains file evidence', () => {
+  const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('file-1', 1, 'file.changed', { path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@' }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].category, 'file');
+  assert.equal(rows[0].evidence.files[0].path, 'src/auth.ts');
+  assert.equal(rows[0].evidence.files[0].diff, '@@ -1 +1 @@');
+});
+
+test('subagent start and finish correlate without provider subagent id when title is stable', () => {
+  const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('sub-1', 1, 'subagent.started', { title: 'Inspect authentication' }),
+    runA('sub-2', 2, 'subagent.finished', { title: 'Inspect authentication', ok: true }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, 'success');
+});
+
+test('preview protocol state becomes a typed preview part', () => {
+  const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('preview-1', 1, 'preview.ready', { state: 'ready', port: 5173, url: 'https://preview.example' }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(toThreadPart(rows[0]).kind, 'preview');
+  assert.equal(rows[0].summary, 'Port 5173');
+});
+
+test('explicit assistant runId owns durable thread relation without relying on message id format', () => {
+  const state = applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('run-1', 1, 'run.started', { messageId: 'user-1' }),
+    runA('run-2', 2, 'run.completed', {}),
+  ]);
+  const messages = [
+    { id: 'user-1', role: 'user', text: 'Fix login', createdAt: '2026-09-27T10:00:00.000Z' },
+    { id: 'assistant-random-id', role: 'assistant', runId: 'run-a', text: 'Fixed.', createdAt: '2026-09-27T10:00:02.000Z' },
+  ];
+  const thread = buildThread(messages, selectActivities(state), selectLiveReplies(state, messages), state);
+  assert.equal(thread.length, 1);
+  assert.equal(thread[0].runId, 'run-a');
+  assert.equal(thread[0].assistantMessage.id, 'assistant-random-id');
+});
+
+test('approval request keeps durable approval id for inline actions', () => {
+  const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('ap-1', 1, 'approval.required', { approvalId: 'approval-123', action: 'terminal.exec', detail: 'Run migration?' }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, 'waiting');
+  assert.equal(rows[0].evidence.approvalId, 'approval-123');
+  assert.equal(toThreadPart(rows[0]).kind, 'approval');
+});
