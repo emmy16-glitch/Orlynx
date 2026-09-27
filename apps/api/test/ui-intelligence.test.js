@@ -41,10 +41,15 @@ describe('event → presentation contract', () => {
     for (const [s, t] of Object.entries(table)) assert.ok(['work', 'ok', 'fail', 'wait', 'neutral'].includes(t), `${s} bad tone`);
     assert.equal(Object.keys(table).length, 9);
   });
-  it('mapping collapses file spam (progressive disclosure rule)', () => {
-    const src = fs.readFileSync(path.join(webUi, 'mapping.ts'), 'utf8');
-    assert.ok(src.includes('Updated files') && src.includes('paths.length'), 'file operation grouping missing');
-    assert.ok(src.includes('aria-live') || true, 'live region handled in workstream.tsx');
+  it('canonical stream owns event normalization and progressive disclosure', () => {
+    const mapping = fs.readFileSync(path.join(webUi, 'mapping.ts'), 'utf8');
+    const store = fs.readFileSync(path.join(root, 'apps/web/src/agent-stream/store.ts'), 'utf8');
+    const view = fs.readFileSync(path.join(root, 'apps/web/src/agent-stream/view.ts'), 'utf8');
+    assert.match(mapping, /canonical agent-stream/);
+    assert.doesNotMatch(mapping, /case 'tool\.started'/);
+    assert.match(store, /case 'TOOL_START'/);
+    assert.match(store, /case 'STATE_DELTA'/);
+    assert.match(view, /title: 'Updated files'/);
   });
 });
 
@@ -130,21 +135,31 @@ describe('chat and cloud reliability contract', () => {
     assert.match(src, /setInterval\(async \(\) =>[\s\S]*?\/v1\/sessions\/\$\{encodeURIComponent\(session\.id\)\}/);
   });
 
-  it('preserves streamed tokens per run instead of one global draft', () => {
+  it('preserves streamed tokens per run through the canonical protocol store', () => {
     assert.match(src, /pendingRef\.current\.splice\(0\)\.sort/);
-    assert.match(src, /applyLiveReplyEvents\(current, batch\)/);
-    assert.match(src, /reconcileLiveRepliesFromRuns\(current, runData, messageData\)/);
-    assert.match(src, /Object\.values\(liveReplies\)/);
+    assert.match(src, /applyRawAgentEvents\(current, batch\)/);
+    assert.match(src, /reconcileAgentStream\(current, runData, messageData\)/);
+    assert.match(src, /selectLiveReplies\(agentStream, messages\)/);
     assert.doesNotMatch(src, /const \[draftReply, setDraftReply\]/);
+    assert.doesNotMatch(src, /applyLiveReplyEvents/);
   });
 
-  it('keeps session refresh single-flight while live-reply reconciliation rejects stale snapshots', () => {
+  it('keeps session refresh single-flight while canonical reconciliation rejects stale snapshots', () => {
     assert.match(src, /sessionRefreshesRef = useRef\(new Map<string, Promise<void>>\(\)\)/);
     assert.match(src, /const inFlight = sessionRefreshesRef\.current\.get\(id\)/);
-    const helper = fs.readFileSync(path.join(webUi, 'live-replies.ts'), 'utf8');
-    assert.match(helper, /previous\.text\.startsWith\(snapshot\)/);
-    assert.match(helper, /snapshot\.startsWith\(previous\.text\)/);
-    assert.match(helper, /snapshotAt < previous\.lastEventAt/);
-    assert.match(helper, /sequence && sequence <= previous\.lastSequence/);
+    const helper = fs.readFileSync(path.join(root, 'apps/web/src/agent-stream/store.ts'), 'utf8');
+    assert.match(helper, /prior\.text\.startsWith\(snapshot\)/);
+    assert.match(helper, /snapshot\.startsWith\(prior\.text\)/);
+    assert.match(helper, /snapshotAt < prior\.lastEventAt/);
+    assert.match(helper, /event\.sequence && event\.sequence <= prior\.lastSequence/);
+  });
+
+  it('keeps raw provider lifecycle out of React and routes it through an adapter first', () => {
+    const adapter = fs.readFileSync(path.join(root, 'apps/web/src/agent-stream/adapter.ts'), 'utf8');
+    assert.match(adapter, /normalizeOrlynxEvent/);
+    assert.match(adapter, /TEXT_CONTENT/);
+    assert.match(adapter, /TOOL_START/);
+    assert.match(adapter, /WORKSPACE_STATE/);
+    assert.doesNotMatch(src, /switch \(item\.type\)/);
   });
 });
