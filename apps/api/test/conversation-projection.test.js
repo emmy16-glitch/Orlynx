@@ -417,7 +417,7 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
 
   it('71: streaming keeps a single subtle cue', () => {
     const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
-    assert.ok(streamLine?.includes('draftReply'));
+    assert.ok(streamLine?.includes('reply.text'));
     assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
   });
 });
