@@ -199,7 +199,7 @@ async function executeDirectTask(
     task.partialText = responseText;
     task.updatedAt = now;
     await repository.putTask(task);
-    await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, createdAt: now });
+    await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, runId: run.id, createdAt: now });
 
     run.state = 'completed';
     run.activity = 'Ready';
@@ -673,7 +673,7 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
     if (Date.now() >= deadline) throw new Error(`${adapter.displayName} task timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
     if (!assistant) throw new Error(`${adapter.displayName} finished without returning an assistant response.`);
     const responseText = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
-    (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, createdAt: new Date().toISOString() });
+    (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, runId: run.id, createdAt: new Date().toISOString() });
     if (durableStorageConfigured()) await controlPlaneRepository().putMessage(store.db.messages[sessionId][store.db.messages[sessionId].length - 1]);
     emit(sessionId, 'message.end', {}, run.id);
     await captureDiff(sessionId, project, run.id, engineSessionId, adapter);
