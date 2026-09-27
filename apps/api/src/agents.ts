@@ -11,7 +11,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
-import { workspaceNeedsCodespaceReplacement } from './workspaces.js';
+import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 export type Engine = AgentAdapterId;
@@ -288,6 +288,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     if (!readyWorkspace) return null;
     if (readyWorkspace.state === 'failed') {
       const recoverableWorkspaceFailure = readyWorkspace.provider === 'orlynx-runner'
+        || workspaceShouldAdoptPreferredRunner(readyWorkspace)
         || workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode);
       if (recoverableWorkspaceFailure) {
         console.warn(`[queue] scheduling failed workspace repair before Build task session=${sessionId} workspace=${readyWorkspace.id} failure=${readyWorkspace.failureCode || 'unknown'}`);
