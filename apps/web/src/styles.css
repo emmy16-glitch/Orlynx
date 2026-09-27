@@ -2430,6 +2430,141 @@ button, input, textarea, select { font: inherit; }
     min-height: 52px;
   }
 }
+
+/* === Contextual message actions: quiet row attached to its response === */
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0.78;
+}
+.message-row:hover .message-actions,
+.message-row:focus-within .message-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .message-actions { opacity: 1; }
+}
+.user-actions {
+  justify-content: flex-end;
+}
+.msg-action {
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--foreground-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.msg-action:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+.msg-action:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.msg-icon-action {
+  padding: 6px 8px;
+}
+.msg-action-word {
+  font-size: 12px;
+}
+.msg-copied {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--success);
+}
+.msg-pending {
+  color: var(--foreground-muted);
+  cursor: default;
+}
+.msg-spinner.ox-spinner {
+  width: 14px;
+  height: 14px;
+}
+.msg-menu-wrap {
+  position: relative;
+}
+.msg-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 12;
+  min-width: 210px;
+  max-width: min(260px, calc(100vw - 32px));
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.msg-menu > button {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.msg-menu > button:hover {
+  background: var(--surface-muted);
+}
+.msg-menu > button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.msg-run-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 2px 4px 4px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.msg-run-details dt {
+  color: var(--foreground-subtle);
+}
+.msg-run-details dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--foreground-muted);
+}
+.msg-confirm-go {
+  color: var(--primary);
+  font-weight: 700;
+}
+.msg-retry-note {
+  font-size: 12px;
+  color: var(--foreground-muted);
+}
 .message-row {
   width: 100%;
   margin: 20px 0;
@@ -3660,25 +3795,4 @@ html[data-theme="light"] .composer-options-panel {
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 34%, var(--border));
   background: color-mix(in srgb, var(--warning) 6%, var(--surface));
-}
-.transcript-recovery-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 8px 0 14px 48px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 9px;
-  color: var(--foreground-muted);
-  font-size: var(--text-small);
-}
-.transcript-recovery-actions .ox-btn {
-  min-height: 36px;
-  flex: none;
-}
-@media (max-width: 760px) {
-  .transcript-recovery-actions {
-    margin-left: 32px;
-    align-items: flex-start;
-  }
 }

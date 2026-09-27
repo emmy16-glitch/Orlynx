@@ -349,14 +349,14 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
   });
 
   it('79B: duplicate taps cannot submit the same message twice', () => {
-    assert.match(app(), /if \(!session \|\| !composer\.trim\(\) \|\| submittingRef\.current \|\| sending \|\| !online\) return/);
+    assert.match(app(), /if \(!session \|\| !text \|\| submittingRef\.current \|\| sending \|\| !online\) return false/);
     assert.match(app(), /submittingRef\.current = true/);
     assert.match(app(), /disabled=\{!composer\.trim\(\) \|\| sending \|\| !aiAccountConnected/);
   });
 
   it('79D: the draft survives submission failure and the spinner never sticks', () => {
     const src = app();
-    const sendStart = src.indexOf('async function sendMessage()');
+    const sendStart = src.indexOf('async function sendMessage(overrideText');
     const sendBlock = src.slice(sendStart, src.indexOf('async function startCloud(', sendStart));
     assert.match(sendBlock, /The draft is preserved/);
     assert.match(sendBlock, /finally \{ submittingRef\.current = false; setSending\(false\); \}/);

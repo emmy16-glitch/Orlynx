@@ -3,6 +3,163 @@ import React from 'react';
 import { Badge, Button, Card, Icon } from './primitives';
 import { runTone, toState, type ActivityItem } from './mapping';
 
+/** Copy readable text only — never telemetry. Brief inline confirmation. */
+export function useCopyFeedback(): { copied: boolean; copy: (text: string) => void } {
+  const [copied, setCopied] = React.useState(false);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const copy = React.useCallback((text: string) => {
+    const done = () => {
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    };
+    try {
+      const clipboard = (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+      if (clipboard?.writeText) { void clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done)); return; }
+    } catch { /* fall through to legacy path */ }
+    fallbackCopy(text, done);
+  }, []);
+  return { copied, copy };
+}
+function fallbackCopy(text: string, done: () => void) {
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand('copy');
+    document.body.removeChild(area);
+  } catch { /* clipboard unavailable; leave state unchanged */ return; }
+  done();
+}
+
+function MsgMenu({ onClose, children, label }: { onClose: () => void; children: React.ReactNode; label: string }) {
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const onPointer = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('pointerdown', onPointer);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('pointerdown', onPointer); window.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+  return (
+    <div ref={menuRef} className="msg-menu" role="menu" aria-label={label}>
+      {children}
+    </div>
+  );
+}
+
+export interface AssistantActions {
+  text: string;
+  userPrompt: string;
+  isLatest: boolean;
+  runActive: boolean;
+  runFailed: boolean;
+  runCancelled: boolean;
+  modelIssue: boolean;
+  resumeLabel: string | null; // non-null when Build-with-changes needs confirm
+  changesCount: number;
+  retryState: 'idle' | 'pending' | 'failed';
+  runDetails: { model?: string; mode?: string; state?: string };
+  onRetry: () => void;
+  onOpenChanges: () => void;
+  onOpenModels: () => void;
+}
+
+/** Quiet contextual row attached to a completed assistant response. */
+export function AssistantMessageActions(props: AssistantActions) {
+  const { copied, copy } = useCopyFeedback();
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [confirmResume, setConfirmResume] = React.useState(false);
+  const [showDetails, setShowDetails] = React.useState(false);
+  const moreRef = React.useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => { if (!menuOpen && moreRef.current && document.activeElement?.closest?.('.msg-menu')) moreRef.current.focus(); }, [menuOpen]);
+  const closeMenu = React.useCallback(() => setMenuOpen(false), []);
+
+  const failed = props.runFailed || props.runCancelled;
+  // Retry attaches to the latest completed response only, never while streaming.
+  const showRetry = !props.runActive && props.isLatest && Boolean(props.userPrompt);
+  const retryLabel = props.runCancelled ? 'Run again' : props.resumeLabel ? 'Resume task' : failed ? 'Retry' : 'Retry response';
+  const retryAria = props.runCancelled ? 'Run again' : props.resumeLabel ? 'Resume task from current state' : failed ? 'Retry task' : 'Retry response';
+
+  const startRetry = () => {
+    if (props.resumeLabel && !confirmResume) { setConfirmResume(true); return; }
+    setConfirmResume(false);
+    props.onRetry();
+  };
+
+  return (
+    <div className="message-actions" role="group" aria-label="Response actions">
+      <button type="button" className="msg-action" onClick={() => copy(props.text)} aria-label="Copy response">
+        {copied ? <span className="msg-copied"><Icon name="check" size={15} /> Copied</span> : 'Copy'}
+      </button>
+      {showRetry && (
+        props.retryState === 'pending' ? (
+          <span className="msg-action msg-pending" role="status"><span className="ox-spinner msg-spinner" aria-hidden /> Retrying…</span>
+        ) : (
+          <button type="button" className="msg-action msg-icon-action" onClick={startRetry} aria-label={retryAria} title={retryAria}>
+            <Icon name="refresh" size={17} /><span className="msg-action-word">{retryLabel}</span>
+          </button>
+        )
+      )}
+      {failed && props.modelIssue && (
+        <button type="button" className="msg-action" onClick={props.onOpenModels}>Change model</button>
+      )}
+      <div className="msg-menu-wrap">
+        <button ref={moreRef} type="button" className="msg-action msg-icon-action" aria-label="More actions" aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => { setMenuOpen((v) => !v); setShowDetails(false); }}>
+          <Icon name="more" size={17} />
+        </button>
+        {menuOpen && (
+          <MsgMenu label="More actions" onClose={closeMenu}>
+            <button type="button" role="menuitem" onClick={() => { copy(props.text); closeMenu(); }}>Copy response</button>
+            {props.changesCount > 0 && (
+              <button type="button" role="menuitem" onClick={() => { closeMenu(); props.onOpenChanges(); }}>
+                View {props.changesCount} changed file{props.changesCount === 1 ? '' : 's'}
+              </button>
+            )}
+            <button type="button" role="menuitem" aria-expanded={showDetails} onClick={() => setShowDetails((v) => !v)}>View run details</button>
+            {showDetails && (
+              <dl className="msg-run-details">
+                {props.runDetails.model && (<><dt>Model</dt><dd>{props.runDetails.model}</dd></>)}
+                {props.runDetails.mode && (<><dt>Mode</dt><dd>{props.runDetails.mode}</dd></>)}
+                {props.runDetails.state && (<><dt>State</dt><dd>{props.runDetails.state}</dd></>)}
+              </dl>
+            )}
+          </MsgMenu>
+        )}
+      </div>
+      {confirmResume && props.resumeLabel && (
+        <span className="msg-confirm" role="group" aria-label="Confirm resume">
+          <span>{props.resumeLabel}</span>
+          <button type="button" className="msg-action" onClick={() => setConfirmResume(false)}>Cancel</button>
+          <button type="button" className="msg-action msg-confirm-go" onClick={startRetry}>Resume</button>
+        </span>
+      )}
+      {props.retryState === 'failed' && !props.runActive && (
+        <span className="msg-retry-note" role="status">Retry couldn’t start. The previous result is unchanged.</span>
+      )}
+    </div>
+  );
+}
+
+export function UserMessageActions({ text, onEdit }: { text: string; onEdit: () => void }) {
+  const { copied, copy } = useCopyFeedback();
+  return (
+    <div className="message-actions user-actions" role="group" aria-label="Message actions">
+      <button type="button" className="msg-action" onClick={() => copy(text)} aria-label="Copy message">
+        {copied ? <span className="msg-copied"><Icon name="check" size={15} /> Copied</span> : 'Copy'}
+      </button>
+      <button type="button" className="msg-action" onClick={onEdit} aria-label="Edit and resend as a new message">Edit &amp; resend</button>
+    </div>
+  );
+}
+
 export function AgentStatusPill({ state, elapsed }: { state: string; elapsed?: string }) {
   const { tone, label } = runTone(state);
   return <Badge tone={tone}>{label}{elapsed ? ` · ${elapsed}` : ''}</Badge>;

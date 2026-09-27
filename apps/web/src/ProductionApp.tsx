@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
-import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
+import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, TaskActivityRow, UserMessageActions } from './ui/product';
 import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import hljs from 'highlight.js/lib/core';
@@ -840,22 +840,47 @@ export default function ProductionApp() {
   }
 
   const submittingRef = useRef(false);
-  async function sendMessage() {
-    if (!session || !composer.trim() || submittingRef.current || sending || !online) return;
-    if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return; }
+  // overrideText resends an earlier prompt as a NEW run: history is never
+  // rewritten, repository state is never replayed, only continued.
+  async function sendMessage(overrideText?: string): Promise<boolean> {
+    const text = (overrideText ?? composer).trim();
+    if (!session || !text || submittingRef.current || sending || !online) return false;
+    if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return false; }
     submittingRef.current = true;
     setSending(true); setError('');
-    const text = composer.trim(); const clientId = uid();
+    const clientId = uid();
     try {
       const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: ai.mode === 'build' && tempFullAccess }) }));
       const preserveStreamingReply = runs.some((candidate: any) => candidate.state === 'running');
-      setComposer(''); if (!preserveStreamingReply) setDraftReply(''); setTempFullAccess(false); try { localStorage.removeItem(draftKey(session.id)); } catch {}
+      if (!overrideText) { setComposer(''); try { localStorage.removeItem(draftKey(session.id)); } catch {} }
+      if (!preserveStreamingReply) setDraftReply(''); setTempFullAccess(false);
       setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
       setLastRun(result.run); runRef.current = result.run;
       if (result.plane === 'direct') setWorkspaceReadNotice('');
       await refreshSession(session.id);
-    } catch (error: any) { setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI')); }
+      return true;
+    } catch (error: any) { setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI')); return false; }
     finally { submittingRef.current = false; setSending(false); }
+  }
+
+  const [retrying, setRetrying] = useState<Record<string, 'pending' | 'failed'>>({});
+  async function retryMessage(messageId: string, text: string) {
+    if (retrying[messageId] || submittingRef.current || sending) return; // idempotent: one attempt.
+    setRetrying((current) => ({ ...current, [messageId]: 'pending' }));
+    const ok = await sendMessage(text);
+    setRetrying((current) => {
+      const next = { ...current };
+      if (ok) delete next[messageId];
+      else next[messageId] = 'failed';
+      return next;
+    });
+  }
+
+  function editAndResend(text: string) {
+    setComposer(text);
+    if (session) try { localStorage.setItem(draftKey(session.id), text); } catch {}
+    setTab('chat');
+    window.setTimeout(() => composerBoxRef.current?.focus(), 50);
   }
 
   async function startCloud(reconnect = false, targetSessionId?: string) {
@@ -1018,6 +1043,14 @@ export default function ProductionApp() {
   const waitingForUser = currentActivity?.state === 'waiting';
   const showWorkBar = tab === 'chat' && Boolean(currentActivity || runActive);
   const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
+  // Single recovery location: the latest response that failed. No duplicate
+  // banners/cards elsewhere for the same failure (§183).
+  const lastAssistantId = [...messages].reverse().find((m: any) => m.role === 'assistant')?.id;
+  const lastFailure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
+  const lastFailureSummary = String(lastFailure?.summary || '');
+  const lastModelIssue = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(lastFailureSummary);
+  const changesCount = changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0);
+  const buildWithChanges = (lastRun?.mode || ai.mode) === 'build' && changesCount > 0;
   const running = runs.some((candidate: any) => candidate.state === 'running') || transcriptActivities.some((event: any) => event.state === 'running');
   const globalNav = [
     ['home', 'Home', 'home'], ['projects', 'Projects', 'folder'], ['settings', 'Settings', 'settings'],
@@ -1110,21 +1143,18 @@ export default function ProductionApp() {
                   const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
                   const priorUserPrompt = message.role === 'assistant' && messageIndex > 0 && messages[messageIndex - 1]?.role === 'user'
                     ? String(messages[messageIndex - 1].text || '') : '';
-                  return <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={entry.key}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text, priorUserPrompt)}</div></div></article>;
+                  const cleanText = visibleChatText(message.role, message.text, priorUserPrompt);
+                  if (message.role === 'user') {
+                    return <article className="message-row user-message" key={entry.key}><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><UserMessageActions text={cleanText} onEdit={() => editAndResend(String(message.text || ''))} /></div></article>;
+                  }
+                  const isLatestAssistant = message.id === lastAssistantId;
+                  const failedLatest = isLatestAssistant && lastRun?.state === 'failed';
+                  const cancelledLatest = isLatestAssistant && lastRun?.state === 'cancelled';
+                  return <article className="message-row assistant-message" key={entry.key}><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><AssistantMessageActions text={cleanText} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={failedLatest} runCancelled={cancelledLatest} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[message.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(message.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} /></div></article>;
                 })}
                 {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{running ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{running && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
-                  const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
-                  const failureSummary = String(failure?.summary || '');
-                  const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(failureSummary);
-                  if (!modelProblem) return null;
-                  return <div className="transcript-recovery-actions" role="group" aria-label="Model recovery">
-                    <span>{failureSummary || 'The selected model needs attention.'}</span>
-                    <Button tone="ghost" onClick={() => setShowConnectAI(true)}>Change model</Button>
-                  </div>;
-                })()}
               </section>}
               {tab === 'files' && <section className="screen-section files-screen"><div className="screen-heading"><div><p className="eyebrow">REPOSITORY</p><h1>Files</h1><p className="screen-subtitle">Browse {session.project} on {session.branch}.</p></div><label className="search-field"><Icon name="search" /><input value={fileFilter} onChange={(event) => setFileFilter(event.target.value)} placeholder="Filter this folder" /></label></div>{openedFile ? <CodeViewer file={openedFile} onBack={() => setOpenedFile(null)} /> : <><div className="breadcrumbs"><button onClick={() => openFolder('')}>{session.project}</button>{folder.split('/').filter(Boolean).map((part, index, parts) => <React.Fragment key={`${part}-${index}`}><Icon name="chevron" size={12} /><button onClick={() => openFolder(parts.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="file-list">{fileBusy ? <div className="loading-screen"><Spinner /><p>Loading files…</p></div> : files.filter((item: any) => item.name.toLowerCase().includes(fileFilter.toLowerCase())).map((item: any) => <button className="file-row" key={item.name} onClick={() => item.dir ? openFolder([folder, item.name].filter(Boolean).join('/')) : openFile([folder, item.name].filter(Boolean).join('/'))}><span className="file-kind"><Icon name={item.dir ? 'folder' : 'file'} /></span><span>{item.name}{item.dir ? '/' : ''}</span>{item.modified && <span className="modified-indicator">Modified</span>}<Icon name="chevron" size={14} /></button>)}</div></>}</section>}
               {tab === 'changes' && <section className="screen-section changes-screen">
