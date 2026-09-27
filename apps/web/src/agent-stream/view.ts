@@ -22,7 +22,24 @@ export function adapterKind(state: string, reason: string): 'steady' | 'transiti
   return 'steady';
 }
 
-function classifyTool(tool: string, command: string): ActivityCategory {
+function categoryForSemanticType(value?: string): ActivityCategory | undefined {
+  if (value === 'terminal') return 'command';
+  if (value === 'file-change') return 'file';
+  if (value === 'file-read') return 'search';
+  if (value === 'test-result') return 'test';
+  if (value === 'build-result') return 'build';
+  if (value === 'git') return 'git';
+  if (value === 'preview') return 'preview';
+  if (value === 'approval') return 'approval';
+  if (value === 'error') return 'error';
+  if (value === 'status') return 'agent';
+  return undefined;
+}
+
+function classifyTool(tool: string, command: string, semanticType?: string): ActivityCategory {
+  const canonical = categoryForSemanticType(semanticType);
+  if (canonical) return canonical;
+  // Legacy-history fallback only. New v1 server events carry semanticType.
   const name = `${tool} ${command}`.toLowerCase();
   if (/test|vitest|jest|pytest|mocha|playwright/.test(name)) return 'test';
   if (/build|tsc|compile|webpack|vite build|next build/.test(name)) return 'build';
@@ -46,12 +63,14 @@ function toolTitle(tool: AgentStreamTool, category: ActivityCategory): string {
 
 function activityCategory(activity: AgentStreamActivity): ActivityCategory {
   if (activity.kind === 'workspace') return 'cloud';
+  if (activity.kind === 'preview') return 'preview';
   if (activity.kind === 'changes') return 'file';
   if (activity.kind === 'approval') return 'approval';
   if (activity.kind === 'error') return 'error';
   if (activity.kind === 'receipt') {
     const command = typeof activity.evidence?.command === 'string' ? activity.evidence.command : '';
-    return classifyTool('', command);
+    const semanticType = typeof activity.evidence?.semanticType === 'string' ? activity.evidence.semanticType : undefined;
+    return classifyTool('', command, semanticType);
   }
   return activity.sourceType === 'repository.map' ? 'search' : 'agent';
 }
@@ -101,12 +120,13 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
 }
 
 function makeTool(tool: AgentStreamTool): ActivityItem {
-  const category = classifyTool(tool.name, tool.command || '');
+  const category = classifyTool(tool.name, tool.command || '', tool.semanticType);
   const testCounts = category === 'test' ? parseTestCounts(tool.output || '') : undefined;
   const failed = tool.state === 'failed' || (category === 'test' && (testCounts?.failed || 0) > 0);
   const state: ActivityLifecycle = failed ? 'failed' : tool.state;
   const evidence: Record<string, unknown> = {
     ...(tool.name ? { tool: tool.name } : {}),
+    ...(tool.semanticType ? { semanticType: tool.semanticType } : {}),
     ...(tool.title ? { toolTitle: tool.title } : {}),
     ...(tool.command ? { command: tool.command } : {}),
     ...(tool.path ? { path: tool.path } : {}),
