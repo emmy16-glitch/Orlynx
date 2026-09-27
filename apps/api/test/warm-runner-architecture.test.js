@@ -61,7 +61,7 @@ test('workspace provider prefers configured warm runner and otherwise preserves 
 
 
 
-test('legacy Codespaces failures migrate to the preferred warm runner without stealing a healthy workspace', () => {
+test('legacy idle/broken Codespaces migrate to the preferred warm runner without stealing active work', () => {
   const base = {
     provider: 'github-codespaces',
     state: 'failed',
@@ -72,9 +72,22 @@ test('legacy Codespaces failures migrate to the preferred warm runner without st
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'broken-ssh', failureCode: 'Codespace SSH did not become ready after 39 bootstrap attempts' }, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stale-space', failureCode: 'GitHub Codespaces request failed (HTTP 404)' }, 'orlynx-runner'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stopped-space', state: 'stopped', failureCode: undefined }, 'orlynx-runner'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'half-ready', state: 'ready', bridgeState: 'disconnected', failureCode: undefined }, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'healthy-space', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'busy-space', state: 'starting', failureCode: undefined }, 'orlynx-runner'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'connecting-space', state: 'connecting', bridgeState: 'connecting', failureCode: undefined }, 'orlynx-runner'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stopping-space', state: 'stopping', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'github-codespaces'), false);
+});
+
+test('workspace message admission adopts legacy runners before reconnect mutation', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const adopt = routes.indexOf('workspaceShouldAdoptPreferredRunner(workspace)');
+  const refresh = routes.indexOf('workspaceNeedsRuntimeRefresh(workspace)', adopt);
+  assert.ok(adopt >= 0, 'workspace admission must check legacy-provider adoption');
+  assert.ok(refresh > adopt, 'legacy provider adoption must happen before runtime refresh/reconnect mutation');
+  assert.match(routes, /repositoryId = workspace\?\.repositoryId/);
 });
 
 test('explicit runner selection fails closed when runner credentials are missing', () => {
