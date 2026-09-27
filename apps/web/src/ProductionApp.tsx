@@ -1032,7 +1032,7 @@ export default function ProductionApp() {
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
   const runActive = runs.some((candidate: any) => candidate.state === 'running' || candidate.state === 'queued') || lastRun?.state === 'running' || lastRun?.state === 'queued';
-  const waitingForUser = currentActivity?.state === 'waiting';
+  const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
   const showWorkBar = tab === 'chat' && Boolean(currentActivity || runActive);
   const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
