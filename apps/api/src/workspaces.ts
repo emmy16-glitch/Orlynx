@@ -55,12 +55,14 @@ export function workspaceShouldAdoptPreferredRunner(
   if (workspaceFullyReady(workspace)) return false;
 
   // A legacy session can remember Codespaces forever even after the deployment
-  // switches to the warm runner. It is safe to migrate when there is no
-  // Codespace handle, or when Codespaces failed specifically at account
-  // capacity before useful work could begin.
+  // switches to the warm runner. Migrate only when the old environment is not
+  // healthy: no provider handle, a quota/capacity failure, or a broken/stale
+  // Codespaces SSH/runtime handle. A healthy ready Codespace is never stolen.
   if (!workspace.codespaceName) return true;
   if (workspace.state !== 'failed') return false;
-  return /too many codespaces|running Codespace limit|Codespace quota|Codespace limit/i.test(workspace.failureCode || '');
+  const failure = workspace.failureCode || '';
+  return /too many codespaces|running Codespace limit|Codespace quota|Codespace limit/i.test(failure)
+    || workspaceNeedsCodespaceReplacement(failure);
 }
 
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
