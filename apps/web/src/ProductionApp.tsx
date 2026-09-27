@@ -3,7 +3,6 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
-import { ActivityDetailToggle, useActivityDetailMode } from './ui/workstream';
 import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -1364,16 +1363,6 @@ function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 
     {(!status || status.mode === 'unauthorized' || status.mode === 'unavailable') && status?.mode !== 'complete' && <form className="preview-form" onSubmit={(e) => { e.preventDefault(); load(token); }}><label>Setup token<input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ORLYNX_SETUP_TOKEN" autoComplete="off" /></label><Button disabled={busy || !token}>{busy ? 'Checking…' : 'Continue'}</Button></form>}
     {status?.mode === 'bootstrap' && <div className="card"><p>This creates the GitHub App <b>{status.appName}</b> for <b>{status.publicUrl}</b> with the permissions needed for repository changes, pull-request publishing, and Codespaces execution.</p><form method="post" action={`${status.manifestEndpoint}?state=${encodeURIComponent(status.state)}`}><input type="hidden" name="manifest" value={JSON.stringify(status.manifest)} /><Button>{busy ? 'Opening GitHub…' : 'Create GitHub App'}</Button></form><p className="settings-footnote">GitHub will ask you to confirm. After approval you return here automatically and Orlynx stores the credentials itself.</p></div>}
   </section>;
-}
-
-function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?: string }) {
-  const [detailMode, setDetailMode] = useActivityDetailMode('code');
-  const currentIndex = activities.reduce((current: number, item: any, index: number) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const visible = activities.slice(-500);
-  return <div className="card">
-    <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
-    <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
-  </div>;
 }
 
 function CodeViewer({ file, onBack }: { file: { path: string; content: string }; onBack: () => void }) {
