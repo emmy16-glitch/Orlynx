@@ -5,6 +5,8 @@ import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives
 import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, TaskActivityRow, UserMessageActions } from './ui/product';
 import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
+import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
+import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -376,6 +378,8 @@ export default function ProductionApp() {
     sourceRef.current?.close();
     seqRef.current = 0;
     seenRef.current = new Set(); pendingRef.current = []; setEvents([]); setDraftReply(''); setPushReview(null);
+    setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
+    setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
     setSession(record); currentSessionRef.current = record;
     try {
@@ -630,10 +634,21 @@ export default function ProductionApp() {
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   }, [composer, composerExpanded, tab, page]);
+  const refreshPorts = useCallback(async () => {
+    if (!session?.id || !integration.workspace?.previewAvailable) return;
+    try {
+      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/ports`));
+      // Replace by fetch: backend list is the truth; never merge stale entries.
+      setPreviewPorts(Array.isArray(result.ports) ? result.ports : []);
+    } catch { /* stale ports stay until the next poll; never fake readiness */ }
+  }, [session?.id, integration.workspace?.previewAvailable]);
+
   useEffect(() => {
-    if (tab !== 'preview' || !session?.id || !integration.workspace?.previewAvailable) return;
-    fetch(`/v1/sessions/${session.id}/ports`).then((response) => j<any>(response)).then((result) => setPreviewPorts(result.ports || [])).catch(() => setPreviewPorts([]));
-  }, [tab, session?.id, integration.workspace?.previewAvailable]);
+    if (!session?.id || !integration.workspace?.previewAvailable || !online) return;
+    void refreshPorts();
+    const timer = window.setInterval(() => { void refreshPorts(); }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [session?.id, integration.workspace?.previewAvailable, online, refreshPorts]);
 
   async function loadRepositories() {
     setRepoBusy(true); setError('');
@@ -1051,12 +1066,72 @@ export default function ProductionApp() {
   const lastModelIssue = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(lastFailureSummary);
   const changesCount = changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0);
   const buildWithChanges = (lastRun?.mode || ai.mode) === 'build' && changesCount > 0;
+  // Single source of truth: backend /ports → usable previews → every surface.
+  const [previewPortSel, setPreviewPortSel] = useState<number | null>(null);
+  const [previewStack, setPreviewStack] = useState<string[]>([]);
+  const [previewIdx, setPreviewIdx] = useState(-1);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>('idle');
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
+  const [previewSlow, setPreviewSlow] = useState(false);
+  const [externalSuggest, setExternalSuggest] = useState<string | null>(null);
+  const usablePorts = useMemo(() => usablePreviews(previewPorts), [previewPorts]);
+  const devServerActivity = [...transcriptActivities].reverse().find((item: any) => typeof item.evidence?.command === 'string' && isDevServerCommand(item.evidence.command));
+  const devHintPort = devServerActivity
+    ? extractPortHint(`${String(devServerActivity.evidence?.command || '')}\n${devServerActivity.rawOutput || ''}`)
+    : undefined;
+  const selectedPreview = usablePorts.find((p) => p.port === previewPortSel) || preferredPreviewPort(previewPorts, devHintPort);
+  const currentPreviewUrl = previewIdx >= 0 && previewIdx < previewStack.length ? previewStack[previewIdx] : null;
+  const previewDisplayPath = (() => {
+    try {
+      const parsed = new URL(currentPreviewUrl || '');
+      return `${parsed.pathname}${parsed.search}` || '/';
+    } catch { return '/'; }
+  })();
+
+  const openPreview = useCallback((port: number, path = '/') => {
+    if (port === previewPortSel && previewStack.length) { setTab('preview'); return; } // preserve context.
+    const found = usablePreviews(previewPorts).find((p) => p.port === port);
+    if (!found?.url) return; // never navigate without a resolved forwarded URL.
+    const resolved = resolvePreviewInput(found.url, path);
+    if (resolved.kind !== 'preview') return;
+    setPreviewPortSel(port);
+    setPreviewStack([resolved.url]); setPreviewIdx(0);
+    setPreviewStatus('loading'); setPreviewSlow(false); setExternalSuggest(null);
+    setTab('preview');
+  }, [previewPorts, previewPortSel, previewStack.length]);
+
+  const submitPreviewPath = useCallback((input: string) => {
+    const base = selectedPreview?.url;
+    if (!base) return;
+    const resolved = resolvePreviewInput(base, input);
+    if (resolved.kind === 'preview') {
+      setPreviewStack((stack) => [...stack.slice(0, previewIdx + 1), resolved.url]);
+      setPreviewIdx((idx) => idx + 1);
+      setPreviewStatus('loading'); setPreviewSlow(false); setExternalSuggest(null);
+    } else if (resolved.kind === 'external') {
+      setExternalSuggest(resolved.url);
+    }
+  }, [selectedPreview?.url, previewIdx]);
+
+  const openExternalUrl = useCallback((url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, []);
+
+  useEffect(() => {
+    if (previewStatus !== 'loading') return;
+    const timer = window.setTimeout(() => setPreviewSlow(true), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [previewStatus, currentPreviewUrl, previewReloadKey]);
+
+  // Refresh promptly when dev-server work changes so View preview appears.
+  const devActivityKey = devServerActivity ? `${devServerActivity.id}:${devServerActivity.state}` : '';
+  useEffect(() => { if (devActivityKey) void refreshPorts(); }, [devActivityKey, refreshPorts]);
   const running = runs.some((candidate: any) => candidate.state === 'running') || transcriptActivities.some((event: any) => event.state === 'running');
   const globalNav = [
     ['home', 'Home', 'home'], ['projects', 'Projects', 'folder'], ['settings', 'Settings', 'settings'],
   ] as const;
   const tabs = [
-    ['chat', 'Chat', 'inbox'], ['files', 'Files', 'folder'], ['changes', `Changes${changes.length ? ` ${changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)}` : ''}`, 'commit'], ['preview', 'Preview', 'preview'], ['terminal', 'Terminal', 'terminal'], ['more', 'More', 'more'],
+    ['chat', 'Chat', 'inbox'], ['files', 'Files', 'folder'], ['changes', `Changes${changes.length ? ` ${changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)}` : ''}`, 'commit'], ['preview', `Preview${usablePorts.length ? ' ●' : ''}`, 'preview'], ['terminal', 'Terminal', 'terminal'], ['more', 'More', 'more'],
   ] as const;
 
   const onboarded = Boolean(session || integration.github?.connected || recentProjects.length);
@@ -1136,6 +1211,7 @@ export default function ProductionApp() {
                           {item.timestamp && <time>{new Date(item.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>}
                         </div>
                         <TaskActivityRow item={item} detailMode="summary" isCurrent={item.id === currentActivityId} />
+                        <ServerPreviewAction command={typeof item.evidence?.command === 'string' ? item.evidence.command : ''} output={item.rawOutput} activityState={item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} />
                       </div>
                     </div>;
                   }
@@ -1180,7 +1256,7 @@ export default function ProductionApp() {
                   </section>)}
                 </>}
               </section>}
-              {tab === 'preview' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>Preview</h1><p className="screen-subtitle">Apps running in this workspace appear here.</p></div></div>{previewPorts.length ? <div className="project-grid">{previewPorts.map((item: any) => <a className="project-card" key={item.port} href={item.url} target="_blank" rel="noreferrer"><Icon name="preview" /><span><b>Open preview</b><small>Workspace port {item.port} · {item.visibility}</small></span><Icon name="external" /></a>)}</div> : <EmptyState title="No preview is running" hint="Start a development server in the terminal, then return here." />}</section>}
+              {tab === 'preview' && <PreviewPane workspaceReady={workspaceReady} online={online} ports={usablePorts} selected={selectedPreview} currentUrl={currentPreviewUrl} displayPath={previewDisplayPath} status={previewStatus} slow={previewSlow} canBack={previewIdx > 0} canForward={previewIdx < previewStack.length - 1} reloadKey={previewReloadKey} externalSuggest={externalSuggest} onSelectPort={(port) => openPreview(port)} onSubmitPath={submitPreviewPath} onDismissSuggest={() => setExternalSuggest(null)} onOpenExternalSuggest={() => { if (externalSuggest) openExternalUrl(externalSuggest); }} onBack={() => { setPreviewIdx((i) => Math.max(0, i - 1)); setPreviewStatus('loading'); setPreviewSlow(false); }} onForward={() => { setPreviewIdx((i) => Math.min(previewStack.length - 1, i + 1)); setPreviewStatus('loading'); setPreviewSlow(false); }} onReload={() => { setPreviewStatus('loading'); setPreviewSlow(false); setPreviewReloadKey((k) => k + 1); }} onOpenExternal={() => { const url = currentPreviewUrl && selectedPreview ? externalPreviewUrl(selectedPreview.url!, currentPreviewUrl) : selectedPreview?.url; if (url) openExternalUrl(url); }} onViewOutput={() => setTab('terminal')} onLoad={() => { setPreviewStatus('ready'); setPreviewSlow(false); }} onFrameError={() => setPreviewStatus('blocked')} />}
               {(tab === 'terminal' || tab === 'more') && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>{tab === 'terminal' ? 'Terminal' : 'More'}</h1><p className="screen-subtitle">{tab === 'terminal' ? 'Run a command in this repository.' : 'Project tools and preferences.'}</p></div></div>{tab === 'more' ? <div className="more-grid"><button onClick={() => setTab('terminal')} disabled={!integration.workspace?.terminalAvailable}><Icon name="terminal" /><b>Terminal</b><span>{integration.workspace?.terminalAvailable ? 'Run a project command' : 'Unavailable for this workspace'}</span></button><button onClick={() => setTab('preview')} disabled={!integration.workspace?.previewAvailable}><Icon name="preview" /><b>Preview</b><span>{integration.workspace?.previewAvailable ? 'Open the running app' : 'No running app detected'}</span></button><button onClick={() => startCloud(session.workspace?.state === 'connecting')} disabled={!integration.workspace?.cloudAvailable || cloudBusy || session.workspace?.state === 'ready'}><Icon name="cloud" /><b>{session.workspace?.state === 'ready' ? 'Cloud ready' : cloudBusy ? 'Preparing workspace…' : session.workspace?.state === 'connecting' ? 'Reconnect workspace' : 'Work on cloud'}</b><span>{integration.workspace?.cloudAvailable ? session.workspace?.state === 'ready' ? 'Development workspace connected' : 'Start or reconnect the cloud workspace' : 'Unavailable in this deployment'}</span></button><button onClick={() => setShowConnectAI(true)}><Icon name="agents" /><b>Orlynx AI</b><span>{ai?.state === 'ready' || ai?.state === 'working' ? 'Ready' : 'Unavailable'}</span></button><button onClick={() => setPage('projects')}><Icon name="github" /><b>Switch repository</b><span>Choose another project</span></button><button onClick={() => setPage('settings')}><Icon name="settings" /><b>Settings</b><span>Connections and appearance</span></button></div> : <Terminal command={command} setCommand={setCommand} output={terminalOutput} run={runTerminalCommand} connected={integration.workspace?.terminalAvailable} />}</section>}
             </main>
             <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>

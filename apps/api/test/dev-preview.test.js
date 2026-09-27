@@ -1,0 +1,178 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  externalPreviewUrl, extractPortHint, isDevServerCommand, isPreviewablePort,
+  preferredPreviewPort, resolvePreviewInput, usablePreviews,
+} from '../../web/src/ui/preview.ts';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '..', '..', '..');
+const webSrc = path.join(root, 'apps/web/src');
+const app = () => fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+const css = () => fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
+const pane = () => fs.readFileSync(path.join(webSrc, 'ui/preview-pane.tsx'), 'utf8');
+
+const BASE = 'https://preview.example.work/';
+
+describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => {
+  it('TEST 1/8: detects start commands without assuming vite/5173', () => {
+    for (const cmd of ['npm run dev', 'npm start', 'pnpm dev', 'yarn dev', 'vite', 'next dev', 'python3 -m http.server 8000', 'npx serve dist']) {
+      assert.equal(isDevServerCommand(cmd), true, cmd);
+    }
+    for (const cmd of ['npm run build', 'npm test', 'tsc --noEmit', 'git status', 'npm run lint', 'jest src']) {
+      assert.equal(isDevServerCommand(cmd), false, cmd);
+    }
+  });
+
+  it('sniffs explicit ports from command or output instead of guessing', () => {
+    assert.equal(extractPortHint('npm run dev -- --port 3001'), 3001);
+    assert.equal(extractPortHint('Local: http://localhost:4173/'), 4173);
+    assert.equal(extractPortHint('Serving on port 8000'), 8000);
+    assert.equal(extractPortHint('npm run build'), undefined);
+  });
+
+  it('TEST 6/7: filters infra ports, keeps URLs, dedupes repeated detection', () => {
+    const ports = [
+      { port: 5173, url: `${BASE}5173/` },
+      { port: 22, url: `${BASE}22/` },
+      { port: 5432, url: `${BASE}5432/` },
+      { port: 5173, url: `${BASE}5173/` },
+      { port: 3000 },
+    ];
+    const usable = usablePreviews(ports);
+    assert.deepEqual(usable.map((p) => p.port), [5173]);
+    assert.equal(isPreviewablePort(22), false);
+    assert.equal(isPreviewablePort(5173), true);
+  });
+
+  it('prefers likely frontends but never invents a URL', () => {
+    assert.equal(preferredPreviewPort([])?.port ?? null, null);
+    assert.equal(preferredPreviewPort([{ port: 8000, url: 'u8000' }, { port: 5173, url: 'u5173' }])?.port, 5173);
+    assert.equal(preferredPreviewPort([{ port: 8000, url: 'u8000' }], 8000)?.port, 8000);
+    assert.equal(preferredPreviewPort([{ port: 8000, url: 'u8000' }], 9999)?.port, 8000);
+  });
+});
+
+describe('preview URL safety (§§192, 198-200, 222)', () => {
+  it('never hands raw phone-localhost to the user; uses resolved URLs opaquely', () => {
+    const src = pane();
+    assert.doesNotMatch(src, /http:\/\/localhost/);
+    assert.match(src, /sandbox="allow-scripts allow-same-origin allow-forms allow-popups"/);
+    assert.match(app(), /if \(!found\?\.url\) return;/);
+  });
+
+  it('relative paths stay in-preview; foreign URLs go external', () => {
+    assert.deepEqual(resolvePreviewInput(BASE, '/login'), { kind: 'preview', url: 'https://preview.example.work/login' });
+    assert.deepEqual(resolvePreviewInput(BASE, 'dashboard'), { kind: 'preview', url: 'https://preview.example.work/dashboard' });
+    const same = resolvePreviewInput(BASE, 'https://preview.example.work/a?b=1');
+    assert.equal(same.kind, 'preview');
+    assert.deepEqual(resolvePreviewInput(BASE, 'https://evil.example/'), { kind: 'external', url: 'https://evil.example/' });
+    assert.deepEqual(resolvePreviewInput(BASE, ''), { kind: 'invalid' });
+    assert.deepEqual(resolvePreviewInput(BASE, 'javascript:alert(1)'), { kind: 'invalid' });
+  });
+
+  it('TEST 12/13: external open preserves the current same-origin path', () => {
+    assert.equal(externalPreviewUrl(BASE, 'https://preview.example.work/dashboard'), 'https://preview.example.work/dashboard');
+    assert.equal(externalPreviewUrl(BASE, 'https://other.example/x'), BASE);
+    assert.match(app(), /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
+    assert.match(pane(), /aria-label="Open preview in browser"/);
+  });
+});
+
+describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)', () => {
+  it('TEST 2/11: View preview exists only with a resolved URL', () => {
+    assert.match(pane(), /<button type="button" className="server-preview-cta" onClick=\{\(\) => onViewPreview\(match\.port\)\}>View preview<\/button>/);
+    assert.match(pane(), /if \(!match\) \{[\s\S]*?return null/);
+    assert.match(pane(), /activityState === 'failed'[\s\S]*?return null/);
+  });
+
+  it('startup stays one coherent activity with expandable detail, not five cards', () => {
+    const src = pane();
+    assert.doesNotMatch(src, /port detected|workspace port|health check/i);
+    assert.match(src, /Development server started/);
+    assert.match(app(), /<ServerPreviewAction command=\{[^}]*\} output=\{item\.rawOutput\}/);
+  });
+
+  it('TEST 3/4/16: chat action selects the tab, port and URL deterministically', () => {
+    const src = app();
+    assert.match(src, /const openPreview = useCallback\(\(port: number, path = '\/'\) => \{/);
+    assert.match(src, /setTab\('preview'\)/);
+    assert.match(src, /setPreviewPortSel\(port\)/);
+    assert.match(src, /setPreviewStatus\('loading'\)/);
+  });
+
+  it('TEST 9/10/20: stopped and failed states never claim readiness', () => {
+    const src = pane();
+    assert.match(src, /activityState === 'failed'[\s\S]*?return null/);
+    assert.match(src, /Starting application…/);
+    assert.match(app(), /setPreviewPorts\(\[\]\)/);
+  });
+
+  it('TEST 17: session switch resets preview context', () => {
+    assert.match(app(), /setPreviewPorts\(\[\]\); setPreviewPortSel\(null\); setPreviewStack\(\[\]\); setPreviewIdx\(-1\);/);
+    assert.match(app(), /setPreviewStatus\('idle'\); setPreviewSlow\(false\); setExternalSuggest\(null\)/);
+  });
+
+  it('TEST 15: chat derives from the same ports list as the tab', () => {
+    const src = app();
+    assert.match(src, /const usablePorts = useMemo\(\(\) => usablePreviews\(previewPorts\), \[previewPorts\]\)/);
+    assert.match(src, /ports=\{previewPorts\} onViewPreview/);
+    assert.match(src, /ports=\{usablePorts\} selected=\{selectedPreview\}/);
+  });
+
+  it('TEST 8: opening the same preview preserves navigation context', () => {
+    assert.match(app(), /if \(port === previewPortSel && previewStack\.length\) \{ setTab\('preview'\); return; \}/);
+  });
+});
+
+describe('preview surface (§§196-197, 206, 211-213, 219-221, 232, 234)', () => {
+  it('one canonical toolbar: back/forward/reload/path/external', () => {
+    const src = pane();
+    assert.match(src, /aria-label="Preview back"/);
+    assert.match(src, /aria-label="Preview forward"/);
+    assert.match(src, /aria-label="Reload preview"/);
+    assert.match(src, /aria-label="Preview path"/);
+    assert.match(src, /aria-label="Select running preview"/);
+    assert.match(src, /<iframe[\s\S]*?onLoad=\{props\.onLoad\}[\s\S]*?onError=\{props\.onFrameError\}/);
+    assert.doesNotMatch(src, /location\.reload|window\.location\.reload/);
+  });
+
+  it('loading, slow, blocked and unreachable states stay distinct', () => {
+    const src = pane();
+    assert.match(src, /Loading preview…/);
+    assert.match(src, /Still waiting for the development server…/);
+    assert.match(src, /This preview can’t be embedded here\./);
+    assert.match(src, /Preview couldn’t load\./);
+    assert.match(src, /View server output/);
+  });
+
+  it('TEST 19: embed failure falls back to external open, never a dead frame', () => {
+    assert.match(pane(), /status !== 'blocked' && \(\s*<iframe/);
+    assert.match(app(), /onFrameError=\{\(\) => setPreviewStatus\('blocked'\)\}/);
+  });
+
+  it('TEST 18/232: tab badge, mobile spacing and touch targets', () => {
+    assert.match(app(), /`Preview\$\{usablePorts\.length \? ' ●' : ''\}`/);
+    const source = css();
+    assert.match(source, /\.preview-pane \{[\s\S]*?padding-bottom: 120px/);
+    assert.match(source, /\.preview-pane \{[\s\S]*?padding-bottom: 190px/);
+    assert.match(source, /\.preview-tool \{[\s\S]*?min-width: 40px;\s*min-height: 40px;/);
+    assert.match(source, /\.preview-address input \{[\s\S]*?min-height: 40px;/);
+    assert.match(source, /\.server-preview-cta \{[\s\S]*?min-height: 40px;/);
+  });
+
+  it('TEST 5/14: reload targets the preview frame only', () => {
+    assert.match(app(), /onReload=\{\(\) => \{ setPreviewStatus\('loading'\); setPreviewSlow\(false\); setPreviewReloadKey\(\(k\) => k \+ 1\); \}\}/);
+    assert.match(pane(), /key=\{props\.reloadKey\}/);
+  });
+
+  it('TEST 16b: back/forward walk Orlynx-tracked history, not the host app', () => {
+    const src = app();
+    assert.match(src, /setPreviewIdx\(\(i\) => Math\.max\(0, i - 1\)\)/);
+    assert.match(src, /setPreviewIdx\(\(i\) => Math\.min\(previewStack\.length - 1, i \+ 1\)\)/);
+    assert.match(src, /canBack=\{previewIdx > 0\} canForward=\{previewIdx < previewStack\.length - 1\}/);
+  });
+});
