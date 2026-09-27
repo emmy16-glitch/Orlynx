@@ -840,9 +840,8 @@ export default function ProductionApp() {
     const clientId = uid();
     try {
       const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: ai.mode === 'build' && tempFullAccess }) }));
-      const preserveStreamingReply = runs.some((candidate: any) => candidate.state === 'running');
       if (!overrideText) { setComposer(''); try { localStorage.removeItem(draftKey(session.id)); } catch {} }
-      if (!preserveStreamingReply) setDraftReply(''); setTempFullAccess(false);
+      setTempFullAccess(false);
       setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
       setLastRun(result.run); runRef.current = result.run;
       if (result.plane === 'direct') setWorkspaceReadNotice('');
