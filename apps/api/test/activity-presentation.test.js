@@ -168,11 +168,12 @@ describe('normalized agent activity presentation', () => {
   it('uses OpenCode-like labels without exposing private reasoning', () => {
     const rows = toActivities([
       event(1, 'activity.progress', { text: 'Reviewing the request' }),
-      event(2, 'tool.started', { tool: 'read', path: 'package.json', callId: 'read-1' }),
-      event(3, 'tool.started', { tool: 'bash', command: 'npm run dev', callId: 'cmd-1' }),
-      event(4, 'run.failed', { error: 'Vite failed to start' }),
+      event(2, 'activity.progress', { text: 'Understanding repository…', sourceType: 'repository.map' }),
+      event(3, 'tool.started', { tool: 'read', path: 'package.json', callId: 'read-1' }),
+      event(4, 'tool.started', { tool: 'bash', command: 'npm run dev', callId: 'cmd-1' }),
+      event(5, 'run.failed', { error: 'Vite failed to start' }),
     ]);
-    assert.deepEqual(rows.map(activityTranscriptLabel), ['Thought', 'Read', 'Run command', 'Error']);
+    assert.deepEqual(rows.map(activityTranscriptLabel), ['Thought', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
   it('chat owns the execution transcript and preserves a running reply when a follow-up is queued', async () => {
