@@ -11,6 +11,7 @@ import {
 } from '../src/bridge-live.ts';
 import { defaultWorkspaceProviderId, shouldPrewarmWorkspace } from '../src/workspace-providers.ts';
 import { OrlynxRunnerProvider } from '../src/orlynx-runner.ts';
+import { workspaceShouldAdoptPreferredRunner } from '../src/workspaces.ts';
 
 function withEnv(values, fn) {
   const previous = {};
@@ -56,6 +57,22 @@ test('workspace provider prefers configured warm runner and otherwise preserves 
   }, () => {
     assert.equal(defaultWorkspaceProviderId(), 'github-codespaces');
   });
+});
+
+
+
+test('legacy Codespaces failures migrate to the preferred warm runner without stealing a healthy workspace', () => {
+  const base = {
+    provider: 'github-codespaces',
+    state: 'failed',
+    bridgeState: 'disconnected',
+    codespaceName: undefined,
+    failureCode: 'GitHub has reached your running Codespace limit.',
+  };
+  assert.equal(workspaceShouldAdoptPreferredRunner(base, 'orlynx-runner'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'healthy-space', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'busy-space', state: 'starting', failureCode: undefined }, 'orlynx-runner'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner(base, 'github-codespaces'), false);
 });
 
 test('explicit runner selection fails closed when runner credentials are missing', () => {
