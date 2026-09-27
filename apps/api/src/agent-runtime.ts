@@ -1,4 +1,4 @@
-import type { AgentAdapterId, AgentMode, EventType, ProjectSession } from '@orlynx/shared';
+import type { AgentAdapterCapabilities, AgentAdapterId, AgentMode, EventType, ProjectSession } from '@orlynx/shared';
 import {
   abortOpenCodeSession,
   getOrCreateOpenCodeSession,
@@ -31,16 +31,6 @@ export interface AgentPromptOptions {
   agent?: string;
 }
 
-export interface AgentAdapterCapabilities {
-  workspace: boolean;
-  directChat: boolean;
-  streaming: boolean;
-  planMode: boolean;
-  approvals: boolean;
-  resumeSession: boolean;
-  diff: boolean;
-}
-
 export interface AgentDirectChatInput {
   runId: string;
   messageId?: string;
@@ -64,7 +54,7 @@ export interface AgentWorkspacePayloadInput {
   agent?: string;
 }
 
-export interface AgentRuntimeAdapter {
+export interface AgentAdapter {
   readonly id: AgentAdapterId;
   readonly displayName: string;
   readonly capabilities: AgentAdapterCapabilities;
@@ -93,7 +83,7 @@ function parseProviderModel(modelId: string): { providerID: string; modelID: str
   return { providerID, modelID: rest.join('/') };
 }
 
-export const openCodeRuntime: AgentRuntimeAdapter = {
+export const openCodeRuntime: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
   capabilities: {
@@ -142,7 +132,7 @@ export const openCodeRuntime: AgentRuntimeAdapter = {
   },
 };
 
-const adapters = new Map<AgentAdapterId, AgentRuntimeAdapter>([
+const adapters = new Map<AgentAdapterId, AgentAdapter>([
   [openCodeRuntime.id, openCodeRuntime],
 ]);
 
@@ -150,14 +140,14 @@ export function defaultAgentAdapterId(): AgentAdapterId {
   return process.env.ORLYNX_DEFAULT_AGENT_ADAPTER || 'opencode';
 }
 
-export function getAgentAdapter(id?: AgentAdapterId): AgentRuntimeAdapter {
+export function getAgentAdapter(id?: AgentAdapterId): AgentAdapter {
   const resolved = id || defaultAgentAdapterId();
   const adapter = adapters.get(resolved);
   if (!adapter) throw new Error(`Agent adapter "${resolved}" is not installed in this Orlynx deployment.`);
   return adapter;
 }
 
-export function listAgentAdapters(): AgentRuntimeAdapter[] {
+export function listAgentAdapters(): AgentAdapter[] {
   return [...adapters.values()];
 }
 
