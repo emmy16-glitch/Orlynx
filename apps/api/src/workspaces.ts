@@ -47,6 +47,22 @@ export function shouldRecoverTransientBridgeClose(authenticated: boolean, code: 
   return authenticated && [1001, 1006, 1012].includes(code);
 }
 
+export function workspaceShouldAdoptPreferredRunner(
+  workspace: Pick<WorkspaceRecord, 'provider' | 'state' | 'bridgeState' | 'codespaceName' | 'failureCode'>,
+  preferredProvider: 'orlynx-runner' | 'github-codespaces' = defaultWorkspaceProviderId(),
+): boolean {
+  if (preferredProvider !== 'orlynx-runner' || workspace.provider !== 'github-codespaces') return false;
+  if (workspaceFullyReady(workspace)) return false;
+
+  // A legacy session can remember Codespaces forever even after the deployment
+  // switches to the warm runner. It is safe to migrate when there is no
+  // Codespace handle, or when Codespaces failed specifically at account
+  // capacity before useful work could begin.
+  if (!workspace.codespaceName) return true;
+  if (workspace.state !== 'failed') return false;
+  return /too many codespaces|running Codespace limit|Codespace quota|Codespace limit/i.test(workspace.failureCode || '');
+}
+
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
@@ -54,7 +70,36 @@ export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord |
 export async function ensureWorkspaceRecord(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   const existing = await repository.getWorkspaceBySession(input.sessionId);
-  if (existing) return existing;
+  if (existing) {
+    if (!workspaceShouldAdoptPreferredRunner(existing)) return existing;
+
+    const now = new Date().toISOString();
+    const migrated: WorkspaceRecord = {
+      ...existing,
+      provider: 'orlynx-runner',
+      runnerId: undefined,
+      codespaceName: undefined,
+      state: 'creating',
+      bridgeState: 'disconnected',
+      connectionId: undefined,
+      failureCode: undefined,
+      updatedAt: now,
+    };
+    await repository.putWorkspace(migrated);
+    await repository.putWorkspaceAgentAdapter({
+      workspaceId: migrated.id,
+      adapterId: 'opencode',
+      state: 'not_installed',
+      updatedAt: now,
+    });
+    console.info(`[workspace] migrated legacy Codespaces workspace to preferred runner session=${migrated.sessionId} workspace=${migrated.id}`);
+    emit(input.sessionId, 'workspace.preparing', {
+      stage: 'workspace.migrate',
+      provider: 'orlynx-runner',
+      message: 'Moving this development environment to the fast Orlynx runner…',
+    });
+    return migrated;
+  }
   const now = new Date().toISOString();
   const workspace: WorkspaceRecord = {
     id: `ws_${uuid()}`,
