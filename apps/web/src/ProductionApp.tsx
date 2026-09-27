@@ -1352,16 +1352,12 @@ function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 
 }
 
 function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [detailMode, setDetailMode] = useActivityDetailMode(agentMode === 'build' ? 'code' : 'summary');
+  const [detailMode, setDetailMode] = useActivityDetailMode('code');
   const currentIndex = activities.reduce((current: number, item: any, index: number) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const startAt = expanded ? 0 : Math.max(0, Math.min(activities.length - 7, currentIndex >= 0 ? currentIndex - 3 : activities.length - 7));
-  const visible = expanded ? activities.slice(-50) : activities.slice(startAt, Math.max(startAt + 7, currentIndex + 1));
-  const hidden = Math.max(0, activities.length - visible.length);
+  const visible = activities.slice(-100);
   return <div className="card">
     <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
     <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
-    {(hidden > 0 || expanded) && <Button tone="ghost" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show recent activity' : `Show ${hidden} earlier updates`}</Button>}
   </div>;
 }
 
