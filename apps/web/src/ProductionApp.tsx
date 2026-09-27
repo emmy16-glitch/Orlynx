@@ -1199,12 +1199,7 @@ export default function ProductionApp() {
                   if (entry.kind === 'activity') {
                     const item = entry.activity;
                     return <div className={`transcript-activity-row category-${item.category}`} key={entry.key}>
-                      <span className="transcript-activity-avatar" aria-hidden><Icon name="agents" size={14} /></span>
                       <div className="transcript-activity-shell">
-                        <div className="transcript-event-heading">
-                          <span className="transcript-event-kind">{activityTranscriptLabel(item)}</span>
-                          {item.timestamp && <time>{new Date(item.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>}
-                        </div>
                         <TaskActivityRow item={item} detailMode="summary" isCurrent={item.id === currentActivityId} />
                         <ServerPreviewAction command={typeof item.evidence?.command === 'string' ? item.evidence.command : ''} output={item.rawOutput} activityState={item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} />
                       </div>
