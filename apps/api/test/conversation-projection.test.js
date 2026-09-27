@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
-import { applyLiveReplyEvents, reconcileLiveRepliesFromRuns } from '../../web/src/ui/live-replies.ts';
+import { emptyAgentStreamState } from '../../web/src/agent-stream/protocol.ts';
+import { applyRawAgentEvents, reconcileAgentStream } from '../../web/src/agent-stream/store.ts';
+import { selectLiveReplies } from '../../web/src/agent-stream/view.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
@@ -29,17 +31,14 @@ describe('conversation projection: adapter heartbeat suppression', () => {
     assert.equal(rows.length, 0);
   });
 
-  it('TEST 2: starting -> ready coalesces into one meaningful transition', () => {
+  it('TEST 2: normal starting -> ready stays state-only and does not clutter chat', () => {
     fresh();
     const rows = toActivities([
       evt('state.delta', { scope: 'agent-adapter', adapterId: 'opencode', state: 'starting' }),
       adapterReady(),
       adapterReady(),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Orlynx AI ready');
-    assert.equal(rows[0].state, 'success');
-    assert.doesNotMatch(rows[0].title, /adapter/i);
+    assert.equal(rows.length, 0);
   });
 
   it('TEST 3: ready -> error becomes a visible actionable row', () => {
@@ -243,13 +242,13 @@ describe('conversation projection: stream/telemetry hygiene', () => {
     assert.equal(rows.length, 1);
   });
 
-  it('replayed run.completed does not duplicate the completion card', () => {
+  it('replayed run.completed remains state-only and creates no redundant completion card', () => {
     fresh();
     const rows = toActivities([
       evt('run.completed', { summary: 'Done' }, 'run-a', 'done-1'),
       evt('run.completed', { summary: 'Done' }, 'run-a', 'done-2'),
     ]);
-    assert.equal(rows.filter((r) => r.title === 'Work completed').length, 1);
+    assert.equal(rows.length, 0);
   });
 });
 
@@ -303,7 +302,7 @@ describe('conversation projection: results and failures', () => {
     ], activities);
     assert.deepEqual(timeline.map((entry) => entry.kind === 'message' ? `message:${entry.message.role}` : `activity:${activityTranscriptLabel(entry.activity)}`), [
       'message:user',
-      'activity:Thought',
+      'activity:Working',
       'activity:Run tests',
       'message:assistant',
     ]);
@@ -378,7 +377,7 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.match(app(), /setStopping\(true\)[\s\S]*?setStopping\(false\)/);
     fresh();
     const rows = toActivities([evt('run.failed', { cancelled: true, error: 'stopped' }, 'run-a')]);
-    assert.equal(rows.at(-1)?.title, 'Work stopped');
+    assert.equal(rows.at(-1)?.title, 'Task stopped');
     assert.equal(rows.at(-1)?.state, 'cancelled');
   });
 
@@ -423,56 +422,77 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
 });
 
 
-describe('run-scoped live assistant streaming', () => {
+describe('canonical run-scoped live assistant streaming', () => {
+  const raw = (eventId, sequence, type, runId, payload = {}, timestamp = '2026-09-27T10:00:00.000Z') => ({
+    eventId, sessionId: 'session-a', runId, sequence, timestamp, type, payload,
+  });
+
   it('keeps overlapping direct/workspace deltas in separate replies', () => {
-    const replies = applyLiveReplyEvents({}, [
-      { type: 'run.started', runId: 'run-a', sequence: 1, timestamp: '2026-09-27T10:00:00.000Z', payload: { messageId: 'u-a', plane: 'direct' } },
-      { type: 'run.started', runId: 'run-b', sequence: 2, timestamp: '2026-09-27T10:00:00.001Z', payload: { messageId: 'u-b', plane: 'workspace' } },
-      { type: 'message.delta', runId: 'run-a', sequence: 3, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'Hello ' } },
-      { type: 'message.delta', runId: 'run-b', sequence: 4, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'Running ' } },
-      { type: 'message.delta', runId: 'run-a', sequence: 5, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'there' } },
-      { type: 'message.delta', runId: 'run-b', sequence: 6, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'tests' } },
+    const state = applyRawAgentEvents(emptyAgentStreamState(), [
+      raw('a1', 1, 'run.started', 'run-a', { messageId: 'u-a', plane: 'direct' }),
+      raw('b1', 2, 'run.started', 'run-b', { messageId: 'u-b', plane: 'workspace' }, '2026-09-27T10:00:00.001Z'),
+      raw('a2', 3, 'message.delta', 'run-a', { delta: 'Hello ' }, '2026-09-27T10:00:00.002Z'),
+      raw('b2', 4, 'message.delta', 'run-b', { delta: 'Running ' }, '2026-09-27T10:00:00.002Z'),
+      raw('a3', 5, 'message.delta', 'run-a', { delta: 'there' }, '2026-09-27T10:00:00.002Z'),
+      raw('b3', 6, 'message.delta', 'run-b', { delta: 'tests' }, '2026-09-27T10:00:00.002Z'),
     ]);
-    assert.equal(replies['run-a'].text, 'Hello there');
-    assert.equal(replies['run-b'].text, 'Running tests');
-    assert.equal(replies['run-a'].messageId, 'u-a');
-    assert.equal(replies['run-b'].messageId, 'u-b');
+    const replies = selectLiveReplies(state);
+    const byRun = Object.fromEntries(replies.map((reply) => [reply.runId, reply]));
+    assert.equal(byRun['run-a'].text, 'Hello there');
+    assert.equal(byRun['run-b'].text, 'Running tests');
+    assert.equal(byRun['run-a'].userMessageId, 'u-a');
+    assert.equal(byRun['run-b'].userMessageId, 'u-b');
   });
 
   it('accepts same-timestamp deltas in sequence order and ignores replay', () => {
-    let replies = applyLiveReplyEvents({}, [
-      { type: 'run.started', runId: 'r', sequence: 10, timestamp: '2026-09-27T10:00:00.000Z', payload: {} },
-      { type: 'message.delta', runId: 'r', sequence: 11, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'A' } },
-      { type: 'message.delta', runId: 'r', sequence: 12, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'B' } },
+    let state = applyRawAgentEvents(emptyAgentStreamState(), [
+      raw('r1', 10, 'run.started', 'r', {}),
+      raw('r2', 11, 'message.delta', 'r', { delta: 'A' }, '2026-09-27T10:00:01.000Z'),
+      raw('r3', 12, 'message.delta', 'r', { delta: 'B' }, '2026-09-27T10:00:01.000Z'),
     ]);
-    replies = applyLiveReplyEvents(replies, [
-      { type: 'message.delta', runId: 'r', sequence: 12, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'B' } },
-      { type: 'message.delta', runId: 'r', sequence: 13, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'C' } },
+    state = applyRawAgentEvents(state, [
+      raw('r3', 12, 'message.delta', 'r', { delta: 'B' }, '2026-09-27T10:00:01.000Z'),
+      raw('r4', 13, 'message.delta', 'r', { delta: 'C' }, '2026-09-27T10:00:01.000Z'),
     ]);
-    assert.equal(replies.r.text, 'ABC');
+    assert.equal(selectLiveReplies(state)[0].text, 'ABC');
   });
 
   it('does not let an older HTTP snapshot rewind newer SSE text', () => {
-    const current = applyLiveReplyEvents({}, [
-      { type: 'run.started', runId: 'r', sequence: 1, timestamp: '2026-09-27T10:00:00.000Z', payload: { messageId: 'u1' } },
-      { type: 'message.delta', runId: 'r', sequence: 2, timestamp: '2026-09-27T10:00:02.000Z', payload: { delta: 'Newest streamed answer' } },
+    const current = applyRawAgentEvents(emptyAgentStreamState(), [
+      raw('s1', 1, 'run.started', 'r', { messageId: 'u1' }),
+      raw('s2', 2, 'message.delta', 'r', { delta: 'Newest streamed answer' }, '2026-09-27T10:00:02.000Z'),
     ]);
-    const reconciled = reconcileLiveRepliesFromRuns(current, [{
+    const reconciled = reconcileAgentStream(current, [{
       id: 'r', state: 'running', messageId: 'u1', partialText: 'Newest streamed',
       partialUpdatedAt: '2026-09-27T10:00:01.000Z', startedAt: '2026-09-27T10:00:00.000Z',
     }], []);
-    assert.equal(reconciled.r.text, 'Newest streamed answer');
+    assert.equal(selectLiveReplies(reconciled)[0].text, 'Newest streamed answer');
   });
 
   it('replaces transient reply only after the durable assistant message exists', () => {
-    const current = {
-      r: { runId: 'r', text: 'partial', startedAt: '2026-09-27T10:00:00.000Z', messageId: 'u1', state: 'completed', lastEventAt: 1, lastSequence: 2 },
-    };
-    const preserved = reconcileLiveRepliesFromRuns(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], []);
-    assert.equal(preserved.r.text, 'partial');
-    const removed = reconcileLiveRepliesFromRuns(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], [
+    const current = applyRawAgentEvents(emptyAgentStreamState(), [
+      raw('p1', 1, 'run.started', 'r', { messageId: 'u1' }),
+      raw('p2', 2, 'message.delta', 'r', { delta: 'partial' }),
+      raw('p3', 3, 'run.completed', 'r', {}),
+    ]);
+    const preserved = reconcileAgentStream(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], []);
+    assert.equal(selectLiveReplies(preserved)[0].text, 'partial');
+    const removed = reconcileAgentStream(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], [
       { id: 'msg_r', role: 'assistant', text: 'final' },
     ]);
-    assert.equal(removed.r, undefined);
+    assert.equal(selectLiveReplies(removed, [{ id: 'msg_r', role: 'assistant', text: 'final' }]).length, 0);
+  });
+
+  it('scopes reused provider tool-call IDs to their run', () => {
+    fresh();
+    const rows = toActivities([
+      evt('tool.started', { tool: 'exec', cmd: 'npm test', toolCallId: 'same' }, 'run-a'),
+      evt('tool.started', { tool: 'exec', cmd: 'npm test', toolCallId: 'same' }, 'run-b'),
+      evt('tool.completed', { tool: 'exec', toolCallId: 'same' }, 'run-a'),
+      evt('tool.completed', { tool: 'exec', toolCallId: 'same' }, 'run-b'),
+    ]);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.runId).sort(), ['run-a', 'run-b']);
   });
 });
+
