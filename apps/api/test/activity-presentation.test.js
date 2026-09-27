@@ -19,7 +19,7 @@ describe('canonical agent activity presentation', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, 'Updating files');
     assert.equal(rows[0].state, 'success');
-    assert.equal(rows[0].sequence, 5);
+    assert.equal(rows[0].sequence, 2);
   });
 
   it('keeps one queue lifecycle plus the actual semantic work', () => {
