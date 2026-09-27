@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
+import { chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
 
 const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${sequence}`) => ({
   eventId, sessionId: 'session-a', runId, sequence, timestamp: new Date(sequence * 1000).toISOString(), type, payload,
@@ -117,15 +117,26 @@ describe('normalized agent activity presentation', () => {
     assert.equal(rows[0].state, 'success');
   });
 
-  it('bounds long sessions while retaining the latest ordered progress events without duplicate replay', () => {
-    const events = Array.from({ length: 150 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
+  it('bounds long sessions to the durable 500-event window while retaining ordered progress without duplicate replay', () => {
+    const events = Array.from({ length: 650 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
     const rows = toActivities([...events].reverse().concat(events[0]));
-    assert.equal(rows.length, 100);
-    assert.equal(rows[0].title, 'step 50');
-    assert.equal(rows.at(-1)?.title, 'step 149');
-    assert.deepEqual(rows.map((row) => row.sequence), Array.from({ length: 100 }, (_, i) => i + 51));
-    const many = toActivities(Array.from({ length: 150 }, (_, i) => event(i + 1, 'workspace.stopped', {}, `run-${i}`)));
-    assert.equal(many.length, 100);
+    assert.equal(rows.length, 500);
+    assert.equal(rows[0].title, 'step 150');
+    assert.equal(rows.at(-1)?.title, 'step 649');
+    assert.deepEqual(rows.map((row) => row.sequence), Array.from({ length: 500 }, (_, i) => i + 151));
+    const many = toActivities(Array.from({ length: 650 }, (_, i) => event(i + 1, 'workspace.stopped', {}, `run-${i}`)));
+    assert.equal(many.length, 500);
+  });
+
+  it('keeps failures in the chat timeline instead of filtering them into a separate hidden path', () => {
+    const rows = toActivities([
+      event(1, 'run.started', { plane: 'workspace' }),
+      event(2, 'run.failed', { error: 'command failed', errorKind: 'engine', recoverable: true }),
+    ]);
+    const visible = chatActivities(rows);
+    assert.equal(visible.length, rows.length);
+    assert.equal(visible.at(-1)?.state, 'failed');
+    assert.equal(visible.at(-1)?.title, 'Work needs attention');
   });
 
   it('defaults to detailed live execution while retaining the optional summary view', async () => {
