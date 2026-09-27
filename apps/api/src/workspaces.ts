@@ -52,17 +52,18 @@ export function workspaceShouldAdoptPreferredRunner(
   preferredProvider: 'orlynx-runner' | 'github-codespaces' = defaultWorkspaceProviderId(),
 ): boolean {
   if (preferredProvider !== 'orlynx-runner' || workspace.provider !== 'github-codespaces') return false;
-  if (workspaceFullyReady(workspace)) return false;
 
-  // A legacy session can remember Codespaces forever even after the deployment
-  // switches to the warm runner. Migrate only when the old environment is not
-  // healthy: no provider handle, a quota/capacity failure, or a broken/stale
-  // Codespaces SSH/runtime handle. A healthy ready Codespace is never stolen.
-  if (!workspace.codespaceName) return true;
-  if (workspace.state !== 'failed') return false;
-  const failure = workspace.failureCode || '';
-  return /too many codespaces|running Codespace limit|Codespace quota|Codespace limit/i.test(failure)
-    || workspaceNeedsCodespaceReplacement(failure);
+  // Never steal a healthy Codespace or interrupt one that is actively coming
+  // online. The preferred runner is an upgrade path for legacy *idle/broken*
+  // sessions, not a reason to churn a working environment mid-task.
+  if (workspaceFullyReady(workspace)) return false;
+  if (workspace.state === 'stopping' || workspaceStartupPending(workspace)) return false;
+
+  // Once the deployment prefers the warm runner, any legacy Codespace that is
+  // stopped, failed, missing its provider handle, or claims "ready" without a
+  // live bridge should adopt the runner on the next Build request. This avoids
+  // old saved sessions permanently bypassing the new architecture.
+  return true;
 }
 
 export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord | null> {
