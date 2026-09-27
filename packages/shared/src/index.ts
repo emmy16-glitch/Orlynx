@@ -36,6 +36,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   text: string;
   createdAt: string;
+  /** Explicit run ownership for assistant messages. Legacy rows may omit this. */
+  runId?: string;
 }
 
 export interface AttachmentMeta {
@@ -196,37 +198,18 @@ export type EventType =
   | 'approval.required' | 'approval.resolved'
   | 'receipt.created' | 'extension.event';
 
-// Orlynx agent-adapter boundary (ACP-inspired). OpenCode implements this;
-// future ACP-compatible agents implement the same surface so the chat UI,
-// session core and transport never change per provider.
-export interface AgentAdapterSession {
-  adapterId: AgentAdapterId;
-  engineSessionId: string;
-  capabilities: {
-    workspace: boolean;
-    directChat: boolean;
-    streaming: boolean;
-    planMode: boolean;
-    approvals: boolean;
-    resumeSession: boolean;
-    diff: boolean;
-  };
-}
-export interface AgentAdapterRunRequest {
-  taskId: string;
-  runId: string;
-  sessionId: string;
-  prompt: string;
-  modelId: string;
-  mode: AgentMode;
-}
-export interface AgentAdapterHandle {
-  startSession(sessionId: string, project: string): Promise<AgentAdapterSession>;
-  sendPrompt(handle: AgentAdapterSession, request: AgentAdapterRunRequest): Promise<void>;
-  cancelRun(handle: AgentAdapterSession, runId: string): Promise<void>;
-  resumeRun(handle: AgentAdapterSession, runId: string): Promise<void>;
-  handlePermission(approvalId: string, decision: 'allow-once' | 'allow-task' | 'deny'): Promise<void>;
-  capabilities(): AgentAdapterSession['capabilities'];
+// Shared adapter capabilities. The operational adapter interface lives in
+// apps/api/src/agent-runtime.ts because its methods depend on server-only
+// request/session types. There is intentionally one production adapter
+// contract, not a second documentation-only handle.
+export interface AgentAdapterCapabilities {
+  workspace: boolean;
+  directChat: boolean;
+  streaming: boolean;
+  planMode: boolean;
+  approvals: boolean;
+  resumeSession: boolean;
+  diff: boolean;
 }
 
 export interface OrlynxEvent {
