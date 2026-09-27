@@ -12,6 +12,7 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 export type Engine = AgentAdapterId;
@@ -714,7 +715,8 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 function collectToolEvents(sessionId: string, runId: string, message: RuntimeMessage, toolStates: Map<string, string>) {
   for (const part of message.parts) {
     if (part.type !== 'tool') continue;
-    const toolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
+    const rawToolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
+    const toolId = scopeToolCallId(runId, rawToolId);
     const state = String(part.state?.status || 'running');
     const input = part.state?.input && typeof part.state.input === 'object'
       ? part.state.input as Record<string, unknown>
