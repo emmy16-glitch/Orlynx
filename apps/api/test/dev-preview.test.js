@@ -123,8 +123,23 @@ describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)
     assert.match(src, /ports=\{usablePorts\} selected=\{selectedPreview\}/);
   });
 
+  it('active Build work uses fast port reconciliation so Preview appears without a 10s lag', () => {
+    const src = app();
+    assert.match(src, /workspaceRunActive = runs\.some/);
+    assert.match(src, /workspaceRunActive \? 1_000 : tab === 'preview' \? 2_500 : 10_000/);
+    assert.match(src, /\[session\?\.id, integration\.workspace\?\.previewAvailable, online, refreshPorts, runs, tab\]/);
+  });
+
   it('TEST 8: opening the same preview preserves navigation context', () => {
     assert.match(app(), /if \(port === previewPortSel && previewStack\.length\) \{ setTab\('preview'\); return; \}/);
+  });
+
+  it('stale selected ports cannot drift from the iframe/server truth', () => {
+    const src = app();
+    assert.match(src, /previewPortSel !== null[\s\S]*?usablePorts\.find/);
+    assert.match(src, /if \(previewPortSel === null \|\| usablePorts\.some/);
+    assert.match(src, /setPreviewPortSel\(null\); setPreviewStack\(\[\]\); setPreviewIdx\(-1\)/);
+    assert.match(src, /setPreviewStack\(\[replacement\.url\]\); setPreviewIdx\(0\)/);
   });
 });
 

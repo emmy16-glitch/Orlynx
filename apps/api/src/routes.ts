@@ -288,6 +288,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
           plane: task.plane || 'workspace',
           state: task.state,
           model: task.modelId,
+
+          messageId: task.messageId,
           mode: task.mode,
           permission: task.permission,
           partialText: task.partialText,
@@ -792,6 +794,8 @@ router.get('/sessions/:id/runs', async (req, res) => {
       plane: task.plane || 'workspace',
       state: task.state,
       model: task.modelId,
+
+      messageId: task.messageId,
       mode: task.mode,
       permission: task.permission,
       partialText: task.partialText,

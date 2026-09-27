@@ -3,6 +3,7 @@ import { app } from './app.js';
 import { githubAppConfigured } from './github.js';
 import { attachBridgeGateway } from './bridge-gateway.js';
 import { warmOpenCodeProviderLayer } from './opencode-local.js';
+import { defaultWorkspaceProviderId, runnerFallbackEnabled, shouldPrewarmWorkspace } from './workspace-providers.js';
 
 const PORT = Number(process.env.PORT || 4000);
 
@@ -16,6 +17,12 @@ if (githubAppConfigured()) {
 }
 
 await warmOpenCodeProviderLayer();
+
+try {
+  console.log(`[orlynx-api] workspace provider=${defaultWorkspaceProviderId()} prewarm=${shouldPrewarmWorkspace()} codespacesFallback=${runnerFallbackEnabled()}`);
+} catch (error) {
+  console.warn(`[orlynx-api] workspace provider configuration error: ${error instanceof Error ? error.message : 'unknown error'}`);
+}
 
 const server = http.createServer(app);
 attachBridgeGateway(server);

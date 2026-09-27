@@ -12,14 +12,25 @@ test('an existing Codespace never changes the mode/request execution decision', 
   assert.equal(executionPlaneFor('Run git status -sb', 'build'), 'workspace');
 });
 
-test('an active repository workspace keeps conversation on the OpenCode session', () => {
+test('a ready workspace is reused only for questions that require live mutable state', () => {
   const ready = { state: 'ready', bridgeState: 'ready' };
   const connecting = { state: 'connecting', bridgeState: 'disconnected' };
 
+  // Runtime/working-tree truth must come from the live workspace.
   assert.equal(executionPlaneForSession('Have U started local host??', 'build', ready), 'workspace');
   assert.equal(executionPlaneForSession('What changed?', 'build', ready), 'workspace');
-  assert.equal(executionPlaneForSession('Explain this file', 'ask', ready), 'workspace');
-  assert.equal(executionPlaneForSession('Plan the next fix', 'plan', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Is the dev server running?', 'ask', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Show me the current git diff', 'plan', ready), 'workspace');
+
+  // General explanation and planning stay on the fast direct lane even after
+  // a workspace exists. Merely having a Codespace/runner is not a routing rule.
+  assert.equal(executionPlaneForSession('Explain this file', 'ask', ready), 'direct');
+  assert.equal(executionPlaneForSession('Plan the next fix', 'plan', ready), 'direct');
+  assert.equal(executionPlaneForSession('Explain the authentication flow', 'build', ready), 'direct');
+  assert.equal(executionPlaneForSession('Review this architecture and suggest improvements', 'build', ready), 'direct');
+
+  // A non-ready workspace cannot be trusted for live-state questions; the
+  // direct classifier remains authoritative until the runtime is actually ready.
   assert.equal(executionPlaneForSession('Explain this file', 'ask', connecting), 'direct');
   assert.equal(executionPlaneForSession('Explain this file', 'ask', null), 'direct');
 });

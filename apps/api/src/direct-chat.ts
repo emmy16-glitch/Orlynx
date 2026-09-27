@@ -68,6 +68,14 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
 }
 
 
+export function needsLiveWorkspaceState(text: string): boolean {
+  // These questions depend on the mutable checkout/runtime rather than the
+  // GitHub branch snapshot used by direct chat. Keep this list intentionally
+  // narrow: an existing workspace must not turn every explanation into a
+  // cloud/OpenCode round trip.
+  return /\b(what\s+changed|what\s+did\s+(?:you|u)\s+(?:change|do)|working\s+tree|uncommitted|git\s+(?:status|diff)|current\s+(?:changes?|status|server|preview)|last\s+(?:command|test|build)|test\s+results?|build\s+results?|(?:have|did)\s+(?:you|u)\s+(?:start|run)|(?:is|are)\s+(?:the\s+)?(?:app|server|dev\s+server|local\s*host|localhost|preview)\s+(?:running|ready|started)|local\s*host|localhost|running\s+(?:app|server|preview)|preview\s+(?:status|url|port))\b/i.test(text);
+}
+
 export function executionPlaneForSession(
   text: string,
   mode: AgentMode,
@@ -76,17 +84,13 @@ export function executionPlaneForSession(
   const base = executionPlaneFor(text, mode);
   if (base === 'workspace' || !workspace) return base;
 
-  // Once a Build conversation has a workspace, keep non-instant follow-ups on
-  // the same OpenCode session. This preserves execution context and avoids
-  // bouncing repository questions to the separate direct-chat runtime.
-  if (mode === 'build') return 'workspace';
-
-  // Ask/Plan may reuse an already-ready workspace in their read-only modes so
-  // users get the same file/tool/event stream without starting cloud solely
-  // for a conversational turn.
-  if ((mode === 'ask' || mode === 'plan')
-    && workspace.state === 'ready'
-    && workspace.bridgeState === 'ready') {
+  // A ready workspace is used only when the answer depends on mutable runtime
+  // truth. Normal explanation/planning/repository questions stay on the direct
+  // AI lane even after a workspace exists, which preserves the instant-chat
+  // architecture instead of routing every follow-up through OpenCode.
+  if (workspace.state === 'ready'
+    && workspace.bridgeState === 'ready'
+    && needsLiveWorkspaceState(text)) {
     return 'workspace';
   }
 
