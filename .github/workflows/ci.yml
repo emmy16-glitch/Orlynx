@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check production supervisor syntax
+        run: node --check apps/api/scripts/production-start.mjs
+
       - name: Typecheck
         run: npm run typecheck
 
