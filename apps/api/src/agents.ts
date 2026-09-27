@@ -427,7 +427,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     }
     store.save();
 
-    emit(sessionId, 'run.started', { taskId: task.id, plane: task.plane || 'workspace', engine: adapter.id, provider, model: modelId, mode, permission }, run.id);
+    emit(sessionId, 'run.started', { taskId: task.id, messageId: task.messageId, plane: task.plane || 'workspace', engine: adapter.id, provider, model: modelId, mode, permission }, run.id);
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
     if (task.plane === 'direct') {
