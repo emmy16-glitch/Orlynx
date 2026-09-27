@@ -646,9 +646,16 @@ export default function ProductionApp() {
   useEffect(() => {
     if (!session?.id || !integration.workspace?.previewAvailable || !online) return;
     void refreshPorts();
-    const timer = window.setInterval(() => { void refreshPorts(); }, 10_000);
+
+    // Port truth must catch up with a just-started dev server quickly. During
+    // active Build execution poll the cheap bridge port probe at 1s; while the
+    // Preview tab is open keep it at 2.5s so stopped/restarted servers do not
+    // leave stale UI. Idle chat falls back to a low-cost 10s reconciliation.
+    const workspaceRunActive = runs.some((candidate: any) => candidate.state === 'running' && candidate.plane === 'workspace');
+    const intervalMs = workspaceRunActive ? 1_000 : tab === 'preview' ? 2_500 : 10_000;
+    const timer = window.setInterval(() => { void refreshPorts(); }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [session?.id, integration.workspace?.previewAvailable, online, refreshPorts]);
+  }, [session?.id, integration.workspace?.previewAvailable, online, refreshPorts, runs, tab]);
 
   async function loadRepositories() {
     setRepoBusy(true); setError('');
