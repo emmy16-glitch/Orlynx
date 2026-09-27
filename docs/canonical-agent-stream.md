@@ -36,10 +36,11 @@ this repository. See "Design influences" at the end.
   (`permission.request/resolved`, `approval.required/resolved`), workspace
   (`workspace.*`), state (`state.snapshot/delta`), product
   (`changes.updated/receipt.created`) and `extension.event`.
-- `AgentAdapterHandle`: the provider boundary every agent implements —
-  `startSession/sendPrompt/cancelRun/resumeRun/handlePermission/capabilities`.
-  OpenCode implements it; a future ACP-compatible agent implements the same
-  surface without touching chat UI, session core or transport.
+- `AgentAdapterCapabilities` in shared describes portable capabilities.
+- The single production provider contract is `AgentAdapter` in
+  `apps/api/src/agent-runtime.ts`. OpenCode implements that contract today;
+  a future ACP-compatible adapter can implement the same operational surface
+  without changing thread rendering or the durable protocol.
 
 `apps/api/src/agent-protocol.ts` is the server-side adapter:
 
