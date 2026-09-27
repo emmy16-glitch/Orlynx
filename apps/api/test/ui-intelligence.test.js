@@ -130,19 +130,21 @@ describe('chat and cloud reliability contract', () => {
     assert.match(src, /setInterval\(async \(\) =>[\s\S]*?\/v1\/sessions\/\$\{encodeURIComponent\(session\.id\)\}/);
   });
 
-  it('preserves first streamed tokens when run.started and message.delta share a frame', () => {
+  it('preserves streamed tokens per run instead of one global draft', () => {
     assert.match(src, /pendingRef\.current\.splice\(0\)\.sort/);
-    assert.match(src, /if \(item\.type === 'run\.started'\)[\s\S]*?deltas\.length = 0/);
-    assert.match(src, /if \(item\.type === 'message\.delta'\)/);
-    assert.match(src, /if \(replaceDraft\) setDraftReply\(deltas\.join\(''\)\)/);
+    assert.match(src, /applyLiveReplyEvents\(current, batch\)/);
+    assert.match(src, /reconcileLiveRepliesFromRuns\(current, runData, messageData\)/);
+    assert.match(src, /Object\.values\(liveReplies\)/);
+    assert.doesNotMatch(src, /const \[draftReply, setDraftReply\]/);
   });
 
-  it('makes session refresh single-flight and prevents stale partial snapshots from rewinding SSE text', () => {
+  it('keeps session refresh single-flight while live-reply reconciliation rejects stale snapshots', () => {
     assert.match(src, /sessionRefreshesRef = useRef\(new Map<string, Promise<void>>\(\)\)/);
     assert.match(src, /const inFlight = sessionRefreshesRef\.current\.get\(id\)/);
-    assert.match(src, /snapshotUpdatedAt < cutoff && current/);
-    assert.match(src, /current\.startsWith\(snapshot\)/);
-    assert.match(src, /snapshot\.startsWith\(current\)/);
-    assert.match(src, /newestDeltaAt > partialCutoffRef\.current/);
+    const helper = fs.readFileSync(path.join(webUi, 'live-replies.ts'), 'utf8');
+    assert.match(helper, /previous\.text\.startsWith\(snapshot\)/);
+    assert.match(helper, /snapshot\.startsWith\(previous\.text\)/);
+    assert.match(helper, /snapshotAt < previous\.lastEventAt/);
+    assert.match(helper, /sequence && sequence <= previous\.lastSequence/);
   });
 });
