@@ -4,7 +4,7 @@ import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfil
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { getAgentAdapter, openCodeRuntime, type AgentRuntimeAdapter, type RuntimeMessage } from './agent-runtime.js';
+import { getAgentAdapter, openCodeRuntime, type AgentAdapter, type RuntimeMessage } from './agent-runtime.js';
 import { buildAskFirstInstruction, canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
@@ -136,7 +136,7 @@ async function executeDirectTask(
   task: TaskRecord,
   run: AgentRun,
   modelId: string,
-  adapter: AgentRuntimeAdapter,
+  adapter: AgentAdapter,
 ): Promise<void> {
   if (!session) return;
   executingDirectTasks.add(task.id);
@@ -639,7 +639,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   return run;
 }
 
-async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentRuntimeAdapter, previousAssistantId?: string): Promise<void> {
+async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentAdapter, previousAssistantId?: string): Promise<void> {
   const active = activeAgentSessions.get(run.id);
   if (!active) return;
   const deadline = Date.now() + timeoutMs;
@@ -717,7 +717,7 @@ function collectToolEvents(sessionId: string, runId: string, message: RuntimeMes
   }
 }
 
-async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentRuntimeAdapter = openCodeRuntime) {
+async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentAdapter = openCodeRuntime) {
   const raw = await adapter.diff(project, engineSessionId);
   const files: ChangedFile[] = raw.flatMap((item) => {
     const file = String(item.file || item.path || '');
