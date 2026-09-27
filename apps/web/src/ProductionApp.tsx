@@ -1354,7 +1354,7 @@ function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 
 function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?: string }) {
   const [detailMode, setDetailMode] = useActivityDetailMode('code');
   const currentIndex = activities.reduce((current: number, item: any, index: number) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const visible = activities.slice(-100);
+  const visible = activities.slice(-500);
   return <div className="card">
     <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
     <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
