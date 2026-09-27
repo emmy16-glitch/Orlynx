@@ -177,11 +177,18 @@ export type LiveReplyView = {
 };
 
 export function selectLiveReplies(state: AgentStreamState, persistedMessages: any[] = []): LiveReplyView[] {
-  const durableAssistantIds = new Set(
-    persistedMessages.filter((message) => message?.role === 'assistant').map((message) => String(message.id || '')),
+  const durableRunIds = new Set(
+    persistedMessages
+      .filter((message) => message?.role === 'assistant')
+      .flatMap((message) => {
+        const explicit = String(message?.runId || '');
+        if (explicit) return [explicit];
+        const id = String(message?.id || '');
+        return id.startsWith('msg_') ? [id.slice(4)] : [];
+      }),
   );
   return Object.values(state.messages)
-    .filter((message) => message.text && !durableAssistantIds.has(`msg_${message.runId}`))
+    .filter((message) => message.text && !durableRunIds.has(message.runId))
     .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))
     .map((message) => ({
       runId: message.runId,
