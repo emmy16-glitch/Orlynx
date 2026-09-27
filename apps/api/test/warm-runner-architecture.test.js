@@ -161,3 +161,21 @@ test('runner preview gateway supports HTTP, cookies and WebSocket/HMR forwarding
   assert.match(internal, /server\.on\('upgrade'/);
   assert.match(internal, /BLOCKED = new Set\(\[4096, PORT\]\)/);
 });
+
+
+test('production start separates API and orchestrator processes', () => {
+  const supervisor = fs.readFileSync(new URL('../scripts/production-start.mjs', import.meta.url), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.scripts.start, 'node scripts/production-start.mjs');
+  assert.equal(pkg.scripts['start:api'], 'node dist/index.js');
+  assert.match(supervisor, /launch\('api', \['dist\/index\.js'\]\)/);
+  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\]\)/);
+  assert.match(supervisor, /ORLYNX_ORCHESTRATOR_MODE: 'worker'/);
+  assert.match(supervisor, /DATABASE_URL \|\| process\.env\.POSTGRES_URL/);
+});
+
+test('legacy runtime worker image uses Node 24', () => {
+  const dockerfile = fs.readFileSync(new URL('../../../runtime-worker/Dockerfile', import.meta.url), 'utf8');
+  assert.match(dockerfile, /^FROM node:24-bookworm-slim/m);
+  assert.doesNotMatch(dockerfile, /^FROM node:20-/m);
+});

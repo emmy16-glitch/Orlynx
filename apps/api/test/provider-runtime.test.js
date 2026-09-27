@@ -409,7 +409,8 @@ test('production keeps the main API lightweight and prewarms the external OpenCo
   const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
   const routesSource = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
 
-  assert.equal(packageJson.scripts.start, 'node dist/index.js');
+  assert.equal(packageJson.scripts.start, 'node scripts/production-start.mjs');
+  assert.equal(packageJson.scripts['start:api'], 'node dist/index.js');
   assert.match(buildScript, /^npm ci --include=dev$/m);
   assert.doesNotMatch(buildScript, /Installing local OpenCode sidecar|apps\/api\/\.opencode-runtime/);
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
