@@ -338,7 +338,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     const now = new Date().toISOString();
     const runId = `run_${uuid().slice(0, 8)}`;
     const taskId = `task_${uuid()}`;
-    const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: instantReply, createdAt: now };
+    const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: instantReply, runId, createdAt: now };
     const run = {
       id: runId, sessionId: s.id, engine: selectedAdapterId, plane: 'direct' as const,
       model: selectedModel || undefined, mode: effectiveMode, permission: prefs.permission,
