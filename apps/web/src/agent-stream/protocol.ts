@@ -1,4 +1,4 @@
-import type { AgentMode, PermissionProfile } from '@orlynx/shared';
+import type { AgentMode, AgentPartKind, PermissionProfile } from '@orlynx/shared';
 
 /**
  * Browser stream-projection actions.
@@ -16,18 +16,19 @@ export type StreamProjectionEvent =
   | (Base & { type: 'TEXT_START'; messageId: string; role: 'assistant' })
   | (Base & { type: 'TEXT_CONTENT'; messageId: string; delta: string })
   | (Base & { type: 'TEXT_END'; messageId: string })
-  | (Base & { type: 'TOOL_START'; toolCallId: string; name: string; waiting?: boolean; title?: string; command?: string; path?: string; code?: string })
+  | (Base & { type: 'TOOL_START'; toolCallId: string; name: string; semanticType?: AgentPartKind; waiting?: boolean; title?: string; command?: string; path?: string; code?: string })
   | (Base & { type: 'TOOL_UPDATE'; toolCallId: string; output?: string; delta?: string; replace?: boolean })
-  | (Base & { type: 'TOOL_END'; toolCallId: string; ok: boolean; error?: string; output?: string; exitCode?: number; files?: unknown[] })
+  | (Base & { type: 'TOOL_END'; toolCallId: string; semanticType?: AgentPartKind; ok: boolean; error?: string; output?: string; exitCode?: number; files?: unknown[] })
   | (Base & { type: 'ACTIVITY_START'; activityId: string; text: string; sourceType?: string })
   | (Base & { type: 'ACTIVITY_UPDATE'; activityId: string; text: string; sourceType?: string; detail?: Record<string, unknown> })
   | (Base & { type: 'ACTIVITY_END'; activityId: string; text?: string })
   | (Base & { type: 'WORKSPACE_STATE'; activityId: string; state: 'preparing' | 'reconnecting' | 'ready' | 'stopped' | 'failed'; message?: string; provider?: string })
+  | (Base & { type: 'PREVIEW_STATE'; activityId: string; state: 'preparing' | 'ready' | 'stopped' | 'failed'; port?: number; url?: string; message?: string })
   | (Base & { type: 'STATE_SNAPSHOT'; scope: string; value: Record<string, unknown> })
   | (Base & { type: 'STATE_DELTA'; scope: string; state?: string; value: Record<string, unknown> })
   | (Base & { type: 'CHANGES_UPDATED'; activityId: string; changeId?: string; files: unknown[]; count?: number })
   | (Base & { type: 'RECEIPT'; activityId: string; command?: string; output?: string; exitCode?: number })
-  | (Base & { type: 'APPROVAL'; activityId: string; resolved: boolean; action?: string; detail?: string })
+  | (Base & { type: 'APPROVAL'; activityId: string; approvalId?: string; resolved: boolean; decision?: string; action?: string; detail?: string })
   | (Base & { type: 'OTHER'; rawType: string; payload: Record<string, unknown> });
 
 export interface Base {
@@ -78,6 +79,7 @@ export interface AgentStreamTool {
   timestamp: string;
   state: 'waiting' | 'running' | 'success' | 'failed' | 'cancelled';
   name: string;
+  semanticType?: AgentPartKind;
   title?: string;
   command?: string;
   path?: string;
@@ -96,7 +98,7 @@ export interface AgentStreamActivity {
   startedSequence: number;
   timestamp: string;
   state: 'queued' | 'running' | 'success' | 'failed' | 'waiting' | 'cancelled';
-  kind: 'agent' | 'workspace' | 'changes' | 'receipt' | 'approval' | 'error';
+  kind: 'agent' | 'workspace' | 'preview' | 'changes' | 'receipt' | 'approval' | 'error';
   title: string;
   summary?: string;
   sourceType?: string;
