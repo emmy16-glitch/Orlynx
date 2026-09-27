@@ -223,7 +223,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
           if (message.ok) {
             const responseText = String(message.result?.responseText || '');
-            if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, createdAt: now });
+            if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, runId: runId || undefined, createdAt: now });
             if (message.result?.engineSessionId) {
               const adapterId = String(command.payload.adapterId || 'opencode');
               await repository.putAgentSession(claims.sessionId, adapterId, String(message.result.engineSessionId));
