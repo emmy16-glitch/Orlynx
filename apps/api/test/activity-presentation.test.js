@@ -40,7 +40,7 @@ describe('normalized agent activity presentation', () => {
       'Inspecting the repository',
       'Work completed',
     ]);
-    assert.ok(rows.every((row) => row.state === 'success'));
+    assert.deepEqual(rows.map((row) => row.state), ['queued', 'success', 'success', 'success']);
   });
 
   it('labels queued Build work and preserves observable command/path evidence', () => {
