@@ -7,20 +7,10 @@
 // Part kinds: text | terminal | file-change | file-read | test-result |
 // build-result | git | preview | approval | error | status | generic
 
+import type { AgentPartKind } from '@orlynx/shared';
 import type { ActivityItem } from './view';
 
-export type PartKind =
-  | 'terminal'
-  | 'file-change'
-  | 'file-read'
-  | 'test-result'
-  | 'build-result'
-  | 'git'
-  | 'preview'
-  | 'approval'
-  | 'error'
-  | 'status'
-  | 'generic';
+export type PartKind = AgentPartKind;
 
 export interface ThreadPart {
   key: string;
@@ -50,6 +40,7 @@ function commandOf(item: ActivityItem): string {
   return evidenceText(item, 'command');
 }
 
+// Legacy-only inference for pre-v1 history that has no semanticType.
 function isPreviewCommand(command: string): boolean {
   return /vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|localhost|:\d{3,5}/i.test(command);
 }
@@ -59,6 +50,21 @@ export function toThreadPart(item: ActivityItem): ThreadPart {
   const evidence = asRecord(item.evidence);
   const command = commandOf(item);
   const sourceType = typeof evidence.sourceType === 'string' ? evidence.sourceType : '';
+  const canonicalKind = typeof evidence.semanticType === 'string' ? evidence.semanticType as PartKind : undefined;
+
+  // v1 server events already declare their semantic part type. Prefer that
+  // authoritative meaning. Everything below is legacy-history fallback.
+  if (canonicalKind && canonicalKind !== 'generic') {
+    return {
+      key: item.key,
+      kind: canonicalKind,
+      item,
+      title: canonicalKind === 'approval' && item.state === 'waiting' ? 'Waiting for approval' : item.title,
+      summary: item.summary,
+      state: item.state,
+      runId: item.runId,
+    };
+  }
 
   // Approvals are always first-class and interactive.
   if (item.category === 'approval' || /approval|permission/i.test(`${item.title} ${sourceType}`)) {
