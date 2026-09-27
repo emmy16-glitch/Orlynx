@@ -57,6 +57,7 @@ jobs:
         run: |
           node --check runner-manager/index.mjs
           node --check runner-runtime/preview-proxy.mjs
+          node --check runner-direct/index.mjs
 
       - name: Build runner runtime image
         run: docker build --file runner-runtime/Dockerfile --tag orlynx-runner-runtime:ci .
