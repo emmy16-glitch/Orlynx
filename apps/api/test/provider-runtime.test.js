@@ -433,3 +433,19 @@ test('runtime prewarm hits health once and is throttled', async (t) => {
   assert.equal(await warmOpenCodeRuntime(), true);
   assert.equal(healthCalls, 1);
 });
+
+test('runtime prewarm backs off after a transient 502 instead of hammering status polling', async (t) => {
+  configureRuntime(t);
+  let healthCalls = 0;
+  mockFetch(t, async (url) => {
+    throw new Error('Unexpected fetch ' + url);
+  }, async () => {
+    healthCalls++;
+    return new Response('bad gateway', { status: 502 });
+  });
+
+  assert.equal(await warmOpenCodeRuntime(), false);
+  assert.equal(await warmOpenCodeRuntime(), false);
+  assert.equal(await warmOpenCodeRuntime(), false);
+  assert.equal(healthCalls, 1);
+});
