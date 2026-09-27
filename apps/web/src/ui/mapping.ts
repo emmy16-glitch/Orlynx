@@ -53,8 +53,40 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
     const activeKey = str(p.toolCallId || p.callId) || `${event.runId || 'session'}:${tool || 'tool'}`;
     const previous = activeTools.get(activeKey);
     switch (event.type) {
-      case 'message.delta': case 'message.start': case 'message.end': case 'state.snapshot': case 'state.delta':
-        break; // user-facing text is rendered in chat; state snapshots are not activity.
+      case 'message.delta':
+        break; // text chunks render directly in the live assistant message.
+      case 'message.start':
+        put(event, 'agent', 'running', 'Response stream started', str(p.model) || undefined, {
+          ...(str(p.plane) ? { plane: str(p.plane) } : {}),
+          ...(str(p.model) ? { model: str(p.model) } : {}),
+        });
+        break;
+      case 'message.end':
+        put(event, 'agent', 'success', 'Response stream completed');
+        break;
+      case 'state.snapshot':
+        put(event, 'cloud', 'success', 'Session state loaded', [str(p.project), str(p.branch)].filter(Boolean).join(' · ') || undefined, {
+          ...(str(p.mode) ? { mode: str(p.mode) } : {}),
+        });
+        break;
+      case 'state.delta': {
+        const adapterId = str(p.adapterId);
+        const state = str(p.state);
+        const title = p.scope === 'agent-adapter'
+          ? `${adapterId || 'AI'} adapter: ${state || 'updated'}`
+          : 'Runtime state updated';
+        const lifecycle: ActivityLifecycle = /failed|unavailable|error/i.test(state)
+          ? 'failed'
+          : /ready|connected|completed/i.test(state)
+            ? 'success'
+            : 'running';
+        put(event, 'agent', lifecycle, title, str(p.reason) || undefined, {
+          ...(str(p.scope) ? { scope: str(p.scope) } : {}),
+          ...(adapterId ? { adapterId } : {}),
+          ...(state ? { state } : {}),
+        });
+        break;
+      }
       case 'run.queued': {
         const buildWorkspace = p.mode === 'build' && p.plane === 'workspace';
         const title = buildWorkspace ? 'Waiting to start Build task' : p.mode === 'plan' ? 'Waiting to start planning' : 'Queued';
