@@ -3490,3 +3490,37 @@ html[data-theme="light"] .composer-options-panel {
     font-size: 11px;
   }
 }
+
+
+/* Status banners distinguish informational state from actual failures. */
+.screen-alert.tone-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+}
+.screen-alert.tone-warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--border));
+  background: color-mix(in srgb, var(--warning) 6%, var(--surface));
+}
+.transcript-recovery-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0 14px 48px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 9px;
+  color: var(--foreground-muted);
+  font-size: var(--text-small);
+}
+.transcript-recovery-actions .ox-btn {
+  min-height: 36px;
+  flex: none;
+}
+@media (max-width: 760px) {
+  .transcript-recovery-actions {
+    margin-left: 32px;
+    align-items: flex-start;
+  }
+}
