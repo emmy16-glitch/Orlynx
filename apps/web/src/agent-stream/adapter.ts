@@ -33,10 +33,26 @@ function toolCallId(event: RawEvent): string {
   const payload = event.payload || {};
   const tool = str(payload.tool || payload.name) || 'tool';
   const command = str(payload.command || payload.cmd);
-  const rawId = str(payload.toolCallId || payload.callId) || `${tool}:${command || 'call'}`;
-  // Tool-call IDs are scoped to a run. Some providers reuse short call IDs
-  // across turns; the UI protocol must never merge two different runs.
-  return `${event.runId || event.sessionId || 'session'}:${rawId}`;
+  const scope = event.runId || event.sessionId || 'session';
+  const rawId = str(payload.toolCallId || payload.callId)
+    || str(payload.ptyId || payload.terminalId || payload.resultId || payload.testId || payload.buildId)
+    || `${tool}:${command || event.eventId || event.sequence || 'call'}`;
+  // v1 server events already scope toolCallId to the run. Legacy events are
+  // scoped here only as a compatibility fallback.
+  return rawId.startsWith(`${scope}:`) ? rawId : `${scope}:${rawId}`;
+}
+
+function semanticType(payload: Record<string, unknown>, fallback?: string): any {
+  return str(payload.semanticType) || fallback || undefined;
+}
+
+function workspaceProjectionState(value: unknown): 'preparing' | 'reconnecting' | 'ready' | 'stopped' | 'failed' {
+  const state = str(value).toLowerCase();
+  if (state === 'ready') return 'ready';
+  if (state === 'stopped' || state === 'stopping') return 'stopped';
+  if (state === 'failed') return 'failed';
+  if (state === 'reconnecting' || state === 'connecting') return 'reconnecting';
+  return 'preparing';
 }
 
 function phaseId(event: RawEvent): string {
@@ -101,6 +117,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'TOOL_START',
         toolCallId: toolCallId(event),
         name: str(payload.tool || payload.name) || 'tool',
+        semanticType: semanticType(payload),
         waiting: event.type === 'tool.requested',
         title: str(payload.title) || undefined,
         command: str(payload.command || payload.cmd) || undefined,
@@ -124,6 +141,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'TOOL_START',
         toolCallId: toolCallId(event),
         name: 'terminal',
+        semanticType: semanticType(payload, 'terminal'),
         title: str(payload.title) || 'Terminal session',
         command: str(payload.command || payload.cmd) || undefined,
         path: str(payload.path) || undefined,
@@ -133,6 +151,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
+        semanticType: semanticType(payload, 'terminal'),
         ok: (num(payload.exitCode ?? payload.code) ?? 0) === 0,
         output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
         exitCode: num(payload.exitCode ?? payload.code),
@@ -143,6 +162,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
+        semanticType: semanticType(payload, event.type === 'test.result' ? 'test-result' : 'build-result'),
         ok: payload.ok !== false && num(payload.failed) === undefined ? Boolean(payload.ok ?? payload.success ?? true) : (num(payload.failed) ?? 1) === 0,
         error: str(payload.error || payload.message) || undefined,
         output: [str(payload.out), str(payload.stderr), str(payload.summary)].filter(Boolean).join('\n') || undefined,
@@ -150,23 +170,44 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         files: Array.isArray(payload.files) ? payload.files : undefined,
       }];
     case 'file.changed':
-    case 'files.changed':
+    case 'files.changed': {
+      const files = Array.isArray(payload.files)
+        ? payload.files
+        : str(payload.path || payload.filePath || payload.file)
+          ? [{
+              path: str(payload.path || payload.filePath || payload.file),
+              action: str(payload.action || payload.status) || 'modify',
+              ...(str(payload.diff) ? { diff: str(payload.diff) } : {}),
+              ...(str(payload.before) ? { before: str(payload.before) } : {}),
+              ...(str(payload.after) ? { after: str(payload.after) } : {}),
+            }]
+          : [];
       return [{
         ...common,
         type: 'CHANGES_UPDATED',
         activityId: `changes:${event.runId || str(payload.changeId) || event.sessionId || event.sequence}`,
         changeId: str(payload.changeId) || undefined,
-        files: Array.isArray(payload.files) ? payload.files : [],
-        count: num(payload.count),
+        files,
+        count: num(payload.count) ?? files.length,
       }];
+    }
     case 'preview.ready':
     case 'preview.state':
-      return [{ ...common, type: 'STATE_DELTA', scope: 'preview', state: str(payload.state) || 'ready', value: { ...payload, scope: 'preview' } }];
+      return [{
+        ...common,
+        type: 'PREVIEW_STATE',
+        activityId: `preview:${event.runId || event.workspaceId || event.sessionId || 'session'}:${num(payload.port) || 'app'}`,
+        state: event.type === 'preview.ready' ? 'ready' : workspaceProjectionState(payload.state) === 'reconnecting' ? 'preparing' : workspaceProjectionState(payload.state),
+        port: num(payload.port),
+        url: str(payload.url) || undefined,
+        message: str(payload.message) || undefined,
+      }];
     case 'permission.request':
       return [{
         ...common,
         type: 'APPROVAL',
         activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        approvalId: str(payload.approvalId || payload.id) || undefined,
         resolved: false,
         action: str(payload.action) || undefined,
         detail: str(payload.detail || payload.message) || undefined,
@@ -176,18 +217,24 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'APPROVAL',
         activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        approvalId: str(payload.approvalId || payload.id) || undefined,
         resolved: true,
-        action: str(payload.action || payload.decision) || undefined,
+        decision: str(payload.decision) || undefined,
+        action: str(payload.action) || undefined,
         detail: str(payload.detail || payload.message) || undefined,
       }];
     case 'subagent.started':
-      return [{ ...common, type: 'TOOL_START', toolCallId: `${event.runId || event.sessionId || 'session'}:subagent:${str(payload.subagentId || payload.id) || event.sequence}`, name: 'subagent', title: str(payload.title) || 'Delegated subtask' }];
-    case 'subagent.finished':
-      return [{ ...common, type: 'TOOL_END', toolCallId: `${event.runId || event.sessionId || 'session'}:subagent:${str(payload.subagentId || payload.id) || event.sequence}`, ok: payload.ok !== false, error: str(payload.error) || undefined }];
+    case 'subagent.finished': {
+      const stableSubagentId = str(payload.subagentId || payload.id || payload.taskId || payload.name || payload.title) || 'delegated';
+      const id = `${event.runId || event.sessionId || 'session'}:subagent:${stableSubagentId}`;
+      return event.type === 'subagent.started'
+        ? [{ ...common, type: 'TOOL_START', toolCallId: id, name: 'subagent', semanticType: 'generic', title: str(payload.title) || 'Delegated subtask' }]
+        : [{ ...common, type: 'TOOL_END', toolCallId: id, semanticType: 'generic', ok: payload.ok !== false, error: str(payload.error) || undefined }];
+    }
     case 'run.state':
       return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: str(payload.state) || undefined, value: { ...payload, scope: 'run' } }];
     case 'workspace.state':
-      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'preparing', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: workspaceProjectionState(payload.state), message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
     case 'extension.event':
       return [{ ...common, type: 'OTHER', rawType: str(payload.sourceType) || 'extension', payload }];
     case 'tool.completed':
@@ -196,6 +243,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
+        semanticType: semanticType(payload),
         ok: event.type === 'tool.completed',
         error: str(payload.error || payload.message) || undefined,
         output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
@@ -248,7 +296,9 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ...common,
         type: 'APPROVAL',
         activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        approvalId: str(payload.approvalId || payload.id) || undefined,
         resolved: event.type === 'approval.resolved',
+        decision: str(payload.decision) || undefined,
         action: str(payload.action) || undefined,
         detail: str(payload.detail || payload.message) || undefined,
       }];
