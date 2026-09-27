@@ -1,5 +1,14 @@
 # Agent Activity Presentation
 
+> Superseded in scope by [canonical agent protocol + conversation
+> architecture](canonical-agent-stream.md): server-side canonicalization
+> (`apps/api/src/agent-protocol.ts`), thread projection
+> (`apps/web/src/agent-stream/thread.ts`), typed parts
+> (`apps/web/src/agent-stream/parts.ts`) and the part renderer registry
+> (`apps/web/src/ui/tool-parts.tsx`). `AgentWorkStream`/`TaskActivityRow`
+> remain only as compatibility surfaces; the transcript renders thread turns
+> with typed parts.
+
 Orlynx accepts low-level runtime activity as input and presents users with
 meaningful progress, evidence, and next actions. The primary conversation is not a
 terminal transcript. Raw provider events are normalized in the existing event

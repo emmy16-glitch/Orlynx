@@ -108,14 +108,88 @@ export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
         code: str(payload.code) || undefined,
       }];
     case 'tool.output':
+    case 'tool.progress':
+    case 'terminal.output':
       return [{
         ...common,
         type: 'TOOL_UPDATE',
         toolCallId: toolCallId(event),
-        delta: str(payload.outDelta) || undefined,
-        output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
+        delta: str(payload.outDelta || payload.delta || payload.data) || undefined,
+        output: [str(payload.out), str(payload.stderr), str(payload.data)].filter(Boolean).join('\n') || undefined,
         replace: Boolean(payload.replace),
       }];
+    case 'terminal.started':
+      return [{
+        ...common,
+        type: 'TOOL_START',
+        toolCallId: toolCallId(event),
+        name: 'terminal',
+        title: str(payload.title) || 'Terminal session',
+        command: str(payload.command || payload.cmd) || undefined,
+        path: str(payload.path) || undefined,
+      }];
+    case 'terminal.exited':
+      return [{
+        ...common,
+        type: 'TOOL_END',
+        toolCallId: toolCallId(event),
+        ok: (num(payload.exitCode ?? payload.code) ?? 0) === 0,
+        output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
+        exitCode: num(payload.exitCode ?? payload.code),
+      }];
+    case 'test.result':
+    case 'build.result':
+      return [{
+        ...common,
+        type: 'TOOL_END',
+        toolCallId: toolCallId(event),
+        ok: payload.ok !== false && num(payload.failed) === undefined ? Boolean(payload.ok ?? payload.success ?? true) : (num(payload.failed) ?? 1) === 0,
+        error: str(payload.error || payload.message) || undefined,
+        output: [str(payload.out), str(payload.stderr), str(payload.summary)].filter(Boolean).join('\n') || undefined,
+        exitCode: num(payload.exitCode ?? payload.code),
+        files: Array.isArray(payload.files) ? payload.files : undefined,
+      }];
+    case 'file.changed':
+    case 'files.changed':
+      return [{
+        ...common,
+        type: 'CHANGES_UPDATED',
+        activityId: `changes:${event.runId || str(payload.changeId) || event.sessionId || event.sequence}`,
+        changeId: str(payload.changeId) || undefined,
+        files: Array.isArray(payload.files) ? payload.files : [],
+        count: num(payload.count),
+      }];
+    case 'preview.ready':
+    case 'preview.state':
+      return [{ ...common, type: 'STATE_DELTA', scope: 'preview', state: str(payload.state) || 'ready', value: { ...payload, scope: 'preview' } }];
+    case 'permission.request':
+      return [{
+        ...common,
+        type: 'APPROVAL',
+        activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        resolved: false,
+        action: str(payload.action) || undefined,
+        detail: str(payload.detail || payload.message) || undefined,
+      }];
+    case 'permission.resolved':
+      return [{
+        ...common,
+        type: 'APPROVAL',
+        activityId: `approval:${str(payload.approvalId || payload.id) || event.runId || event.sequence}`,
+        resolved: true,
+        action: str(payload.action || payload.decision) || undefined,
+        detail: str(payload.detail || payload.message) || undefined,
+      }];
+    case 'subagent.started':
+      return [{ ...common, type: 'TOOL_START', toolCallId: `${event.runId || event.sessionId || 'session'}:subagent:${str(payload.subagentId || payload.id) || event.sequence}`, name: 'subagent', title: str(payload.title) || 'Delegated subtask' }];
+    case 'subagent.finished':
+      return [{ ...common, type: 'TOOL_END', toolCallId: `${event.runId || event.sessionId || 'session'}:subagent:${str(payload.subagentId || payload.id) || event.sequence}`, ok: payload.ok !== false, error: str(payload.error) || undefined }];
+    case 'run.state':
+      return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: str(payload.state) || undefined, value: { ...payload, scope: 'run' } }];
+    case 'workspace.state':
+      return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'preparing', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
+    case 'extension.event':
+      return [{ ...common, type: 'OTHER', rawType: str(payload.sourceType) || 'extension', payload }];
     case 'tool.completed':
     case 'tool.failed':
       return [{

@@ -120,3 +120,47 @@
   .ox-activity .mark, .ox-badge[data-tone="work"] .dot, .ox-spinner { animation: none; }
   .ox-stream, .ox-btn { transition: none; }
 }
+
+/* Thread turns: one user request owns its response + work. No boxes in boxes:
+   whitespace + one hairline separate turns; parts are borderless rows. */
+.thread-turn { padding: 6px 0 10px; }
+.thread-turn + .thread-turn { border-top: 1px solid var(--border-subtle); margin-top: 6px; padding-top: 14px; }
+.turn-work { margin-top: 8px; display: grid; gap: 2px; }
+.turn-part { min-width: 0; }
+
+/* Typed part rows: compact, calm, chevron always visible when expandable. */
+.ox-part { border: 0; }
+.ox-part-row {
+  width: 100%; min-height: var(--touch-min); display: flex; align-items: center; gap: 8px;
+  padding: 7px 4px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--foreground-muted); font: inherit; font-size: var(--text-small);
+  text-align: left; cursor: pointer; min-width: 0;
+}
+.ox-part-row:disabled { cursor: default; }
+.ox-part-row:not(:disabled):hover { background: var(--surface-hover); }
+.ox-part-row:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.ox-part-mark { width: 20px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.ox-part[data-state="success"] .ox-part-mark { color: var(--agent-success); }
+.ox-part[data-state="failed"] .ox-part-mark { color: var(--agent-failed); }
+.ox-part[data-state="running"] .ox-part-mark, .ox-part[data-state="waiting"] .ox-part-mark, .ox-part[data-state="queued"] .ox-part-mark { color: var(--foreground-subtle); }
+.ox-part[data-state="running"] { color: var(--foreground); }
+.ox-part-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-part-summary { color: var(--foreground-subtle); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-part-kind { display: none; }
+.ox-part-chevron { margin-left: auto; flex: none; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--foreground-subtle); }
+.ox-part-row[aria-expanded="true"] .ox-part-chevron svg { transform: rotate(90deg); }
+.ox-part-detail { margin: 2px 0 6px 28px; padding: 10px 12px; border-left: 1px solid var(--border-strong); overflow-wrap: anywhere; }
+/* One motion cue: only the running part's dot moves. Completed rows are static. */
+.ox-live-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--agent-working) 30%, var(--border)); border-top-color: var(--agent-working); animation: ox-spin 1.1s linear infinite; }
+.ox-part[data-state="success"] .ox-live-dot, .ox-part[data-state="failed"] .ox-live-dot { display: none; }
+@media (max-width: 520px) {
+  .ox-part-row { padding: 8px 2px; }
+  .ox-part-title { max-width: 52vw; }
+  .ox-part-summary { max-width: 30vw; }
+  .ox-part-detail { margin-left: 20px; padding: 8px; }
+  .ox-part-detail pre { max-height: min(35vh, 220px); overflow: auto; overscroll-behavior: contain; }
+  .ox-part-row, .ox-part-detail { max-width: 100%; overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ox-live-dot { animation: none; border-top-color: color-mix(in srgb, var(--agent-working) 30%, var(--border)); }
+}

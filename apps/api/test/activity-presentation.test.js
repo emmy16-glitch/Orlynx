@@ -166,20 +166,36 @@ describe('canonical agent activity presentation', () => {
 
   it('chat consumes canonical stream selectors rather than raw lifecycle reducers', () => {
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
-    assert.match(app, /buildConversationTimeline\(messages, transcriptActivities\)/);
+    // Thread projection owns turn grouping by run/user-message IDs — timestamp
+    // merging alone is no longer the transcript authority.
+    assert.match(app, /buildThread\(messages, transcriptActivities, liveReplies, agentStream\)/);
+    assert.match(app, /toThreadParts\(turn\.work\)/);
     assert.match(app, /applyRawAgentEvents\(current, batch\)/);
     assert.match(app, /selectLiveReplies\(agentStream, messages\)/);
     assert.match(app, /activity\?limit=500/);
-    assert.match(app, /transcript-activity-row/);
+    assert.match(app, /thread-turn/);
     assert.doesNotMatch(app, /applyLiveReplyEvents/);
+    assert.doesNotMatch(app, /buildConversationTimeline\(messages, transcriptActivities\)/);
+  });
+
+  it('typed part registry renders work; generic row is fallback only', () => {
+    const registry = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+    assert.match(app, /<PartRow part=\{part\} \/>/);
+    assert.match(registry, /partRenderers/);
+    for (const kind of ['terminal', 'file-change', 'test-result', 'build-result', 'git', 'preview', 'approval']) {
+      assert.match(registry, new RegExp(`['"]?${kind}['"]?`));
+    }
+    assert.match(registry, /generic: \(part\)/);
   });
 
   it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {
-    const source = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
-    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
-    assert.match(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
-    assert.match(source, /className="ox-activity-disclosure"/);
-    assert.match(source, /aria-label=\{showEvidence \? `Hide details for/);
-    assert.doesNotMatch(source, />View code & details</);
+    const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    assert.match(parts, /className="ox-part-row"/);
+    assert.match(parts, /className="ox-part-chevron"/);
+    assert.match(parts, /aria-expanded=\{expandable \? open : undefined\}/);
+    assert.match(parts, /aria-controls=\{expandable \? evidenceId : undefined\}/);
+    assert.doesNotMatch(parts, />View details</);
+    assert.doesNotMatch(parts, />View code & details</);
   });
 });

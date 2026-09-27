@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
-import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, TaskActivityRow, UserMessageActions } from './ui/product';
-import { buildConversationTimeline, chatActivities, selectActivities, selectLiveReplies } from './ui/mapping';
+import { AgentApprovalCard, AgentErrorCard, AssistantMessageActions, AttachmentChip, DiffSummary, UserMessageActions } from './ui/product';
+import { PartRow } from './ui/tool-parts';
+import { chatActivities, selectActivities, selectLiveReplies } from './ui/mapping';
+import { buildThread } from './agent-stream/thread';
+import { toThreadParts } from './agent-stream/parts';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
@@ -1025,7 +1028,10 @@ export default function ProductionApp() {
   const activities = useMemo(() => selectActivities(agentStream), [agentStream]);
   const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
   const liveReplies = useMemo(() => selectLiveReplies(agentStream, messages), [agentStream, messages]);
-  const conversationTimeline = useMemo(() => buildConversationTimeline(messages, transcriptActivities), [messages, transcriptActivities]);
+  // Thread projection: each run owns its message stream + work parts, so
+  // overlapping runs never interleave unpredictably. IDs (not timestamps)
+  // are the grouping authority.
+  const thread = useMemo(() => buildThread(messages, transcriptActivities, liveReplies, agentStream), [messages, transcriptActivities, liveReplies, agentStream]);
   const currentActivityId = [...transcriptActivities].reverse().find((item: any) => item.state === 'running' || item.state === 'waiting')?.id;
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
@@ -1194,35 +1200,24 @@ export default function ProductionApp() {
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
                   </div>
                 </div></div>}
-                {conversationTimeline.map((entry) => {
-                  if (entry.kind === 'activity') {
-                    const item = entry.activity;
-                    return <div className={`transcript-activity-row category-${item.category}`} key={entry.key}>
-                      <div className="transcript-activity-shell">
-                        <TaskActivityRow item={item} detailMode="summary" isCurrent={item.id === currentActivityId} />
-                        <ServerPreviewAction command={typeof item.evidence?.command === 'string' ? item.evidence.command : ''} output={item.rawOutput} activityState={item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} />
-                      </div>
-                    </div>;
-                  }
-                  const message = entry.message;
-                  const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
-                  const priorUserPrompt = message.role === 'assistant' && messageIndex > 0 && messages[messageIndex - 1]?.role === 'user'
-                    ? String(messages[messageIndex - 1].text || '') : '';
-                  const cleanText = visibleChatText(message.role, message.text, priorUserPrompt);
-                  if (message.role === 'user') {
-                    return <article className="message-row user-message" key={entry.key}><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><UserMessageActions text={cleanText} onEdit={() => editAndResend(String(message.text || ''))} /></div></article>;
-                  }
-                  const isLatestAssistant = message.id === lastAssistantId;
-                  const failedLatest = isLatestAssistant && lastRun?.state === 'failed';
-                  const cancelledLatest = isLatestAssistant && lastRun?.state === 'cancelled';
-                  return <article className="message-row assistant-message" key={entry.key}><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{cleanText}</div><AssistantMessageActions text={cleanText} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={failedLatest} runCancelled={cancelledLatest} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[message.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(message.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} /></div></article>;
-                })}
-                {liveReplies.map((reply) => {
-                  const prompt = reply.userMessageId
-                    ? String(messages.find((message) => message.id === reply.userMessageId)?.text || '')
-                    : String([...messages].reverse().find((message) => message.role === 'user')?.text || '');
-                  const active = reply.state === 'streaming';
-                  return <article className="message-row assistant-message" key={`live:${reply.runId}`}><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{active ? 'Responding…' : reply.state === 'failed' ? 'Partial response · interrupted' : reply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', reply.text, prompt)}{active && <span className="stream-caret" />}</div></div></article>;
+                {thread.map((turn) => {
+                  const parts = toThreadParts(turn.work);
+                  const userText = turn.userMessage ? visibleChatText('user', turn.userMessage.text, '') : '';
+                  const durable = turn.assistantMessage;
+                  const durableIndex = durable ? messages.findIndex((candidate) => candidate.id === durable.id) : -1;
+                  const priorUserPrompt = durable && durableIndex > 0 && messages[durableIndex - 1]?.role === 'user'
+                    ? String(messages[durableIndex - 1].text || '') : turn.userMessage ? String(turn.userMessage.text || '') : '';
+                  const isLatestAssistant = durable ? durable.id === lastAssistantId : false;
+                  const turnActive = turn.state === 'streaming' || turn.state === 'queued';
+                  return <div className="thread-turn" data-state={turn.state} key={turn.key}>
+                    {turn.userMessage && <article className="message-row user-message"><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{userText}</div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
+                      {turn.liveReply && !durable && <div className="message-text">{visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '')}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
+                      {durable && <div className="message-text">{visibleChatText('assistant', durable.text, priorUserPrompt)}</div>}
+                      {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
+                      {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} />}
+                    </div></article>}
+                  </div>;
                 })}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
