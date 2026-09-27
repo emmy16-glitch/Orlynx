@@ -30,8 +30,10 @@ function toolCallId(event: RawEvent): string {
   const payload = event.payload || {};
   const tool = str(payload.tool || payload.name) || 'tool';
   const command = str(payload.command || payload.cmd);
-  return str(payload.toolCallId || payload.callId)
-    || `${event.runId || event.sessionId || 'session'}:${tool}:${command || 'call'}`;
+  const rawId = str(payload.toolCallId || payload.callId) || `${tool}:${command || 'call'}`;
+  // Tool-call IDs are scoped to a run. Some providers reuse short call IDs
+  // across turns; the UI protocol must never merge two different runs.
+  return `${event.runId || event.sessionId || 'session'}:${rawId}`;
 }
 
 function phaseId(event: RawEvent): string {
