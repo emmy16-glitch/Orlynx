@@ -251,8 +251,12 @@ async function opencodeRequest(payload: Record<string, unknown>) {
   }
   return { status: response.status, body };
 }
+let bridgeEventSequence = 0;
 function bridgeEvent(ws: WebSocket, type: string, payload: Record<string, unknown>, taskId?: string, runId?: string) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'EVENT', event: { type, payload, taskId, runId } }));
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const sequence = ++bridgeEventSequence;
+  const eventId = `${CONNECTION_ID || WORKSPACE_ID || 'bridge'}:${sequence}`;
+  ws.send(JSON.stringify({ kind: 'EVENT', event: { eventId, sequence, type, payload, taskId, runId } }));
 }
 
 type OpenCodeEvent = { type?: string; properties?: Record<string, any> };
@@ -383,6 +387,18 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     }, taskId, runId);
   };
 
+function toolSemanticType(toolName: string, command: string, filePath: string): string {
+  const text = `${toolName} ${command}`.toLowerCase();
+  if (/vitest|jest|pytest|mocha|playwright|(^|\s)test(\s|$)|npm test|pnpm test|yarn test/.test(text)) return 'test-result';
+  if (/build|compile|tsc|webpack|vite build|next build/.test(text)) return 'build-result';
+  if (/git\b|commit|checkout|branch|merge|rebase|push|pull/.test(text)) return 'git';
+  if (filePath && /read|cat|view|inspect|open|grep|search/.test(text)) return 'file-read';
+  if (filePath && /write|edit|patch|apply|create|delete|remove|replace/.test(text)) return 'file-change';
+  if (/vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|serve|preview/.test(text)) return 'preview';
+  if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
+  return 'generic';
+}
+
   const emitTool = (part: Record<string, any>) => {
     const state = part.state && typeof part.state === 'object' ? part.state as Record<string, any> : {};
     const status = String(state.status || '');
@@ -409,9 +425,11 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
         : '';
     const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
     const code = typeof codeCandidate === 'string' ? codeCandidate : '';
+    const semanticType = toolSemanticType(toolName, command, filePath);
     const common = {
       tool: toolName,
       callId: id,
+      semanticType,
       title,
       ...(command ? { command: command.slice(0, 4_000) } : {}),
       ...(filePath ? { path: filePath.slice(0, 1_200) } : {}),
@@ -465,7 +483,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     if (assistant) {
       const text = assistantText(assistant);
       if (text.startsWith(visible) && text.length > visible.length) {
-        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length) }, taskId, runId);
+        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length), messagePartId: 'snapshot', offset: visible.length }, taskId, runId);
         visible = text;
       }
       if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
@@ -501,7 +519,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
                 const before = textParts.get(id) || '';
                 if (current.startsWith(before) && current.length > before.length) {
                   const delta = current.slice(before.length);
-                  bridgeEvent(ws, 'message.delta', { delta }, taskId, runId);
+                  bridgeEvent(ws, 'message.delta', { delta, messagePartId: id, offset: before.length }, taskId, runId);
                   visible += delta;
                 }
                 textParts.set(id, current);

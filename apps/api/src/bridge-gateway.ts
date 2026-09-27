@@ -10,9 +10,10 @@ import { store } from './store.js';
 import { markWorkspaceConnectionLost, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 
 type BridgeAdapterState = { state?: string; reason?: string };
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
@@ -222,7 +223,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
           if (message.ok) {
             const responseText = String(message.result?.responseText || '');
-            if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, createdAt: now });
+            if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, runId: runId || undefined, createdAt: now });
             if (message.result?.engineSessionId) {
               const adapterId = String(command.payload.adapterId || 'opencode');
               await repository.putAgentSession(claims.sessionId, adapterId, String(message.result.engineSessionId));
@@ -291,13 +292,71 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'EVENT' && message.event?.type) {
-        // Server-side provider adapter: canonicalize at the protocol boundary
-        // so unknown provider events keep their semantics (extension.event)
-        // instead of collapsing into generic activity.progress.
-        const { normalizeBridgeEvent } = await import('./agent-protocol.js');
+        // Provider semantics are normalized ONCE at the server boundary. React
+        // receives the shared canonical protocol; it never sees raw OpenCode
+        // event names.
+        const runId = message.event.runId;
         const normalized = normalizeBridgeEvent(String(message.event.type), message.event.payload || {});
         if (normalized.heartbeat) return;
-        await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, taskId: message.event.taskId, runId: message.event.runId, type: normalized.type, timestamp: new Date().toISOString(), payload: normalized.payload });
+
+        const payload: Record<string, unknown> = { ...normalized.payload };
+        const type = normalized.type;
+
+        // Stable tool identity is a protocol invariant, not a UI heuristic.
+        if (/^(tool\.|terminal\.|test\.result|build\.result)/.test(type)) {
+          const rawToolId = String(
+            payload.toolCallId
+            || payload.callId
+            || payload.ptyId
+            || payload.terminalId
+            || payload.resultId
+            || payload.testId
+            || payload.buildId
+            || message.event.eventId
+            || `${type}:${message.event.sequence || 0}`,
+          );
+          payload.toolCallId = scopeToolCallId(runId, rawToolId);
+          delete payload.callId;
+        }
+
+        // Preserve singular file-change semantics for the typed renderer.
+        if (type === 'file.changed' && !Array.isArray(payload.files)) {
+          const path = String(payload.path || payload.filePath || payload.file || '');
+          if (path) {
+            payload.files = [{
+              path,
+              action: String(payload.action || payload.status || 'modify'),
+              ...(typeof payload.diff === 'string' ? { diff: payload.diff } : {}),
+              ...(typeof payload.before === 'string' ? { before: payload.before } : {}),
+              ...(typeof payload.after === 'string' ? { after: payload.after } : {}),
+            }];
+            payload.count = 1;
+          }
+        }
+
+        // workspace.state must retain its actual state. The browser must never
+        // turn ready/failed/stopped into a generic "preparing" row.
+        if (type === 'workspace.state') {
+          payload.state = String(payload.state || 'connecting');
+        }
+
+        const eventId = bridgeEventKey(
+          claims.sessionId,
+          runId,
+          type,
+          payload,
+          message.event.eventId,
+        );
+        await repository.appendEvent({
+          eventId,
+          sessionId: claims.sessionId,
+          workspaceId: claims.workspaceId,
+          taskId: message.event.taskId,
+          runId,
+          type,
+          timestamp: new Date().toISOString(),
+          payload,
+        });
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });

@@ -38,7 +38,7 @@ A workspace is not reported ready until the Codespace is running, the bridge is 
 
 ## Agent abstraction
 
-OpenCode is the first production agent runtime. Orlynx orchestration depends on an `AgentRuntimeAdapter` boundary so future real runtimes can implement the same session/event contracts without changing the product UI.
+OpenCode is the first production agent runtime. Orlynx orchestration depends on an `AgentAdapter` boundary so future real runtimes can implement the same session/event contracts without changing the product UI.
 
 ## GitHub security
 

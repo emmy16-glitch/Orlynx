@@ -181,12 +181,15 @@ describe('canonical agent activity presentation', () => {
   it('typed part registry renders work; generic row is fallback only', () => {
     const registry = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
-    assert.match(app, /<PartRow part=\{part\} \/>/);
+    assert.match(app, /<PartRow part=\{part\} onResolveApproval=\{resolveApproval\} \/>/);
     assert.match(registry, /partRenderers/);
     for (const kind of ['terminal', 'file-change', 'test-result', 'build-result', 'git', 'preview', 'approval']) {
       assert.match(registry, new RegExp(`['"]?${kind}['"]?`));
     }
-    assert.match(registry, /generic: \(part\)/);
+    assert.match(registry, /generic: \(part, onResolveApproval\)/);
+    assert.match(registry, /ApprovalDetail part=\{part\} onResolveApproval=\{onResolveApproval\}/);
+    assert.match(registry, /Allow once/);
+    assert.match(registry, /'Deny'/);
   });
 
   it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {

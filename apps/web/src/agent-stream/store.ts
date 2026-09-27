@@ -7,7 +7,7 @@ import {
   type AgentStreamRun,
   type AgentStreamState,
   type AgentStreamTool,
-  type CanonicalAgentEvent,
+  type StreamProjectionEvent,
 } from './protocol';
 
 const stamp = (value?: string) => {
@@ -66,7 +66,7 @@ function putActivity(state: AgentStreamState, item: AgentStreamActivity) {
   rememberOrder(state, 'activity', item.id, item.startedSequence);
 }
 
-function updateRun(state: AgentStreamState, event: CanonicalAgentEvent, patch: Partial<AgentStreamRun>) {
+function updateRun(state: AgentStreamState, event: StreamProjectionEvent, patch: Partial<AgentStreamRun>) {
   if (!event.runId) return;
   const prior = state.runs[event.runId];
   const messageId = patch.messageId || prior?.messageId || `assistant:${event.runId}`;
@@ -90,7 +90,7 @@ function resolveRunActivities(state: AgentStreamState, runId: string, lifecycle:
   }
 }
 
-function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
+function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
   if (state.seenEventIds.has(event.eventId)) return;
   state.seenEventIds.add(event.eventId);
   state.lastSequence = Math.max(state.lastSequence, event.sequence || 0);
@@ -274,6 +274,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: event.waiting ? 'waiting' : 'running',
         name: event.name || prior?.name || 'tool',
+        semanticType: event.semanticType || prior?.semanticType,
         title: event.title || prior?.title,
         command: event.command || prior?.command,
         path: event.path || prior?.path,
@@ -324,6 +325,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         ...prior,
         sequence: event.sequence,
         state: event.ok ? 'success' : 'failed',
+        semanticType: event.semanticType || prior.semanticType,
         output: output ? output.slice(-200_000) : output,
         error: event.ok ? undefined : friendlyFailure(event.error) || event.error || 'Action failed.',
         exitCode: event.exitCode ?? prior.exitCode,
@@ -385,6 +387,37 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         title,
         summary: event.state === 'ready' ? undefined : event.message ? compact(event.message, 180) : undefined,
         evidence: event.provider ? { provider: event.provider } : prior?.evidence,
+      });
+      return;
+    }
+
+    case 'PREVIEW_STATE': {
+      const prior = state.activities[event.activityId];
+      const title = event.state === 'ready' ? 'Development server ready'
+        : event.state === 'failed' ? 'Preview unavailable'
+          : event.state === 'stopped' ? 'Development server stopped'
+            : 'Starting development server';
+      const activityState: AgentStreamActivity['state'] = event.state === 'ready' ? 'success'
+        : event.state === 'failed' ? 'failed'
+          : event.state === 'stopped' ? 'cancelled'
+            : 'running';
+      putActivity(state, {
+        id: event.activityId,
+        runId: event.runId,
+        taskId: event.taskId,
+        sequence: event.sequence,
+        startedSequence: prior?.startedSequence || event.sequence,
+        timestamp: prior?.timestamp || event.timestamp,
+        state: activityState,
+        kind: 'preview',
+        title,
+        summary: event.port ? `Port ${event.port}` : event.message ? compact(event.message, 180) : undefined,
+        evidence: {
+          semanticType: 'preview',
+          ...(event.port ? { port: event.port } : {}),
+          ...(event.url ? { url: event.url } : {}),
+          ...(event.message ? { message: event.message } : {}),
+        },
       });
       return;
     }
@@ -528,9 +561,16 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: event.resolved ? 'success' : 'waiting',
         kind: 'approval',
-        title: event.resolved ? 'Approval resolved' : 'Waiting for approval',
+        title: event.resolved
+          ? event.decision === 'deny' || event.decision === 'denied' ? 'Permission denied' : 'Approval resolved'
+          : 'Waiting for approval',
         summary: event.detail || event.action,
-        evidence: event.action ? { action: event.action } : undefined,
+        evidence: {
+          semanticType: 'approval',
+          ...(event.approvalId ? { approvalId: event.approvalId } : {}),
+          ...(event.action ? { action: event.action } : {}),
+          ...(event.decision ? { decision: event.decision } : {}),
+        },
       });
       return;
     }
@@ -540,7 +580,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
   }
 }
 
-export function applyCanonicalAgentEvents(current: AgentStreamState, events: CanonicalAgentEvent[]): AgentStreamState {
+export function applyStreamProjectionEvents(current: AgentStreamState, events: StreamProjectionEvent[]): AgentStreamState {
   if (!events.length) return current;
   const state = clone(current);
   for (const event of events.sort((a, b) => a.sequence - b.sequence)) applyOne(state, event);
@@ -551,7 +591,7 @@ export function applyCanonicalAgentEvents(current: AgentStreamState, events: Can
 export function applyRawAgentEvents(current: AgentStreamState, events: any[]): AgentStreamState {
   const unseen = events.filter((event) => event?.eventId && !current.seenEventIds.has(String(event.eventId)));
   if (!unseen.length) return current;
-  return applyCanonicalAgentEvents(current, normalizeOrlynxEvents(unseen));
+  return applyStreamProjectionEvents(current, normalizeOrlynxEvents(unseen));
 }
 
 export function reconcileAgentStream(
@@ -560,8 +600,15 @@ export function reconcileAgentStream(
   persistedMessages: any[],
 ): AgentStreamState {
   const state = clone(current);
-  const durableAssistantIds = new Set(
-    persistedMessages.filter((message) => message?.role === 'assistant').map((message) => String(message.id || '')),
+  const durableRunIds = new Set(
+    persistedMessages
+      .filter((message) => message?.role === 'assistant')
+      .flatMap((message) => {
+        const explicit = String(message?.runId || '');
+        if (explicit) return [explicit];
+        const id = String(message?.id || '');
+        return id.startsWith('msg_') ? [id.slice(4)] : [];
+      }),
   );
 
   for (const run of runs || []) {
@@ -569,7 +616,6 @@ export function reconcileAgentStream(
     if (!runId) continue;
     const existingRun = state.runs[runId];
     const messageId = existingRun?.messageId || `assistant:${runId}`;
-    const durableId = `msg_${runId}`;
     const terminal = ['completed', 'failed', 'cancelled'].includes(String(run.state || ''));
 
     state.runs[runId] = {
@@ -587,7 +633,7 @@ export function reconcileAgentStream(
       errorKind: String(run.errorKind || existingRun?.errorKind || '') || undefined,
     };
 
-    if (terminal && durableAssistantIds.has(durableId)) {
+    if (terminal && durableRunIds.has(runId)) {
       delete state.messages[messageId];
       continue;
     }

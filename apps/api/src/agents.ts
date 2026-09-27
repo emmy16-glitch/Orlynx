@@ -4,7 +4,7 @@ import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfil
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
-import { getAgentAdapter, openCodeRuntime, type AgentRuntimeAdapter, type RuntimeMessage } from './agent-runtime.js';
+import { getAgentAdapter, openCodeRuntime, type AgentAdapter, type RuntimeMessage } from './agent-runtime.js';
 import { buildAskFirstInstruction, canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
@@ -12,6 +12,7 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 
 export type Engine = AgentAdapterId;
@@ -136,7 +137,7 @@ async function executeDirectTask(
   task: TaskRecord,
   run: AgentRun,
   modelId: string,
-  adapter: AgentRuntimeAdapter,
+  adapter: AgentAdapter,
 ): Promise<void> {
   if (!session) return;
   executingDirectTasks.add(task.id);
@@ -199,7 +200,7 @@ async function executeDirectTask(
     task.partialText = responseText;
     task.updatedAt = now;
     await repository.putTask(task);
-    await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, createdAt: now });
+    await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, runId: run.id, createdAt: now });
 
     run.state = 'completed';
     run.activity = 'Ready';
@@ -639,7 +640,7 @@ export async function startRun(sessionId: string, project: string, userText: str
   return run;
 }
 
-async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentRuntimeAdapter, previousAssistantId?: string): Promise<void> {
+async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentAdapter, previousAssistantId?: string): Promise<void> {
   const active = activeAgentSessions.get(run.id);
   if (!active) return;
   const deadline = Date.now() + timeoutMs;
@@ -673,7 +674,7 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
     if (Date.now() >= deadline) throw new Error(`${adapter.displayName} task timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
     if (!assistant) throw new Error(`${adapter.displayName} finished without returning an assistant response.`);
     const responseText = assistant.parts.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('');
-    (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, createdAt: new Date().toISOString() });
+    (store.db.messages[sessionId] ||= []).push({ id: `msg_${run.id}`, sessionId, role: 'assistant', text: responseText, runId: run.id, createdAt: new Date().toISOString() });
     if (durableStorageConfigured()) await controlPlaneRepository().putMessage(store.db.messages[sessionId][store.db.messages[sessionId].length - 1]);
     emit(sessionId, 'message.end', {}, run.id);
     await captureDiff(sessionId, project, run.id, engineSessionId, adapter);
@@ -699,25 +700,58 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
   }
 }
 
+function toolSemanticType(toolName: string, command: string, filePath: string): string {
+  const text = `${toolName} ${command}`.toLowerCase();
+  if (/vitest|jest|pytest|mocha|playwright|(^|\s)test(\s|$)|npm test|pnpm test|yarn test/.test(text)) return 'test-result';
+  if (/build|compile|tsc|webpack|vite build|next build/.test(text)) return 'build-result';
+  if (/git\b|commit|checkout|branch|merge|rebase|push|pull/.test(text)) return 'git';
+  if (filePath && /read|cat|view|inspect|open|grep|search/.test(text)) return 'file-read';
+  if (filePath && /write|edit|patch|apply|create|delete|remove|replace/.test(text)) return 'file-change';
+  if (/vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|serve|preview/.test(text)) return 'preview';
+  if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
+  return 'generic';
+}
+
 function collectToolEvents(sessionId: string, runId: string, message: RuntimeMessage, toolStates: Map<string, string>) {
   for (const part of message.parts) {
     if (part.type !== 'tool') continue;
-    const toolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
+    const rawToolId = String(part.callID || part.id || `${message.info.id}:${part.tool}`);
+    const toolId = scopeToolCallId(runId, rawToolId);
     const state = String(part.state?.status || 'running');
+    const input = part.state?.input && typeof part.state.input === 'object'
+      ? part.state.input as Record<string, unknown>
+      : part.input && typeof part.input === 'object'
+        ? part.input as Record<string, unknown>
+        : {};
+    const tool = String(part.tool || 'OpenCode action');
+    const command = typeof (input.command ?? input.cmd ?? input.script ?? input.shell) === 'string'
+      ? String(input.command ?? input.cmd ?? input.script ?? input.shell)
+      : '';
+    const filePath = typeof (input.filePath ?? input.path ?? input.file ?? input.filename) === 'string'
+      ? String(input.filePath ?? input.path ?? input.file ?? input.filename)
+      : '';
+    const semanticType = toolSemanticType(tool, command, filePath);
+    const metadata = {
+      tool,
+      toolCallId: toolId,
+      semanticType,
+      ...(command ? { command } : {}),
+      ...(filePath ? { path: filePath } : {}),
+    };
     const prior = toolStates.get(toolId);
-    if (!prior) emit(sessionId, 'tool.started', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId }, runId);
+    if (!prior) emit(sessionId, 'tool.started', metadata, runId);
     if (state === 'completed' && prior !== 'completed') {
-      emit(sessionId, 'tool.completed', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId, out: String(part.state?.output || '') }, runId);
+      emit(sessionId, 'tool.completed', { ...metadata, out: String(part.state?.output || '') }, runId);
     } else if (state === 'error' && prior !== 'error') {
-      emit(sessionId, 'tool.failed', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId, error: String(part.state?.error || 'Action failed.'), out: String(part.state?.output || '') }, runId);
+      emit(sessionId, 'tool.failed', { ...metadata, error: String(part.state?.error || 'Action failed.'), out: String(part.state?.output || '') }, runId);
     } else if (state === 'running' && prior !== 'running') {
-      emit(sessionId, 'tool.output', { tool: String(part.tool || 'OpenCode action'), toolCallId: toolId }, runId);
+      emit(sessionId, 'tool.output', metadata, runId);
     }
     toolStates.set(toolId, state);
   }
 }
 
-async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentRuntimeAdapter = openCodeRuntime) {
+async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentAdapter = openCodeRuntime) {
   const raw = await adapter.diff(project, engineSessionId);
   const files: ChangedFile[] = raw.flatMap((item) => {
     const file = String(item.file || item.path || '');

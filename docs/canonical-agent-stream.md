@@ -8,12 +8,20 @@ directly.
 ```text
 RawProviderEvent
       ↓  AgentAdapter (server boundary)
-CanonicalAgentEvent (protocol v1)
-      ↓  Session/EventStore (durable, sequenced, idempotent)
+OrlynxEvent / EventType (canonical protocol v1)
+      ↓
+Session/EventStore (durable, sequenced, idempotent)
+      ↓
 SSE / snapshot replay
-      ↓  ThreadProjection (turns owned by run IDs)
+      ↓
+StreamProjectionEvent (browser-private reducer action)
+      ↓
+ThreadProjection (turns owned by run IDs)
+      ↓
 Typed message parts
-      ↓  Part renderer registry
+      ↓
+Part renderer registry
+      ↓
 Conversation UI
 ```
 
@@ -36,10 +44,11 @@ this repository. See "Design influences" at the end.
   (`permission.request/resolved`, `approval.required/resolved`), workspace
   (`workspace.*`), state (`state.snapshot/delta`), product
   (`changes.updated/receipt.created`) and `extension.event`.
-- `AgentAdapterHandle`: the provider boundary every agent implements —
-  `startSession/sendPrompt/cancelRun/resumeRun/handlePermission/capabilities`.
-  OpenCode implements it; a future ACP-compatible agent implements the same
-  surface without touching chat UI, session core or transport.
+- `AgentAdapterCapabilities` in shared describes portable capabilities.
+- The single production provider contract is `AgentAdapter` in
+  `apps/api/src/agent-runtime.ts`. OpenCode implements that contract today;
+  a future ACP-compatible adapter can implement the same operational surface
+  without changing thread rendering or the durable protocol.
 
 `apps/api/src/agent-protocol.ts` is the server-side adapter:
 
@@ -79,10 +88,11 @@ persist under their own canonical type.
 
 `apps/web/src/agent-stream/`:
 
-- `adapter.ts` — compatibility boundary for pre-v1 durable history. New
-  server emissions already arrive canonical, so this layer only translates
-  legacy envelopes (including `pty.output` → tool update, `permission.*` →
-  approval, `preview.*` → preview state, unknown → extension/debug).
+- `adapter.ts` — the browser projection boundary. It maps the single shared
+  canonical `OrlynxEvent` vocabulary into private reducer actions and also
+  carries compatibility for pre-v1 durable history. New server events already
+  contain semantic identities/types; provider inference belongs at the server
+  adapter/bridge boundary, not in React.
 - `store.ts` — deterministic reducer. One logical tool owns one lifecycle
   (`TOOL_START → TOOL_UPDATE* → TOOL_END`) mutating in place; workspace
   startup/recovery owns one activity; infrastructure heartbeats stay

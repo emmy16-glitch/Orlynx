@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeBridgeEvent, scopeToolCallId, PROTOCOL_VERSION } from '../src/agent-protocol.ts';
+import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId, PROTOCOL_VERSION } from '../src/agent-protocol.ts';
 
 test('protocol version is declared and versioned', () => {
   assert.equal(PROTOCOL_VERSION, 1);
@@ -42,4 +42,17 @@ test('heartbeats are telemetry and never become transcript rows', () => {
 test('tool-call ids are scoped per run', () => {
   assert.notEqual(scopeToolCallId('run-a', '1'), scopeToolCallId('run-b', '1'));
   assert.equal(scopeToolCallId('run-a', '1'), 'run-a:1');
+});
+
+
+test('bridge event identity is deterministic across replay and respects provider event ids', () => {
+  const payloadA = { delta: 'hello', offset: 0, messagePartId: 'text-1' };
+  const first = bridgeEventKey('session-a', 'run-a', 'message.delta', payloadA);
+  const replay = bridgeEventKey('session-a', 'run-a', 'message.delta', { messagePartId: 'text-1', offset: 0, delta: 'hello' });
+  assert.equal(first, replay);
+  assert.notEqual(first, bridgeEventKey('session-a', 'run-a', 'message.delta', { ...payloadA, offset: 5 }));
+  assert.equal(
+    bridgeEventKey('session-a', 'run-a', 'tool.output', { outDelta: 'x' }, 'provider-event-42'),
+    'bridge:session-a:source:provider-event-42',
+  );
 });
