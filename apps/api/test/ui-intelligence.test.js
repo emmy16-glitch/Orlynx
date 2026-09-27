@@ -49,7 +49,8 @@ describe('event → presentation contract', () => {
     assert.doesNotMatch(mapping, /case 'tool\.started'/);
     assert.match(store, /case 'TOOL_START'/);
     assert.match(store, /case 'STATE_DELTA'/);
-    assert.match(view, /title: 'Updated files'/);
+    assert.match(store, /title: 'Updated files'/);
+    assert.match(view, /activity\.kind === 'changes'/);
   });
 });
 
