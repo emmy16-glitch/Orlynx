@@ -34,7 +34,7 @@ export function AgentWorkStream({ events, defaultDetailMode = 'code' }: { events
   const items = useMemo(() => toActivities(events), [events]);
   if (!items.length) return <div className="small" role="status">No agent activity yet.</div>;
   const currentIndex = items.reduce((current, item, index) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const visible = expanded ? items : items.slice(-100);
+  const visible = expanded ? items : items.slice(-500);
   const hidden = Math.max(0, items.length - visible.length);
   const last = items[items.length - 1];
   const announcement = last.state === 'failed' ? `${last.title}${last.summary ? `. ${last.summary}` : ''}`
