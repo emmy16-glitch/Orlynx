@@ -6,7 +6,7 @@ import { durableHistory, emit, recentHistory, subscribe, subscribeEvents } from 
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
@@ -385,14 +385,23 @@ router.post('/sessions/:id/messages', async (req, res) => {
     plane = executionPlaneForSession(String(text), effectiveMode, workspace);
 
     if (plane === 'workspace') {
-      if (!workspace) {
-        const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
-        if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
+      // Existing saved sessions may still point at a legacy Codespace even
+      // after production switched to the warm runner. Adopt the preferred
+      // runner BEFORE runtime-refresh/reconnect logic mutates the old row into
+      // "connecting"; otherwise a stopped legacy Codespace can accidentally
+      // keep bypassing the fast architecture forever.
+      if (!workspace || workspaceShouldAdoptPreferredRunner(workspace)) {
+        let repositoryId = workspace?.repositoryId;
+        if (!repositoryId) {
+          const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
+          if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
+          repositoryId = githubRepo.id;
+        }
         workspace = await ensureWorkspaceRecord({
           sessionId: s.id,
           userId: durableSession.userId,
           projectId: durableSession.projectId,
-          repositoryId: githubRepo.id,
+          repositoryId,
           branch: s.branch,
         });
       }
