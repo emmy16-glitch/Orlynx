@@ -37,8 +37,11 @@ function filesOf(part: ThreadPart): { path: string; action?: string; diff?: stri
   });
 }
 
-function Shell({ part, label }: { part: ThreadPart; label: string }) {
-  const { open, toggle } = useDisclosure(false);
+type ApprovalDecision = 'allow_once' | 'deny';
+type ResolveApproval = (approvalId: string, decision: ApprovalDecision) => Promise<void>;
+
+function Shell({ part, label, onResolveApproval }: { part: ThreadPart; label: string; onResolveApproval?: ResolveApproval }) {
+  const { open, toggle } = useDisclosure(part.kind === 'approval' && part.item.state === 'waiting');
   const item = part.item;
   const active = item.state === 'running';
   const failed = item.state === 'failed';
@@ -70,14 +73,14 @@ function Shell({ part, label }: { part: ThreadPart; label: string }) {
       </button>
       {expandable && open && (
         <div id={evidenceId} className="ox-part-detail">
-          {childrenFor(part)}
+          {childrenFor(part, onResolveApproval)}
         </div>
       )}
     </div>
   );
 }
 
-function childrenFor(part: ThreadPart): React.ReactNode {
+function childrenFor(part: ThreadPart, onResolveApproval?: ResolveApproval): React.ReactNode {
   switch (part.kind) {
     case 'terminal':
       return <TerminalDetail part={part} />;
@@ -94,7 +97,7 @@ function childrenFor(part: ThreadPart): React.ReactNode {
     case 'preview':
       return <PreviewDetail part={part} />;
     case 'approval':
-      return <ApprovalDetail part={part} />;
+      return <ApprovalDetail part={part} onResolveApproval={onResolveApproval} />;
     case 'error':
     case 'status':
     case 'generic':
@@ -227,11 +230,42 @@ function PreviewDetail({ part }: { part: ThreadPart }) {
   );
 }
 
-function ApprovalDetail({ part }: { part: ThreadPart }) {
+function ApprovalDetail({ part, onResolveApproval }: { part: ThreadPart; onResolveApproval?: ResolveApproval }) {
+  const evidence = asRecord(part.item.evidence);
+  const approvalId = str(evidence.approvalId);
+  const action = str(evidence.action);
+  const [busy, setBusy] = React.useState<ApprovalDecision | null>(null);
+  const [error, setError] = React.useState('');
+
+  const resolve = async (decision: ApprovalDecision) => {
+    if (!approvalId || !onResolveApproval || busy) return;
+    setBusy(decision);
+    setError('');
+    try {
+      await onResolveApproval(approvalId, decision);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Approval could not be resolved.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
-    <div>
+    <div className="ox-approval-detail">
       {part.item.summary && <div className="small">{part.item.summary}</div>}
-      <div className="small">Approve from the run controls when prompted. Only actions supported by backend permission semantics are offered.</div>
+      {action && <div className="ox-code-path"><span className="ox-code-label">Action</span><code>{action}</code></div>}
+      {part.item.state === 'waiting' && approvalId && onResolveApproval && (
+        <div className="ox-approval-actions" role="group" aria-label="Approval actions">
+          <button type="button" className="pri" disabled={Boolean(busy)} onClick={() => void resolve('allow_once')}>
+            {busy === 'allow_once' ? 'Approving…' : 'Allow once'}
+          </button>
+          <button type="button" className="gho" disabled={Boolean(busy)} onClick={() => void resolve('deny')}>
+            {busy === 'deny' ? 'Denying…' : 'Deny'}
+          </button>
+        </div>
+      )}
+      {part.item.state === 'waiting' && !approvalId && <div className="small">This permission request cannot be acted on from chat because it came from legacy history.</div>}
+      {error && <div className="small ox-inline-error" role="alert">{error}</div>}
     </div>
   );
 }
@@ -265,21 +299,21 @@ const KIND_LABEL: Record<ThreadPart['kind'], string> = {
 };
 
 /** Renderer registry: typed part -> purpose-built row. Generic is fallback only. */
-export const partRenderers: Record<ThreadPart['kind'], (part: ThreadPart) => React.ReactNode> = {
-  terminal: (part) => <Shell part={part} label={KIND_LABEL.terminal} />,
-  'file-change': (part) => <Shell part={part} label={KIND_LABEL['file-change']} />,
-  'file-read': (part) => <Shell part={part} label={KIND_LABEL['file-read']} />,
-  'test-result': (part) => <Shell part={part} label={KIND_LABEL['test-result']} />,
-  'build-result': (part) => <Shell part={part} label={KIND_LABEL['build-result']} />,
-  git: (part) => <Shell part={part} label={KIND_LABEL.git} />,
-  preview: (part) => <Shell part={part} label={KIND_LABEL.preview} />,
-  approval: (part) => <Shell part={part} label={KIND_LABEL.approval} />,
-  error: (part) => <Shell part={part} label={KIND_LABEL.error} />,
-  status: (part) => <Shell part={part} label={KIND_LABEL.status} />,
-  generic: (part) => <Shell part={part} label={KIND_LABEL.generic} />,
+export const partRenderers: Record<ThreadPart['kind'], (part: ThreadPart, onResolveApproval?: ResolveApproval) => React.ReactNode> = {
+  terminal: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.terminal} onResolveApproval={onResolveApproval} />,
+  'file-change': (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL['file-change']} onResolveApproval={onResolveApproval} />,
+  'file-read': (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL['file-read']} onResolveApproval={onResolveApproval} />,
+  'test-result': (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL['test-result']} onResolveApproval={onResolveApproval} />,
+  'build-result': (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL['build-result']} onResolveApproval={onResolveApproval} />,
+  git: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.git} onResolveApproval={onResolveApproval} />,
+  preview: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.preview} onResolveApproval={onResolveApproval} />,
+  approval: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.approval} onResolveApproval={onResolveApproval} />,
+  error: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.error} onResolveApproval={onResolveApproval} />,
+  status: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.status} onResolveApproval={onResolveApproval} />,
+  generic: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.generic} onResolveApproval={onResolveApproval} />,
 };
 
-export function PartRow({ part }: { part: ThreadPart }) {
+export function PartRow({ part, onResolveApproval }: { part: ThreadPart; onResolveApproval?: ResolveApproval }) {
   const render = partRenderers[part.kind] || partRenderers.generic;
-  return <>{render(part)}</>;
+  return <>{render(part, onResolveApproval)}</>;
 }
