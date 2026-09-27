@@ -37,7 +37,14 @@ function toolCallId(event: RawEvent): string {
 }
 
 function phaseId(event: RawEvent): string {
-  const source = str(event.payload?.sourceType) || 'agent';
+  const raw = str(event.payload?.sourceType).toLowerCase();
+  // Providers are free to emit many low-level status names. Collapse them into
+  // a few stable semantic phases so progress updates evolve one row instead of
+  // creating a telemetry transcript.
+  const source = raw === 'repository.map' ? 'repository'
+    : raw === 'opencode.retry' ? 'provider-retry'
+      : raw === 'pty.output' ? 'pty-output'
+        : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
 
