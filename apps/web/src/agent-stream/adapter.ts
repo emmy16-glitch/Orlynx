@@ -1,5 +1,5 @@
 import type { OrlynxEvent } from '@orlynx/shared';
-import type { CanonicalAgentEvent } from './protocol';
+import type { StreamProjectionEvent } from './protocol';
 
 type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
   type: string;
@@ -55,7 +55,7 @@ function workspaceId(event: RawEvent): string {
   return `workspace:${event.workspaceId || event.sessionId || 'session'}`;
 }
 
-export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
+export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
   const payload = event.payload || {};
   const common = base(event);
 
@@ -257,7 +257,7 @@ export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
   }
 }
 
-export function normalizeOrlynxEvents(events: RawEvent[]): CanonicalAgentEvent[] {
+export function normalizeOrlynxEvents(events: RawEvent[]): StreamProjectionEvent[] {
   const deduped = [...new Map(events.filter(Boolean).map((event) => [String(event.eventId || `${event.sequence}:${event.type}`), event])).values()]
     .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
   return deduped.flatMap(normalizeOrlynxEvent);
