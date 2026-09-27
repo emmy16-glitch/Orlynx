@@ -7,7 +7,7 @@ import {
   type AgentStreamRun,
   type AgentStreamState,
   type AgentStreamTool,
-  type CanonicalAgentEvent,
+  type StreamProjectionEvent,
 } from './protocol';
 
 const stamp = (value?: string) => {
@@ -66,7 +66,7 @@ function putActivity(state: AgentStreamState, item: AgentStreamActivity) {
   rememberOrder(state, 'activity', item.id, item.startedSequence);
 }
 
-function updateRun(state: AgentStreamState, event: CanonicalAgentEvent, patch: Partial<AgentStreamRun>) {
+function updateRun(state: AgentStreamState, event: StreamProjectionEvent, patch: Partial<AgentStreamRun>) {
   if (!event.runId) return;
   const prior = state.runs[event.runId];
   const messageId = patch.messageId || prior?.messageId || `assistant:${event.runId}`;
@@ -90,7 +90,7 @@ function resolveRunActivities(state: AgentStreamState, runId: string, lifecycle:
   }
 }
 
-function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
+function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
   if (state.seenEventIds.has(event.eventId)) return;
   state.seenEventIds.add(event.eventId);
   state.lastSequence = Math.max(state.lastSequence, event.sequence || 0);
@@ -540,7 +540,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
   }
 }
 
-export function applyCanonicalAgentEvents(current: AgentStreamState, events: CanonicalAgentEvent[]): AgentStreamState {
+export function applyStreamProjectionEvents(current: AgentStreamState, events: StreamProjectionEvent[]): AgentStreamState {
   if (!events.length) return current;
   const state = clone(current);
   for (const event of events.sort((a, b) => a.sequence - b.sequence)) applyOne(state, event);
@@ -551,7 +551,7 @@ export function applyCanonicalAgentEvents(current: AgentStreamState, events: Can
 export function applyRawAgentEvents(current: AgentStreamState, events: any[]): AgentStreamState {
   const unseen = events.filter((event) => event?.eventId && !current.seenEventIds.has(String(event.eventId)));
   if (!unseen.length) return current;
-  return applyCanonicalAgentEvents(current, normalizeOrlynxEvents(unseen));
+  return applyStreamProjectionEvents(current, normalizeOrlynxEvents(unseen));
 }
 
 export function reconcileAgentStream(
