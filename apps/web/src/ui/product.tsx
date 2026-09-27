@@ -197,7 +197,7 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
   const codePreview = typeof evidence?.code === 'string' ? evidence.code : '';
   const hasEvidence = Boolean(evidence && Object.keys(evidence).length);
   const detailsVisible = detailMode === 'code' || showEvidence;
-  const technical = Boolean(command || path || codePreview || files.length || failures.length || rawOutput || typeof evidence?.exitCode === 'number');
+  const expandable = detailMode === 'summary' && Boolean(hasEvidence || rawOutput);
 
   const details = detailsVisible && (hasEvidence || rawOutput) ? <div id={`ox-evidence-${item.id}`} className={`ox-evidence ${detailMode === 'code' ? 'ox-evidence-code' : ''}`}>
     {toolTitle && detailMode === 'code' && toolTitle !== title && <div className="ox-code-caption">{toolTitle}</div>}
@@ -228,9 +228,20 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
     <div className="ox-activity" data-state={uiState} data-current={isCurrent ? 'true' : undefined}>
       <span className="mark" aria-hidden>{uiState === 'done' ? <Icon name="check" /> : uiState === 'fail' ? <Icon name="x" /> : uiState === 'active' && isCurrent ? <Icon name="dot" /> : <Icon name="ring" />}</span>
       <div className="ox-activity-content">
-        <div className="ox-activity-title"><span>{title}</span>{timeLabel && <time className="ox-activity-time">{timeLabel}</time>}{isCurrent && <span className="ox-current-label">Current</span>}</div>
+        <div className="ox-activity-title">
+          <span className="ox-activity-title-text">{title}</span>
+          {isCurrent && <span className="ox-current-label">Current</span>}
+          {timeLabel && <time className="ox-activity-time">{timeLabel}</time>}
+          {expandable && <button
+            type="button"
+            className="ox-activity-disclosure"
+            aria-expanded={showEvidence}
+            aria-controls={`ox-evidence-${item.id}`}
+            aria-label={showEvidence ? `Hide details for ${title}` : `View details for ${title}`}
+            onClick={() => setShowEvidence((value) => !value)}
+          ><Icon name="chevron" size={14} /></button>}
+        </div>
         {summary && <div className="small">{summary}</div>}
-        {detailMode === 'summary' && (hasEvidence || rawOutput) && <Button type="button" tone="ghost" className="ox-detail-toggle" aria-expanded={showEvidence} aria-controls={`ox-evidence-${item.id}`} onClick={() => setShowEvidence((value) => !value)}>{showEvidence ? 'Hide details' : isCurrent && (item.state === 'running' || item.state === 'waiting') && rawOutput ? 'View output ›' : category === 'file' ? 'View files' : category === 'test' ? 'View results' : category === 'approval' ? 'Review request' : technical ? 'View code & details' : 'View details'}</Button>}
         {details}
       </div>
     </div>
