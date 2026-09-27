@@ -762,7 +762,6 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     const denied = { ...approval, state: 'denied', resolvedAt: now };
     await repository.putApproval(denied);
     emit(session.id, 'approval.resolved', { approvalId: approval.id, action: approval.action, decision: 'deny', detail: 'Permission denied.' });
-    emit(session.id, 'permission.resolved', { approvalId: approval.id, action: approval.action, decision: 'deny' });
     await recordAudit(req, session.id, 'approval.resolve', 'denied', { approvalId: approval.id, action: approval.action });
     return res.json({ approval: denied });
   }
@@ -784,7 +783,6 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
     await repository.putApproval(approvedRecord);
     emit(session.id, 'approval.resolved', { approvalId: approval.id, action: approval.action, decision: 'allow_once', detail: 'Approved once.' });
-    emit(session.id, 'permission.resolved', { approvalId: approval.id, action: approval.action, decision: 'allow_once' });
     emit(session.id, 'receipt.created', { approvalId: approval.id, cmd: command, ...result });
     await recordAudit(req, session.id, 'approval.resolve', 'approved_once', { approvalId: approval.id, action: approval.action });
     return res.json({ approval: approvedRecord, result });
