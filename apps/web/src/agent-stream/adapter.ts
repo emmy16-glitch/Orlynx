@@ -1,4 +1,4 @@
-import type { OrlynxEvent } from '@orlynx/shared';
+import type { AgentPartKind, OrlynxEvent } from '@orlynx/shared';
 import type { StreamProjectionEvent } from './protocol';
 
 type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
@@ -8,6 +8,37 @@ type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
 
 const str = (value: unknown) => typeof value === 'string' ? value : '';
 const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const PART_KINDS = new Set<AgentPartKind>(['terminal','file-change','file-read','test-result','build-result','git','preview','approval','error','status','generic']);
+function semanticType(payload: Record<string, unknown>, fallback?: AgentPartKind): AgentPartKind | undefined {
+  const value = str(payload.semanticType) as AgentPartKind;
+  return PART_KINDS.has(value) ? value : fallback;
+}
+function workspaceState(payload: Record<string, unknown>): 'preparing' | 'reconnecting' | 'ready' | 'stopped' | 'failed' {
+  const value = str(payload.state).toLowerCase();
+  if (value === 'ready') return 'ready';
+  if (value === 'failed') return 'failed';
+  if (value === 'stopped' || value === 'stopping') return 'stopped';
+  if (value === 'reconnecting' || value === 'connecting') return 'reconnecting';
+  return 'preparing';
+}
+function singularFile(payload: Record<string, unknown>): unknown[] {
+  if (Array.isArray(payload.files)) return payload.files;
+  const path = str(payload.path || payload.filePath || payload.file);
+  if (!path) return [];
+  return [{
+    path,
+    action: str(payload.action || payload.status) || 'modify',
+    ...(typeof payload.diff === 'string' ? { diff: payload.diff } : {}),
+    ...(typeof payload.before === 'string' ? { before: payload.before } : {}),
+    ...(typeof payload.after === 'string' ? { after: payload.after } : {}),
+  }];
+}
+function subagentId(event: RawEvent): string {
+  const payload = event.payload || {};
+  const raw = str(payload.subagentId || payload.id || payload.agentId || payload.parentToolCallId || payload.title) || 'default';
+  return `${event.runId || event.sessionId || 'session'}:subagent:${raw}`;
+}
 
 function base(event: RawEvent) {
   return {
@@ -152,6 +183,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
         semanticType: semanticType(payload, 'terminal'),
+        semanticType: 'terminal',
         ok: (num(payload.exitCode ?? payload.code) ?? 0) === 0,
         output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
         exitCode: num(payload.exitCode ?? payload.code),
@@ -244,6 +276,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'TOOL_END',
         toolCallId: toolCallId(event),
         semanticType: semanticType(payload),
+        semanticType: semanticType(payload),
         ok: event.type === 'tool.completed',
         error: str(payload.error || payload.message) || undefined,
         output: [str(payload.out), str(payload.stderr)].filter(Boolean).join('\n') || undefined,
@@ -278,8 +311,8 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         type: 'CHANGES_UPDATED',
         activityId: `changes:${event.runId || str(payload.changeId) || event.sessionId || event.sequence}`,
         changeId: str(payload.changeId) || undefined,
-        files: Array.isArray(payload.files) ? payload.files : [],
-        count: num(payload.count),
+        files: singularFile(payload),
+        count: num(payload.count) ?? singularFile(payload).length,
       }];
     case 'receipt.created':
       return [{
