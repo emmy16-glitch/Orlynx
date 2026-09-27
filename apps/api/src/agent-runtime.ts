@@ -1,4 +1,4 @@
-import type { AgentAdapterId, AgentMode, ProjectSession } from '@orlynx/shared';
+import type { AgentAdapterId, AgentMode, EventType, ProjectSession } from '@orlynx/shared';
 import {
   abortOpenCodeSession,
   getOrCreateOpenCodeSession,
@@ -51,6 +51,7 @@ export interface AgentDirectChatInput {
   mode: AgentMode;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
+  onActivity?: (type: EventType, payload: Record<string, unknown>) => void;
 }
 
 export interface AgentWorkspacePayloadInput {

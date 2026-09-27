@@ -3,8 +3,7 @@ import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
-import { ActivityDetailToggle, useActivityDetailMode } from './ui/workstream';
-import { toActivities, chatActivities } from './ui/mapping';
+import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -71,6 +70,7 @@ export default function ProductionApp() {
   const [tab, setTab] = useState<Tab>('chat');
   const [session, setSession] = useState<any>(null);
   const [lastRun, setLastRun] = useState<any>(null);
+  const [runs, setRuns] = useState<any[]>([]);
   const [integration, setIntegration] = useState<any>({ github: {}, githubAvailable: true, ai: { available: false }, workspace: { terminalAvailable: false, cloudAvailable: false, previewAvailable: false } });
   const [repos, setRepos] = useState<Repo[]>([]);
   const [repoQuery, setRepoQuery] = useState('');
@@ -239,17 +239,19 @@ export default function ProductionApp() {
       // Ignore a response for a conversation the user has already left.
       if (currentSessionRef.current?.id && currentSessionRef.current.id !== id) return;
 
-      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData);
+      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData); setRuns(runData);
       const latestRun = runData.slice(-1)[0] || null;
       setLastRun(latestRun); runRef.current = latestRun;
 
-      if (['running', 'failed', 'cancelled'].includes(latestRun?.state) && latestRun?.partialText) {
-        const snapshot = String(latestRun.partialText);
-        const snapshotUpdatedAt = Date.parse(latestRun.partialUpdatedAt || '') || 0;
+      const streamingRun = [...runData].reverse().find((candidate: any) => candidate.state === 'running' && candidate.partialText);
+      if (streamingRun?.partialText) {
+        const snapshot = String(streamingRun.partialText);
+        const snapshotUpdatedAt = Date.parse(streamingRun.partialUpdatedAt || '') || 0;
         const cutoff = partialCutoffRef.current;
 
         // SSE is the hot path. A slower HTTP refresh must never replace newer
-        // streamed text with an older partial snapshot.
+        // streamed text with an older partial snapshot. A newly queued follow-up
+        // must not erase the response that is still streaming ahead of it.
         setDraftReply((current) => {
           if (snapshotUpdatedAt < cutoff && current) return current;
           if (current && current.startsWith(snapshot)) return current;
@@ -257,7 +259,7 @@ export default function ProductionApp() {
           return snapshotUpdatedAt >= cutoff ? snapshot : current;
         });
         partialCutoffRef.current = Math.max(cutoff, snapshotUpdatedAt);
-      } else if (latestRun?.state !== 'running') {
+      } else if (!runData.some((candidate: any) => candidate.state === 'running')) {
         setDraftReply('');
         partialCutoffRef.current = 0;
       }
@@ -282,7 +284,7 @@ export default function ProductionApp() {
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
-      setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-300));
+      setEvents((previous) => [...previous, ...batch].sort((a, b) => a.sequence - b.sequence).slice(-500));
 
       // Preserve event order. A run.started and its first message.delta can
       // arrive in the same animation frame; clearing the draft after appending
@@ -294,6 +296,7 @@ export default function ProductionApp() {
       for (const item of batch) {
         if (item.type === 'run.started') {
           replaceDraft = true;
+          setError('');
           deltas.length = 0;
           partialCutoffRef.current = 0;
           setLastRun({ id: item.runId, state: 'running', plane: item.payload?.plane, model: item.payload?.model, engine: item.payload?.engine || item.payload?.adapterId || 'opencode', startedAt: item.timestamp });
@@ -325,13 +328,15 @@ export default function ProductionApp() {
         if (item.type === 'workspace.preparing' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
         if (item.type === 'workspace.ready') {
           setWorkspaceReadNotice('');
+          setError('');
           setCloudIssue(null);
         }
         if (item.type === 'workspace.reconnecting' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
         if (!nearBottomRef.current) setNewActivity(true);
       }
 
-      if (replaceDraft) setDraftReply(deltas.join(''));
+      if (replaceDraft && !deltas.length) setDraftReply('');
+      else if (replaceDraft) setDraftReply(deltas.join(''));
       else if (deltas.length) setDraftReply((previous) => previous + deltas.join(''));
       if (newestDeltaAt > partialCutoffRef.current) partialCutoffRef.current = newestDeltaAt;
       if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
@@ -377,7 +382,7 @@ export default function ProductionApp() {
     setRecentProjects((previous) => { const next = [record.project, ...previous.filter((item) => item !== record.project)].filter((name) => name.includes('/')).slice(0, 8); try { localStorage.setItem(RECENTS, JSON.stringify(next)); } catch {} return next; });
     await refreshSession(record.id);
     try {
-      const history = await j<any[]>(await fetch(`/v1/sessions/${record.id}/activity?limit=300`));
+      const history = await j<any[]>(await fetch(`/v1/sessions/${record.id}/activity?limit=500`));
       const ordered = [...history].filter((item) => item?.eventId).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
       setEvents(ordered);
       seenRef.current = new Set(ordered.map((item) => item.eventId));
@@ -821,7 +826,9 @@ export default function ProductionApp() {
     const text = composer.trim(); const clientId = uid();
     try {
       const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: ai.mode === 'build' && tempFullAccess }) }));
-      setComposer(''); setDraftReply(''); setTempFullAccess(false); try { localStorage.removeItem(draftKey(session.id)); } catch {}
+      const preserveStreamingReply = runs.some((candidate: any) => candidate.state === 'running');
+      setComposer(''); if (!preserveStreamingReply) setDraftReply(''); setTempFullAccess(false); try { localStorage.removeItem(draftKey(session.id)); } catch {}
+      setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
       setLastRun(result.run); runRef.current = result.run;
       if (result.plane === 'direct') setWorkspaceReadNotice('');
       await refreshSession(session.id);
@@ -975,16 +982,10 @@ export default function ProductionApp() {
   const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
   const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
   const activities = useMemo(() => toActivities(events), [events]);
-  const currentChatActivities = useMemo(() => {
-    if (!lastRun?.id) return [];
-    const current = chatActivities(activities).filter((item: any) => item.runId === lastRun.id);
-    if (lastRun.plane === 'direct') {
-      if (draftReply || lastRun.state === 'completed') return [];
-      return current.filter((item: any) => item.state === 'running' || item.state === 'waiting' || item.state === 'queued');
-    }
-    return current;
-  }, [activities, draftReply, lastRun?.id, lastRun?.plane, lastRun?.state]);
-  const running = lastRun?.state === 'running' || activities.some((event) => event.state === 'running');
+  const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
+  const conversationTimeline = useMemo(() => buildConversationTimeline(messages, transcriptActivities), [messages, transcriptActivities]);
+  const currentActivityId = [...transcriptActivities].reverse().find((item: any) => item.state === 'running' || item.state === 'waiting')?.id;
+  const running = runs.some((candidate: any) => candidate.state === 'running') || transcriptActivities.some((event: any) => event.state === 'running');
   const globalNav = [
     ['home', 'Home', 'home'], ['projects', 'Projects', 'folder'], ['settings', 'Settings', 'settings'],
   ] as const;
@@ -1036,12 +1037,12 @@ export default function ProductionApp() {
           <nav className="project-tabs" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => { setTab(id); setOpenedFile(null); }}><Icon name={icon} size={16} /><span>{label}</span></button>)}</nav>
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
-          {workspaceReadNotice && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
-          {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
+          {workspaceReadNotice && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert tone-neutral" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
+          {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert tone-danger" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
-                {workspacePreparing && (cloudBusy || lastRun?.plane === 'workspace') && <div className="screen-alert" role="status"><span><b>Development environment</b> {workspaceReadNotice || (lastRun?.state === 'queued' ? 'This task needs runtime tools. Your message is saved and will start automatically.' : 'Starting only for the work that needs it…')}</span></div>}
+                {workspacePreparing && workspaceStalled && <div className="screen-alert tone-warning" role="status"><span><b>Development environment is taking longer than expected.</b> The task remains queued and will continue automatically.</span></div>}
                 {cloudIssue === 'permissions' && (cloudBusy || lastRun?.plane === 'workspace') && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
                 {cloudIssue === 'failed' && session.workspace?.state === 'failed' && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace couldn't start." hint={session.workspace?.failureCode?.startsWith('OpenCode') ? session.workspace.failureCode : "Your conversation is preserved. You can retry without reopening the project."} onRetry={() => startCloud()} />}
                 {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
@@ -1058,37 +1059,38 @@ export default function ProductionApp() {
                     <Button tone="ghost" onClick={() => setTab('files')}><Icon name="folder" />Browse files</Button>
                   </div>
                 </div></div>}
-                {messages.map((message, index) => {
-                  const priorUserPrompt = message.role === 'assistant' && messages[index - 1]?.role === 'user' ? String(messages[index - 1].text || '') : '';
-                  return <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={message.id}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text, priorUserPrompt)}</div></div></article>;
+                {conversationTimeline.map((entry) => {
+                  if (entry.kind === 'activity') {
+                    const item = entry.activity;
+                    return <div className={`transcript-activity-row category-${item.category}`} key={entry.key}>
+                      <span className="transcript-activity-avatar" aria-hidden><Icon name="agents" size={14} /></span>
+                      <div className="transcript-activity-shell">
+                        <div className="transcript-event-heading">
+                          <span className="transcript-event-kind">{activityTranscriptLabel(item)}</span>
+                          {item.timestamp && <time>{new Date(item.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>}
+                        </div>
+                        <TaskActivityRow item={item} detailMode="code" isCurrent={item.id === currentActivityId} />
+                      </div>
+                    </div>;
+                  }
+                  const message = entry.message;
+                  const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
+                  const priorUserPrompt = message.role === 'assistant' && messageIndex > 0 && messages[messageIndex - 1]?.role === 'user'
+                    ? String(messages[messageIndex - 1].text || '') : '';
+                  return <article className={`message-row ${message.role === 'user' ? 'user-message' : 'assistant-message'}`} key={entry.key}><span className={message.role === 'user' ? 'user-avatar' : 'agent-avatar'}><Icon name={message.role === 'user' ? 'github' : 'agents'} size={16} /></span><div className="message-content"><div className="message-meta"><b>{message.role === 'user' ? 'You' : 'Orlynx AI'}</b><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{visibleChatText(message.role, message.text, priorUserPrompt)}</div></div></article>;
                 })}
-                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{lastRun?.state === 'running' ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{lastRun?.state === 'running' && <span className="stream-caret" />}</div></div></article>}
+                {draftReply && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b><span className="live-reply-indicator">{running ? 'Responding…' : 'Partial response'}</span></div><div className="message-text">{visibleChatText('assistant', draftReply, [...messages].reverse().find((message) => message.role === 'user')?.text || '')}{running && <span className="stream-caret" />}</div></div></article>}
                 {!!attachments.length && <div className="chat-attachments">{attachments.map((item: any) => <AttachmentChip key={item.id} name={item.filename} state="agent" />)}</div>}
                 {uploads.map((item) => <div className="upload-state" key={item.id}><Icon name="file" />{item.name}<Badge tone={item.status === 'failed' ? 'fail' : 'ok'}>{item.status}</Badge></div>)}
-                {!!currentChatActivities.length && <div className="workstream-wrap"><ActivityList activities={currentChatActivities} agentMode={ai.mode} /></div>}
-                {lastRun?.state === 'queued' && <p className="run-receipt">{lastRun?.plane === 'workspace' ? 'Task saved · development environment starts automatically for this work.' : 'Queued · Orlynx will respond automatically.'}</p>}
-                {lastRun?.state === 'completed' && lastRun?.plane === 'workspace' && <p className="run-receipt">Development work completed.</p>}
                 {lastRun?.state === 'failed' && ai.model?.id && lastRun?.model === ai.model.id && (() => {
                   const failure = [...activities].reverse().find((item: any) => item.state === 'failed' && (!lastRun?.id || item.runId === lastRun.id));
                   const failureSummary = String(failure?.summary || '');
-                  const runtimeRecovered = selectedAgentAdapter?.state === 'ready'
-                    && /AI is not ready|OpenCode adapter is not ready|AI runtime unavailable|workspace connection interrupted/i.test(failureSummary);
-                  const staleFreeModelAuthFailure = Boolean(ai.model?.free)
-                    && /rejected the saved connection|credential.*rejected|HTTP 401|Invalid API key/i.test(failureSummary);
-                  if (runtimeRecovered || staleFreeModelAuthFailure) return null;
                   const modelProblem = lastRun?.errorKind === 'rate_limit' || lastRun?.errorKind === 'quota' || lastRun?.errorKind === 'model' || /model|rate limit|quota/i.test(failureSummary);
-                  return <AgentErrorCard
-                    title={failure?.title || (modelProblem ? 'This model could not respond.' : 'Orlynx needs attention.')}
-                    hint={failureSummary || 'Your conversation is preserved.'}
-                    onRetry={() => {
-                      if (modelProblem) {
-                        setShowConnectAI(true);
-                      } else {
-                        void refreshSession(session.id);
-                      }
-                    }}
-                    retryLabel={modelProblem ? 'Change model' : 'Refresh'}
-                  />;
+                  if (!modelProblem) return null;
+                  return <div className="transcript-recovery-actions" role="group" aria-label="Model recovery">
+                    <span>{failureSummary || 'The selected model needs attention.'}</span>
+                    <Button tone="ghost" onClick={() => setShowConnectAI(true)}>Change model</Button>
+                  </div>;
                 })()}
               </section>}
               {tab === 'files' && <section className="screen-section files-screen"><div className="screen-heading"><div><p className="eyebrow">REPOSITORY</p><h1>Files</h1><p className="screen-subtitle">Browse {session.project} on {session.branch}.</p></div><label className="search-field"><Icon name="search" /><input value={fileFilter} onChange={(event) => setFileFilter(event.target.value)} placeholder="Filter this folder" /></label></div>{openedFile ? <CodeViewer file={openedFile} onBack={() => setOpenedFile(null)} /> : <><div className="breadcrumbs"><button onClick={() => openFolder('')}>{session.project}</button>{folder.split('/').filter(Boolean).map((part, index, parts) => <React.Fragment key={`${part}-${index}`}><Icon name="chevron" size={12} /><button onClick={() => openFolder(parts.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="file-list">{fileBusy ? <div className="loading-screen"><Spinner /><p>Loading files…</p></div> : files.filter((item: any) => item.name.toLowerCase().includes(fileFilter.toLowerCase())).map((item: any) => <button className="file-row" key={item.name} onClick={() => item.dir ? openFolder([folder, item.name].filter(Boolean).join('/')) : openFile([folder, item.name].filter(Boolean).join('/'))}><span className="file-kind"><Icon name={item.dir ? 'folder' : 'file'} /></span><span>{item.name}{item.dir ? '/' : ''}</span>{item.modified && <span className="modified-indicator">Modified</span>}<Icon name="chevron" size={14} /></button>)}</div></>}</section>}
@@ -1116,7 +1118,7 @@ export default function ProductionApp() {
                 </>}
               </section>}
               {tab === 'preview' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>Preview</h1><p className="screen-subtitle">Apps running in this workspace appear here.</p></div></div>{previewPorts.length ? <div className="project-grid">{previewPorts.map((item: any) => <a className="project-card" key={item.port} href={item.url} target="_blank" rel="noreferrer"><Icon name="preview" /><span><b>Open preview</b><small>Workspace port {item.port} · {item.visibility}</small></span><Icon name="external" /></a>)}</div> : <EmptyState title="No preview is running" hint="Start a development server in the terminal, then return here." />}</section>}
-              {(tab === 'terminal' || tab === 'more') && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>{tab === 'terminal' ? 'Terminal' : 'More'}</h1><p className="screen-subtitle">{tab === 'terminal' ? 'Run a command in this repository.' : 'Project tools and preferences.'}</p></div></div>{tab === 'more' ? <div className="more-grid"><button onClick={() => setTab('terminal')} disabled={!integration.workspace?.terminalAvailable}><Icon name="terminal" /><b>Terminal</b><span>{integration.workspace?.terminalAvailable ? 'Run a project command' : 'Unavailable for this workspace'}</span></button><button onClick={() => setTab('preview')} disabled={!integration.workspace?.previewAvailable}><Icon name="preview" /><b>Preview</b><span>{integration.workspace?.previewAvailable ? 'Open the running app' : 'No running app detected'}</span></button><button onClick={() => startCloud(session.workspace?.state === 'connecting')} disabled={!integration.workspace?.cloudAvailable || cloudBusy || session.workspace?.state === 'ready'}><Icon name="cloud" /><b>{session.workspace?.state === 'ready' ? 'Cloud ready' : cloudBusy ? 'Preparing workspace…' : session.workspace?.state === 'connecting' ? 'Reconnect workspace' : 'Work on cloud'}</b><span>{integration.workspace?.cloudAvailable ? session.workspace?.state === 'ready' ? 'GitHub Codespace connected' : 'Start or reconnect the cloud workspace' : 'Unavailable in this deployment'}</span></button><button onClick={() => setShowConnectAI(true)}><Icon name="agents" /><b>Orlynx AI</b><span>{ai?.state === 'ready' || ai?.state === 'working' ? 'Ready' : 'Unavailable'}</span></button><button onClick={() => setPage('projects')}><Icon name="github" /><b>Switch repository</b><span>Choose another project</span></button><button onClick={() => setPage('settings')}><Icon name="settings" /><b>Settings</b><span>Connections and appearance</span></button></div> : <Terminal command={command} setCommand={setCommand} output={terminalOutput} run={runTerminalCommand} connected={integration.workspace?.terminalAvailable} />}</section>}
+              {(tab === 'terminal' || tab === 'more') && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>{tab === 'terminal' ? 'Terminal' : 'More'}</h1><p className="screen-subtitle">{tab === 'terminal' ? 'Run a command in this repository.' : 'Project tools and preferences.'}</p></div></div>{tab === 'more' ? <div className="more-grid"><button onClick={() => setTab('terminal')} disabled={!integration.workspace?.terminalAvailable}><Icon name="terminal" /><b>Terminal</b><span>{integration.workspace?.terminalAvailable ? 'Run a project command' : 'Unavailable for this workspace'}</span></button><button onClick={() => setTab('preview')} disabled={!integration.workspace?.previewAvailable}><Icon name="preview" /><b>Preview</b><span>{integration.workspace?.previewAvailable ? 'Open the running app' : 'No running app detected'}</span></button><button onClick={() => startCloud(session.workspace?.state === 'connecting')} disabled={!integration.workspace?.cloudAvailable || cloudBusy || session.workspace?.state === 'ready'}><Icon name="cloud" /><b>{session.workspace?.state === 'ready' ? 'Cloud ready' : cloudBusy ? 'Preparing workspace…' : session.workspace?.state === 'connecting' ? 'Reconnect workspace' : 'Work on cloud'}</b><span>{integration.workspace?.cloudAvailable ? session.workspace?.state === 'ready' ? 'Development workspace connected' : 'Start or reconnect the cloud workspace' : 'Unavailable in this deployment'}</span></button><button onClick={() => setShowConnectAI(true)}><Icon name="agents" /><b>Orlynx AI</b><span>{ai?.state === 'ready' || ai?.state === 'working' ? 'Ready' : 'Unavailable'}</span></button><button onClick={() => setPage('projects')}><Icon name="github" /><b>Switch repository</b><span>Choose another project</span></button><button onClick={() => setPage('settings')}><Icon name="settings" /><b>Settings</b><span>Connections and appearance</span></button></div> : <Terminal command={command} setCommand={setCommand} output={terminalOutput} run={runTerminalCommand} connected={integration.workspace?.terminalAvailable} />}</section>}
             </main>
             <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
           </div>
@@ -1148,7 +1150,7 @@ export default function ProductionApp() {
     <div className="composer-options-panel">
       <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
         {[
-          ['build', 'Build', 'Uses the Codespace only when the request needs execution or file changes'],
+          ['build', 'Build', 'Uses the development workspace only when the request needs execution or file changes'],
           ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
           ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
         ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
@@ -1349,16 +1351,6 @@ function SetupScreen({ notice, clearNotice }: { notice: { tone: 'ok' | 'fail' | 
     {(!status || status.mode === 'unauthorized' || status.mode === 'unavailable') && status?.mode !== 'complete' && <form className="preview-form" onSubmit={(e) => { e.preventDefault(); load(token); }}><label>Setup token<input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ORLYNX_SETUP_TOKEN" autoComplete="off" /></label><Button disabled={busy || !token}>{busy ? 'Checking…' : 'Continue'}</Button></form>}
     {status?.mode === 'bootstrap' && <div className="card"><p>This creates the GitHub App <b>{status.appName}</b> for <b>{status.publicUrl}</b> with the permissions needed for repository changes, pull-request publishing, and Codespaces execution.</p><form method="post" action={`${status.manifestEndpoint}?state=${encodeURIComponent(status.state)}`}><input type="hidden" name="manifest" value={JSON.stringify(status.manifest)} /><Button>{busy ? 'Opening GitHub…' : 'Create GitHub App'}</Button></form><p className="settings-footnote">GitHub will ask you to confirm. After approval you return here automatically and Orlynx stores the credentials itself.</p></div>}
   </section>;
-}
-
-function ActivityList({ activities, agentMode }: { activities: any[]; agentMode?: string }) {
-  const [detailMode, setDetailMode] = useActivityDetailMode('code');
-  const currentIndex = activities.reduce((current: number, item: any, index: number) => item.state === 'running' || item.state === 'waiting' ? index : current, -1);
-  const visible = activities.slice(-500);
-  return <div className="card">
-    <div className="ox-workstream-toolbar"><span className="small">{agentMode === 'build' ? 'Build activity' : 'Activity'}</span><ActivityDetailToggle mode={detailMode} onChange={setDetailMode} /></div>
-    <div className="ox-stream">{visible.map((item: any) => <TaskActivityRow key={item.key} item={item} detailMode={detailMode} isCurrent={activities.indexOf(item) === currentIndex} />)}</div>
-  </div>;
 }
 
 function CodeViewer({ file, onBack }: { file: { path: string; content: string }; onBack: () => void }) {

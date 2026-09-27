@@ -125,6 +125,15 @@ test('deterministic chat turns bypass the model', () => {
   );
 });
 
+test('direct Ask/Plan repository reads publish observable file activity', () => {
+  const src = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(src, /onActivity\?\.\('tool\.started', \{ tool: 'read'/);
+  assert.match(src, /onActivity\?\.\('tool\.started', \{ tool: 'list'/);
+  assert.match(src, /sourceType: 'direct\.github'/);
+  assert.match(agents, /onActivity: \(type, payload\) => emit\(session\.id, type/);
+});
+
 test('direct history and repo context are intentionally bounded for free-model latency', () => {
   const src = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
   assert.match(src, /\.slice\(-8\)/);
