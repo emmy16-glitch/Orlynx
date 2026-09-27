@@ -68,6 +68,32 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
 }
 
 
+export function executionPlaneForSession(
+  text: string,
+  mode: AgentMode,
+  workspace?: { state?: string; bridgeState?: string } | null,
+): ExecutionPlane {
+  const base = executionPlaneFor(text, mode);
+  if (base === 'workspace' || !workspace) return base;
+
+  // Once a Build conversation has a workspace, keep non-instant follow-ups on
+  // the same OpenCode session. This preserves execution context and avoids
+  // bouncing repository questions to the separate direct-chat runtime.
+  if (mode === 'build') return 'workspace';
+
+  // Ask/Plan may reuse an already-ready workspace in their read-only modes so
+  // users get the same file/tool/event stream without starting cloud solely
+  // for a conversational turn.
+  if ((mode === 'ask' || mode === 'plan')
+    && workspace.state === 'ready'
+    && workspace.bridgeState === 'ready') {
+    return 'workspace';
+  }
+
+  return base;
+}
+
+
 export function needsRepositoryContext(text: string): boolean {
   return /\b(repository|repo|codebase|current\s+(?:repo|repository|project)|connected\s+to|this (?:project|app)|our (?:code|app)|readme|architecture|authentication flow|project structure|what (?:project|repo)|which (?:project|repo))\b|[\w/-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/i.test(text);
 }
