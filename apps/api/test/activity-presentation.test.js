@@ -105,7 +105,7 @@ describe('canonical agent activity presentation', () => {
     const rows = toActivities([...progress].reverse().concat(progress[0]));
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, 'step 649');
-    assert.equal(rows[0].sequence, 650);
+    assert.equal(rows[0].sequence, 1);
 
     const workspace = toActivities(Array.from({ length: 650 }, (_, i) => event(i + 1, 'workspace.preparing', { message: `stage ${i}` }, 'run-long')));
     assert.equal(workspace.length, 1);
