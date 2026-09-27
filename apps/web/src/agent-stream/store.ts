@@ -430,6 +430,37 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
             evidence: { adapterId, state: rawState },
           });
         }
+        return;
+      }
+
+      // Bridge/transport/runtime health is also state, not history. Surface only
+      // actionable failures and resolve the same item when connectivity returns.
+      const infraId = `infra-error:${event.scope}`;
+      const priorInfra = state.activities[infraId];
+      if (/ready|connected|online/.test(rawState) && priorInfra?.state === 'failed') {
+        state.activities[infraId] = {
+          ...priorInfra,
+          state: 'success',
+          title: 'Connection restored',
+          summary: undefined,
+          sequence: event.sequence,
+        };
+        return;
+      }
+      if (/fail|error|unavailable|disconnect|offline|interrupt|expired|denied/.test(`${rawState} ${reason}`.toLowerCase())) {
+        putActivity(state, {
+          id: infraId,
+          runId: event.runId,
+          taskId: event.taskId,
+          sequence: event.sequence,
+          startedSequence: priorInfra?.startedSequence || event.sequence,
+          timestamp: priorInfra?.timestamp || event.timestamp,
+          state: 'failed',
+          kind: 'error',
+          title: 'Connection issue',
+          summary: friendlyFailure(reason) || 'The workspace connection needs attention.',
+          evidence: { scope: event.scope, state: rawState },
+        });
       }
       return;
     }
