@@ -21,8 +21,11 @@ function base(event: RawEvent) {
   };
 }
 
-function messageId(event: RawEvent): string {
-  return str(event.payload?.messageId)
+function assistantMessageId(event: RawEvent): string {
+  // run.started payload.messageId is the originating USER message. Never reuse
+  // it as the assistant stream identity. The assistant stream is run-scoped
+  // unless a provider explicitly supplies an assistantMessageId.
+  return str(event.payload?.assistantMessageId)
     || (event.runId ? `assistant:${event.runId}` : `assistant:${event.sessionId || 'session'}:${event.sequence || 0}`);
 }
 
@@ -63,7 +66,7 @@ export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
       return [{
         ...common,
         type: 'RUN_STARTED',
-        messageId: messageId(event),
+        messageId: assistantMessageId(event),
         userMessageId: str(payload.messageId) || undefined,
         plane: str(payload.plane) || undefined,
         model: str(payload.model) || undefined,
@@ -83,13 +86,13 @@ export function normalizeOrlynxEvent(event: RawEvent): CanonicalAgentEvent[] {
       }];
 
     case 'message.start':
-      return [{ ...common, type: 'TEXT_START', messageId: messageId(event), role: 'assistant' }];
+      return [{ ...common, type: 'TEXT_START', messageId: assistantMessageId(event), role: 'assistant' }];
     case 'message.delta': {
       const delta = str(payload.delta);
-      return delta ? [{ ...common, type: 'TEXT_CONTENT', messageId: messageId(event), delta }] : [];
+      return delta ? [{ ...common, type: 'TEXT_CONTENT', messageId: assistantMessageId(event), delta }] : [];
     }
     case 'message.end':
-      return [{ ...common, type: 'TEXT_END', messageId: messageId(event) }];
+      return [{ ...common, type: 'TEXT_END', messageId: assistantMessageId(event) }];
 
     case 'tool.requested':
     case 'tool.started':
