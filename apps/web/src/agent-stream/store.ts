@@ -180,6 +180,13 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
       if (run?.messageId && state.messages[run.messageId]) {
         state.messages[run.messageId] = { ...state.messages[run.messageId], state: runState, endedAt: event.timestamp, lastSequence: Math.max(state.messages[run.messageId].lastSequence, event.sequence) };
       }
+      const failureTitle = event.cancelled ? 'Task stopped'
+        : event.errorKind === 'auth' ? 'Reconnect AI'
+          : event.errorKind === 'model' ? 'Model unavailable'
+            : event.errorKind === 'rate_limit' ? 'Model is busy'
+              : event.errorKind === 'quota' ? 'AI quota reached'
+                : event.errorKind === 'engine' ? 'AI runtime unavailable'
+                  : 'Work needs attention';
       putActivity(state, {
         id: `run-error:${event.runId}`,
         runId: event.runId,
@@ -189,7 +196,7 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
         timestamp: event.timestamp,
         state: event.cancelled ? 'cancelled' : 'failed',
         kind: 'error',
-        title: event.cancelled ? 'Task stopped' : 'Work needs attention',
+        title: failureTitle,
         summary: event.cancelled ? 'The task was stopped.' : friendlyFailure(event.error) || 'Orlynx could not complete the task.',
         evidence: { ...(event.errorKind ? { errorKind: event.errorKind } : {}), ...(event.retryable ? { retryable: true } : {}) },
       });
@@ -390,23 +397,39 @@ function applyOne(state: AgentStreamState, event: CanonicalAgentEvent) {
       state.state[event.scope] = { ...(state.state[event.scope] || {}), ...event.value };
       const reason = String(event.value.reason || event.value.error || event.value.message || '');
       const rawState = String(event.state || event.value.state || '').toLowerCase();
-      // Adapter ready/busy heartbeats are state, not transcript. Only a state
-      // that needs user attention gets a semantic activity.
-      if (event.scope === 'agent-adapter' && /failed|unavailable|error|auth|quota|rate/i.test(`${rawState} ${reason}`)) {
+      if (event.scope === 'agent-adapter') {
         const adapterId = String(event.value.adapterId || 'orlynx-ai');
-        putActivity(state, {
-          id: `adapter-error:${adapterId}`,
-          runId: event.runId,
-          taskId: event.taskId,
-          sequence: event.sequence,
-          startedSequence: state.activities[`adapter-error:${adapterId}`]?.startedSequence || event.sequence,
-          timestamp: state.activities[`adapter-error:${adapterId}`]?.timestamp || event.timestamp,
-          state: 'failed',
-          kind: 'error',
-          title: /model/i.test(reason) ? 'Model unavailable' : /auth/i.test(reason) ? 'AI connection needs attention' : 'AI runtime unavailable',
-          summary: friendlyFailure(reason) || 'The AI runtime needs attention.',
-          evidence: { adapterId, state: rawState },
-        });
+        const activityId = `adapter-error:${adapterId}`;
+        const prior = state.activities[activityId];
+
+        // Normal ready/busy heartbeats remain state-only. If a visible error
+        // had existed, READY resolves that same semantic object in place.
+        if (/ready/.test(rawState) && prior?.state === 'failed') {
+          state.activities[activityId] = {
+            ...prior,
+            state: 'success',
+            title: 'Orlynx AI ready',
+            summary: undefined,
+            sequence: event.sequence,
+          };
+          return;
+        }
+
+        if (/failed|unavailable|error|auth|quota|rate/i.test(`${rawState} ${reason}`)) {
+          putActivity(state, {
+            id: activityId,
+            runId: event.runId,
+            taskId: event.taskId,
+            sequence: event.sequence,
+            startedSequence: prior?.startedSequence || event.sequence,
+            timestamp: prior?.timestamp || event.timestamp,
+            state: 'failed',
+            kind: 'error',
+            title: /model/i.test(reason) ? 'Model unavailable' : /auth/i.test(reason) ? 'AI connection needs attention' : 'AI runtime unavailable',
+            summary: friendlyFailure(reason) || 'The AI runtime needs attention.',
+            evidence: { adapterId, state: rawState },
+          });
+        }
       }
       return;
     }
