@@ -71,11 +71,11 @@ function updateRun(state: AgentStreamState, event: CanonicalAgentEvent, patch: P
   const prior = state.runs[event.runId];
   const messageId = patch.messageId || prior?.messageId || `assistant:${event.runId}`;
   state.runs[event.runId] = {
-    id: event.runId,
-    state: prior?.state || 'queued',
-    messageId,
-    ...prior,
+    ...(prior || {}),
     ...patch,
+    id: event.runId,
+    state: patch.state || prior?.state || 'queued',
+    messageId,
   };
 }
 
