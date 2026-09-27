@@ -8,16 +8,19 @@ import { externalPreviewUrl, isDevServerCommand, preferredPreviewPort, usablePre
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'unreachable' | 'blocked';
 
 /** Compact action attached to a dev-server startup activity result. */
-export function ServerPreviewAction({ command, output, activityState, runActive, ports, onViewPreview, onOpenExternal }: {
+export function ServerPreviewAction({ command, output, isPreview = false, activityState, runActive, ports, onViewPreview, onOpenExternal }: {
   command: string;
   output?: string;
+  isPreview?: boolean;
   activityState: string;
   runActive: boolean;
   ports: PreviewPort[];
   onViewPreview: (port: number) => void;
   onOpenExternal: (url: string) => void;
 }) {
-  if (!isDevServerCommand(command)) return null;
+  // Canonical v1 preview parts are authoritative. Command-name detection is
+  // retained only for legacy activity history that predates semanticType.
+  if (!isPreview && !isDevServerCommand(command)) return null;
   if (activityState === 'failed') return null; // failure stays on the row itself.
   const usable = usablePreviews(ports);
   // Exact hint match only: never point this command at another server's port.
