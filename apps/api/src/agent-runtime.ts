@@ -51,6 +51,7 @@ export interface AgentDirectChatInput {
   mode: AgentMode;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
+  onActivity?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 export interface AgentWorkspacePayloadInput {
