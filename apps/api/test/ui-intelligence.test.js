@@ -68,7 +68,7 @@ describe('workspace trust and AI control contract', () => {
 
   it('restores recent durable activity before resuming the live stream', () => {
     assert.match(src, /\/v1\/sessions\/\$\{record\.id\}\/activity\?limit=500/, 'workspace does not restore durable activity history');
-    assert.match(src, /setEvents\(ordered\)/, 'restored activity is not placed back into the timeline');
+    assert.match(src, /setAgentStream\(rebuildAgentStream\(ordered\)\)/, 'restored activity is not rebuilt into canonical stream state');
     assert.match(src, /connectEvents\(record\.id\)/, 'live event stream is not resumed after restoration');
   });
 
