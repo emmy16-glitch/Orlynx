@@ -254,7 +254,7 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
       default: break;
     }
   }
-  return rows.slice(-100);
+  return rows.slice(-500);
 }
 
 function humanActivity(text: string): string {
