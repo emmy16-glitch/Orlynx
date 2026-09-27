@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
+import { applyLiveReplyEvents, reconcileLiveRepliesFromRuns } from '../../web/src/ui/live-replies.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
@@ -418,5 +419,60 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
     assert.ok(streamLine?.includes('draftReply'));
     assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
+  });
+});
+
+
+describe('run-scoped live assistant streaming', () => {
+  it('keeps overlapping direct/workspace deltas in separate replies', () => {
+    const replies = applyLiveReplyEvents({}, [
+      { type: 'run.started', runId: 'run-a', sequence: 1, timestamp: '2026-09-27T10:00:00.000Z', payload: { messageId: 'u-a', plane: 'direct' } },
+      { type: 'run.started', runId: 'run-b', sequence: 2, timestamp: '2026-09-27T10:00:00.001Z', payload: { messageId: 'u-b', plane: 'workspace' } },
+      { type: 'message.delta', runId: 'run-a', sequence: 3, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'Hello ' } },
+      { type: 'message.delta', runId: 'run-b', sequence: 4, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'Running ' } },
+      { type: 'message.delta', runId: 'run-a', sequence: 5, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'there' } },
+      { type: 'message.delta', runId: 'run-b', sequence: 6, timestamp: '2026-09-27T10:00:00.002Z', payload: { delta: 'tests' } },
+    ]);
+    assert.equal(replies['run-a'].text, 'Hello there');
+    assert.equal(replies['run-b'].text, 'Running tests');
+    assert.equal(replies['run-a'].messageId, 'u-a');
+    assert.equal(replies['run-b'].messageId, 'u-b');
+  });
+
+  it('accepts same-timestamp deltas in sequence order and ignores replay', () => {
+    let replies = applyLiveReplyEvents({}, [
+      { type: 'run.started', runId: 'r', sequence: 10, timestamp: '2026-09-27T10:00:00.000Z', payload: {} },
+      { type: 'message.delta', runId: 'r', sequence: 11, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'A' } },
+      { type: 'message.delta', runId: 'r', sequence: 12, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'B' } },
+    ]);
+    replies = applyLiveReplyEvents(replies, [
+      { type: 'message.delta', runId: 'r', sequence: 12, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'B' } },
+      { type: 'message.delta', runId: 'r', sequence: 13, timestamp: '2026-09-27T10:00:01.000Z', payload: { delta: 'C' } },
+    ]);
+    assert.equal(replies.r.text, 'ABC');
+  });
+
+  it('does not let an older HTTP snapshot rewind newer SSE text', () => {
+    const current = applyLiveReplyEvents({}, [
+      { type: 'run.started', runId: 'r', sequence: 1, timestamp: '2026-09-27T10:00:00.000Z', payload: { messageId: 'u1' } },
+      { type: 'message.delta', runId: 'r', sequence: 2, timestamp: '2026-09-27T10:00:02.000Z', payload: { delta: 'Newest streamed answer' } },
+    ]);
+    const reconciled = reconcileLiveRepliesFromRuns(current, [{
+      id: 'r', state: 'running', messageId: 'u1', partialText: 'Newest streamed',
+      partialUpdatedAt: '2026-09-27T10:00:01.000Z', startedAt: '2026-09-27T10:00:00.000Z',
+    }], []);
+    assert.equal(reconciled.r.text, 'Newest streamed answer');
+  });
+
+  it('replaces transient reply only after the durable assistant message exists', () => {
+    const current = {
+      r: { runId: 'r', text: 'partial', startedAt: '2026-09-27T10:00:00.000Z', messageId: 'u1', state: 'completed', lastEventAt: 1, lastSequence: 2 },
+    };
+    const preserved = reconcileLiveRepliesFromRuns(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], []);
+    assert.equal(preserved.r.text, 'partial');
+    const removed = reconcileLiveRepliesFromRuns(current, [{ id: 'r', state: 'completed', messageId: 'u1' }], [
+      { id: 'msg_r', role: 'assistant', text: 'final' },
+    ]);
+    assert.equal(removed.r, undefined);
   });
 });
