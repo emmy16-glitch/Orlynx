@@ -154,19 +154,48 @@ async function safeFile(project: string, branch: string, path: string, installat
   } catch { return null; }
 }
 
-async function loadRepositoryContext(session: ProjectSession, paths: string[]): Promise<string> {
+async function loadRepositoryContext(
+  session: ProjectSession,
+  paths: string[],
+  onActivity?: (type: string, payload: Record<string, unknown>) => void,
+): Promise<string> {
   if (paths.length) {
-    const files = await Promise.all(paths.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
+    const files = await Promise.all(paths.map(async (name) => {
+      const callId = `direct-read:${name}`;
+      onActivity?.('tool.started', { tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github' });
+      const content = await safeFile(session.project, session.branch, name, session.installationId);
+      onActivity?.(content == null ? 'tool.failed' : 'tool.completed', {
+        tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github',
+        ...(content == null ? { error: 'File could not be read from GitHub.' } : {}),
+      });
+      return { name, content };
+    }));
     return [`Repository: ${session.project}`, `Branch: ${session.branch}`,
       ...files.map(({ name, content }) => `--- ${name} ---\n${content ?? 'File could not be read from GitHub.'}`)].join('\n\n').slice(0, 24_000);
   }
   let root: { name: string; dir: boolean }[] = [];
-  try { root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId); } catch {}
+  const rootCallId = 'direct-list:root';
+  onActivity?.('tool.started', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github' });
+  try {
+    root = await githubRepositoryFiles(session.project, session.branch, '', session.installationId);
+    onActivity?.('tool.completed', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github' });
+  } catch {
+    onActivity?.('tool.failed', { tool: 'list', callId: rootCallId, path: '/', title: 'List repository root', sourceType: 'direct.github', error: 'Repository root could not be read from GitHub.' });
+  }
   const names = root.map((item) => item.dir ? `${item.name}/` : item.name).slice(0, 80);
   const candidates = ['README.md','README','ARCHITECTURE.md','DESIGN.md','AGENTS.md','HOSTING.md','package.json','pyproject.toml','requirements.txt','Cargo.toml','go.mod','pom.xml','build.gradle','docker-compose.yml','compose.yml']
     .filter((name) => root.some((item) => !item.dir && item.name.toLowerCase() === name.toLowerCase()))
     .slice(0, 5);
-  const loaded = await Promise.all(candidates.map(async (name) => ({ name, content: await safeFile(session.project, session.branch, name, session.installationId) })));
+  const loaded = await Promise.all(candidates.map(async (name) => {
+    const callId = `direct-read:${name}`;
+    onActivity?.('tool.started', { tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github' });
+    const content = await safeFile(session.project, session.branch, name, session.installationId);
+    onActivity?.(content == null ? 'tool.failed' : 'tool.completed', {
+      tool: 'read', callId, path: name, title: `Read ${name}`, sourceType: 'direct.github',
+      ...(content == null ? { error: 'File could not be read from GitHub.' } : {}),
+    });
+    return { name, content };
+  }));
   const snippets: string[] = [];
   let used = 0;
   for (const item of loaded) {
@@ -184,14 +213,18 @@ async function loadRepositoryContext(session: ProjectSession, paths: string[]): 
   ].filter(Boolean).join('\n\n');
 }
 
-async function repositoryContext(session: ProjectSession & { userId: string }, prompt: string): Promise<string> {
+async function repositoryContext(
+  session: ProjectSession & { userId: string },
+  prompt: string,
+  onActivity?: (type: string, payload: Record<string, unknown>) => void,
+): Promise<string> {
   const paths = [...new Set(prompt.match(/(?:[a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_.-]+\.(?:tsx?|jsx?|json|py|rs|go|md)\b/g) || [])]
     .filter((path) => !path.split('/').includes('..')).slice(0, 3);
   const key = JSON.stringify([session.userId, session.installationId, session.project, session.branch, paths]);
   const existing = contextCache.get(key);
   if (existing && existing.expires > Date.now()) return existing.value;
   if (contextCache.size >= 32) contextCache.delete(contextCache.keys().next().value!);
-  const value = loadRepositoryContext(session, paths);
+  const value = loadRepositoryContext(session, paths, onActivity);
   contextCache.set(key, { expires: Date.now() + (paths.length ? FILE_CONTEXT_TTL_MS : ROOT_CONTEXT_TTL_MS), value });
   void value.catch(() => contextCache.delete(key));
   return value;
@@ -207,6 +240,7 @@ export async function streamDirectRepositoryChat(input: {
   mode: AgentMode;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
+  onActivity?: (type: string, payload: Record<string, unknown>) => void;
 }): Promise<string> {
   const controller = new AbortController();
   active.set(input.runId, controller);
@@ -225,7 +259,7 @@ export async function streamDirectRepositoryChat(input: {
     const projectName = input.session.project.split('/').pop() || '';
     const needsContext = shouldLoadRepositoryContext(input.prompt, input.mode, projectName);
     if (needsContext) input.onStatus?.('Reading repository…');
-    const context = needsContext ? await repositoryContext(input.session, input.prompt)
+    const context = needsContext ? await repositoryContext(input.session, input.prompt, input.onActivity)
       : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
     controller.signal.throwIfAborted();
     timings.repoContextMs = performance.now() - contextStarted;
