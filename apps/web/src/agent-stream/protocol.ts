@@ -1,14 +1,14 @@
 import type { AgentMode, PermissionProfile } from '@orlynx/shared';
 
 /**
- * Orlynx canonical agent/UI protocol.
+ * Browser stream-projection actions.
  *
- * Raw provider/bridge/workspace events are adapted into this small lifecycle
- * before React sees them. The shape intentionally follows the strongest common
- * pattern used by AG-UI/Cline/OpenHands: run boundaries, start/update/end text,
- * stable tool-call identity, state snapshots/deltas, and explicit activities.
+ * IMPORTANT: this is NOT a second wire/canonical protocol. The one canonical
+ * protocol is @orlynx/shared EventType/OrlynxEvent and is persisted/streamed by
+ * the server. These actions are private reducer inputs used to build efficient
+ * UI state from that protocol (similar to Redux actions/selectors).
  */
-export type CanonicalAgentEvent =
+export type StreamProjectionEvent =
   | (Base & { type: 'RUN_QUEUED'; position?: number; plane?: string; mode?: AgentMode })
   | (Base & { type: 'RUN_STARTED'; messageId: string; userMessageId?: string; plane?: string; model?: string; mode?: AgentMode; permission?: PermissionProfile })
   | (Base & { type: 'RUN_FINISHED'; summary?: string })
