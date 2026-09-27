@@ -168,16 +168,66 @@ export const PERMISSION_PROFILES: { id: PermissionProfile; name: string; hint: s
 ];
 
 // §§14.2-14.3 event envelope + taxonomy
+//
+// Orlynx canonical agent protocol v1 (Orlynx-native, informed by AG-UI run/
+// message/tool/state lifecycles, ACP session boundaries, OpenHands
+// action/observation separation and assistant-ui message parts).
+//
+// Provider events are normalized into this vocabulary at the server adapter
+// boundary (apps/api/src/agent-protocol.ts). The durable ledger stores the
+// canonical types below; the browser compatibility adapter
+// (apps/web/src/agent-stream/adapter.ts) only handles pre-v1 history.
+export const CANONICAL_PROTOCOL_VERSION = 1;
+
 export type EventType =
-  | 'run.queued' | 'run.started' | 'run.completed' | 'run.failed'
+  | 'run.queued' | 'run.started' | 'run.completed' | 'run.failed' | 'run.state'
   | 'step.started' | 'step.finished'
   | 'message.start' | 'message.delta' | 'message.end'
-  | 'tool.requested' | 'tool.started' | 'tool.output' | 'tool.completed' | 'tool.failed'
-  | 'workspace.preparing' | 'workspace.ready' | 'workspace.reconnecting' | 'workspace.stopped'
+  | 'tool.requested' | 'tool.started' | 'tool.progress' | 'tool.output' | 'tool.completed' | 'tool.failed'
+  | 'terminal.started' | 'terminal.output' | 'terminal.exited'
+  | 'file.changed' | 'files.changed'
+  | 'test.result' | 'build.result'
+  | 'preview.state' | 'preview.ready'
+  | 'subagent.started' | 'subagent.finished'
+  | 'permission.request' | 'permission.resolved'
+  | 'workspace.preparing' | 'workspace.ready' | 'workspace.reconnecting' | 'workspace.stopped' | 'workspace.state'
   | 'state.snapshot' | 'state.delta' | 'changes.updated' | 'branch.changed'
   | 'activity.started' | 'activity.progress' | 'activity.completed'
   | 'approval.required' | 'approval.resolved'
-  | 'receipt.created';
+  | 'receipt.created' | 'extension.event';
+
+// Orlynx agent-adapter boundary (ACP-inspired). OpenCode implements this;
+// future ACP-compatible agents implement the same surface so the chat UI,
+// session core and transport never change per provider.
+export interface AgentAdapterSession {
+  adapterId: AgentAdapterId;
+  engineSessionId: string;
+  capabilities: {
+    workspace: boolean;
+    directChat: boolean;
+    streaming: boolean;
+    planMode: boolean;
+    approvals: boolean;
+    resumeSession: boolean;
+    diff: boolean;
+  };
+}
+export interface AgentAdapterRunRequest {
+  taskId: string;
+  runId: string;
+  sessionId: string;
+  prompt: string;
+  modelId: string;
+  mode: AgentMode;
+}
+export interface AgentAdapterHandle {
+  startSession(sessionId: string, project: string): Promise<AgentAdapterSession>;
+  sendPrompt(handle: AgentAdapterSession, request: AgentAdapterRunRequest): Promise<void>;
+  cancelRun(handle: AgentAdapterSession, runId: string): Promise<void>;
+  resumeRun(handle: AgentAdapterSession, runId: string): Promise<void>;
+  handlePermission(approvalId: string, decision: 'allow-once' | 'allow-task' | 'deny'): Promise<void>;
+  capabilities(): AgentAdapterSession['capabilities'];
+}
 
 export interface OrlynxEvent {
   eventId: string;

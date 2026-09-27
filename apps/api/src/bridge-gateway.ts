@@ -291,12 +291,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'EVENT' && message.event?.type) {
-        if (message.event.type === 'heartbeat') return;
-        const allowed = new Set(['message.delta', 'tool.requested', 'tool.started', 'tool.output', 'tool.completed', 'tool.failed', 'activity.progress']);
-        const eventType = allowed.has(message.event.type)
-          ? message.event.type as 'message.delta' | 'tool.requested' | 'tool.started' | 'tool.output' | 'tool.completed' | 'tool.failed' | 'activity.progress'
-          : 'activity.progress';
-        await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, taskId: message.event.taskId, runId: message.event.runId, type: eventType, timestamp: new Date().toISOString(), payload: eventType === 'activity.progress' ? { sourceType: message.event.type, ...(message.event.payload || {}) } : message.event.payload || {} });
+        // Server-side provider adapter: canonicalize at the protocol boundary
+        // so unknown provider events keep their semantics (extension.event)
+        // instead of collapsing into generic activity.progress.
+        const { normalizeBridgeEvent } = await import('./agent-protocol.js');
+        const normalized = normalizeBridgeEvent(String(message.event.type), message.event.payload || {});
+        if (normalized.heartbeat) return;
+        await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, workspaceId: claims.workspaceId, taskId: message.event.taskId, runId: message.event.runId, type: normalized.type, timestamp: new Date().toISOString(), payload: normalized.payload });
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
