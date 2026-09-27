@@ -905,10 +905,10 @@ export default function ProductionApp() {
   const [stopping, setStopping] = useState(false);
   async function stopRun() {
     if (stopping) return;
-    const running = Object.values(agentStream.runs)
+    const runningRuns = Object.values(agentStream.runs)
       .filter((run) => run.state === 'running')
-      .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''))
-      .at(-1)?.id || lastRun?.id;
+      .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''));
+    const running = runningRuns[runningRuns.length - 1]?.id || lastRun?.id;
     if (!session || !running) return;
     setStopping(true);
     try { await j(await fetch(`/v1/agent-runs/${running}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) })); await refreshSession(session.id); }
