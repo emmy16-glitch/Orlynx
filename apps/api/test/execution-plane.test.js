@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executionPlaneFor } from '../src/direct-chat.ts';
-import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired } from '../src/agents.ts';
+import { executionPlaneFor, executionPlaneForSession } from '../src/direct-chat.ts';
+import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
 // Keep routing tests deterministic: these assertions require no live workspace.
@@ -10,6 +10,29 @@ test('an existing Codespace never changes the mode/request execution decision', 
   assert.equal(executionPlaneFor('Explain this repo', 'ask'), 'direct');
   assert.equal(executionPlaneFor('Plan the refactor and show the steps', 'plan'), 'direct');
   assert.equal(executionPlaneFor('Run git status -sb', 'build'), 'workspace');
+});
+
+test('an active repository workspace keeps conversation on the OpenCode session', () => {
+  const ready = { state: 'ready', bridgeState: 'ready' };
+  const connecting = { state: 'connecting', bridgeState: 'disconnected' };
+
+  assert.equal(executionPlaneForSession('Have U started local host??', 'build', ready), 'workspace');
+  assert.equal(executionPlaneForSession('What changed?', 'build', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Explain this file', 'ask', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Plan the next fix', 'plan', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Explain this file', 'ask', connecting), 'direct');
+  assert.equal(executionPlaneForSession('Explain this file', 'ask', null), 'direct');
+});
+
+test('Build ask-first permits observable runtime work without granting file changes', () => {
+  const instruction = instructionForModeAccess('build', 'ask-first');
+  assert.match(instruction, /run tests/i);
+  assert.match(instruction, /development servers/i);
+  assert.match(instruction, /Do NOT create, modify or delete project files/i);
+  assert.doesNotMatch(instruction, /Inspect, search and explain only/i);
+  assert.match(instructionForModeAccess('ask', 'full'), /READ ONLY/);
+  assert.match(instructionForModeAccess('plan', 'full'), /PLAN/);
+  assert.equal(instructionForModeAccess('build', 'full'), '');
 });
 
 test('plain conversation does not start a development environment', () => {

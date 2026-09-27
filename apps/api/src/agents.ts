@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
 import { getAgentAdapter, openCodeRuntime, type AgentRuntimeAdapter, type RuntimeMessage } from './agent-runtime.js';
-import { canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
+import { buildAskFirstInstruction, canPerform, classifyError, getSessionPrefs, hydrateSessionPrefs, planInstruction, readOnlyInstruction, resolveAgentForMode } from './ai.js';
 import { materializeAttachments } from './attachments.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
@@ -121,6 +121,14 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
 export function taskPermission(current: PermissionProfile, requested?: PermissionProfile): { permission: PermissionProfile; tempPermission?: PermissionProfile } {
   const tempPermission = current === 'ask-first' && requested === 'full' ? 'full' : undefined;
   return { permission: tempPermission || current, ...(tempPermission ? { tempPermission } : {}) };
+}
+
+export function instructionForModeAccess(mode: AgentMode, permission: PermissionProfile): string {
+  if (mode === 'ask') return readOnlyInstruction();
+  if (mode === 'plan') return planInstruction();
+  if (permission === 'read-only') return readOnlyInstruction();
+  if (mode === 'build' && permission === 'ask-first') return buildAskFirstInstruction();
+  return '';
 }
 
 async function executeDirectTask(
@@ -445,9 +453,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
     const guardedText = [
-      permission !== 'full' ? readOnlyInstruction() : '',
-      mode === 'plan' ? planInstruction() : '',
-      mode === 'ask' ? readOnlyInstruction() : '',
+      instructionForModeAccess(mode, permission),
       task.prompt,
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
@@ -614,9 +620,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
     : '';
   const guardedText = [
-    permission !== 'full' ? readOnlyInstruction() : '',
-    mode === 'plan' ? planInstruction() : '',
-    mode === 'ask' ? readOnlyInstruction() : '',
+    instructionForModeAccess(mode, permission),
     attachmentInstruction,
     userText,
   ].filter(Boolean).join('\n\n');

@@ -70,6 +70,8 @@ test('legacy Codespaces failures migrate to the preferred warm runner without st
     failureCode: 'GitHub has reached your running Codespace limit.',
   };
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'orlynx-runner'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'broken-ssh', failureCode: 'Codespace SSH did not become ready after 39 bootstrap attempts' }, 'orlynx-runner'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stale-space', failureCode: 'GitHub Codespaces request failed (HTTP 404)' }, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'healthy-space', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'busy-space', state: 'starting', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'github-codespaces'), false);

@@ -85,13 +85,14 @@ test('prompt echoes are removed without breaking natural greetings', () => {
 
 });
 
-test('repeated historical failures never add error cards to the activity list', () => {
+test('historical failures remain visible in the ordered chat activity stream', () => {
   const events = [1, 2, 3].map((n) => ({ eventId: 'e' + n, runId: 'r' + n, sequence: n, type: 'run.failed', payload: { error: 'old failure' } }));
   const history = toActivities(events);
-  assert.equal(history.length, 3); // Still available in diagnostics.
-  assert.deepEqual(chatActivities(history), []);
+  assert.equal(history.length, 3);
+  assert.deepEqual(chatActivities(history), history);
   const success = toActivities([...events, { eventId: 'done', runId: 'r4', sequence: 4, type: 'run.completed', payload: {} }]);
-  assert.ok(chatActivities(success).every((item) => item.state !== 'failed'));
+  assert.equal(chatActivities(success).filter((item) => item.state === 'failed').length, 3);
+  assert.equal(chatActivities(success).at(-1)?.title, 'Work completed');
 });
 
 

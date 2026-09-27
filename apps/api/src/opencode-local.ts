@@ -11,12 +11,15 @@ const TRANSIENT_RUNTIME_STATUSES = new Set([502, 503, 504]);
 const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 150_000;
 const DEFAULT_RUNTIME_WAKE_POLL_MS = 2_000;
 const RUNTIME_PREWARM_TTL_MS = 5 * 60_000;
+const RUNTIME_PREWARM_FAILURE_BACKOFF_MS = 30_000;
 let runtimePrewarmAt = 0;
+let runtimePrewarmRetryAt = 0;
 let runtimePrewarmPromise: Promise<boolean> | null = null;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
   runtimePrewarmAt = 0;
+  runtimePrewarmRetryAt = 0;
   runtimePrewarmPromise = null;
 }
 
@@ -120,6 +123,7 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
   const now = Date.now();
   if (runtimePrewarmPromise) return runtimePrewarmPromise;
   if (now - runtimePrewarmAt < RUNTIME_PREWARM_TTL_MS) return Promise.resolve(true);
+  if (now < runtimePrewarmRetryAt) return Promise.resolve(false);
 
   runtimePrewarmPromise = (async () => {
     try {
@@ -128,17 +132,21 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       }, 20_000);
       if (response.ok) {
         runtimePrewarmAt = Date.now();
+        runtimePrewarmRetryAt = 0;
         console.info('[ai-runtime] prewarm ready');
         return true;
       }
-      // Even a transient edge response is useful because the request starts
-      // Render's cold-start path. The normal chat path will poll until ready.
-      console.warn(`[ai-runtime] prewarm returned HTTP ${response.status}`);
+      // One failed wake request is enough to kick a sleeping Render service.
+      // Back off before probing again so frequent catalog/status polling cannot
+      // hammer the runtime edge with repeated 502s.
+      runtimePrewarmRetryAt = Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS;
+      console.warn(`[ai-runtime] prewarm returned HTTP ${response.status}; backing off`);
       return false;
     } catch (error) {
+      runtimePrewarmRetryAt = Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS;
       // Prewarming is best-effort and must never break catalog/overview calls.
       const name = error instanceof Error ? error.name : 'Error';
-      console.warn(`[ai-runtime] prewarm request failed (${name})`);
+      console.warn(`[ai-runtime] prewarm request failed (${name}); backing off`);
       return false;
     } finally {
       runtimePrewarmPromise = null;
