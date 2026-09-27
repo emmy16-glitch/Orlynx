@@ -61,7 +61,7 @@ describe('workspace trust and AI control contract', () => {
   const src = fs.readFileSync(path.join(root, 'apps/web/src/ProductionApp.tsx'), 'utf8');
 
   it('restores recent durable activity before resuming the live stream', () => {
-    assert.match(src, /\/v1\/sessions\/\$\{record\.id\}\/activity\?limit=300/, 'workspace does not restore durable activity history');
+    assert.match(src, /\/v1\/sessions\/\$\{record\.id\}\/activity\?limit=500/, 'workspace does not restore durable activity history');
     assert.match(src, /setEvents\(ordered\)/, 'restored activity is not placed back into the timeline');
     assert.match(src, /connectEvents\(record\.id\)/, 'live event stream is not resumed after restoration');
   });
@@ -78,7 +78,7 @@ describe('workspace trust and AI control contract', () => {
   });
 
   it('routes model recovery back into the unified AI controls', () => {
-    assert.match(src, /if \(modelProblem\) \{\s*setShowConnectAI\(true\);/, 'model recovery does not open AI controls');
+    assert.match(src, /modelProblem[\s\S]*?<Button[^>]*onClick=\{\(\) => setShowConnectAI\(true\)\}>Change model<\/Button>/, 'model recovery does not open AI controls');
   });
 
   it('keeps the composer picker compact and scrollable', () => {
