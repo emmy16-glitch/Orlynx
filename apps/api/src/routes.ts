@@ -19,7 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, instantReplyFor } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneForSession, instantReplyFor } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
@@ -376,10 +376,11 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
 
-    // Execution plane is determined by the current mode + request, not by
-    // whether this project happens to have an existing Codespace. Ask/Plan and
-    // conversational Build turns stay direct; only execution work uses cloud.
+    // Keep repository continuity on an existing workspace. Build follow-ups
+    // stay with the same OpenCode session, while Ask/Plan reuse only an already
+    // ready workspace and never cold-start one just for conversation.
     let workspace = await repository.getWorkspaceBySession(s.id);
+    plane = executionPlaneForSession(String(text), effectiveMode, workspace);
 
     if (plane === 'workspace') {
       if (!workspace) {
