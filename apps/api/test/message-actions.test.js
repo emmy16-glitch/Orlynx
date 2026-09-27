@@ -38,7 +38,7 @@ describe('contextual message actions (§§142-143, 161, 171-173)', () => {
     // attach only to the turn's durable assistant response.
     assert.doesNotMatch(product(), /PartRow[\s\S]{0,500}?AssistantMessageActions/);
     const src = app();
-    const partRow = src.indexOf('<PartRow part={part} />');
+    const partRow = src.indexOf('<PartRow part={part} onResolveApproval={resolveApproval} />');
     assert.ok(partRow > 0);
     assert.doesNotMatch(src.slice(partRow - 200, partRow + 200), /MessageActions/);
   });
