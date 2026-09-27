@@ -125,19 +125,26 @@ test('deterministic chat turns bypass the model', () => {
   );
 });
 
-test('direct Ask/Plan repository reads publish observable file activity', () => {
+test('direct Ask/Plan builds whole-repository understanding before answering', () => {
   const src = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
+  const github = fs.readFileSync(new URL('../src/github.ts', import.meta.url), 'utf8');
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
-  assert.match(src, /onActivity\?\.\('tool\.started', \{ tool: 'read'/);
-  assert.match(src, /onActivity\?\.\('tool\.started', \{ tool: 'list'/);
-  assert.match(src, /sourceType: 'direct\.github'/);
+  assert.match(src, /githubRepositoryTree/);
+  assert.match(src, /Whole repository map:/);
+  assert.match(src, /chooseRepositoryFiles/);
+  assert.match(src, /Understanding repository/);
+  assert.match(src, /sourceType: 'repository\.map'/);
+  assert.doesNotMatch(src, /sourceType: 'direct\.github'/);
+  assert.match(github, /git\/trees\/.*recursive=1/);
   assert.match(agents, /onActivity: \(type, payload\) => emit\(session\.id, type/);
 });
 
-test('direct history and repo context are intentionally bounded for free-model latency', () => {
+test('whole-repository understanding is cached and bounded for model latency', () => {
   const src = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
   assert.match(src, /\.slice\(-8\)/);
   assert.match(src, /\.slice\(-6_000\)/);
-  assert.match(src, /24_000/);
-  assert.match(src, /ROOT_CONTEXT_TTL_MS = 5 \* 60_000/);
+  assert.match(src, /REPOSITORY_MAP_TTL_MS = 5 \* 60_000/);
+  assert.match(src, /REPOSITORY_MAP_CHAR_BUDGET = 20_000/);
+  assert.match(src, /REPOSITORY_CONTENT_CHAR_BUDGET = 44_000/);
+  assert.match(src, /MAX_RELEVANT_FILES = 14/);
 });
