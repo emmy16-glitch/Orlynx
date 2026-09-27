@@ -85,7 +85,9 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
     id: activity.id,
     runId: activity.runId,
     taskId: activity.taskId,
-    sequence: activity.sequence,
+    // Presentation order is anchored to lifecycle start. Progress updates mutate
+    // the same object without making the row jump around the transcript.
+    sequence: activity.startedSequence,
     timestamp: activity.timestamp,
     category,
     state: activity.state,
@@ -130,7 +132,7 @@ function makeTool(tool: AgentStreamTool): ActivityItem {
     id: `tool:${tool.id}`,
     runId: tool.runId,
     taskId: tool.taskId,
-    sequence: tool.sequence,
+    sequence: tool.startedSequence,
     timestamp: tool.timestamp,
     category,
     state,
