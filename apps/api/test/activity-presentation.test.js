@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
+import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
 
 const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${sequence}`) => ({
   eventId, sessionId: 'session-a', runId, sequence, timestamp: new Date(sequence * 1000).toISOString(), type, payload,
@@ -137,6 +137,42 @@ describe('normalized agent activity presentation', () => {
     assert.equal(visible.length, rows.length);
     assert.equal(visible.at(-1)?.state, 'failed');
     assert.equal(visible.at(-1)?.title, 'Work needs attention');
+  });
+
+
+
+  it('interleaves messages and observable execution into one chronological transcript', () => {
+    const messages = [
+      { id: 'u1', role: 'user', text: 'Run the tests', createdAt: '2026-09-27T05:00:00.000Z' },
+      { id: 'a1', role: 'assistant', text: 'Tests pass.', createdAt: '2026-09-27T05:00:05.000Z' },
+    ];
+    const activities = toActivities([
+      { ...event(1, 'activity.progress', { text: 'Reading files' }), timestamp: '2026-09-27T05:00:01.000Z' },
+      { ...event(2, 'tool.started', { tool: 'bash', command: 'npm test', callId: 'test-1' }), timestamp: '2026-09-27T05:00:02.000Z' },
+      { ...event(3, 'tool.output', { tool: 'bash', callId: 'test-1', outDelta: '8 passed\n' }), timestamp: '2026-09-27T05:00:03.000Z' },
+      { ...event(4, 'tool.completed', { tool: 'bash', callId: 'test-1' }), timestamp: '2026-09-27T05:00:04.000Z' },
+    ]);
+    const timeline = buildConversationTimeline(messages, activities);
+    assert.deepEqual(timeline.map((entry) => entry.kind === 'message'
+      ? `message:${entry.message.role}`
+      : `activity:${activityTranscriptLabel(entry.activity)}`), [
+      'message:user',
+      'activity:Read',
+      'activity:Run tests',
+      'message:assistant',
+    ]);
+    const testRow = timeline.find((entry) => entry.kind === 'activity' && entry.activity.category === 'test');
+    assert.equal(testRow?.kind === 'activity' ? testRow.activity.rawOutput : '', '8 passed\n');
+  });
+
+  it('uses OpenCode-like labels without exposing private reasoning', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', { text: 'Reviewing the request' }),
+      event(2, 'tool.started', { tool: 'read', path: 'package.json', callId: 'read-1' }),
+      event(3, 'tool.started', { tool: 'bash', command: 'npm run dev', callId: 'cmd-1' }),
+      event(4, 'run.failed', { error: 'Vite failed to start' }),
+    ]);
+    assert.deepEqual(rows.map(activityTranscriptLabel), ['Thought', 'Read', 'Run command', 'Error']);
   });
 
   it('defaults to detailed live execution while retaining the optional summary view', async () => {
