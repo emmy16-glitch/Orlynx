@@ -415,6 +415,7 @@ export type ConversationTimelineEntry =
   | { kind: 'activity'; key: string; timestamp: string; activity: ActivityItem };
 
 export function activityTranscriptLabel(item: ActivityItem): string {
+  if (item.evidence?.sourceType === 'repository.map') return 'Repository';
   if (item.category === 'search') return /search/i.test(item.title) ? 'Search' : 'Read';
   if (item.category === 'command') return 'Run command';
   if (item.category === 'test') return 'Run tests';
