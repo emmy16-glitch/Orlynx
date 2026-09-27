@@ -175,6 +175,17 @@ describe('normalized agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Thought', 'Read', 'Run command', 'Error']);
   });
 
+  it('chat owns the execution transcript and preserves a running reply when a follow-up is queued', async () => {
+    const fs = await import('node:fs');
+    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+    assert.match(app, /buildConversationTimeline\(messages, transcriptActivities\)/);
+    assert.match(app, /preserveStreamingReply = runs\.some/);
+    assert.match(app, /activity\?limit=500/);
+    assert.match(app, /transcript-activity-row/);
+    assert.doesNotMatch(app, /currentChatActivities/);
+    assert.doesNotMatch(app, /workstream-wrap/);
+  });
+
   it('defaults to detailed live execution while retaining the optional summary view', async () => {
     const fs = await import('node:fs');
     const source = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
