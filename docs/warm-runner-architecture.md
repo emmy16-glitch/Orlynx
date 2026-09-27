@@ -59,9 +59,33 @@ they are absent, Orlynx behaves exactly as before and uses GitHub Codespaces.
 
 The runner endpoint must be HTTPS. Do not expose it without authentication.
 
-## Runner host
+## Runner hosts
 
-`runner-manager/index.mjs` is the first runner-host implementation. It requires
+Orlynx has two runner-host implementations behind the same provider contract.
+
+### Render single-workspace runner
+
+`runner-direct/index.mjs` is the production MVP used when no Docker-capable VM
+is available yet. The Render service itself is the isolation boundary and it
+accepts exactly one active workspace at a time.
+
+It:
+
+- clones one authorized repository with an ephemeral GitHub credential;
+- launches the existing Orlynx bridge and preinstalled OpenCode runtime;
+- keeps the checkout warm between tasks;
+- supports signed HTTP/WebSocket preview forwarding;
+- stops/reclaims idle workspace processes;
+- returns capacity-full for a second workspace so the durable orchestrator can
+  fall back to GitHub Codespaces instead of mixing repositories.
+
+The service must be dedicated to runner execution only. It must not share the
+control-plane process or its filesystem. This is an MVP isolation boundary, not
+the final multi-tenant pool.
+
+### Docker runner manager
+
+`runner-manager/index.mjs` is the multi-workspace runner-host implementation. It requires
 a host with a Docker daemon. It creates one container per Orlynx workspace and
 applies:
 
