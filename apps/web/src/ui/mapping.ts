@@ -402,7 +402,7 @@ export function toActivities(input: RuntimeEvent[]): ActivityItem[] {
 }
 
 /** Classify an agent-adapter infrastructure state for visibility decisions. */
-function adapterKind(state: string, reason: string): 'steady' | 'transitional' | 'attention' {
+export function adapterKind(state: string, reason: string): 'steady' | 'transitional' | 'attention' {
   const text = `${state} ${reason}`.toLowerCase();
   if (/fail|unavailable|error|auth|model|rate.?limit|quota|exceed|too many|reject|expired|forbidden|unauthor|needs.?attention|not.?available/.test(text)) return 'attention';
   if (/start|install|connect|reconnect|busy|work|load|prepar|pending|waiting|retry/.test(text)) return 'transitional';

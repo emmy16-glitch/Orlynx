@@ -2359,6 +2359,77 @@ button, input, textarea, select { font: inherit; }
     padding: 5px 6px 5px 12px;
   }
 }
+
+/* === Smart live-follow breathing room + compact expanding composer === */
+/* Bottom space so the fixed composer (and work bar) never cover the latest
+   streamed line. The live-edge pin scrolls to scrollHeight = end of padding. */
+.conversation {
+  padding-bottom: 150px;
+}
+.is-workspace.has-active-work .conversation {
+  padding-bottom: 208px;
+}
+@media (max-width: 760px) {
+  .conversation {
+    padding-bottom: 232px;
+  }
+  .is-workspace.has-active-work .conversation {
+    padding-bottom: 290px;
+  }
+}
+
+.composer {
+  transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), padding var(--motion-fast) var(--motion-ease);
+}
+.composer:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent), var(--shadow-2);
+}
+.composer textarea {
+  max-height: min(30vh, 200px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.composer.is-idle {
+  min-height: 52px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.composer.is-idle .composer-body {
+  gap: 2px;
+}
+.ai-status-compact {
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--foreground-subtle);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-status-compact > span:not([aria-hidden]) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-status-compact > span:not([aria-hidden]):nth-child(3) {
+  flex: none;
+}
+.ai-status-compact:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+@media (max-width: 760px) {
+  .composer.is-idle {
+    min-height: 52px;
+  }
+}
 .message-row {
   width: 100%;
   margin: 20px 0;

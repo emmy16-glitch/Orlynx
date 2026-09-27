@@ -4,6 +4,7 @@ import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
 import { AgentApprovalCard, AgentErrorCard, AttachmentChip, DiffSummary, TaskActivityRow } from './ui/product';
 import { activityTranscriptLabel, buildConversationTimeline, toActivities, chatActivities } from './ui/mapping';
+import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -332,8 +333,10 @@ export default function ProductionApp() {
           setCloudIssue(null);
         }
         if (item.type === 'workspace.reconnecting' && item.payload?.message) setWorkspaceReadNotice(String(item.payload.message));
-        if (!nearBottomRef.current) setNewActivity(true);
       }
+      // Only user-visible content may raise "New activity". Hidden telemetry
+      // (heartbeats, stream markers, snapshots) never moves the viewport.
+      if (!nearBottomRef.current && batch.some((item) => isFollowWorthyEvent(item.type, item.payload))) setNewActivity(true);
 
       if (replaceDraft && !deltas.length) setDraftReply('');
       else if (replaceDraft) setDraftReply(deltas.join(''));
@@ -598,16 +601,35 @@ export default function ProductionApp() {
   }, [theme]);
 
   useEffect(() => {
-    const onScroll = () => { const distance = document.documentElement.scrollHeight - innerHeight - scrollY; const atBottom = distance < 140; nearBottomRef.current = atBottom; if (atBottom) setNewActivity(false); };
+    // READING_HISTORY vs FOLLOWING_LIVE is user intent: this handler runs only
+    // on real scroll input. Content growth never touches follow state (§91).
+    const onScroll = () => {
+      const distance = distanceFromBottom(document.documentElement.scrollHeight, window.scrollY, window.innerHeight);
+      const following = followAfterUserScroll(distance);
+      nearBottomRef.current = following;
+      if (following) setNewActivity(false);
+    };
     addEventListener('scroll', onScroll, { passive: true }); return () => removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
+    // FOLLOWING_LIVE pin: instant, at most once per rendered batch via rAF.
+    // Never smooth per token (§88); never runs while reading history (§86).
     if (!nearBottomRef.current || tab !== 'chat' || page !== 'workspace') return;
     const frame = requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
     return () => cancelAnimationFrame(frame);
   }, [messages.length, draftReply, events.length, tab, page]);
 
+  const [composerFocused, setComposerFocused] = useState(false);
+  const composerBoxRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerExpanded = composerFocused || composer.length > 0 || sending;
+  useEffect(() => {
+    // Auto-grow with content; CSS caps the height and scrolls internally.
+    const el = composerBoxRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [composer, composerExpanded, tab, page]);
   useEffect(() => {
     if (tab !== 'preview' || !session?.id || !integration.workspace?.previewAvailable) return;
     fetch(`/v1/sessions/${session.id}/ports`).then((response) => j<any>(response)).then((result) => setPreviewPorts(result.ports || [])).catch(() => setPreviewPorts([]));
@@ -1133,21 +1155,25 @@ export default function ProductionApp() {
             </main>
             <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
           </div>
-          {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); setNewActivity(false); }}>↓ New activity</Button></div>}
+          {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { nearBottomRef.current = true; window.scrollTo({ top: document.documentElement.scrollHeight, behavior: jumpBehavior() }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span>{runActive && <Button type="button" tone="ghost" className="active-work-stop" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}>{stopping ? 'Stopping…' : <><span aria-hidden>■</span> Stop</>}</Button>}</div></div>}
-              {tab === 'chat' && <form className="composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea
+              {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea
+  ref={composerBoxRef}
+  rows={1}
   value={composer}
   onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }}
+  onFocus={() => setComposerFocused(true)}
+  onBlur={() => setComposerFocused(false)}
   onKeyDown={(event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
       event.preventDefault();
       if (composer.trim() && !sending && aiAccountConnected && ai.model && online) void sendMessage();
     }
   }}
-  placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected ? 'Connect AI to start' : !ai.model ? 'Choose a model to start' : `Ask Orlynx anything about this repository…`}
+  placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected || !ai.model ? 'Connect AI to start' : `Ask Orlynx anything…`}
   aria-label="Message Orlynx AI"
   disabled={!aiAccountConnected || !ai.model || !online}
-/><div className="composer-controls">{aiAccountConnected
+/>{composerExpanded ? <div className="composer-controls">{aiAccountConnected
   ? <button type="button" className="ai-control-trigger" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
       <span className="ai-control-icon"><Icon name="agents" size={14} /></span>
       <span className="ai-control-copy"><b>{selectedAgentAdapter?.displayName || 'Orlynx AI'}</b><small>{ai.model?.displayName || 'Choose model'}</small></span>
@@ -1177,7 +1203,7 @@ export default function ProductionApp() {
           </div></div>
         : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
     </div>
-  </details></div>{ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
+  </details></div> : <button type="button" className="ai-status-compact" onClick={() => setShowConnectAI(true)} aria-label="Choose AI agent and model"><span>{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span><span aria-hidden> · </span><span>{ai.model?.displayName || 'Choose model'}</span><span aria-hidden> · </span><span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span></button>}{composerExpanded && ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
