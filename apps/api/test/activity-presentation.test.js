@@ -157,7 +157,7 @@ describe('normalized agent activity presentation', () => {
       ? `message:${entry.message.role}`
       : `activity:${activityTranscriptLabel(entry.activity)}`), [
       'message:user',
-      'activity:Read',
+      'activity:Thought',
       'activity:Run tests',
       'message:assistant',
     ]);
