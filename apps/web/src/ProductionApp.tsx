@@ -1053,8 +1053,10 @@ export default function ProductionApp() {
   const devHintPort = devServerActivity
     ? extractPortHint(`${String(devServerActivity.evidence?.command || '')}\n${devServerActivity.rawOutput || ''}`)
     : undefined;
-  const selectedPreview = usablePorts.find((p) => p.port === previewPortSel) || preferredPreviewPort(previewPorts, devHintPort);
-  const currentPreviewUrl = previewIdx >= 0 && previewIdx < previewStack.length ? previewStack[previewIdx] : null;
+  const selectedPreview = previewPortSel !== null
+    ? usablePorts.find((p) => p.port === previewPortSel) || null
+    : preferredPreviewPort(previewPorts, devHintPort);
+  const currentPreviewUrl = selectedPreview && previewIdx >= 0 && previewIdx < previewStack.length ? previewStack[previewIdx] : null;
   const previewDisplayPath = (() => {
     try {
       const parsed = new URL(currentPreviewUrl || '');
@@ -1073,6 +1075,22 @@ export default function ProductionApp() {
     setPreviewStatus('loading'); setPreviewSlow(false); setExternalSuggest(null);
     setTab('preview');
   }, [previewPorts, previewPortSel, previewStack.length]);
+
+  // A selected port can disappear or be replaced after a restart. Never let
+  // the toolbar silently describe one server while the iframe still points at
+  // a stale one. Reset to the new authoritative forwarded URL or to idle.
+  useEffect(() => {
+    if (previewPortSel === null || usablePorts.some((item) => item.port === previewPortSel)) return;
+    const replacement = preferredPreviewPort(previewPorts, devHintPort);
+    if (!replacement?.url) {
+      setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
+      if (tab === 'preview') { setPreviewStatus('idle'); setPreviewSlow(false); }
+      return;
+    }
+    setPreviewPortSel(replacement.port);
+    setPreviewStack([replacement.url]); setPreviewIdx(0);
+    if (tab === 'preview') { setPreviewStatus('loading'); setPreviewSlow(false); }
+  }, [previewPortSel, usablePorts, previewPorts, devHintPort, tab]);
 
   const submitPreviewPath = useCallback((input: string) => {
     const base = selectedPreview?.url;
