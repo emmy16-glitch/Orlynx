@@ -1,23 +1,14 @@
 // Typed tool/part renderer registry (tool-ui inspired, Orlynx-native).
 //
 // One logical tool = one UI object that mutates in place. Each part kind gets
-// a purpose-built collapsed row + typed detail panel. Generic fallback exists
-// but is never the default for terminal/file/test/git/approval/preview.
-//
-// Row contract (all kinds):
-//   `✓ Title · summary                              ›`  (completed, compact)
-//   `◌ Title · summary                              ›`  (running, single motion cue)
-//   `✕ Title · summary                              ›`  (failed, recovery nearby)
-// Chevron is always visible when evidence exists — never inside ⋯.
+// a purpose-built row with meaningful evidence visible directly underneath.
+// Generic fallback exists but is never the default for terminal/file/test/git/
+// approval/preview. Raw output stays bounded so observability does not turn the
+// conversation into an unbounded terminal dump.
 
 import React from 'react';
 import { Icon } from './primitives';
 import type { ThreadPart } from '../agent-stream/parts';
-
-function useDisclosure(defaultOpen = false) {
-  const [open, setOpen] = React.useState(defaultOpen);
-  return { open, setOpen, toggle: () => setOpen((v) => !v) };
-}
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
