@@ -4112,3 +4112,31 @@ html[data-theme="light"] .composer-options-panel {
 .model-picker-popover .ai-model-compact-list {
   margin-top: 6px;
 }
+
+
+/* Long user prompts stay compact in the transcript; the full text is still sent to the agent. */
+.user-message-body-wrap {
+  min-width: 0;
+}
+.user-message-body {
+  position: relative;
+}
+.user-message-body.is-collapsed {
+  max-height: 8.4rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 0%, #000 72%, transparent 100%);
+}
+.user-message-toggle {
+  margin-top: 6px;
+  border: 0;
+  padding: 2px 0;
+  color: var(--info);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.user-message-toggle:hover {
+  text-decoration: underline;
+}
