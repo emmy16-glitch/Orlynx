@@ -26,7 +26,9 @@ const humanActivity = (value: string) => {
   if (/thinking|reasoning|reviewing|understanding/i.test(clean)) return 'Reviewing the request';
   if (/repository mapped|repository map/i.test(clean)) return 'Inspecting the repository';
   if (/reading files?/i.test(clean)) return 'Inspecting the repository';
-  if (/updating|editing|writing|changing files?/i.test(clean)) return 'Updating files';
+  if (/^(?:updating|editing|writing|changing)\s+/i.test(clean)) {
+    return /\bfiles?\b/i.test(clean) ? 'Updating files' : compact(clean, 96);
+  }
   if (/running tests?/i.test(clean)) return 'Running tests';
   if (/building/i.test(clean)) return 'Building project';
   return clean;
