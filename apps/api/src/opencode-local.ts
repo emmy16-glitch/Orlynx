@@ -15,12 +15,15 @@ const RUNTIME_PREWARM_FAILURE_BACKOFF_MS = 30_000;
 let runtimePrewarmAt = 0;
 let runtimePrewarmRetryAt = 0;
 let runtimePrewarmPromise: Promise<boolean> | null = null;
+let runtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
   runtimePrewarmAt = 0;
   runtimePrewarmRetryAt = 0;
   runtimePrewarmPromise = null;
+  if (runtimeRecoveryTimer) clearTimeout(runtimeRecoveryTimer);
+  runtimeRecoveryTimer = null;
 }
 
 async function initialize(npm: string, baseURL: string, apiKey: string, id: string): Promise<LanguageModel> {
@@ -232,6 +235,25 @@ async function waitForRuntimeReady(
   );
 }
 
+function scheduleOpenCodeRuntimeRecovery(): void {
+  if (runtimeRecoveryTimer) clearTimeout(runtimeRecoveryTimer);
+  runtimeRecoveryTimer = setTimeout(() => {
+    runtimeRecoveryTimer = null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('runtime recovery timeout')), 90_000);
+    timeout.unref?.();
+    void waitForRuntimeReady(controller.signal)
+      .then(() => {
+        runtimePrewarmAt = Date.now();
+        runtimePrewarmRetryAt = 0;
+        console.info('[ai-runtime] post-turn recovery ready');
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timeout));
+  }, 12_000);
+  runtimeRecoveryTimer.unref?.();
+}
+
 async function runtimeJson<T>(pathname: string, init: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
   const response = await runtimeFetch(pathname, init, timeoutMs);
   if (!response.ok) {
@@ -377,6 +399,10 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   let first = true;
   let remoteError = '';
   let done = false;
+  const messageRoles = new Map<string, string>();
+  const partMessages = new Map<string, string>();
+  const partTexts = new Map<string, string>();
+  const partEmitted = new Map<string, string>();
 
   const append = (delta: string) => {
     if (!delta) return;
@@ -386,6 +412,16 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     }
     full += delta;
     input.onDelta(delta);
+  };
+
+  const flushAssistantPart = (partID: string) => {
+    const messageID = partMessages.get(partID) || '';
+    if (!messageID || messageRoles.get(messageID) !== 'assistant') return;
+    const text = partTexts.get(partID) || '';
+    const emitted = partEmitted.get(partID) || '';
+    if (!text.startsWith(emitted) || text.length <= emitted.length) return;
+    append(text.slice(emitted.length));
+    partEmitted.set(partID, text);
   };
 
   try {
@@ -412,14 +448,40 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
         );
         if (eventSession && eventSession !== sessionID) continue;
 
+        if (type === 'message.updated') {
+          const info = properties.info || {};
+          const messageID = String(info.id || '');
+          if (messageID) {
+            messageRoles.set(messageID, String(info.role || ''));
+            if (info.role === 'assistant') {
+              for (const [partID, owner] of partMessages) {
+                if (owner === messageID) flushAssistantPart(partID);
+              }
+            }
+          }
+          continue;
+        }
+
         if (type === 'message.part.delta') {
-          if (!properties.field || properties.field === 'text') append(String(properties.delta || ''));
+          if (properties.field && properties.field !== 'text') continue;
+          const messageID = String(properties.messageID || '');
+          const partID = String(properties.partID || '');
+          if (!messageID || !partID) continue;
+          partMessages.set(partID, messageID);
+          partTexts.set(partID, (partTexts.get(partID) || '') + String(properties.delta || ''));
+          flushAssistantPart(partID);
           continue;
         }
 
         if (type === 'message.part.updated' && properties.part?.type === 'text') {
-          const text = String(properties.part.text || '');
-          if (text && text.startsWith(full)) append(text.slice(full.length));
+          const part = properties.part;
+          if (part.ignored === true) continue;
+          const messageID = String(part.messageID || '');
+          const partID = String(part.id || '');
+          if (!messageID || !partID) continue;
+          partMessages.set(partID, messageID);
+          partTexts.set(partID, String(part.text || ''));
+          flushAssistantPart(partID);
           continue;
         }
 
@@ -488,7 +550,7 @@ export async function streamWithOfficialOpenCode(input: {
   // requests prewarm it so normal chat does not carry OpenCode in the main API
   // process or require a Codespace.
   if (resolved.free) {
-    return streamFreeModelThroughOpenCodeRuntime({
+    const result = await streamFreeModelThroughOpenCodeRuntime({
       runtimeKey: input.runtimeKey,
       requestId: input.requestId,
       modelId: input.modelId,
@@ -499,6 +561,11 @@ export async function streamWithOfficialOpenCode(input: {
       onStatus: input.onStatus,
       onTiming: input.onTiming,
     });
+    // Free Render instances can recycle the OpenCode process after a memory
+    // spike. Re-probe shortly after a completed turn so the next message does
+    // not pay the full cold-start penalty.
+    scheduleOpenCodeRuntimeRecovery();
+    return result;
   }
 
   let savedKey: string | undefined;
