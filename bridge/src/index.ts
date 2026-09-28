@@ -334,6 +334,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
+  if (payload.system) body.system = String(payload.system);
   if (payload.model) body.model = payload.model;
   if (payload.agent) body.agent = payload.agent;
 
