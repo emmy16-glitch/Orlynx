@@ -386,10 +386,10 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.equal(rows.at(-1)?.state, 'cancelled');
   });
 
-  it('61/74: the working indicator reflects the user task, never infrastructure', () => {
+  it('61/74: the floating working indicator only appears away from the live edge', () => {
     const src = app();
     assert.match(src, /const currentActivity = transcriptActivities\.find\(\(item: any\) => item\.id === currentActivityId\)/);
-    assert.match(src, /const showWorkBar = tab === 'chat' && Boolean\(currentActivity \|\| runActive\)/);
+    assert.match(src, /const showWorkBar = tab === 'chat' && newActivity && Boolean\(currentActivity \|\| runActive\)/);
     assert.match(src, /workBarLabel = waitingForUser[\s\S]*?currentActivity\?\.title \|\| 'Orlynx is working'/);
     const barStart = src.indexOf('active-work-bar');
     const barBlock = src.slice(barStart, barStart + 1200);
@@ -424,6 +424,15 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
     assert.ok(streamLine?.includes('turn.liveReply.text'));
     assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
+  });
+
+  it('76: Build work renders before the live or durable response text', () => {
+    const src = app();
+    const work = src.indexOf('className="turn-work"');
+    const response = src.indexOf('className="message-text turn-response"');
+    assert.ok(work >= 0 && response >= 0, 'work/response surfaces are present');
+    assert.ok(work < response, 'Build work must stay above the final response');
+    assert.match(css(), /\.turn-work \+ \.turn-response \{\s*border-top:/);
   });
 });
 
