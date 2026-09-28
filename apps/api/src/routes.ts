@@ -1330,6 +1330,16 @@ router.get('/sessions/:id/runs', async (req, res) => {
       messageId: task.messageId,
       mode: task.mode,
       permission: task.permission,
+      harness: task.harness ? {
+        phase: task.harness.phase,
+        step: task.harness.step,
+        stepBudget: task.harness.stepBudget,
+        steeringRevision: task.harness.steeringRevision,
+        verification: {
+          status: task.harness.verification.status,
+          missing: task.harness.verification.missing,
+        },
+      } : undefined,
       partialText: task.partialText,
       partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
       activity: task.state === 'running'
