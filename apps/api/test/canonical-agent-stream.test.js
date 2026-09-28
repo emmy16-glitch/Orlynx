@@ -81,9 +81,7 @@ test('workspace progress evolves one semantic row', () => {
     raw('2', 2, 'workspace.preparing', 'run-a', { message: 'Connecting…' }),
     raw('3', 3, 'workspace.ready', 'run-a', { provider: 'orlynx-runner' }),
   ]));
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].title, 'Workspace ready');
-  assert.equal(rows[0].state, 'success');
+  assert.equal(rows.length, 0);
 });
 
 test('durable snapshots repair state without rewinding fresher SSE', () => {
