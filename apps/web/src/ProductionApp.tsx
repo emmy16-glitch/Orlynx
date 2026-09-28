@@ -1589,6 +1589,8 @@ function ModeAccessMenu({ mode, permission, online, onMode, onPermission, onClos
   useEffect(() => {
     const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
     const closeOnPointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('.mode-access-chip')) return;
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
     };
     window.addEventListener('keydown', closeOnKey);
