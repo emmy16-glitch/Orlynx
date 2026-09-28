@@ -113,6 +113,60 @@ export interface WorkspaceRecord {
   updatedAt: string;
 }
 
+export type HarnessPhase =
+  | 'received'
+  | 'routing'
+  | 'context_loading'
+  | 'executing'
+  | 'verifying'
+  | 'waiting_approval'
+  | 'finalizing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type SteeringAction = 'ignore' | 'append' | 'replace' | 'stop';
+
+export type ToolFamily =
+  | 'repository'
+  | 'filesystem'
+  | 'terminal'
+  | 'tests'
+  | 'git'
+  | 'preview'
+  | 'deployment'
+  | 'browser';
+
+export interface HarnessSteeringMessage {
+  id: string;
+  action: Exclude<SteeringAction, 'ignore'>;
+  text: string;
+  createdAt: string;
+  appliedAt?: string;
+}
+
+export interface HarnessVerification {
+  required: string[];
+  satisfied: string[];
+  missing: string[];
+  status: 'pending' | 'passed' | 'needs_more_work' | 'failed';
+  checkedAt?: string;
+}
+
+export interface HarnessCheckpoint {
+  phase: HarnessPhase;
+  step: number;
+  stepBudget: number;
+  steeringRevision: number;
+  inbox: HarnessSteeringMessage[];
+  toolFamilies: ToolFamily[];
+  verification: HarnessVerification;
+  lastProgressAt?: string;
+  lastCheckpointAt?: string;
+  salvageAttempts: number;
+  updatedAt: string;
+}
+
 export interface TaskRecord {
   id: string;
   sessionId: string;
@@ -128,6 +182,7 @@ export interface TaskRecord {
   permission?: PermissionProfile;
   tempPermission?: PermissionProfile;
   partialText?: string;
+  harness?: HarnessCheckpoint;
   createdAt: string;
   updatedAt: string;
 }
