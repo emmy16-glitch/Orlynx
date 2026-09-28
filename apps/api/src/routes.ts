@@ -24,6 +24,7 @@ import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { applySteering, steeringActionFor } from './harness.js';
 
 export const router = Router();
 
@@ -430,6 +431,95 @@ router.post('/sessions/:id/messages', async (req, res) => {
     durableSession = await repository.getSession(s.id);
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+
+    const steeringAction = steeringActionFor(String(text));
+    if (steeringAction !== 'ignore') {
+      const activeTask = (await repository.listTasks(s.id))
+        .find((item) => item.state === 'running' && (item.plane || 'workspace') === 'workspace');
+
+      if (activeTask) {
+        const now = new Date().toISOString();
+        const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
+
+        if (steeringAction === 'stop') {
+          try {
+            const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
+            await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
+              adapterId: adapter.id,
+              taskId: activeTask.id,
+              runId: activeTask.runId,
+            }, 15_000);
+          } catch (error) {
+            console.warn(`[harness] stop command failed session=${s.id} task=${activeTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+          }
+
+          await repository.putTask(steeredTask);
+          const memoryRun = (store.db.runs[s.id] || []).find((item) => item.id === activeTask.runId);
+          if (memoryRun) {
+            memoryRun.state = 'cancelled';
+            memoryRun.finishedAt = now;
+            memoryRun.activity = 'Stopped';
+            store.save();
+          }
+          emit(s.id, 'run.failed', { taskId: activeTask.id, cancelled: true, steering: true }, activeTask.runId);
+          await promoteNextQueuedRun(s.id).catch(() => null);
+        } else {
+          await repository.putTask(steeredTask);
+          emit(s.id, 'state.delta', {
+            taskId: activeTask.id,
+            scope: 'harness',
+            steeringAction,
+            steeringRevision: steeredTask.harness?.steeringRevision,
+            message: steeringAction === 'replace' ? 'Updated the active Build request.' : 'Added context to the active Build request.',
+          }, activeTask.runId);
+        }
+
+        const ackRunId = `run_${uuid().slice(0, 8)}`;
+        const ackTaskId = `task_${uuid()}`;
+        const reply = steeringAction === 'stop'
+          ? 'Stopped the current Build task.'
+          : steeringAction === 'replace'
+            ? 'Updated the current Build task with your new direction.'
+            : 'Added that to the current Build task.';
+        const assistant = { id: `msg_${ackRunId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId: ackRunId, createdAt: now };
+        const ackRun = {
+          id: ackRunId,
+          sessionId: s.id,
+          engine: selectedAdapterId,
+          plane: 'direct' as const,
+          model: selectedModel || undefined,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          state: 'completed' as const,
+          activity: 'Ready',
+          startedAt: now,
+          finishedAt: now,
+        };
+        (store.db.messages[s.id] ||= []).push(assistant);
+        (store.db.runs[s.id] ||= []).push(ackRun as any);
+        store.save();
+        await repository.putMessage(assistant);
+        await repository.putTask({
+          id: ackTaskId,
+          sessionId: s.id,
+          workspaceId: 'direct',
+          plane: 'direct',
+          runId: ackRunId,
+          messageId: msg.id,
+          state: 'completed',
+          prompt: String(text),
+          modelId: selectedModel || undefined,
+          adapterId: selectedAdapterId,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          createdAt: now,
+          updatedAt: now,
+        });
+        emit(s.id, 'message.end', { taskId: ackTaskId, instant: true, steering: steeringAction }, ackRunId);
+        emit(s.id, 'run.completed', { taskId: ackTaskId, summary: reply, instant: true, steering: steeringAction }, ackRunId);
+        return res.json({ message: msg, run: ackRun, plane: 'direct', instant: true, steering: steeringAction, targetRunId: activeTask.runId });
+      }
+    }
   }
 
   if (publishIntent) {
