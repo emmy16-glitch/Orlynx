@@ -352,7 +352,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
           AND queued.state='queued'
           AND NOT EXISTS (
             SELECT 1 FROM tasks active
-            WHERE active.session_id=${sessionId} AND active.state='running'
+            WHERE active.session_id=${sessionId}
+              AND active.state='running'
+              AND COALESCE(active.execution_plane,'workspace') = COALESCE(queued.execution_plane,'workspace')
           )
         ORDER BY queued.created_at, queued.id
         LIMIT 1
@@ -375,7 +377,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
         AND queued.state='queued'
         AND NOT EXISTS (
           SELECT 1 FROM tasks active
-          WHERE active.session_id=${sessionId} AND active.state='running'
+          WHERE active.session_id=${sessionId}
+              AND active.state='running'
+              AND COALESCE(active.execution_plane,'workspace') = COALESCE(queued.execution_plane,'workspace')
         )
       RETURNING queued.*
     `)[0];
