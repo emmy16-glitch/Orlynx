@@ -441,7 +441,10 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (status !== previousStatus) {
       toolStates.set(id, status);
       if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
-      else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
+      else if (status === 'running') {
+        bridgeEvent(ws, 'step.started', { stepId: id, tool: toolName, semanticType, title }, taskId, runId);
+        bridgeEvent(ws, 'tool.started', common, taskId, runId);
+      }
     }
 
     const currentOutput = String(state.output || '');
@@ -467,11 +470,13 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
         ...common,
         ...(typeof state.time?.end === 'number' ? { endedAt: state.time.end } : {}),
       }, taskId, runId);
+      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'success' }, taskId, runId);
     } else if (status === 'error' && previousStatus !== 'error') {
       bridgeEvent(ws, 'tool.failed', {
         ...common,
         error: String(state.error || 'Tool failed.').slice(0, 8_000),
       }, taskId, runId);
+      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
     }
   };
 
