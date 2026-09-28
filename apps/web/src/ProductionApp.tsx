@@ -95,15 +95,132 @@ function isBuildProgressNarration(text: string): boolean {
   return /^(?:i(?:'m| am|'ll| will)\s+)?(?:starting|checking|inspecting|looking|reading|running|testing|building|setting up|opening|preparing|trying|verifying|reviewing|first checking|let me\b)/i.test(cleaned);
 }
 
+function safeLinkHref(value: string): string | undefined {
+  const href = value.trim();
+  return /^(?:https?:\/\/|mailto:)/i.test(href) ? href : undefined;
+}
+
+function inlineMarkdown(text: string, keyPrefix: string): React.ReactNode[] {
+  const pattern = /(\`[^\`\n]+\`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)\s]+\)|\*[^*\n]+\*|_[^_\n]+_)/g;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = pattern.exec(text))) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${index++}`;
+    if (token.startsWith('**') || token.startsWith('__')) {
+      parts.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith('~~')) {
+      parts.push(<del key={key}>{token.slice(2, -2)}</del>);
+    } else if (token.startsWith('`')) {
+      parts.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith('[')) {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = linkMatch ? safeLinkHref(linkMatch[2]) : undefined;
+      parts.push(href
+        ? <a key={key} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel={href.startsWith('http') ? 'noreferrer' : undefined}>{linkMatch![1]}</a>
+        : token);
+    } else {
+      parts.push(<em key={key}>{token.slice(1, -1)}</em>);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+function MarkdownText({ text, className = '' }: { text: string; className?: string }) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+
+  const paragraph = (items: string[]) => {
+    const content: React.ReactNode[] = [];
+    items.forEach((line, lineIndex) => {
+      if (lineIndex) content.push(<br key={`br-${key}-${lineIndex}`} />);
+      content.push(...inlineMarkdown(line, `p-${key}-${lineIndex}`));
+    });
+    blocks.push(<p key={`p-${key++}`}>{content}</p>);
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+
+    const fence = line.match(/^\s*\`\`\`([^\s]*)\s*$/);
+    if (fence) {
+      const language = fence[1];
+      const codeLines: string[] = [];
+      i += 1;
+      while (i < lines.length && !/^\s*\`\`\`\s*$/.test(lines[i])) codeLines.push(lines[i++]);
+      if (i < lines.length) i += 1;
+      blocks.push(<pre key={`code-${key++}`} className="chat-code-block"><code data-language={language || undefined}>{codeLines.join('\n')}</code></pre>);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length + 1);
+      blocks.push(React.createElement(`h${level}`, { key: `h-${key++}` }, inlineMarkdown(heading[2], `h-${key}`)));
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+        i += 1;
+      }
+      blocks.push(<ul key={`ul-${key++}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{inlineMarkdown(item, `ul-${key}-${itemIndex}`)}</li>)}</ul>);
+      continue;
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
+        i += 1;
+      }
+      blocks.push(<ol key={`ol-${key++}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{inlineMarkdown(item, `ol-${key}-${itemIndex}`)}</li>)}</ol>);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ''));
+        i += 1;
+      }
+      blocks.push(<blockquote key={`quote-${key++}`}>{quote.map((item, itemIndex) => <React.Fragment key={itemIndex}>{itemIndex > 0 && <br />}{inlineMarkdown(item, `q-${key}-${itemIndex}`)}</React.Fragment>)}</blockquote>);
+      continue;
+    }
+
+    const paragraphLines: string[] = [line];
+    i += 1;
+    while (
+      i < lines.length
+      && lines[i].trim()
+      && !/^\s*\`\`\`/.test(lines[i])
+      && !/^(#{1,4})\s+/.test(lines[i])
+      && !/^\s*[-*+]\s+/.test(lines[i])
+      && !/^\s*\d+[.)]\s+/.test(lines[i])
+      && !/^\s*>\s?/.test(lines[i])
+    ) {
+      paragraphLines.push(lines[i]);
+      i += 1;
+    }
+    paragraph(paragraphLines);
+  }
+
+  return <div className={`message-text markdown-text ${className}`.trim()}>{blocks}</div>;
+}
+
 function UserMessageText({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const longMessage = text.length > 700 || text.split(/\r?\n/).length > 8;
-  return <div className="user-message-body-wrap">
-    <div className={`message-text user-message-body ${longMessage && !expanded ? 'is-collapsed' : ''}`}>{text}</div>
-    {longMessage && <button type="button" className="user-message-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-      {expanded ? 'Show less' : 'Show more'}
-    </button>}
-  </div>;
+  return <div className="user-message-body-wrap"><MarkdownText text={text} className="user-message-body" /></div>;
 }
 
 export default function ProductionApp() {
@@ -1286,11 +1403,11 @@ export default function ProductionApp() {
                   const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '') : '';
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
-                    {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
-                    {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
+                    {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
-                      {turn.liveReply && !durable && !hideProgressNarration && <div className="message-text turn-response">{liveText}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
-                      {durable && <div className="message-text turn-response">{visibleChatText('assistant', durable.text, priorUserPrompt)}</div>}
+                      {turn.liveReply && !durable && !hideProgressNarration && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
+                      {durable && <div className="turn-response"><MarkdownText text={visibleChatText('assistant', durable.text, priorUserPrompt)} /></div>}
                       {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => { setAiPickerView('model'); setShowConnectAI(true); }} />}
                     </div></article>}
                   </div>;
