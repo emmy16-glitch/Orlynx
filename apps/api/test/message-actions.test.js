@@ -15,8 +15,8 @@ describe('contextual message actions (§§142-143, 161, 171-173)', () => {
   it('assistant responses carry a quiet attached action row', () => {
     // Thread turns attach actions to the durable assistant message they own.
     assert.match(app(), /<AssistantMessageActions text=\{visibleChatText\('assistant', durable\.text, priorUserPrompt\)\}/);
-    assert.match(product(), /className="message-actions" role="group" aria-label="Response actions"/);
-    assert.match(css(), /\.message-actions \{[\s\S]*?opacity: 0\.78/);
+    assert.match(product(), /className="message-actions assistant-actions" role="group" aria-label="Response actions"/);
+    assert.match(css(), /\.assistant-actions \{[\s\S]*?opacity: \.42/);
   });
 
   it('primary set stays at 2-4 controls; the rest hides in More', () => {
@@ -68,7 +68,7 @@ describe('retry semantics (§§144-149, 175-178, 183, 185)', () => {
   });
 
   it('failure recovery sits beside the failure, once', () => {
-    assert.match(product(), /onClick=\{props\.onOpenModels\}>Change model<\/button>/);
+    assert.match(product(), /onClick=\{\(\) => \{ closeMenu\(\); props\.onOpenModels\(\); \}\}>Change model<\/button>/);
     assert.match(product(), /runCancelled \? 'Run again'/);
     assert.equal((product().match(/Change model/g) || []).length, 1);
     assert.equal((app().match(/Change model/g) || []).length, 0);
@@ -86,7 +86,7 @@ describe('copy, menu, a11y (§§150, 155-156, 165-168, 184)', () => {
     const src = product();
     assert.match(src, /navigator.*clipboard.*writeText|clipboard\?\.writeText/);
     assert.match(src, /fallbackCopy/);
-    assert.match(src, /Copied<\/span>/);
+    assert.match(src, /Icon name=\{copied \? 'check' : 'copy'\}/);
     assert.match(src, /setTimeout\(\(\) => setCopied\(false\), 1500\)/);
     assert.doesNotMatch(src, /toast/i);
   });
@@ -110,7 +110,7 @@ describe('copy, menu, a11y (§§150, 155-156, 165-168, 184)', () => {
 
   it('icons are labeled; touch targets stay tappable without bulk', () => {
     const src = product();
-    assert.match(src, /aria-label="Copy response"/);
+    assert.match(src, /aria-label=\{copied \? 'Copied response' : 'Copy response'\}/);
     assert.match(src, /aria-label="More actions"/);
     assert.match(src, /aria-label=\{copied \? 'Copied message' : 'Copy message'\}/);
     assert.match(src, /title=\{copied \? 'Copied' : 'Copy'\}/);
