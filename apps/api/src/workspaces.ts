@@ -99,7 +99,7 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
     emit(input.sessionId, 'workspace.preparing', {
       stage: 'workspace.migrate',
       provider: 'orlynx-runner',
-      message: 'Moving this development environment to the fast Orlynx runner…',
+      message: 'Switching to the warm Orlynx runner…',
     });
     return migrated;
   }
@@ -150,7 +150,7 @@ async function prepareWorkspaceOnce(
   let refreshAdapterFallback: Awaited<ReturnType<typeof repository.listWorkspaceAgentAdapters>> = [];
   try {
     if (workspace.state === 'creating' && !hasProviderHandle(workspace)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.create', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Preparing a fast Orlynx workspace…' : 'Starting a development environment on GitHub…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.create', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Starting Orlynx workspace…' : 'Starting Codespace…' });
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {
@@ -161,7 +161,7 @@ async function prepareWorkspaceOnce(
       if (workspace.provider === 'github-codespaces' && workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure) && provider.replace) {
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'codespace.replace',
-          message: 'Replacing the broken development environment with a fresh Codespace…',
+          message: 'Restarting with a fresh Codespace…',
         });
         workspace = await provider.replace({
           workspaceId: workspace.id,
@@ -228,7 +228,7 @@ async function prepareWorkspaceOnce(
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.wait', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Preparing the Orlynx workspace…' : 'Waiting for GitHub to finish starting the Codespace…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.wait', provider: workspace.provider, message: workspace.provider === 'orlynx-runner' ? 'Waiting for runner…' : 'Waiting for GitHub…' });
       const readyTimeout = workspace.provider === 'orlynx-runner'
         ? Math.max(15_000, Number(process.env.ORLYNX_RUNNER_READY_TIMEOUT_MS || 60_000))
         : Math.max(90_000, Number(process.env.ORLYNX_CODESPACE_READY_TIMEOUT_MS || 4 * 60_000));
@@ -248,7 +248,7 @@ async function prepareWorkspaceOnce(
             emit(input.sessionId, 'workspace.preparing', {
               stage: 'workspace.wait',
               state: workspace.state,
-              message: workspace.provider === 'orlynx-runner' ? 'Runner status is temporarily unavailable. Orlynx is still preparing the workspace.' : 'GitHub status is temporarily unavailable. Orlynx is still waiting for the development environment.',
+              message: workspace.provider === 'orlynx-runner' ? 'Checking runner status again…' : 'Checking GitHub status again…',
             });
           }
           await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -261,10 +261,10 @@ async function prepareWorkspaceOnce(
             stage: 'workspace.state',
             state: workspace.state,
             message: workspace.state === 'connecting'
-              ? (workspace.provider === 'orlynx-runner' ? 'Runner is ready. Connecting Orlynx…' : 'Codespace is online. Connecting Orlynx…')
+              ? (workspace.provider === 'orlynx-runner' ? 'Runner ready. Starting bridge…' : 'Codespace online. Starting SSH…')
               : workspace.state === 'failed'
-                ? (workspace.provider === 'orlynx-runner' ? 'The Orlynx runner could not prepare the workspace.' : 'GitHub could not start the Codespace.')
-                : (workspace.provider === 'orlynx-runner' ? 'Orlynx is preparing the runner…' : 'GitHub is preparing the Codespace…'),
+                ? (workspace.provider === 'orlynx-runner' ? 'Runner start failed. Preparing recovery…' : 'Codespace start failed. Preparing recovery…')
+                : (workspace.provider === 'orlynx-runner' ? 'Starting runner…' : 'Starting Codespace…'),
           });
         }
         if (workspace.state === 'connecting' || workspace.state === 'failed') break;
@@ -273,7 +273,7 @@ async function prepareWorkspaceOnce(
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'workspace.wait',
             state: workspace.state,
-            message: workspace.provider === 'orlynx-runner' ? 'The runner is still preparing. Your task is saved and will start automatically.' : 'GitHub is still preparing the development environment. Your task is saved and Orlynx will continue automatically.',
+            message: workspace.provider === 'orlynx-runner' ? 'Waiting for runner…' : 'Waiting for GitHub…',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_500));
@@ -290,7 +290,7 @@ async function prepareWorkspaceOnce(
       await repository.putWorkspace(workspace);
       await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
-      emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: 'Connecting Orlynx to the development environment…' });
+      emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: workspace.provider === 'orlynx-runner' ? 'Starting Orlynx bridge…' : 'Starting SSH and Orlynx bridge…' });
       console.info(`[workspace] connecting runtime session=${workspace.sessionId} workspace=${workspace.id} provider=${workspace.provider}`);
       if (!provider.connect) throw new Error(`Workspace provider ${workspace.provider} cannot connect the Orlynx runtime.`);
       await provider.connect(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
@@ -311,8 +311,8 @@ async function prepareWorkspaceOnce(
             stage: 'agent.ready',
             state: finalWorkspace.state,
             message: finalWorkspace.bridgeState === 'ready'
-              ? 'Development environment connected. Preparing agent adapters…'
-              : 'Connecting Orlynx to the development environment…',
+              ? 'Starting OpenCode…'
+              : 'Connecting Orlynx bridge…',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -320,7 +320,7 @@ async function prepareWorkspaceOnce(
       }
     }
     if (workspaceFullyReady(finalWorkspace)) {
-      emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Development environment ready.' });
+      emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Workspace ready.' });
       return finalWorkspace;
     }
     if (finalWorkspace.state === 'failed') {
@@ -359,7 +359,7 @@ async function prepareWorkspaceOnce(
         try {
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'codespace.replace',
-            message: 'The previous Codespace is no longer available. Starting a fresh development environment…',
+            message: 'Codespace unavailable — starting a fresh Codespace…',
           });
           if (!provider.replace) throw new Error('Workspace provider cannot replace this environment.');
           const replacement = await provider.replace({
@@ -382,7 +382,7 @@ async function prepareWorkspaceOnce(
         try {
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'codespace.replace',
-            message: 'The development environment could not establish SSH. Replacing it with a fresh Codespace…',
+            message: 'SSH unavailable — restarting with a fresh Codespace…',
           });
           const brokenName = workspace.codespaceName;
           const replacement = await provider.replace({

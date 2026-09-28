@@ -127,7 +127,6 @@ export default function ProductionApp() {
   const [syncStep, setSyncStep] = useState('');
   const manageOpenedAt = useRef(0);
   const [cloudBusy, setCloudBusy] = useState(false);
-  const [workspaceClock, setWorkspaceClock] = useState(Date.now());
   const [cloudIssue, setCloudIssue] = useState<'permissions' | 'failed' | null>(null);
   const [workspaceReadNotice, setWorkspaceReadNotice] = useState('');
   const workspaceReconnectRef = useRef(new Set<string>());
@@ -537,7 +536,6 @@ export default function ProductionApp() {
     const workspace = session?.workspace;
     if (!session?.id || !workspace || !['creating', 'starting', 'bootstrapping', 'connecting'].includes(workspace.state)) return;
     const tick = window.setInterval(async () => {
-      setWorkspaceClock(Date.now());
       if (document.visibilityState !== 'visible' || !navigator.onLine) return;
       try {
         const next = await j<any>(await fetch(`/v1/sessions/${encodeURIComponent(session.id)}`));
@@ -894,7 +892,6 @@ export default function ProductionApp() {
       // progress. Re-POSTing /cloud every two seconds used to re-enter recovery
       // while GitHub was still changing state.
       const workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
-      setWorkspaceClock(Date.now());
       setSession((current: any) => {
         if (!current || current.id !== sessionId) return current;
         const next = { ...current, workspace };
@@ -1032,10 +1029,7 @@ export default function ProductionApp() {
   const publicFreeModelsAvailable = aiModels.some((model: any) => model.free && model.status === 'available');
   const aiAccountConnected = Boolean(openCodeConnection || publicFreeModelsAvailable);
   const workspaceReady = session?.workspace?.state === 'ready';
-  const workspaceDisconnected = session?.workspace?.state === 'connecting' && session.workspace.bridgeState === 'disconnected' && Boolean(session.workspace.connectionId);
-  const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state) && !workspaceDisconnected);
-  const workspaceSeconds = session?.workspace?.updatedAt ? Math.max(0, Math.floor((workspaceClock - Date.parse(session.workspace.updatedAt)) / 1000)) : 0;
-  const workspaceStalled = workspacePreparing && workspaceSeconds >= 180;
+  const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state));
   const activities = useMemo(() => selectActivities(agentStream), [agentStream]);
   const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
   const liveReplies = useMemo(() => selectLiveReplies(agentStream, messages), [agentStream, messages]);
@@ -1189,15 +1183,13 @@ export default function ProductionApp() {
           <nav className="project-tabs" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => { setTab(id); setOpenedFile(null); }}><Icon name={icon} size={16} /><span>{label}</span></button>)}</nav>
           {!online && <div className="offline-banner"><Icon name="cloud" />Offline. Drafts remain on this device; no task was sent.</div>}
           {session?.githubAccess === 'disconnected' && <div className="screen-alert" role="alert"><span>GitHub access to {session.project} was removed. Your Orlynx conversation is preserved.</span><button className="text-button" onClick={() => setPage('github')}>Manage GitHub access</button></div>}
-          {workspaceReadNotice && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert tone-neutral" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
+          {workspaceReadNotice && tab !== 'chat' && (!lastRun || lastRun?.plane === 'workspace' || tab === 'files' || cloudBusy) && <div className="screen-alert tone-neutral" role="status"><span>{workspaceReadNotice}</span><button aria-label="Dismiss" onClick={() => setWorkspaceReadNotice('')}><Icon name="close" /></button></div>}
           {error && !(cloudBusy && workspacePreparing) && <div className="screen-alert tone-danger" role="alert"><span>{error}</span><button aria-label="Dismiss" onClick={() => setError('')}><Icon name="close" /></button></div>}
           <div className="workspace-layout">
             <main className="workspace-main">
               {tab === 'chat' && <section className="conversation">
-                {workspacePreparing && workspaceStalled && <div className="screen-alert tone-warning" role="status"><span><b>Development environment is taking longer than expected.</b> The task remains queued and will continue automatically.</span></div>}
                 {cloudIssue === 'permissions' && (cloudBusy || lastRun?.plane === 'workspace') && <div className="workspace-recovery-card" role="alert"><span className="recovery-icon"><Icon name="github" /></span><div><b>Allow GitHub Codespaces to continue</b><p>Approve the requested GitHub access in the new tab, then return to this Orlynx tab. Orlynx will check the permission and continue. If GitHub stays open, switch back to Orlynx yourself.</p><div className="recovery-actions"><Button tone="ghost" onClick={openManageRepositories}>Review GitHub access</Button><Button onClick={() => startCloud()} disabled={cloudBusy}>{cloudBusy ? 'Checking…' : 'Retry workspace'}</Button></div></div></div>}
                 {cloudIssue === 'failed' && session.workspace?.state === 'failed' && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace couldn't start." hint={session.workspace?.failureCode?.startsWith('OpenCode') ? session.workspace.failureCode : "Your conversation is preserved. You can retry without reopening the project."} onRetry={() => startCloud()} />}
-                {session.workspace?.state === 'connecting' && session.workspace?.bridgeState === 'disconnected' && session.workspace?.connectionId && (cloudBusy || lastRun?.plane === 'workspace') && <AgentErrorCard title="Workspace connection interrupted." hint="The Codespace remains available." onReconnect={() => startCloud(true)} />}
                 {!messages.length && <div className="conversation-intro setup-aware"><span className="agent-avatar"><span className="brand-mark small-mark" /></span><div>
                   <p className="setup-kicker">{!aiAccountConnected ? 'CONNECT AI' : ai.model ? 'READY TO CHAT' : 'CHOOSE MODEL'}</p>
                   <h2>{!aiAccountConnected ? 'Connect AI' : ai.model ? 'What should we work on?' : 'Choose your model'}</h2>

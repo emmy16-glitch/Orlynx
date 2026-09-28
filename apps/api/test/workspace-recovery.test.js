@@ -114,7 +114,7 @@ test('bridge disconnect recovery leaves idle Codespaces alone and repairs only a
 
 test('workspace startup retries transient GitHub status lookup failures', () => {
   const source = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
-  assert.match(source, /GitHub status is temporarily unavailable/);
+  assert.match(source, /Checking GitHub status again/);
   assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
 });
 
