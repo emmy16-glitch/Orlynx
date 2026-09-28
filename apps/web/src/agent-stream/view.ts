@@ -51,11 +51,34 @@ function classifyTool(tool: string, command: string, semanticType?: string): Act
 
 function toolTitle(tool: AgentStreamTool, category: ActivityCategory): string {
   const command = tool.command || '';
+  const firstFile = Array.isArray(tool.files) ? tool.files.find((file) => file?.path)?.path : '';
+  const targetPath = tool.path || firstFile || '';
+
   if (category === 'test') return tool.state === 'success' ? 'Tests passed' : tool.state === 'failed' ? 'Tests failed' : 'Running tests';
   if (category === 'build') return tool.state === 'success' ? 'Build completed' : tool.state === 'failed' ? 'Build failed' : 'Building the project';
-  if (category === 'search') return tool.title && !/^read|search|list$/i.test(tool.title) ? compact(tool.title, 88) : 'Inspecting the repository';
-  if (category === 'file') return tool.title && !/^edit|write|patch$/i.test(tool.title) ? compact(tool.title, 88) : 'Updating files';
-  if (category === 'git') return /status|log|diff|show|branch/i.test(command) ? 'Inspecting Git state' : 'Updating repository';
+
+  if (category === 'search') {
+    if (targetPath) return `Reading ${compact(String(targetPath), 82)}`;
+    return tool.title && !/^read|search|list$/i.test(tool.title) ? compact(tool.title, 88) : 'Inspecting the repository';
+  }
+
+  if (category === 'file') {
+    if (targetPath) {
+      const action = Array.isArray(tool.files) ? String(tool.files.find((file) => file?.path === firstFile)?.action || '') : '';
+      const verb = action === 'create' ? 'Creating' : action === 'delete' ? 'Deleting' : tool.state === 'success' ? 'Updated' : 'Editing';
+      return `${verb} ${compact(String(targetPath), 82)}`;
+    }
+    return tool.title && !/^edit|write|patch$/i.test(tool.title) ? compact(tool.title, 88) : 'Updating files';
+  }
+
+  if (category === 'git') {
+    if (/\bcommit\b/i.test(command)) return tool.state === 'success' ? 'Committed changes' : tool.state === 'failed' ? 'Commit failed' : 'Committing changes';
+    if (/\bpush\b/i.test(command)) return tool.state === 'success' ? 'Published changes' : tool.state === 'failed' ? 'Publish failed' : 'Publishing changes';
+    if (/\b(?:pull|fetch)\b/i.test(command)) return tool.state === 'success' ? 'Repository updated' : tool.state === 'failed' ? 'Repository update failed' : 'Updating from remote';
+    if (/status|log|diff|show|branch/i.test(command)) return 'Inspecting Git state';
+    return tool.title && !/^git$/i.test(tool.title) ? compact(tool.title, 88) : 'Updating repository';
+  }
+
   if (/health|curl/i.test(command)) return tool.state === 'failed' ? 'Service health check failed' : tool.state === 'success' ? 'Service health check passed' : 'Checking service health';
   if (command) return tool.state === 'failed' ? 'Command failed' : tool.state === 'success' ? 'Command completed' : 'Running command';
   return tool.title || (tool.name === 'exec' || /bash|shell|command|terminal/i.test(tool.name) ? 'Running command' : `Working with ${tool.name || 'the project'}`);
@@ -135,7 +158,14 @@ function makeTool(tool: AgentStreamTool): ActivityItem {
     ...(tool.files ? { files: tool.files } : {}),
     ...(testCounts || {}),
   };
-  let summary = tool.command ? compact(tool.command, 120) : tool.path ? compact(tool.path, 120) : undefined;
+  const filePaths = Array.isArray(tool.files) ? tool.files.map((file) => String(file?.path || '')).filter(Boolean) : [];
+  let summary = tool.command
+    ? compact(tool.command, 140)
+    : filePaths.length
+      ? filePaths.slice(0, 3).join(' · ')
+      : tool.path
+        ? compact(tool.path, 120)
+        : undefined;
   if (category === 'test' && testCounts) {
     summary = [
       testCounts.passed !== undefined ? `${testCounts.passed} passed` : '',
