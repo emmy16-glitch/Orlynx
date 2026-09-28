@@ -73,7 +73,9 @@ describe('workspace trust and AI control contract', () => {
   });
 
   it('uses one authored agent/model control instead of native composer selects', () => {
-    assert.match(src, /className="ai-control-trigger"/, 'unified AI control trigger missing');
+    assert.match(src, /className="ai-control-trigger composer-chip agent-chip"/, 'compact agent control missing');
+    assert.match(src, /className="composer-chip model-chip"/, 'compact model control missing');
+    assert.match(src, /className="composer-chip mode-access-chip"/, 'compact mode/access control missing');
     assert.match(src, /className="ai-dropdown-topline"/, 'compact AI dropdown header missing');
     assert.match(src, /aria-label="Model"/, 'model picker list missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');

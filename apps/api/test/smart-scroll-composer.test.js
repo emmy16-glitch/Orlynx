@@ -127,12 +127,14 @@ describe('compact expanding composer (§§109-140)', () => {
     assert.match(source, /\.composer textarea \{\s*max-height: min\(30vh, 200px\);\s*overflow-y: auto/);
   });
 
-  it('idle keeps model/mode legible without the heavy utility row', () => {
+  it('keeps agent, model and mode visible as compact stable controls', () => {
     const src = app();
-    assert.match(src, /className="ai-status-compact"/);
+    assert.match(src, /className="ai-control-trigger composer-chip agent-chip"/);
+    assert.match(src, /className="composer-chip model-chip"/);
+    assert.match(src, /className="composer-chip mode-access-chip"/);
     assert.match(src, /aria-label="Choose AI agent and model"/);
-    assert.match(src, /\{ai\.mode === 'build' \? 'Build' : ai\.mode === 'plan' \? 'Plan' : 'Ask'\}<\/span><\/button>\}/);
-    assert.match(src, /\{composerExpanded && ai\.mode === 'build' && ai\.permission === 'ask-first'/);
+    assert.match(src, /\{ai\.mode === 'build' \? 'Build' : ai\.mode === 'plan' \? 'Plan' : 'Ask'\}/);
+    assert.match(src, /ai\.mode === 'build' && ai\.permission === 'ask-first' && aiAccountConnected && composerExpanded/);
   });
 
   it('send stays anchored; Enter/Shift+Enter/IME untouched', () => {
@@ -147,6 +149,6 @@ describe('compact expanding composer (§§109-140)', () => {
     assert.match(source, /\.composer:focus-within \{\s*border-color: var\(--primary\)/);
     assert.match(source, /\.composer \{\s*transition: border-color var\(--motion-fast\)/);
     assert.match(source, /\.composer\.is-idle \{\s*min-height: 52px/);
-    assert.match(source, /\.ai-status-compact \{[\s\S]*?min-height: 32px/);
+    assert.match(source, /\.composer-chip \{[\s\S]*?min-height: 30px/);
   });
 });

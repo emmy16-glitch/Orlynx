@@ -1256,53 +1256,66 @@ export default function ProductionApp() {
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { nearBottomRef.current = true; window.scrollTo({ top: document.documentElement.scrollHeight, behavior: jumpBehavior() }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span>{runActive && <Button type="button" tone="ghost" className="active-work-stop" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}>{stopping ? 'Stopping…' : <><span aria-hidden>■</span> Stop</>}</Button>}</div></div>}
-              {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body"><textarea
-  ref={composerBoxRef}
-  rows={1}
-  value={composer}
-  onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }}
-  onFocus={() => setComposerFocused(true)}
-  onBlur={() => setComposerFocused(false)}
-  onKeyDown={(event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
-      event.preventDefault();
-      if (composer.trim() && !sending && aiAccountConnected && ai.model && online) void sendMessage();
-    }
-  }}
-  placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected || !ai.model ? 'Connect AI to start' : `Ask Orlynx anything…`}
-  aria-label="Message Orlynx AI"
-  disabled={!aiAccountConnected || !ai.model || !online}
-/>{composerExpanded ? <div className="composer-controls">{aiAccountConnected
-  ? <button type="button" className="ai-control-trigger" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
-      <span className="ai-control-icon"><Icon name="agents" size={14} /></span>
-      <span className="ai-control-copy"><b>{selectedAgentAdapter?.displayName || 'Orlynx AI'}</b><small>{ai.model?.displayName || 'Choose model'}</small></span>
-      <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
-      <Icon name="chevron" size={12} />
-    </button>
-  : <button type="button" className="ai-control-trigger connect" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><span className="ai-control-icon"><Icon name="agents" size={14} /></span><span className="ai-control-copy"><b>Connect AI</b><small>Choose an agent and model</small></span><Icon name="chevron" size={12} /></button>}
-  <details className="composer-options">
-    <summary aria-label="Mode and access">{ai.mode === 'build'
-      ? `Build · ${ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access'}`
-      : ai.mode === 'plan' ? 'Plan · No project changes' : 'Ask · Read only'} <Icon name="chevron" size={12} /></summary>
-    <div className="composer-options-panel">
-      <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
-        {[
-          ['build', 'Build', 'Uses the development workspace only when the request needs execution or file changes'],
-          ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
-          ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
-        ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
-      </div></div>
-      {ai.mode === 'build'
-        ? <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
-            {[
-              ['full', 'Full project access', 'Can make project changes'],
-              ['ask-first', 'Ask first', 'Requests permission before changes'],
-              ['read-only', 'Read only', 'Cannot change project files'],
-            ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
-          </div></div>
-        : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
-    </div>
-  </details></div> : <button type="button" className="ai-status-compact" onClick={() => setShowConnectAI(true)} aria-label="Choose AI agent and model"><span>{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span><span aria-hidden> · </span><span>{ai.model?.displayName || 'Choose model'}</span><span aria-hidden> · </span><span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span></button>}{composerExpanded && ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
+              {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
+  <div className="composer-controls">
+    {aiAccountConnected ? <>
+      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
+        <Icon name="agents" size={13} />
+        <span className="composer-chip-label">{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span>
+        <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
+        <Icon name="chevron" size={11} />
+      </button>
+      <button type="button" className="composer-chip model-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI model">
+        <span className="composer-chip-label">{ai.model?.displayName || 'Choose model'}</span>
+        <Icon name="chevron" size={11} />
+      </button>
+    </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
+    <details className="composer-options">
+      <summary className="composer-chip mode-access-chip" aria-label="Mode and access">
+        <span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span>
+        <span className="chip-separator" aria-hidden>·</span>
+        <span>{ai.mode === 'build' ? (ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access') : 'Read only'}</span>
+        <Icon name="chevron" size={11} />
+      </summary>
+      <div className="composer-options-panel">
+        <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
+          {[
+            ['build', 'Build', 'Uses the development workspace only when the request needs execution or file changes'],
+            ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
+            ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
+          ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
+        </div></div>
+        {ai.mode === 'build'
+          ? <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
+              {[
+                ['full', 'Full project access', 'Can make project changes'],
+                ['ask-first', 'Ask first', 'Requests permission before changes'],
+                ['read-only', 'Read only', 'Cannot change project files'],
+              ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
+            </div></div>
+          : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
+      </div>
+    </details>
+  </div>
+  <textarea
+    ref={composerBoxRef}
+    rows={1}
+    value={composer}
+    onChange={(event) => { setComposer(event.target.value); try { localStorage.setItem(draftKey(session.id), event.target.value); } catch {} }}
+    onFocus={() => setComposerFocused(true)}
+    onBlur={() => setComposerFocused(false)}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+        event.preventDefault();
+        if (composer.trim() && !sending && aiAccountConnected && ai.model && online) void sendMessage();
+      }
+    }}
+    placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected || !ai.model ? 'Connect AI to start' : `Ask Orlynx anything…`}
+    aria-label="Message Orlynx AI"
+    disabled={!aiAccountConnected || !ai.model || !online}
+  />
+  {ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && composerExpanded && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}
+</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}

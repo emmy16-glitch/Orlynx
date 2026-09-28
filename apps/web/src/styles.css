@@ -3913,3 +3913,113 @@ html[data-theme="light"] .composer-options-panel {
   border-color: color-mix(in srgb, var(--warning) 34%, var(--border));
   background: color-mix(in srgb, var(--warning) 6%, var(--surface));
 }
+
+
+/* === Clean composer hierarchy adopted from the mobile Orlynx reference ===
+   Keep controls stable and scannable: agent, model, then mode/access. */
+.composer-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: visible;
+}
+.composer-chip {
+  min-width: 0;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 4px 9px;
+  color: var(--foreground-muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
+}
+.composer-chip:hover {
+  color: var(--foreground);
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.composer-chip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.ai-control-trigger.composer-chip {
+  min-height: 30px;
+  display: inline-flex;
+  grid-template-columns: none;
+  max-width: 170px;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+}
+.ai-control-trigger.composer-chip.connect {
+  max-width: none;
+}
+.composer-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-chip .composer-chip-label { max-width: 92px; }
+.model-chip { max-width: min(42vw, 220px); }
+.model-chip .composer-chip-label { max-width: min(34vw, 178px); }
+.mode-access-chip {
+  max-width: min(46vw, 235px);
+  list-style: none;
+}
+.mode-access-chip::-webkit-details-marker { display: none; }
+.chip-separator { color: var(--foreground-subtle); }
+.ai-control-trigger.composer-chip .ai-control-state {
+  width: 6px;
+  height: 6px;
+  margin-left: 1px;
+}
+.composer-options summary.composer-chip {
+  padding: 4px 9px;
+}
+.composer-body {
+  gap: 8px;
+}
+.composer textarea {
+  padding: 5px 6px 4px;
+}
+.turn-work {
+  margin-top: 9px;
+  gap: 3px;
+}
+.ox-part-row {
+  min-height: 34px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.thread-turn + .thread-turn {
+  margin-top: 10px;
+  padding-top: 16px;
+}
+
+@media (max-width: 760px) {
+  .composer-controls {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 1px;
+    scrollbar-width: none;
+  }
+  .composer-controls::-webkit-scrollbar { display: none; }
+  .composer-chip { flex: none; }
+  .agent-chip .composer-chip-label { max-width: 78px; }
+  .model-chip { max-width: 45vw; }
+  .model-chip .composer-chip-label { max-width: 34vw; }
+  .mode-access-chip { max-width: 48vw; }
+}
