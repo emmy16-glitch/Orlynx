@@ -52,13 +52,17 @@ test('harness starts durable and progressively discloses tool families', () => {
   assert.deepEqual(cp.toolFamilies, ['repository']);
 
   const context = advanceHarnessPhase(cp, 'context_loading', { mode: 'build', permission: 'full' });
-  assert.deepEqual(context.toolFamilies, ['repository', 'filesystem']);
+  assert.deepEqual(context.toolFamilies, ['repository']);
 
   const executing = advanceHarnessPhase(context, 'executing', { mode: 'build', permission: 'full' });
   assert.ok(executing.toolFamilies.includes('terminal'));
   assert.ok(executing.toolFamilies.includes('tests'));
 
-  assert.deepEqual(toolFamiliesFor({ mode: 'ask', permission: 'read-only', phase: 'executing' }), ['repository', 'filesystem']);
+  assert.deepEqual(toolFamiliesFor({ mode: 'ask', permission: 'read-only', phase: 'executing' }), ['repository']);
+  assert.equal((await import('../src/harness.ts')).openCodeToolsFor({
+    ...executing,
+    toolFamilies: ['repository'],
+  }).write, false);
   assert.deepEqual(toolFamiliesFor({ mode: 'build', permission: 'full', phase: 'finalizing' }), []);
 });
 
