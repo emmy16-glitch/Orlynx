@@ -9,7 +9,17 @@ import { cleanLegacyAssistantText } from '../src/direct-chat.ts';
 const snapshot = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
 const input = () => ({ runtimeKey: 'test-session', userId: 'test-user', modelId: 'opencode/big-pickle', system: 'Be concise.', messages: [{ role: 'user', content: 'Hello' }], signal: new AbortController().signal, onDelta: () => {} });
 const frame = (content, finish_reason = null) => 'data: ' + JSON.stringify({ id: 'test', object: 'chat.completion.chunk', created: 1, model: 'big-pickle', choices: [{ index: 0, delta: content ? { content } : {}, finish_reason }] }) + '\n\n';
-const runtimeFrame = (type, properties = {}) => 'data: ' + JSON.stringify({ type, properties }) + '\n\n';
+const rawRuntimeFrame = (type, properties = {}) => 'data: ' + JSON.stringify({ type, properties }) + '\n\n';
+const runtimeFrame = (type, properties = {}) => {
+  if (type !== 'message.part.delta') return rawRuntimeFrame(type, properties);
+  const sessionID = properties.sessionID;
+  const messageID = properties.messageID || 'assistant-message';
+  const partID = properties.partID || 'assistant-part';
+  return rawRuntimeFrame('message.updated', {
+    sessionID,
+    info: { id: messageID, sessionID, role: 'assistant' },
+  }) + rawRuntimeFrame(type, { ...properties, messageID, partID });
+};
 
 function configureRuntime(t) {
   resetOpenCodeRuntimeSessionsForTests();
@@ -100,6 +110,33 @@ test('dedicated OpenCode runtime streams first delta before the response finishe
   assert.deepEqual(chunks, ['Hello']);
   release();
   assert.equal(await result, 'Hello there');
+});
+
+test('dedicated OpenCode runtime ignores user text parts and streams only assistant text', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  const chunks = [];
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'role-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(
+          rawRuntimeFrame('message.updated', { sessionID: 'role-session', info: { id: 'user-msg', sessionID: 'role-session', role: 'user' } })
+          + rawRuntimeFrame('message.part.delta', { sessionID: 'role-session', messageID: 'user-msg', partID: 'user-part', field: 'text', delta: 'Do not echo me' })
+          + rawRuntimeFrame('message.updated', { sessionID: 'role-session', info: { id: 'assistant-msg', sessionID: 'role-session', role: 'assistant' } })
+          + rawRuntimeFrame('message.part.delta', { sessionID: 'role-session', messageID: 'assistant-msg', partID: 'assistant-part', field: 'text', delta: 'Actual answer' })
+          + rawRuntimeFrame('session.status', { sessionID: 'role-session', status: { type: 'idle' } })
+        ));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/role-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  });
+  assert.equal(await streamWithOfficialOpenCode({ ...input(), onDelta: (text) => chunks.push(text) }), 'Actual answer');
+  assert.deepEqual(chunks, ['Actual answer']);
 });
 
 test('explicit cancellation rejects instead of marking partial text complete', async (t) => {
