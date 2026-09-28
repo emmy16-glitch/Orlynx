@@ -65,7 +65,7 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
   }
 
   const target = branch.toLowerCase();
-  const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+origin\/)?(?:main|master|current\s+branch|branch)?[.!?\s]*$/.test(normalized);
+  const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+(?:origin\/)?(?:main|master|current\s+branch|branch))?[.!?\s]*$/.test(normalized);
   if (!direct) return null;
 
   if (/\b(?:main|master)\b/.test(normalized)) return 'direct';
