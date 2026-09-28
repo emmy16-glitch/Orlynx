@@ -132,7 +132,8 @@ describe('compact expanding composer (§§109-140)', () => {
     assert.match(src, /className="ai-control-trigger composer-chip agent-chip"/);
     assert.match(src, /className="composer-chip model-chip"/);
     assert.match(src, /className="composer-chip mode-access-chip"/);
-    assert.match(src, /aria-label="Choose AI agent and model"/);
+    assert.match(src, /aria-label="Choose AI agent"/);
+    assert.match(src, /aria-label="Choose OpenCode model"/);
     assert.match(src, /\{ai\.mode === 'build' \? 'Build' : ai\.mode === 'plan' \? 'Plan' : 'Ask'\}/);
     assert.match(src, /ai\.mode === 'build' && ai\.permission === 'ask-first' && aiAccountConnected && composerExpanded/);
   });

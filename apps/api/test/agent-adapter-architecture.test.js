@@ -63,6 +63,10 @@ test('visible agent controls and task admission use the selected adapter explici
   assert.match(web, /className="ai-control-trigger composer-chip agent-chip"/);
   assert.match(web, /className="ai-dropdown-topline"/);
   assert.match(web, /onSelectAdapter=\{\(id\) =>/);
+  assert.match(web, /displayName: 'Cline', detail: 'Coming soon', enabled: false/);
+  assert.match(web, /displayName: 'OpenAI', detail: 'Coming soon', enabled: false/);
+  assert.match(web, /displayName: 'Claude', detail: 'Coming soon', enabled: false/);
+  assert.match(web, /displayName: 'Other', detail: 'Coming soon', enabled: false/);
   assert.match(web, /adapterId: ai\.adapterId \|\| 'opencode'/);
   assert.match(routes, /selectedAdapterId/);
   assert.match(routes, /startRun\(s\.id, s\.project, text, selectedAdapterId/);

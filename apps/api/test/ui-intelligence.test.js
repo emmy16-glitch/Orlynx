@@ -72,12 +72,18 @@ describe('workspace trust and AI control contract', () => {
     assert.match(src, /connectEvents\(record\.id\)/, 'live event stream is not resumed after restoration');
   });
 
-  it('uses one authored agent/model control instead of native composer selects', () => {
+  it('keeps agent/runtime and OpenCode model controls separate', () => {
     assert.match(src, /className="ai-control-trigger composer-chip agent-chip"/, 'compact agent control missing');
     assert.match(src, /className="composer-chip model-chip"/, 'compact model control missing');
     assert.match(src, /className="composer-chip mode-access-chip"/, 'compact mode/access control missing');
-    assert.match(src, /className="ai-dropdown-topline"/, 'compact AI dropdown header missing');
-    assert.match(src, /aria-label="Model"/, 'model picker list missing');
+    assert.match(src, /const \[aiPickerView, setAiPickerView\] = useState<'agent' \| 'model'>\('model'\)/, 'picker view state missing');
+    assert.match(src, /aria-label="AI agent selector"/, 'agent picker missing');
+    assert.match(src, /aria-label="OpenCode model selector"/, 'OpenCode model picker missing');
+    assert.match(src, /displayName: 'Cline'/, 'Cline placeholder missing');
+    assert.match(src, /displayName: 'OpenAI'/, 'OpenAI placeholder missing');
+    assert.match(src, /displayName: 'Claude'/, 'Claude placeholder missing');
+    assert.match(src, /displayName: 'Other'/, 'Other placeholder missing');
+    assert.match(src, /openCodeModels = available\.filter/, 'models are not scoped to OpenCode');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
     assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');
@@ -86,7 +92,7 @@ describe('workspace trust and AI control contract', () => {
   });
 
   it('routes model recovery back into the unified AI controls', () => {
-    assert.match(src, /onOpenModels=\{\(\) => setShowConnectAI\(true\)\}/, 'per-message recovery does not open AI controls');
+    assert.match(src, /onOpenModels=\{\(\) => \{ setAiPickerView\('model'\); setShowConnectAI\(true\); \}\}/, 'per-message recovery does not open the model picker');
     const product = fs.readFileSync(path.join(root, 'apps/web/src/ui/product.tsx'), 'utf8');
     assert.match(product, /onClick=\{props\.onOpenModels\}>Change model<\/button>/, 'Change model action missing from failed response');
     assert.doesNotMatch(src, /transcript-recovery-actions/, 'legacy global recovery block still present');
