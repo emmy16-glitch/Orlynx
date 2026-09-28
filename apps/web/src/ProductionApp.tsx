@@ -59,11 +59,21 @@ function repoUpdatedLabel(value?: string) {
 function visibleChatText(role: string, text: string, prompt = ''): string {
   if (role !== 'assistant') return text;
   const marker = 'Respond naturally to the latest user message. Do not repeat the transcript.';
+  const internalBuildPrefix = 'During Build execution, do not narrate routine progress in assistant prose.';
   const index = text.lastIndexOf(marker);
   let cleaned = (index >= 0 ? text.slice(index + marker.length) : text)
     .replace(/^\s*Conversation so far:[\s\S]*?Assistant:\s*/i, '')
     .trim();
   const request = prompt.trim();
+
+  // Older workspace runs could echo Orlynx's private Build wrapper before the
+  // user's prompt. Never render that private control text in the conversation.
+  if (request && cleaned.startsWith(internalBuildPrefix)) {
+    const requestIndex = cleaned.indexOf(request);
+    if (requestIndex >= 0) cleaned = cleaned.slice(requestIndex + request.length).replace(/^[\s:–—-]+/, '').trimStart();
+    else cleaned = '';
+  }
+
   if (!request || !cleaned.toLowerCase().startsWith(request.toLowerCase())) return cleaned;
   const remainder = cleaned.slice(request.length);
   const immediate = remainder[0] || '';
@@ -77,6 +87,17 @@ function isBuildProgressNarration(text: string): boolean {
   const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
   if (!cleaned || cleaned.length > 280) return false;
   return /^(?:i(?:'m| am|'ll| will)\s+)?(?:starting|checking|inspecting|looking|reading|running|testing|building|setting up|opening|preparing|trying|verifying|reviewing|first checking|let me\b)/i.test(cleaned);
+}
+
+function UserMessageText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const longMessage = text.length > 700 || text.split(/\r?\n/).length > 8;
+  return <div className="user-message-body-wrap">
+    <div className={`message-text user-message-body ${longMessage && !expanded ? 'is-collapsed' : ''}`}>{text}</div>
+    {longMessage && <button type="button" className="user-message-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+      {expanded ? 'Show less' : 'Show more'}
+    </button>}
+  </div>;
 }
 
 export default function ProductionApp() {
@@ -1223,7 +1244,7 @@ export default function ProductionApp() {
                   const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '') : '';
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
-                    {turn.userMessage && <article className="message-row user-message"><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="message-text">{userText}</div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {turn.userMessage && <article className="message-row user-message"><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><UserMessageText text={userText} /><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {turn.liveReply && !durable && !hideProgressNarration && <div className="message-text turn-response">{liveText}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
