@@ -4057,3 +4057,58 @@ html[data-theme="light"] .composer-options-panel {
   opacity: .62;
   cursor: wait;
 }
+
+
+/* Separate agent/runtime and model pickers. */
+.agent-picker-popover {
+  max-height: 290px;
+}
+.ai-agent-menu {
+  display: grid;
+  gap: 3px;
+  padding-top: 6px;
+}
+.ai-agent-menu-item {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: var(--foreground);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-agent-menu-item:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.ai-agent-menu-item.selected {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+.ai-agent-menu-item:disabled {
+  opacity: .56;
+  cursor: not-allowed;
+}
+.ai-agent-menu-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ai-agent-menu-copy b {
+  font-size: 10.5px;
+}
+.ai-agent-menu-copy small,
+.ai-agent-coming-soon {
+  color: var(--foreground-muted);
+  font-size: 8.5px;
+}
+.ai-agent-coming-soon {
+  white-space: nowrap;
+}
+.model-picker-popover .ai-model-compact-list {
+  margin-top: 6px;
+}
