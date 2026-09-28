@@ -49,7 +49,7 @@ export function ErrorState({ title, hint, onRetry }: { title: string; hint?: str
 }
 
 // Single coherent inline icon family (no icon lib = zero weight, consistent stroke).
-export type IconName = 'check' | 'dot' | 'ring' | 'x' | 'pause' | 'plus' | 'cloud' | 'file' | 'warn' | 'home' | 'folder' | 'settings' | 'agents' | 'search' | 'chevron' | 'github' | 'branch' | 'more' | 'terminal' | 'preview' | 'arrow' | 'paperclip' | 'send' | 'clock' | 'external' | 'menu' | 'commit' | 'shield' | 'monitor' | 'refresh' | 'camera' | 'link' | 'inbox' | 'code' | 'repo' | 'close' | 'upload';
+export type IconName = 'check' | 'dot' | 'ring' | 'x' | 'pause' | 'plus' | 'cloud' | 'file' | 'warn' | 'home' | 'folder' | 'settings' | 'agents' | 'search' | 'chevron' | 'github' | 'branch' | 'more' | 'terminal' | 'preview' | 'arrow' | 'paperclip' | 'send' | 'clock' | 'external' | 'menu' | 'commit' | 'shield' | 'monitor' | 'refresh' | 'camera' | 'link' | 'inbox' | 'code' | 'repo' | 'close' | 'upload' | 'copy' | 'edit';
 
 // One Orlynx-owned 16px outline set: consistent dimensions, 1.7px stroke, no icon dependency.
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
@@ -78,6 +78,8 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
     link: <><path d="M10 13a5 5 0 0 0 7.1 0l3-3A5 5 0 0 0 13 2.9l-1.7 1.7M14 11a5 5 0 0 0-7.1 0l-3 3A5 5 0 0 0 11 21.1l1.7-1.7" /></>,
     inbox: <><path d="M4 4h16v16H4zM4 14h4l2 3h4l2-3h4" /></>, code: <><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14" /></>,
     repo: <><path d="M5 3h11l3 3v15H5zM16 3v4h4M8 11h8M8 15h8" /></>, upload: <><path d="M12 16V4M7 9l5-5 5 5M4 20h16" /></>,
+    copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+    edit: <><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z" /><path d="m13.5 6.5 4 4M4 16l4 4" /></>,
   };
   return <svg {...common}>{paths[name]}</svg>;
 }
