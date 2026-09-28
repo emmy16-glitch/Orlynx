@@ -228,7 +228,6 @@ async function executeDirectTask(
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
 
     const now = new Date().toISOString();
-    const effectivePermission = task.tempPermission || task.permission || run.permission || 'full';
     task.harness ||= createHarnessCheckpoint({
       prompt: task.prompt,
       mode: task.mode || run.mode || 'build',
