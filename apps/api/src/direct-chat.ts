@@ -85,10 +85,11 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
   const inspectProject = /\b(check|inspect|verify|look\s+at|take\s+a\s+look\s+at)\b[\s\S]{0,60}\b(repo(?:sitory)?|codebase|project|files?|branch|working\s+tree|status|local\s+host|localhost)\b/i.test(text)
     || /\b(?:switch(?:ed)?|set)\b[\s\S]{0,40}\bbuild\b[\s\S]{0,80}\b(check|inspect|verify)\b/i.test(text)
     || /^\s*(check|inspect|verify)(?:\s+(?:it|this|that))?[!.?\s]*$/i.test(text);
+  const repoStateRequest = /\b(?:repo(?:sitory)?|main|master|branch)\b[\s\S]{0,55}\b(?:updates?|changes?|latest|new|status)\b|\b(?:updates?|changes?|latest|new)\b[\s\S]{0,55}\b(?:repo(?:sitory)?|main|master|branch)\b/i.test(text);
 
   const explanatory = /^\s*(explain|what (?:is|are|does)|how (?:do|does|can|would)|why|review|discuss|suggest)\b/i.test(text);
   if (explanatory && !mutatesRepo && !inspectProject) return 'direct';
-  if (requiresMachine || actionRequest || mutatesRepo || inspectProject) return 'workspace';
+  if (requiresMachine || actionRequest || mutatesRepo || inspectProject || repoStateRequest) return 'workspace';
   return 'direct';
 }
 
@@ -149,7 +150,7 @@ export function cleanAssistantText(text: string, prompt = ''): string {
   const leading = cleaned.trimStart();
   if (!leading.toLowerCase().startsWith(request.toLowerCase())) return cleaned;
   const remainder = leading.slice(request.length);
-  if (!remainder) return cleaned;
+  if (!remainder.trim()) return '';
 
   // Strip an actual prompt echo, but keep natural answers such as
   // "Hello! How can I help?" where the repeated greeting is the answer.

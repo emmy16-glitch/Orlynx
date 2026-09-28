@@ -338,6 +338,30 @@ describe('conversation projection: presentation contract', () => {
     assert.doesNotMatch(parts, /Show raw output/);
   });
 });
+describe('assistant response presentation', () => {
+  const app = () => fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+  const product = () => fs.readFileSync(path.join(webSrc, 'ui/product.tsx'), 'utf8');
+  const css = () => fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
+
+  it('exact prompt echoes are hidden before rendering', () => {
+    assert.match(app(), /if \(!remainder\.trim\(\)\) return '';/);
+    assert.match(app(), /turn\.liveReply && liveText && !durable/);
+  });
+
+  it('assistant replies use clean response chrome without a persistent avatar or wordy action row', () => {
+    const src = app();
+    const start = src.indexOf('<article className="message-row assistant-message">');
+    const end = src.indexOf('</article>', start);
+    const block = src.slice(start, end);
+    assert.ok(start >= 0);
+    assert.doesNotMatch(block, /agent-avatar/);
+    assert.match(product(), /className="message-actions assistant-actions"/);
+    assert.match(product(), /assistant-action-icon/);
+    assert.doesNotMatch(product(), /<span className="msg-action-word">/);
+    assert.match(css(), /\.assistant-actions \{/);
+  });
+});
+
 describe('live working indicator and composer interaction (sections 60-81)', () => {
   const app = () => fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
   const components = () => fs.readFileSync(path.join(webSrc, 'ui/components.css'), 'utf8');

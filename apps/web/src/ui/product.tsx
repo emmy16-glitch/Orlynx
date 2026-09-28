@@ -95,25 +95,22 @@ export function AssistantMessageActions(props: AssistantActions) {
   };
 
   return (
-    <div className="message-actions" role="group" aria-label="Response actions">
-      <button type="button" className="msg-action" onClick={() => copy(props.text)} aria-label="Copy response">
-        {copied ? <span className="msg-copied"><Icon name="check" size={15} /> Copied</span> : 'Copy'}
+    <div className="message-actions assistant-actions" role="group" aria-label="Response actions">
+      <button type="button" className="msg-action msg-icon-action assistant-action-icon" onClick={() => copy(props.text)} aria-label={copied ? 'Copied response' : 'Copy response'} title={copied ? 'Copied' : 'Copy'}>
+        <Icon name={copied ? 'check' : 'copy'} size={14} />
       </button>
       {showRetry && (
         props.retryState === 'pending' ? (
           <span className="msg-action msg-pending" role="status"><span className="ox-spinner msg-spinner" aria-hidden /> Retrying…</span>
         ) : (
-          <button type="button" className="msg-action msg-icon-action" onClick={startRetry} aria-label={retryAria} title={retryAria}>
-            <Icon name="refresh" size={17} /><span className="msg-action-word">{retryLabel}</span>
+          <button type="button" className="msg-action msg-icon-action assistant-action-icon" onClick={startRetry} aria-label={retryAria} title={retryLabel}>
+            <Icon name="refresh" size={14} />
           </button>
         )
       )}
-      {failed && props.modelIssue && (
-        <button type="button" className="msg-action" onClick={props.onOpenModels}>Change model</button>
-      )}
       <div className="msg-menu-wrap">
-        <button ref={moreRef} type="button" className="msg-action msg-icon-action" aria-label="More actions" aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => { setMenuOpen((v) => !v); setShowDetails(false); }}>
-          <Icon name="more" size={17} />
+        <button ref={moreRef} type="button" className="msg-action msg-icon-action assistant-action-icon" aria-label="More actions" aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => { setMenuOpen((v) => !v); setShowDetails(false); }}>
+          <Icon name="more" size={14} />
         </button>
         {menuOpen && (
           <MsgMenu label="More actions" onClose={closeMenu}>
@@ -122,6 +119,9 @@ export function AssistantMessageActions(props: AssistantActions) {
               <button type="button" role="menuitem" onClick={() => { closeMenu(); props.onOpenChanges(); }}>
                 View {props.changesCount} changed file{props.changesCount === 1 ? '' : 's'}
               </button>
+            )}
+            {failed && props.modelIssue && (
+              <button type="button" role="menuitem" onClick={() => { closeMenu(); props.onOpenModels(); }}>Change model</button>
             )}
             <button type="button" role="menuitem" aria-expanded={showDetails} onClick={() => setShowDetails((v) => !v)}>View run details</button>
             {showDetails && (

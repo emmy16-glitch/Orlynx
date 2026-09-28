@@ -82,6 +82,7 @@ test('prompt echoes are removed without breaking natural greetings', () => {
   assert.equal(cleanAssistantText('helloHello! What do you want to work on?', 'hello'), 'Hello! What do you want to work on?');
   assert.equal(cleanAssistantText('what repo are u connected to currently?Currently connected to: emmy16-glitch/Orlynx', 'what repo are u connected to currently?'), 'Currently connected to: emmy16-glitch/Orlynx');
   assert.equal(cleanAssistantText('Hello! How can I help?', 'Hello'), 'Hello! How can I help?');
+  assert.equal(cleanAssistantText('on the repo any updates??', 'on the repo any updates??'), '');
 
 });
 
@@ -123,6 +124,15 @@ test('deterministic chat turns bypass the model', () => {
     instantReplyFor({ text: 'Explain the authentication architecture', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
     null,
   );
+});
+
+test('OpenCode runtime never projects user message parts as assistant streaming', () => {
+  const src = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
+  assert.match(src, /const messageRoles = new Map<string, string>\(\)/);
+  assert.match(src, /messageRoles\.get\(messageID\) !== 'assistant'/);
+  assert.match(src, /type === 'message\.updated'/);
+  assert.match(src, /partMessages\.set\(partID, messageID\)/);
+  assert.match(src, /scheduleOpenCodeRuntimeRecovery\(\)/);
 });
 
 test('direct Ask/Plan builds whole-repository understanding before answering', () => {

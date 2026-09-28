@@ -4641,3 +4641,73 @@ html[data-theme="light"] .composer-options-panel {
     font-size: 14.5px;
   }
 }
+
+
+/* === Clean assistant response surface: 2026-09-28 ===
+   The answer itself is primary. No avatar bubble or persistent action labels. */
+.assistant-message {
+  display: block;
+  max-width: 720px;
+  padding: 0 18px 0 0;
+  margin: 18px 0 24px;
+}
+.assistant-message .message-content {
+  width: 100%;
+  max-width: 720px;
+  padding: 0;
+}
+.assistant-message .assistant-message-meta {
+  min-height: 16px;
+  margin: 0 0 5px;
+  opacity: .72;
+}
+.assistant-message .turn-response {
+  max-width: 700px;
+  color: var(--foreground);
+}
+.assistant-actions {
+  width: fit-content;
+  min-height: 30px;
+  gap: 2px;
+  margin-top: 5px;
+  opacity: .42;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+.assistant-message:hover .assistant-actions,
+.assistant-message:focus-within .assistant-actions {
+  opacity: 1;
+}
+.assistant-action-icon.msg-action {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--foreground-subtle);
+}
+.assistant-action-icon.msg-action:hover {
+  color: var(--foreground);
+  background: var(--surface-hover);
+}
+.assistant-actions .msg-menu-wrap {
+  display: inline-flex;
+}
+.live-reply-indicator {
+  min-height: 16px;
+  color: var(--foreground-subtle);
+  font-size: 10.5px;
+}
+@media (hover: none) {
+  .assistant-actions { opacity: .8; }
+}
+@media (max-width: 620px) {
+  .assistant-message {
+    padding-right: 4px;
+    margin-top: 16px;
+  }
+  .assistant-message .message-content,
+  .assistant-message .turn-response {
+    max-width: 100%;
+  }
+}
