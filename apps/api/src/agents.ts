@@ -732,13 +732,26 @@ export async function startRun(sessionId: string, project: string, userText: str
   const attachmentInstruction = availableAttachments.length
     ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
     : '';
+  let localHarness = createHarnessCheckpoint({
+    prompt: userText,
+    mode,
+    permission,
+    plane: 'workspace',
+  });
+  localHarness = advanceHarnessPhase(localHarness, 'executing', { mode, permission });
   const privateSystem = [
     instructionForModeAccess(mode, permission),
     buildPresentationInstruction(mode),
+    harnessSystemInstruction(localHarness),
     attachmentInstruction,
   ].filter(Boolean).join('\n\n');
   try {
-    await adapter.prompt(project, engineSession.id, userText, { model, agent: resolvedAgent.agent, system: privateSystem });
+    await adapter.prompt(project, engineSession.id, userText, {
+      model,
+      agent: resolvedAgent.agent,
+      system: privateSystem,
+      tools: openCodeToolsFor(localHarness),
+    });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
