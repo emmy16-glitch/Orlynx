@@ -77,6 +77,8 @@ test('runtime and mutating build work requests the development environment', () 
   assert.equal(executionPlaneFor('git log --oneline -10', 'build'), 'workspace');
   assert.equal(executionPlaneFor('check the main repo and pull update', 'build'), 'workspace');
   assert.equal(executionPlaneFor('can you check the repo now', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('on the repo any updates??', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('any new updates on main?', 'build'), 'workspace');
   assert.equal(executionPlaneFor('I switched you to build mode so check', 'build'), 'workspace');
   assert.equal(executionPlaneFor('start the local host', 'build'), 'workspace');
 });
