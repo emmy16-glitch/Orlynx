@@ -441,6 +441,22 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.match(src, /const hideProgressNarration = turnActive && parts\.length > 0 && isBuildProgressNarration\(liveText\)/);
     assert.match(src, /turn\.liveReply && !durable && !hideProgressNarration/);
   });
+
+  it('78: long user messages collapse without truncating the text sent to actions', () => {
+    const src = app();
+    assert.match(src, /function UserMessageText\(\{ text \}: \{ text: string \}\)/);
+    assert.match(src, /text\.length > 700 \|\| text\.split/);
+    assert.match(src, /\{expanded \? 'Show less' : 'Show more'\}/);
+    assert.match(src, /<UserMessageText text=\{userText\} \/><UserMessageActions text=\{userText\}/);
+    assert.match(css(), /\.user-message-body\.is-collapsed \{[\s\S]*?max-height: 8\.4rem;[\s\S]*?overflow: hidden/);
+  });
+
+  it('79: legacy private Build wrappers are scrubbed from visible assistant text', () => {
+    const src = app();
+    assert.match(src, /const internalBuildPrefix = 'During Build execution, do not narrate routine progress in assistant prose\.'/);
+    assert.match(src, /cleaned\.startsWith\(internalBuildPrefix\)/);
+    assert.match(src, /cleaned = cleaned\.slice\(requestIndex \+ request\.length\)/);
+  });
 });
 
 
