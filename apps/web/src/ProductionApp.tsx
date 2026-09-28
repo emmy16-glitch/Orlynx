@@ -126,6 +126,7 @@ export default function ProductionApp() {
   const [aiModelError, setAiModelError] = useState('');
   const [aiProviders, setAiProviders] = useState<any[]>([]);
   const [showConnectAI, setShowConnectAI] = useState(false);
+  const [aiPickerView, setAiPickerView] = useState<'agent' | 'model'>('model');
   const [modelSearch, setModelSearch] = useState('');
   const [tempFullAccess, setTempFullAccess] = useState(false);
   const [connectingGithub, setConnectingGithub] = useState(false);
@@ -1147,6 +1148,7 @@ export default function ProductionApp() {
 
   const onboarded = Boolean(session || integration.github?.connected || recentProjects.length);
   const renderAiSwitcher = () => session ? <ConnectAiSheet
+    view={aiPickerView}
     models={aiModels}
     providers={aiProviders}
     adapters={ai.adapters || []}
@@ -1226,7 +1228,7 @@ export default function ProductionApp() {
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {turn.liveReply && !durable && !hideProgressNarration && <div className="message-text turn-response">{liveText}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
                       {durable && <div className="message-text turn-response">{visibleChatText('assistant', durable.text, priorUserPrompt)}</div>}
-                      {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => setShowConnectAI(true)} />}
+                      {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => { setAiPickerView('model'); setShowConnectAI(true); }} />}
                     </div></article>}
                   </div>;
                 })}
@@ -1267,17 +1269,17 @@ export default function ProductionApp() {
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>
-      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
+      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'agent'} aria-label="Choose AI agent">
         <Icon name="agents" size={13} />
         <span className="composer-chip-label">{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span>
         <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
         <Icon name="chevron" size={11} />
       </button>
-      <button type="button" className="composer-chip model-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI model">
+      <button type="button" className="composer-chip model-chip" onClick={() => { setAiPickerView('model'); setModelSearch(''); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'model'} aria-label="Choose OpenCode model">
         <span className="composer-chip-label">{ai.model?.displayName || 'Choose model'}</span>
         <Icon name="chevron" size={11} />
       </button>
-    </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => setShowConnectAI(true)} aria-label="Connect AI"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
+    </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-label="Choose AI agent"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
     {runActive && <button type="button" className="composer-chip composer-stop-chip" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}><span aria-hidden>■</span><span>{stopping ? 'Stopping…' : 'Stop'}</span></button>}
     <details className="composer-options">
       <summary className="composer-chip mode-access-chip" aria-label="Mode and access">
@@ -1402,7 +1404,8 @@ export default function ProductionApp() {
   );
 }
 
-function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onClose }: {
+function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onClose }: {
+  view: 'agent' | 'model';
   models: any[]; providers: any[]; adapters: any[]; selectedAdapterId: string; selectedModelId: string;
   modelError: string; search: string; setSearch: (v: string) => void;
   onRefresh: () => Promise<void>; onSelectAdapter: (id: string) => void; onSelectModel: (id: string) => void; onClose: () => void;
@@ -1414,11 +1417,19 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
   const openCode = providers.find((provider: any) => provider.id === 'opencode');
   const accountConnected = openCode?.state === 'connected';
   const available = models.filter((m) => m.status === 'available');
-  const publicModelsAvailable = available.some((m) => m.free ?? /-free$/i.test(m.id));
+  const openCodeModels = available.filter((m) => m.providerId === 'opencode' || String(m.id || '').toLowerCase().startsWith('opencode/'));
+  const publicModelsAvailable = openCodeModels.some((m) => m.free ?? /-free$/i.test(m.id));
   const connected = accountConnected || publicModelsAvailable;
   const query = search.toLowerCase().trim();
-  const filtered = available.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
-  const selectedAdapter = adapters.find((adapter: any) => adapter.id === selectedAdapterId) || adapters[0];
+  const filtered = openCodeModels.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
+  const selectedAdapter = adapters.find((adapter: any) => adapter.id === selectedAdapterId) || adapters.find((adapter: any) => adapter.id === 'opencode');
+  const agentChoices = [
+    { id: 'opencode', displayName: 'OpenCode', detail: 'Active', enabled: true, state: selectedAdapter?.state || 'available' },
+    { id: 'cline', displayName: 'Cline', detail: 'Coming soon', enabled: false, state: 'unavailable' },
+    { id: 'openai', displayName: 'OpenAI', detail: 'Coming soon', enabled: false, state: 'unavailable' },
+    { id: 'claude', displayName: 'Claude', detail: 'Coming soon', enabled: false, state: 'unavailable' },
+    { id: 'other', displayName: 'Other', detail: 'Coming soon', enabled: false, state: 'unavailable' },
+  ];
 
   useEffect(() => {
     const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
@@ -1446,43 +1457,61 @@ function ConnectAiSheet({ models, providers, adapters, selectedAdapterId, select
     } finally { setBusy(false); }
   }
 
-  return <aside ref={popoverRef} className="ai-switcher-popover" role="dialog" aria-modal="false" aria-label="Agent and model switcher">
+  if (view === 'agent') {
+    return <aside ref={popoverRef} className="ai-switcher-popover agent-picker-popover" role="dialog" aria-modal="false" aria-label="AI agent selector">
+      <div className="ai-dropdown-topline">
+        <Icon name="agents" size={14} />
+        <span className="ai-dropdown-agent-copy"><b>AI agent</b><small>OpenCode is the active runtime</small></span>
+        <span className="ai-dropdown-count">1 available</span>
+      </div>
+      <div className="ai-agent-menu" role="listbox" aria-label="AI agent">
+        {agentChoices.map((choice) => {
+          const selected = choice.id === (selectedAdapterId || 'opencode');
+          return <button
+            key={choice.id}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            className={`ai-agent-menu-item ${selected ? 'selected' : ''}`}
+            disabled={!choice.enabled}
+            onClick={() => {
+              if (!choice.enabled) return;
+              onSelectAdapter(choice.id);
+              onClose();
+            }}
+          >
+            <span className={`ai-control-state state-${choice.state}`} aria-hidden="true" />
+            <span className="ai-agent-menu-copy"><b>{choice.displayName}</b><small>{choice.detail}</small></span>
+            {selected ? <Icon name="check" size={13} /> : <span className="ai-agent-coming-soon">{choice.enabled ? '' : 'Soon'}</span>}
+          </button>;
+        })}
+      </div>
+    </aside>;
+  }
+
+  return <aside ref={popoverRef} className="ai-switcher-popover model-picker-popover" role="dialog" aria-modal="false" aria-label="OpenCode model selector">
     {sheetError && <div className="screen-alert tone-fail ai-sheet-alert" role="alert"><span>{sheetError}</span></div>}
+    <div className="ai-dropdown-topline">
+      <span className={`ai-control-state state-${selectedAdapter?.state || 'available'}`} aria-hidden="true" />
+      <span className="ai-dropdown-agent-copy"><b>OpenCode models</b><small>Choose the model OpenCode should use</small></span>
+      <span className="ai-dropdown-count">{filtered.length} models</span>
+    </div>
 
     {!connected ? <form className="ai-quick-connect" onSubmit={connectOpenCode}>
-      <div><b>Connect OpenCode</b><small>Use a Zen API key for paid models. Free models remain available without it.</small></div>
+      <div><b>Connect OpenCode</b><small>Use a Zen API key for paid models. Free OpenCode models remain available without it.</small></div>
       <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenCode Zen API key" autoComplete="off" spellCheck={false} />
       <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : 'Connect'}</Button>
     </form> : <>
-      <div className="ai-dropdown-topline">
-        <span className={`ai-control-state state-${selectedAdapter?.state || 'available'}`} aria-hidden="true" />
-        <span className="ai-dropdown-agent-copy"><b>{selectedAdapter?.displayName || 'OpenCode'}</b><small>{selectedAdapter?.state === 'starting' || selectedAdapter?.state === 'installing' ? 'Starting' : selectedAdapter?.state === 'failed' ? 'Unavailable' : 'Ready'}</small></span>
-        <span className="ai-dropdown-count">{filtered.length} models</span>
-      </div>
-
-      {adapters.length > 1 && <div className="ai-agent-compact-list" role="list" aria-label="Agent">
-        {adapters.map((adapter: any) => {
-          const selected = adapter.id === selectedAdapterId;
-          const unavailable = adapter.state === 'failed';
-          return <button key={adapter.id} type="button" className={selected ? 'ai-agent-compact selected' : 'ai-agent-compact'} onClick={() => onSelectAdapter(adapter.id)} disabled={unavailable}>
-            <span className={`ai-control-state state-${adapter.state || 'available'}`} />
-            <span>{adapter.displayName}</span>
-            {selected && <Icon name="check" size={12} />}
-          </button>;
-        })}
-      </div>}
-
-      {available.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-
-      {available.length
-        ? <div className="ai-model-compact-list" role="listbox" aria-label="Model">
+      {openCodeModels.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search OpenCode models…" /></label>}
+      {openCodeModels.length
+        ? <div className="ai-model-compact-list" role="listbox" aria-label="OpenCode model">
             {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" role="option" aria-selected={m.id === selectedModelId} className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
               <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
               {m.id === selectedModelId ? <Icon name="check" size={12} /> : null}
             </button>)}
-            {!filtered.length && <p className="ai-switcher-empty">No matching models.</p>}
+            {!filtered.length && <p className="ai-switcher-empty">No matching OpenCode models.</p>}
           </div>
-        : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load models' : 'Loading models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
+        : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load OpenCode models' : 'Loading OpenCode models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
     </>}
   </aside>;
 }
