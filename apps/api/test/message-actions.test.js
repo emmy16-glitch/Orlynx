@@ -112,7 +112,9 @@ describe('copy, menu, a11y (§§150, 155-156, 165-168, 184)', () => {
     const src = product();
     assert.match(src, /aria-label="Copy response"/);
     assert.match(src, /aria-label="More actions"/);
-    assert.match(src, /aria-label="Copy message"/);
+    assert.match(src, /aria-label=\{copied \? 'Copied message' : 'Copy message'\}/);
+    assert.match(src, /title=\{copied \? 'Copied' : 'Copy'\}/);
+    assert.match(src, /title="Edit and resend"/);
     const source = css();
     assert.match(source, /\.msg-action \{[\s\S]*?min-width: 40px;\s*min-height: 40px;/);
     assert.match(source, /\.msg-menu > button \{[\s\S]*?min-height: 44px;/);
