@@ -127,6 +127,10 @@ test('Build execution reserves prose for final results instead of narrating tool
   const instruction = buildPresentationInstruction('build');
   assert.match(instruction, /do not narrate routine progress/i);
   assert.match(instruction, /Reserve normal assistant prose for the final result/i);
+  assert.match(instruction, /GitHub authentication is managed by the Orlynx GitHub App/i);
+  assert.match(instruction, /Never ask the user to run gh auth login/i);
+  assert.match(instruction, /Do not run raw git push from the provider shell/i);
+  assert.match(instruction, /Orlynx controlled publish\/review/i);
   assert.equal(buildPresentationInstruction('plan'), '');
   assert.equal(buildPresentationInstruction('ask'), '');
 });
