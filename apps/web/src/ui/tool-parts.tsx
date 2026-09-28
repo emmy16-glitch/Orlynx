@@ -37,6 +37,40 @@ function filesOf(part: ThreadPart): { path: string; action?: string; diff?: stri
   });
 }
 
+function hasRenderableDetail(part: ThreadPart): boolean {
+  const evidence = asRecord(part.item.evidence);
+  const raw = Boolean(part.item.rawOutput);
+  const command = Boolean(str(evidence.command));
+  const path = Boolean(str(evidence.path));
+  const code = Boolean(str(evidence.code));
+  const files = filesOf(part).length > 0;
+  const counts = typeof evidence.passed === 'number'
+    || typeof evidence.failed === 'number'
+    || typeof evidence.skipped === 'number'
+    || (Array.isArray(evidence.failures) && evidence.failures.length > 0);
+  const exit = typeof evidence.exitCode === 'number';
+  const git = Boolean(str(evidence.branch));
+  const preview = Boolean(str(evidence.port) || str(evidence.url));
+  const approval = part.kind === 'approval' && Boolean(str(evidence.approvalId) || str(evidence.action) || part.item.summary);
+  const generic = Boolean(command || path || raw);
+
+  switch (part.kind) {
+    case 'terminal': return command || path || raw;
+    case 'test-result': return counts || raw;
+    case 'build-result': return command || exit || raw;
+    case 'file-change': return files || raw;
+    case 'file-read': return path || code || raw;
+    case 'git': return command || git || raw;
+    case 'preview': return command || preview || raw;
+    case 'approval': return approval;
+    case 'error':
+    case 'status':
+    case 'generic':
+    default:
+      return generic;
+  }
+}
+
 type ApprovalDecision = 'allow_once' | 'deny';
 type ResolveApproval = (approvalId: string, decision: ApprovalDecision) => Promise<void>;
 
@@ -46,7 +80,7 @@ function Shell({ part, label, onResolveApproval }: { part: ThreadPart; label: st
   const active = item.state === 'running';
   const failed = item.state === 'failed';
   const waiting = item.state === 'waiting' || item.state === 'queued';
-  const expandable = Boolean(item.evidence && Object.keys(item.evidence).length) || Boolean(item.rawOutput);
+  const expandable = hasRenderableDetail(part);
   const evidenceId = `ox-part-${item.id}`;
   return (
     <div className="ox-part" data-kind={part.kind} data-state={item.state} data-active={active ? 'true' : undefined}>
