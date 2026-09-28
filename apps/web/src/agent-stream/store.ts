@@ -104,7 +104,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           plane: event.plane,
           mode: event.mode,
         });
-        if (event.plane === 'workspace' || event.position) {
+        if (event.plane === 'workspace') {
           putActivity(state, {
             id: `queue:${event.runId}`,
             runId: event.runId,
@@ -137,7 +137,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         errorKind: undefined,
       });
       const queued = state.activities[`queue:${event.runId}`];
-      if (queued) state.activities[queued.id] = { ...queued, state: 'success', title: 'Build task started', summary: undefined, sequence: event.sequence };
+      if (queued) delete state.activities[queued.id];
       const existing = state.messages[event.messageId];
       state.messages[event.messageId] = {
         id: event.messageId,
@@ -367,14 +367,20 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
 
     case 'WORKSPACE_STATE': {
       const prior = state.activities[event.activityId];
+      // Workspace readiness belongs in the project/header state, not as a
+      // permanent success row in every conversation. Keep one transient
+      // preparing/recovery row while startup is in progress, remove it when
+      // ready, and preserve only stopped/failed states when they matter.
+      if (event.state === 'ready') {
+        if (prior) delete state.activities[event.activityId];
+        return;
+      }
       const recovering = event.state === 'reconnecting' || /recover|replace|fresh|ssh|lost|interrupt/i.test(event.message || '');
-      const title = event.state === 'ready' ? 'Workspace ready'
-        : event.state === 'stopped' ? 'Workspace stopped'
-          : event.state === 'failed' ? 'Workspace needs attention'
-            : recovering ? 'Recovering workspace' : 'Preparing workspace';
-      const activityState: AgentStreamActivity['state'] = event.state === 'ready' ? 'success'
-        : event.state === 'stopped' ? 'cancelled'
-          : event.state === 'failed' ? 'failed' : 'running';
+      const title = event.state === 'stopped' ? 'Workspace stopped'
+        : event.state === 'failed' ? 'Workspace needs attention'
+          : recovering ? 'Recovering workspace' : 'Preparing workspace';
+      const activityState: AgentStreamActivity['state'] = event.state === 'stopped' ? 'cancelled'
+        : event.state === 'failed' ? 'failed' : 'running';
       putActivity(state, {
         id: event.activityId,
         runId: event.runId,
@@ -385,7 +391,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         state: activityState,
         kind: 'workspace',
         title,
-        summary: event.state === 'ready' ? undefined : event.message ? compact(event.message, 180) : undefined,
+        summary: event.message ? compact(event.message, 180) : undefined,
         evidence: event.provider ? { provider: event.provider } : prior?.evidence,
       });
       return;
@@ -503,8 +509,10 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: 'success',
         kind: 'changes',
-        title: 'Updated files',
-        summary: `${count} file${count === 1 ? '' : 's'} changed`,
+        title: count === 1 && event.files[0]?.path ? `Updated ${compact(String(event.files[0].path), 88)}` : `Updated ${count} files`,
+        summary: event.files.length
+          ? event.files.slice(0, 3).map((file) => String(file.path || '')).filter(Boolean).join(' · ')
+          : `${count} file${count === 1 ? '' : 's'} changed`,
         evidence: { ...(event.changeId ? { changeId: event.changeId } : {}), files: event.files },
       });
       return;
