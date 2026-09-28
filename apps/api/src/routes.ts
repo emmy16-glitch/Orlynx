@@ -435,22 +435,24 @@ router.post('/sessions/:id/messages', async (req, res) => {
     const steeringAction = steeringActionFor(String(text));
     if (steeringAction !== 'ignore') {
       const activeTask = (await repository.listTasks(s.id))
-        .find((item) => item.state === 'running' && (item.plane || 'workspace') === 'workspace');
+        .find((item) => ['running', 'waiting_approval'].includes(item.state) && (item.plane || 'workspace') === 'workspace');
 
       if (activeTask) {
         const now = new Date().toISOString();
         const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
 
         if (steeringAction === 'stop') {
-          try {
-            const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
-            await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
-              adapterId: adapter.id,
-              taskId: activeTask.id,
-              runId: activeTask.runId,
-            }, 15_000);
-          } catch (error) {
-            console.warn(`[harness] stop command failed session=${s.id} task=${activeTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+          if (activeTask.state === 'running') {
+            try {
+              const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
+              await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
+                adapterId: adapter.id,
+                taskId: activeTask.id,
+                runId: activeTask.runId,
+              }, 15_000);
+            } catch (error) {
+              console.warn(`[harness] stop command failed session=${s.id} task=${activeTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+            }
           }
 
           await repository.putTask(steeredTask);
@@ -1096,6 +1098,11 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     const taskId = String(approval.taskId || approval.context.taskId || '');
     const task = taskId ? await repository.getTask(taskId) : null;
     if (!task) return res.status(409).json({ error: 'The Build task waiting for this approval is no longer available.' });
+    if (task.state === 'cancelled' || task.harness?.phase === 'cancelled') {
+      const cancelledApproval = { ...approval, state: 'denied', resolvedAt: now };
+      await repository.putApproval(cancelledApproval);
+      return res.status(409).json({ error: 'This Build task was cancelled, so the pending approval can no longer run.', approval: cancelledApproval });
+    }
 
     const workspaceId = String(approval.context.workspaceId || task.workspaceId || '');
     const workspace = workspaceId ? await repository.getWorkspace(workspaceId) : await getWorkspace(session.id);
@@ -1279,9 +1286,16 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
         catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
       }
     }
-    if (task.state === 'running' || task.state === 'queued') {
+    if (task.state === 'running' || task.state === 'queued' || task.state === 'waiting_approval') {
       task.state = 'cancelled';
       task.updatedAt = new Date().toISOString();
+      if (task.harness) {
+        task.harness = advanceHarnessPhase(task.harness, 'cancelled', {
+          mode: task.mode || 'build',
+          permission: task.tempPermission || task.permission || 'full',
+          now: task.updatedAt,
+        });
+      }
       await repository.putTask(task);
       const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
       if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
