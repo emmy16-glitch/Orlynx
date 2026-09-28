@@ -77,8 +77,8 @@ describe('workspace trust and AI control contract', () => {
     assert.match(src, /className="composer-chip model-chip"/, 'compact model control missing');
     assert.match(src, /className="composer-chip mode-access-chip"/, 'compact mode/access control missing');
     assert.match(src, /const \[aiPickerView, setAiPickerView\] = useState<'agent' \| 'model'>\('model'\)/, 'picker view state missing');
-    assert.match(src, /aria-label="AI agent selector"/, 'agent picker missing');
-    assert.match(src, /aria-label="OpenCode model selector"/, 'OpenCode model picker missing');
+    assert.match(src, /aria-label="Choose AI agent"/, 'agent picker missing');
+    assert.match(src, /aria-label="Choose OpenCode model"/, 'OpenCode model picker missing');
     assert.match(src, /displayName: 'Cline'/, 'Cline placeholder missing');
     assert.match(src, /displayName: 'OpenAI'/, 'OpenAI placeholder missing');
     assert.match(src, /displayName: 'Claude'/, 'Claude placeholder missing');
@@ -87,7 +87,7 @@ describe('workspace trust and AI control contract', () => {
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
     assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');
-    assert.match(src, /className="composer-ai-dropdown"/, 'AI switcher is not anchored to the composer');
+    assert.match(src, /composer-ai-dropdown view-\$\{aiPickerView\}/, 'AI switcher is not anchored to the composer');
     assert.match(src, /page !== 'workspace'.*ai-settings-switcher-anchor/, 'settings AI switcher fallback missing');
   });
 
