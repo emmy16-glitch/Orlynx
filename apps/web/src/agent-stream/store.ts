@@ -508,6 +508,11 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
     case 'CHANGES_UPDATED': {
       const prior = state.activities[event.activityId];
       const count = event.count ?? event.files.length;
+      const paths = event.files.map((file) => file.path).filter(Boolean);
+      const title = count === 1 && paths[0] ? `Updated ${compact(paths[0], 88)}` : `Updated ${count} files`;
+      const summary = count > 1 && paths.length
+        ? paths.slice(0, 3).map((path) => compact(path, 48)).join(' · ') + (paths.length > 3 ? ` · +${paths.length - 3} more` : '')
+        : undefined;
       putActivity(state, {
         id: event.activityId,
         runId: event.runId,
@@ -517,8 +522,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: 'success',
         kind: 'changes',
-        title: 'Updated files',
-        summary: `${count} file${count === 1 ? '' : 's'} changed`,
+        title,
+        summary,
         evidence: { ...(event.changeId ? { changeId: event.changeId } : {}), files: event.files },
       });
       return;
