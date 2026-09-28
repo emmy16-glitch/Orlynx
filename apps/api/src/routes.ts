@@ -411,8 +411,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
   let plane = executionPlaneFor(String(text), effectiveMode);
   if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
+  const publishIntent = effectiveMode === 'build' ? publishIntentFor(String(text), s.branch) : null;
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
-  if (!selectedModel && !instantReply) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
+  if (!selectedModel && !instantReply && !publishIntent) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
   const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
@@ -429,6 +430,106 @@ router.post('/sessions/:id/messages', async (req, res) => {
     durableSession = await repository.getSession(s.id);
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+  }
+
+  if (publishIntent) {
+    const now = new Date().toISOString();
+    const runId = `run_${uuid().slice(0, 8)}`;
+    const taskId = `task_${uuid()}`;
+    const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null;
+    const baseRun = {
+      id: runId,
+      sessionId: s.id,
+      engine: selectedAdapterId,
+      plane: 'workspace' as const,
+      model: selectedModel || undefined,
+      mode: effectiveMode,
+      permission: prefs.permission,
+      activity: 'Publishing to GitHub',
+      startedAt: now,
+    };
+
+    emit(s.id, 'run.started', { taskId, messageId: msg.id, plane: 'workspace', engine: selectedAdapterId, mode: effectiveMode, permission: prefs.permission }, runId);
+    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
+
+    try {
+      const published = await publishCommittedWorkspaceHead(req, s, publishIntent);
+      const shortSha = published.head.slice(0, 7);
+      const reply = published.pullRequestUrl
+        ? `Published \`${shortSha}\` as pull request #${published.pullRequestNumber}: ${published.pullRequestUrl}`
+        : published.alreadyPublished
+          ? `Already published: \`${shortSha}\` is already on \`${published.branch}\`.`
+          : `Published \`${shortSha}\` to \`${published.branch}\`.`;
+      const finishedAt = new Date().toISOString();
+      const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId, createdAt: finishedAt };
+      const run = { ...baseRun, state: 'completed' as const, activity: 'Published', finishedAt };
+
+      (store.db.messages[s.id] ||= []).push(assistant);
+      (store.db.runs[s.id] ||= []).push(run as any);
+      store.save();
+
+      if (durableStorageConfigured()) {
+        const repository = controlPlaneRepository();
+        await repository.putMessage(assistant);
+        await repository.putTask({
+          id: taskId,
+          sessionId: s.id,
+          workspaceId: workspace?.id || 'workspace',
+          plane: 'workspace',
+          runId,
+          messageId: msg.id,
+          state: 'completed',
+          prompt: String(text),
+          modelId: selectedModel || undefined,
+          adapterId: selectedAdapterId,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          createdAt: now,
+          updatedAt: finishedAt,
+        });
+      }
+
+      emit(s.id, 'activity.completed', { taskId, text: published.alreadyPublished ? 'Already published' : 'Published to GitHub', sourceType: 'git.publish', branch: published.branch, head: published.head, pullRequestUrl: published.pullRequestUrl }, runId);
+      emit(s.id, 'receipt.created', { taskId, branch: published.branch, commitSha: published.head, pullRequestUrl: published.pullRequestUrl, pullRequestNumber: published.pullRequestNumber }, runId);
+      emit(s.id, 'message.end', { taskId, instant: true }, runId);
+      emit(s.id, 'run.completed', { taskId, summary: reply, instant: true }, runId);
+      return res.json({ message: msg, run, plane: 'workspace', instant: true, published });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const detail = error instanceof Error ? error.message : 'Orlynx could not publish this commit.';
+      const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: `Publish needs attention: ${detail}`, runId, createdAt: finishedAt };
+      const run = { ...baseRun, state: 'failed' as const, activity: 'Publish needs attention', finishedAt, errorKind: 'permission' as const };
+
+      (store.db.messages[s.id] ||= []).push(assistant);
+      (store.db.runs[s.id] ||= []).push(run as any);
+      store.save();
+
+      if (durableStorageConfigured()) {
+        const repository = controlPlaneRepository();
+        await repository.putMessage(assistant);
+        await repository.putTask({
+          id: taskId,
+          sessionId: s.id,
+          workspaceId: workspace?.id || 'workspace',
+          plane: 'workspace',
+          runId,
+          messageId: msg.id,
+          state: 'failed',
+          prompt: String(text),
+          modelId: selectedModel || undefined,
+          adapterId: selectedAdapterId,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          createdAt: now,
+          updatedAt: finishedAt,
+        });
+      }
+
+      emit(s.id, 'activity.failed', { taskId, text: 'Publish failed', error: detail, sourceType: 'git.publish' }, runId);
+      emit(s.id, 'message.end', { taskId, instant: true }, runId);
+      emit(s.id, 'run.failed', { taskId, error: detail, errorKind: 'permission', recoverable: true }, runId);
+      return res.status(409).json({ message: msg, run, plane: 'workspace', instant: true, error: detail });
+    }
   }
 
   if (instantReply) {
@@ -1182,7 +1283,10 @@ router.post('/changes/:changeId/push', async (req, res) => {
           });
         }
       } else {
-        const result = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.push', { approved: true });
+        const result = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.push', {
+          approved: true,
+          allowDefaultBranch: originalBranch === 'main' || originalBranch === 'master',
+        });
         publishedBranch = result.branch || session.branch;
       }
 
