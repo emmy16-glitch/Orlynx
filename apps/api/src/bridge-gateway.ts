@@ -285,20 +285,33 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           if (!message.ok) {
             const adapterId = String(command.payload.adapterId || 'opencode');
             const detail = String(message.error || message.result?.error || `${adapterId} adapter could not complete the task.`);
-            const errorKind = classifyError(detail);
+            const freePublicModel = command.payload.openCodePublicAccess === true;
+            const classifiedErrorKind = classifyError(detail);
+            // A 401/403 from OpenCode's public/free route is not evidence that
+            // the user's optional saved account credential needs reconnecting.
+            // Keep that recovery local to the model instead of sending users
+            // into an unrelated credential flow.
+            const errorKind = freePublicModel && classifiedErrorKind === 'auth'
+              ? 'model'
+              : classifiedErrorKind;
             const error = errorKind === 'rate_limit'
               ? 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.'
               : errorKind === 'quota'
-                ? 'The selected OpenCode access path has reached its current usage allowance. Orlynx prefers your connected OpenCode account when available; otherwise choose another free model.'
+                ? freePublicModel
+                  ? 'OpenCode free-model usage is currently limited for this route. Retry later or choose another free model.'
+                  : 'The selected OpenCode account has reached its current usage allowance.'
                 : errorKind === 'auth'
                   ? 'The AI provider connection needs to be refreshed before this model can be used.'
                   : errorKind === 'model'
-                    ? 'The selected model is not currently available. Choose another model and try again.'
+                    ? freePublicModel
+                      ? 'OpenCode rejected this free-model route for the current run. This does not mean your account needs reconnecting; retry later or choose another free model.'
+                      : 'The selected model is not currently available. Choose another model and try again.'
                     : errorKind === 'permission'
                       ? 'This task needs permission that the current access level does not allow.'
                       : errorKind === 'engine'
                         ? 'The AI workspace connection was interrupted. Reconnect the workspace and try again.'
                         : 'Orlynx AI could not complete this task.';
+            console.warn(`[bridge] agent run failed session=${claims.sessionId} run=${runId} kind=${errorKind} freePublic=${freePublicModel}`);
 
             if (task) {
               task.state = 'failed';
