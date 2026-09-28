@@ -1,4 +1,4 @@
-import type { AgentMode, AgentPartKind, PermissionProfile } from '@orlynx/shared';
+import type { AgentMode, AgentPartKind, PermissionProfile, RunState } from '@orlynx/shared';
 
 /**
  * Browser stream-projection actions.
@@ -43,7 +43,7 @@ export interface Base {
 
 export interface AgentStreamRun {
   id: string;
-  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  state: RunState;
   messageId: string;
   userMessageId?: string;
   plane?: string;
