@@ -59,7 +59,7 @@ export function toolFamiliesFor(input: {
     return [];
   }
 
-  const readOnly: ToolFamily[] = ['repository', 'filesystem'];
+  const readOnly: ToolFamily[] = ['repository'];
   if (input.mode !== 'build' || input.permission === 'read-only') return readOnly;
   if (input.phase === 'received' || input.phase === 'routing') return ['repository'];
   if (input.phase === 'context_loading') return readOnly;
