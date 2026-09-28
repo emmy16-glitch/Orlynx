@@ -335,6 +335,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
   if (payload.system) body.system = String(payload.system);
+  if (payload.tools && typeof payload.tools === 'object') body.tools = payload.tools;
   if (payload.model) body.model = payload.model;
   if (payload.agent) body.agent = payload.agent;
 
