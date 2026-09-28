@@ -14,7 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
-import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction } from './harness.js';
+import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor } from './harness.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -498,6 +498,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       engineSessionId,
       text: task.prompt,
       system: privateSystem,
+      tools: openCodeToolsFor(task.harness),
       agent: resolvedAgent.agent,
     });
     await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
