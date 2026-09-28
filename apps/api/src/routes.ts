@@ -525,7 +525,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
         });
       }
 
-      emit(s.id, 'activity.failed', { taskId, text: 'Publish failed', error: detail, sourceType: 'git.publish' }, runId);
+      emit(s.id, 'activity.progress', { taskId, text: 'Publish failed', error: detail, sourceType: 'git.publish', state: 'failed' }, runId);
       emit(s.id, 'message.end', { taskId, instant: true }, runId);
       emit(s.id, 'run.failed', { taskId, error: detail, errorKind: 'permission', recoverable: true }, runId);
       return res.status(409).json({ message: msg, run, plane: 'workspace', instant: true, error: detail });
