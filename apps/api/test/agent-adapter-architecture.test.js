@@ -72,6 +72,19 @@ test('visible agent controls and task admission use the selected adapter explici
   assert.match(routes, /startRun\(s\.id, s\.project, text, selectedAdapterId/);
 });
 
+test('controlled Git publish keeps credentials out of the AI shell and allows explicit default-branch approval', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+
+  assert.match(bridge, /case 'git\.fetch'/);
+  assert.match(bridge, /payload\.allowDefaultBranch !== true/);
+  assert.match(bridge, /GitHub credentials are unavailable in this workspace/);
+  assert.match(routes, /publishCommittedWorkspaceHead/);
+  assert.match(routes, /allowDefaultBranch: branch === 'main' \|\| branch === 'master'/);
+  assert.match(routes, /const publishIntent = effectiveMode === 'build' \? publishIntentFor/);
+  assert.match(routes, /Published .* to/);
+});
+
 test('promotion scheduler preserves adapter-ready wakeups that arrive while a pass is active', () => {
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
   assert.match(agents, /promotionWakeups/);
