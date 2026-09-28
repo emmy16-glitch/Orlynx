@@ -889,7 +889,18 @@ export async function cancelRun(sessionId: string, runId: string) {
     try { await getAgentAdapter(active.adapterId).abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
-  if (active?.task) { active.task.state = 'cancelled'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
+  if (active?.task) {
+    active.task.state = 'cancelled';
+    active.task.updatedAt = run.finishedAt;
+    if (active.task.harness) {
+      active.task.harness = advanceHarnessPhase(active.task.harness, 'cancelled', {
+        mode: active.task.mode || run.mode || 'build',
+        permission: active.task.tempPermission || active.task.permission || run.permission || 'full',
+        now: run.finishedAt,
+      });
+    }
+    await controlPlaneRepository().putTask(active.task);
+  }
   store.save();
   emit(sessionId, 'run.failed', { cancelled: true }, runId);
   return run;
