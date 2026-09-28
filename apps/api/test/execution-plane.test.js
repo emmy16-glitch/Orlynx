@@ -55,6 +55,10 @@ test('plain conversation does not start a development environment', () => {
 
 test('runtime and mutating build work requests the development environment', () => {
   assert.equal(executionPlaneFor('Run the tests and fix what fails', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('carry out test', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('perform the tests', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('conduct testing', 'build'), 'workspace');
+  assert.equal(executionPlaneFor('rerun the build', 'build'), 'workspace');
   assert.equal(executionPlaneFor('npm install and start the dev server', 'build'), 'workspace');
   assert.equal(executionPlaneFor('Implement the login fix', 'build'), 'workspace');
   assert.equal(executionPlaneFor('Update the README file', 'build'), 'workspace');
