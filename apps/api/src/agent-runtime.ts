@@ -51,6 +51,7 @@ export interface AgentWorkspacePayloadInput {
   sessionId: string;
   engineSessionId?: string | null;
   text: string;
+  system?: string;
   agent?: string;
 }
 
@@ -125,6 +126,7 @@ export const openCodeRuntime: AgentAdapter = {
       sessionId: input.sessionId,
       engineSessionId: input.engineSessionId || '',
       text: input.text,
+      ...(input.system ? { system: input.system } : {}),
       model,
       agent: input.agent,
       ...(publicAccess !== undefined ? { openCodePublicAccess: publicAccess } : {}),
