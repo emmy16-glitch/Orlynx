@@ -114,10 +114,15 @@ sessions can be recovered on another authenticated device.
 
 ### Safe Git publishing
 
-Changes require review/approval before commit or publish. The workspace bridge
-refuses direct pushes to `main` or `master`. Default-branch publication creates
-an isolated `orlynx/*` branch, pushes it, and opens a real GitHub pull request.
-Important workspace/approval/commit/publish actions are written to the audit log.
+The AI/provider shell never receives GitHub credentials and cannot run an
+authenticated raw push. Normal change sets still support review/approval,
+commit, and PR publication. When the user explicitly asks Orlynx to
+`push to main` (or chooses the equivalent publish action) and the project's
+access policy permits it, the control plane may authorize that one
+default-branch push through the workspace bridge. The bridge rejects default
+branch pushes unless that explicit control-plane approval flag is present.
+Dirty or behind workspaces are rejected before publishing, and publish actions
+are written to the audit log.
 
 ## Interface
 
