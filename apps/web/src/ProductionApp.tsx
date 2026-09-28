@@ -951,7 +951,7 @@ export default function ProductionApp() {
   async function stopRun() {
     if (stopping) return;
     const runningRuns = Object.values(agentStream.runs)
-      .filter((run) => run.state === 'running')
+      .filter((run) => run.state === 'running' || run.state === 'waiting_approval')
       .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''));
     const running = runningRuns[runningRuns.length - 1]?.id || lastRun?.id;
     if (!session || !running) return;
@@ -1075,10 +1075,26 @@ export default function ProductionApp() {
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
-  const runActive = runs.some((candidate: any) => candidate.state === 'running' || candidate.state === 'queued') || lastRun?.state === 'running' || lastRun?.state === 'queued';
+  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_approval'].includes(candidate.state))
+    || ['running', 'queued', 'waiting_approval'].includes(String(lastRun?.state || ''));
+  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_approval'].includes(candidate.state) && candidate.harness);
+  const activeHarness = activeHarnessRun?.harness;
+  const harnessRemaining = activeHarness ? Math.max(0, Number(activeHarness.stepBudget || 0) - Number(activeHarness.step || 0)) : null;
+  const harnessMissing = Array.isArray(activeHarness?.verification?.missing) ? activeHarness.verification.missing : [];
+  const harnessStatusLabel = activeHarness?.phase === 'verifying'
+    ? `Verifying${harnessMissing.length ? ` ${harnessMissing.slice(0, 2).join(' + ')}` : ' result'}`
+    : activeHarness?.phase === 'finalizing'
+      ? 'Finishing result'
+      : activeHarnessRun?.state === 'waiting_approval'
+        ? 'Waiting for approval'
+        : harnessRemaining !== null && harnessRemaining <= 3
+          ? `${harnessRemaining} step${harnessRemaining === 1 ? '' : 's'} left`
+          : '';
   const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
   const showWorkBar = tab === 'chat' && newActivity && Boolean(currentActivity || runActive);
-  const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
+  const workBarLabel = waitingForUser && currentActivity?.category === 'approval'
+    ? 'Waiting for you'
+    : currentActivity?.title || harnessStatusLabel || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
   // banners/cards elsewhere for the same failure (§183).
   const lastAssistantId = [...messages].reverse().find((m: any) => m.role === 'assistant')?.id;
@@ -1307,6 +1323,7 @@ export default function ProductionApp() {
         <Icon name="chevron" size={11} />
       </button>
     </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-label="Choose AI agent"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
+    {harnessStatusLabel && <span className="composer-chip harness-status-chip" role="status"><span className="harness-status-dot" aria-hidden="true" />{harnessStatusLabel}</span>}
     {runActive && <button type="button" className="composer-chip composer-stop-chip" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}><span aria-hidden>■</span><span>{stopping ? 'Stopping…' : 'Stop'}</span></button>}
     <details className="composer-options">
       <summary className="composer-chip mode-access-chip" aria-label="Mode and access">
