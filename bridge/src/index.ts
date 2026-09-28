@@ -202,7 +202,12 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
 }
 
 async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
-  const desired: OpenCodeAuthMode = publicAccess ? 'public' : 'account';
+  // Match direct chat: a connected OpenCode account wins even for zero-cost
+  // models. Public access is only the fallback when this workspace has no
+  // account credential. This prevents the shared public allowance from
+  // reporting "Free usage exceeded" while the user's authenticated CLI still
+  // has access.
+  const desired: OpenCodeAuthMode = publicAccess && !OPENCODE_API_KEY ? 'public' : 'account';
   if (desired === 'account' && !OPENCODE_API_KEY) {
     throw new Error('Connect your OpenCode account before using this paid model.');
   }
@@ -342,6 +347,11 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
 
   const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
+  const messageRoles = new Map<string, string>();
+  for (const message of prior.body || []) {
+    const id = String(message.info?.id || '');
+    if (id) messageRoles.set(id, String(message.info?.role || ''));
+  }
   const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
   if (payload.system) body.system = String(payload.system);
   if (payload.tools && typeof payload.tools === 'object') body.tools = payload.tools;
@@ -381,6 +391,12 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   let lastRetryKey = '';
   let streamFallbackNotified = false;
   const textParts = new Map<string, string>();
+  const partMessages = new Map<string, string>();
+  const partTypes = new Map<string, string>();
+  const partSnapshots = new Map<string, string>();
+  const pendingTextDeltas = new Map<string, string>();
+  const blockedTextParts = new Set<string>();
+  const toolParts = new Map<string, Record<string, any>>();
   const toolStates = new Map<string, string>();
   const toolOutputs = new Map<string, string>();
 
@@ -409,6 +425,32 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
   if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
   return 'generic';
 }
+
+  const emitTextDelta = (partID: string, delta: string) => {
+    if (!delta) return;
+    const before = textParts.get(partID) || '';
+    bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
+    textParts.set(partID, before + delta);
+    visible += delta;
+  };
+
+  const flushTextPart = (partID: string) => {
+    if (blockedTextParts.has(partID) || partTypes.get(partID) !== 'text') return;
+    const messageID = partMessages.get(partID) || '';
+    if (!messageID || messageID === previousAssistant || messageRoles.get(messageID) !== 'assistant') return;
+
+    const pending = pendingTextDeltas.get(partID) || '';
+    if (pending) {
+      pendingTextDeltas.delete(partID);
+      emitTextDelta(partID, pending);
+    }
+
+    const snapshot = partSnapshots.get(partID) || '';
+    const emitted = textParts.get(partID) || '';
+    if (snapshot.startsWith(emitted) && snapshot.length > emitted.length) {
+      emitTextDelta(partID, snapshot.slice(emitted.length));
+    }
+  };
 
   const emitTool = (part: Record<string, any>) => {
     const state = part.state && typeof part.state === 'object' ? part.state as Record<string, any> : {};
@@ -529,18 +571,35 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 
             if (event.type === 'message.part.updated') {
               const part = properties.part && typeof properties.part === 'object' ? properties.part as Record<string, any> : undefined;
-              if (part?.messageID !== previousAssistant && part?.type === 'text' && !part.synthetic && !part.ignored) {
-                const id = String(part.id || part.messageID || 'text');
-                const current = String(part.text || '');
-                const before = textParts.get(id) || '';
-                if (current.startsWith(before) && current.length > before.length) {
-                  const delta = current.slice(before.length);
-                  bridgeEvent(ws, 'message.delta', { delta, messagePartId: id, offset: before.length }, taskId, runId);
-                  visible += delta;
+              const messageID = String(part?.messageID || '');
+              const partID = String(part?.id || '');
+              if (partID && messageID) {
+                partMessages.set(partID, messageID);
+                partTypes.set(partID, String(part?.type || ''));
+              }
+
+              if (part?.type === 'text' && partID) {
+                if (part.synthetic || part.ignored) {
+                  blockedTextParts.add(partID);
+                  pendingTextDeltas.delete(partID);
+                } else {
+                  partSnapshots.set(partID, String(part.text || ''));
+                  flushTextPart(partID);
                 }
-                textParts.set(id, current);
-              } else if (part?.type === 'tool' && part?.messageID !== previousAssistant) {
-                emitTool(part);
+              } else if (part?.type === 'tool' && partID) {
+                toolParts.set(partID, part);
+                if (messageID !== previousAssistant && messageRoles.get(messageID) === 'assistant') emitTool(part);
+              }
+            } else if (event.type === 'message.part.delta') {
+              if (!properties.field || properties.field === 'text') {
+                const messageID = String(properties.messageID || '');
+                const partID = String(properties.partID || '');
+                const delta = String(properties.delta || '');
+                if (messageID && partID && delta && !blockedTextParts.has(partID)) {
+                  partMessages.set(partID, messageID);
+                  pendingTextDeltas.set(partID, (pendingTextDeltas.get(partID) || '') + delta);
+                  flushTextPart(partID);
+                }
               }
             } else if (event.type === 'session.status') {
               const status = properties.status && typeof properties.status === 'object' ? properties.status as Record<string, any> : {};
@@ -550,6 +609,19 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
               throw new Error(openCodeErrorMessage(properties.error));
             } else if (event.type === 'message.updated') {
               const info = properties.info && typeof properties.info === 'object' ? properties.info as Record<string, any> : {};
+              const messageID = String(info.id || '');
+              if (messageID) {
+                messageRoles.set(messageID, String(info.role || ''));
+                if (info.role === 'assistant') {
+                  for (const [partID, owner] of partMessages) {
+                    if (owner === messageID) {
+                      flushTextPart(partID);
+                      const toolPart = toolParts.get(partID);
+                      if (toolPart && messageID !== previousAssistant) emitTool(toolPart);
+                    }
+                  }
+                }
+              }
               if (info.role === 'assistant' && info.id !== previousAssistant && info.error) throw new Error(openCodeErrorMessage(info.error));
             }
             continue;
