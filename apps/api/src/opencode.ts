@@ -179,6 +179,7 @@ export function getOpenCodeSessionId(lynxSessionId: string): string | undefined 
 export interface PromptOptions {
   model?: { providerID: string; modelID: string };
   agent?: string;
+  system?: string;
 }
 
 function parseModel(value: string): { providerID: string; modelID: string } {
@@ -189,6 +190,7 @@ function parseModel(value: string): { providerID: string; modelID: string } {
 
 export async function promptOpenCode(project: string, openCodeSessionId: string, text: string, options: PromptOptions = {}): Promise<void> {
   const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
+  if (options.system) body.system = options.system;
   const agent = options.agent || agentName();
   if (agent) body.agent = agent;
   const model = options.model || (defaultModel() ? parseModel(defaultModel()) : undefined);
