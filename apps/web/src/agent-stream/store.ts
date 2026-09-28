@@ -438,13 +438,10 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         // Normal ready/busy heartbeats remain state-only. If a visible error
         // had existed, READY resolves that same semantic object in place.
         if (/ready/.test(rawState) && prior?.state === 'failed') {
-          state.activities[activityId] = {
-            ...prior,
-            state: 'success',
-            title: 'Orlynx AI ready',
-            summary: undefined,
-            sequence: event.sequence,
-          };
+          // Adapter health is current state, not durable transcript history.
+          // Once recovered, remove the old error instead of adding a noisy
+          // "Orlynx AI ready" success row to the user's task stream.
+          delete state.activities[activityId];
           return;
         }
 
@@ -471,13 +468,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       const infraId = `infra-error:${event.scope}`;
       const priorInfra = state.activities[infraId];
       if (/ready|connected|online/.test(rawState) && priorInfra?.state === 'failed') {
-        state.activities[infraId] = {
-          ...priorInfra,
-          state: 'success',
-          title: 'Connection restored',
-          summary: undefined,
-          sequence: event.sequence,
-        };
+        // Resolved transport errors should disappear from the transcript.
+        // The live workspace/header state already communicates recovery.
+        delete state.activities[infraId];
         return;
       }
       if (/fail|error|unavailable|disconnect|offline|interrupt|expired|denied/.test(`${rawState} ${reason}`.toLowerCase())) {
