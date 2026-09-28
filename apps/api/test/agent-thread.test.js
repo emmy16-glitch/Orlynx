@@ -143,12 +143,11 @@ test('server semanticType is authoritative over command-name heuristics', () => 
   assert.equal(part.kind, 'file-read');
 });
 
-test('workspace.state preserves ready failed and stopped rather than always preparing', () => {
+test('workspace.state keeps failures/stops visible while successful readiness stays state-only', () => {
   const ready = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
     runA('ws-1', 1, 'workspace.state', { state: 'ready', provider: 'orlynx-runner' }),
-  ]))[0];
-  assert.equal(ready.title, 'Workspace ready');
-  assert.equal(ready.state, 'success');
+  ]));
+  assert.equal(ready.length, 0);
 
   const failed = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
     runA('ws-2', 1, 'workspace.state', { state: 'failed', message: 'boot failed' }),
