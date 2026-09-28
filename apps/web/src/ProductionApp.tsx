@@ -892,7 +892,6 @@ export default function ProductionApp() {
       // progress. Re-POSTing /cloud every two seconds used to re-enter recovery
       // while GitHub was still changing state.
       const workspace = await j<any>(await fetch(`/v1/sessions/${sessionId}/cloud${reconnect ? '/reconnect' : ''}`, { method: 'POST' }));
-      setWorkspaceClock(Date.now());
       setSession((current: any) => {
         if (!current || current.id !== sessionId) return current;
         const next = { ...current, workspace };
