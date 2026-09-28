@@ -4045,3 +4045,19 @@ html[data-theme="light"] .composer-options-panel {
     scroll-margin-bottom: 228px;
   }
 }
+
+
+.composer-stop-chip {
+  color: var(--danger, #b42318);
+  border-color: color-mix(in srgb, var(--danger, #b42318) 28%, var(--border));
+  background: color-mix(in srgb, var(--danger, #b42318) 7%, var(--surface));
+  font-weight: 700;
+}
+.composer-stop-chip:hover {
+  color: var(--danger, #b42318);
+  border-color: color-mix(in srgb, var(--danger, #b42318) 45%, var(--border-strong));
+}
+.composer-stop-chip:disabled {
+  opacity: .62;
+  cursor: wait;
+}
