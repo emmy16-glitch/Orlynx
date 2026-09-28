@@ -4159,3 +4159,359 @@ html[data-theme="light"] .composer-options-panel {
   background: currentColor;
   opacity: .58;
 }
+
+
+/* === Quiet chat + unified composer controls: 2026-09-28 === */
+.user-message {
+  justify-content: flex-end;
+  margin: 14px 0 18px;
+  padding-left: 80px;
+}
+.user-message-stack {
+  width: fit-content;
+  max-width: min(76%, 620px);
+  display: grid;
+  justify-items: end;
+}
+.user-message-meta {
+  min-height: 18px;
+  gap: 6px;
+  margin: 0 4px 4px 0;
+  color: var(--foreground-subtle);
+}
+.user-message-meta b {
+  color: var(--foreground-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.user-message-meta time {
+  font-size: 10px;
+}
+.user-message-bubble {
+  max-width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 15px 15px 5px 15px;
+  padding: 8px 11px;
+  color: var(--foreground);
+  background: var(--surface-muted);
+}
+.user-message-bubble .message-text {
+  line-height: 1.5;
+}
+.user-message .user-actions {
+  min-height: 28px;
+  gap: 1px;
+  margin: 3px 2px 0 0;
+  opacity: .46;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+.user-message:hover .user-actions,
+.user-message:focus-within .user-actions {
+  opacity: 1;
+}
+.user-action-icon.msg-action {
+  min-width: 28px;
+  min-height: 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--foreground-subtle);
+}
+.user-action-icon.msg-action:hover {
+  color: var(--foreground);
+  background: var(--surface-hover);
+}
+.user-action-icon.msg-action svg {
+  width: 14px;
+  height: 14px;
+}
+.user-message-toggle {
+  margin-top: 4px;
+  color: var(--foreground-muted);
+  font-size: 10.5px;
+}
+@media (hover: none) {
+  .user-message .user-actions { opacity: .82; }
+}
+@media (max-width: 620px) {
+  .user-message {
+    padding-left: 36px;
+  }
+  .user-message-stack {
+    max-width: 90%;
+  }
+  .user-message-bubble {
+    padding: 8px 10px;
+  }
+}
+
+/* Composer controls are one quiet family; selection lives in authored popovers. */
+.composer-controls {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 5px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.composer-controls::-webkit-scrollbar { display: none; }
+.composer-controls .composer-chip,
+.composer-controls .ai-control-trigger.composer-chip {
+  min-width: 0;
+  min-height: 30px;
+  height: 30px;
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 4px 8px;
+  color: var(--foreground-muted);
+  background: var(--surface);
+  box-shadow: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1;
+}
+.composer-controls .composer-chip:hover,
+.composer-controls .ai-control-trigger.composer-chip:hover {
+  color: var(--foreground);
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.composer-controls .composer-chip[aria-expanded="true"] {
+  color: var(--foreground);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-strong));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+.composer-chip-label {
+  max-width: 126px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-chip .composer-chip-label { max-width: 88px; }
+.model-chip .composer-chip-label { max-width: 150px; }
+.mode-access-chip { max-width: 175px; }
+.chip-separator { color: var(--foreground-subtle); }
+.ai-control-state {
+  width: 6px;
+  height: 6px;
+  flex: none;
+}
+.harness-status-chip {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Picker placement follows the triggering chip instead of floating in the page. */
+.composer-ai-dropdown {
+  bottom: calc(100% + 7px);
+  width: min(326px, calc(100vw - 24px));
+}
+.composer-ai-dropdown.view-agent { left: 42px; }
+.composer-ai-dropdown.view-model { left: 136px; }
+.composer-ai-dropdown .ai-switcher-popover {
+  max-height: 310px;
+  border-radius: 13px;
+  padding: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: none;
+}
+.composer-ai-dropdown .ai-dropdown-topline {
+  min-height: 34px;
+  padding: 3px 5px 8px;
+}
+.composer-ai-dropdown .ai-dropdown-agent-copy b {
+  font-size: 11px;
+}
+.composer-ai-dropdown .ai-dropdown-agent-copy small,
+.composer-ai-dropdown .ai-dropdown-count {
+  font-size: 9px;
+}
+.composer-ai-dropdown .ai-agent-menu {
+  gap: 2px;
+  padding-top: 5px;
+}
+.composer-ai-dropdown .ai-agent-menu-item {
+  min-height: 40px;
+  border-radius: 8px;
+  padding: 5px 7px;
+}
+.composer-ai-dropdown .ai-agent-menu-item.selected {
+  background: var(--surface-muted);
+}
+.composer-ai-dropdown .ai-agent-menu-copy b {
+  font-size: 10.5px;
+}
+.composer-ai-dropdown .ai-agent-menu-copy small,
+.composer-ai-dropdown .ai-agent-coming-soon {
+  font-size: 9px;
+}
+.composer-ai-dropdown .ai-model-compact-list {
+  max-height: 210px;
+  margin-top: 5px;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.composer-ai-dropdown .ai-model-compact {
+  min-height: 39px;
+  padding: 6px 7px;
+  border-radius: 7px;
+}
+.composer-ai-dropdown .ai-model-compact.selected {
+  background: var(--surface-muted);
+}
+.composer-ai-dropdown .ai-switcher-search {
+  margin: 6px 0 2px;
+}
+
+/* Authored mode/access picker: no native details race, stable selection state. */
+.composer-mode-dropdown {
+  position: absolute;
+  z-index: 62;
+  right: 48px;
+  bottom: calc(100% + 7px);
+  width: min(332px, calc(100vw - 24px));
+}
+.mode-access-popover {
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  padding: 8px;
+  color: var(--foreground);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.mode-menu-section {
+  display: grid;
+  gap: 6px;
+}
+.mode-menu-section + .mode-menu-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.mode-menu-heading {
+  padding: 0 4px;
+  color: var(--foreground-subtle);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.mode-menu-list {
+  display: grid;
+  gap: 2px;
+}
+.mode-menu-list > button {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: var(--foreground);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.mode-menu-list > button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.mode-menu-list > button.selected {
+  background: var(--surface-muted);
+}
+.mode-menu-list > button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.mode-menu-list > button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+.mode-menu-list > button > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.mode-menu-list b {
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.mode-menu-list small {
+  overflow: hidden;
+  color: var(--foreground-muted);
+  font-size: 9px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+}
+.mode-menu-list svg {
+  color: var(--accent);
+}
+.mode-menu-readonly {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 8px;
+  color: var(--foreground-muted);
+  background: var(--surface-muted);
+}
+.mode-menu-readonly > span {
+  display: grid;
+  gap: 2px;
+}
+.mode-menu-readonly b {
+  color: var(--foreground);
+  font-size: 10.5px;
+}
+.mode-menu-readonly small {
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+@media (max-width: 850px) {
+  .composer-ai-dropdown.view-agent,
+  .composer-ai-dropdown.view-model {
+    left: 8px;
+  }
+  .composer-mode-dropdown {
+    right: 8px;
+  }
+}
+@media (max-width: 560px) {
+  .composer-ai-dropdown,
+  .composer-mode-dropdown {
+    width: calc(100vw - 16px);
+  }
+  .composer-ai-dropdown.view-agent,
+  .composer-ai-dropdown.view-model {
+    left: 4px;
+  }
+  .composer-mode-dropdown {
+    right: 4px;
+  }
+  .composer-controls .composer-chip,
+  .composer-controls .ai-control-trigger.composer-chip {
+    min-height: 31px;
+    height: 31px;
+  }
+  .model-chip .composer-chip-label { max-width: 38vw; }
+  .mode-access-chip { max-width: 46vw; }
+}
