@@ -132,6 +132,15 @@ export function instructionForModeAccess(mode: AgentMode, permission: Permission
   return '';
 }
 
+export function buildPresentationInstruction(mode: AgentMode): string {
+  if (mode !== 'build') return '';
+  return [
+    'During Build execution, do not narrate routine progress in assistant prose.',
+    'Use tools directly; Orlynx already renders repository reads, commands, tests, builds, edits, and workspace state as live activity rows.',
+    'Reserve normal assistant prose for the final result, a necessary user question, or an approval that genuinely requires user input.',
+  ].join(' ');
+}
+
 async function executeDirectTask(
   session: Awaited<ReturnType<ReturnType<typeof controlPlaneRepository>['getSession']>>,
   task: TaskRecord,
@@ -457,6 +466,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
     const guardedText = [
       instructionForModeAccess(mode, permission),
+      buildPresentationInstruction(mode),
       task.prompt,
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
