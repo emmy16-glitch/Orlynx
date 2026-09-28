@@ -397,6 +397,44 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           payload.state = String(payload.state || 'connecting');
         }
 
+        const eventTaskId = String(message.event.taskId || '');
+        if (eventTaskId && (type === 'step.started' || type === 'approval.required' || type === 'approval.resolved')) {
+          const task = await repository.getTask(eventTaskId);
+          if (task) {
+            const effectivePermission = task.tempPermission || task.permission || 'full';
+            task.harness ||= createHarnessCheckpoint({
+              prompt: task.prompt,
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              plane: task.plane || 'workspace',
+            });
+
+            if (type === 'step.started') {
+              task.harness = consumeHarnessStep(task.harness, {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+              const budget = harnessBudgetStatus(task.harness);
+              payload.harnessStep = budget.step;
+              payload.harnessBudget = budget.budget;
+              payload.harnessRemaining = budget.remaining;
+              payload.harnessBudgetStage = budget.stage;
+            } else if (type === 'approval.required') {
+              task.harness = advanceHarnessPhase(task.harness, 'waiting_approval', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+            } else if (type === 'approval.resolved' && task.state === 'running') {
+              task.harness = advanceHarnessPhase(task.harness, 'executing', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+            }
+            task.updatedAt = new Date().toISOString();
+            await repository.putTask(task);
+          }
+        }
+
         const eventId = bridgeEventKey(
           claims.sessionId,
           runId,
