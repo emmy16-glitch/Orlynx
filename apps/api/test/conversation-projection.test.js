@@ -54,7 +54,7 @@ describe('conversation projection: adapter heartbeat suppression', () => {
     assert.doesNotMatch(rows[0].title, /adapter/i);
   });
 
-  it('TEST 4: error -> ready recovers in place without duplicate rows', () => {
+  it('TEST 4: error -> ready removes resolved infrastructure noise', () => {
     fresh();
     const rows = toActivities([
       evt('state.delta', { scope: 'agent-adapter', adapterId: 'opencode', state: 'starting' }),
@@ -63,9 +63,7 @@ describe('conversation projection: adapter heartbeat suppression', () => {
       adapterReady(),
       adapterReady(),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].state, 'success');
-    assert.equal(rows[0].title, 'Orlynx AI ready');
+    assert.equal(rows.length, 0);
   });
 
   it('non-adapter infrastructure heartbeats stay hidden unless failing', () => {
@@ -80,6 +78,11 @@ describe('conversation projection: adapter heartbeat suppression', () => {
     ]);
     assert.equal(loud.length, 1);
     assert.equal(loud[0].state, 'failed');
+    const recovered = toActivities([
+      evt('state.delta', { scope: 'bridge', state: 'disconnected', reason: 'transport lost' }),
+      evt('state.delta', { scope: 'bridge', state: 'ready' }),
+    ]);
+    assert.equal(recovered.length, 0);
   });
 });
 
