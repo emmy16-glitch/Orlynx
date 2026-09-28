@@ -152,10 +152,24 @@ export function UserMessageActions({ text, onEdit }: { text: string; onEdit: () 
   const { copied, copy } = useCopyFeedback();
   return (
     <div className="message-actions user-actions" role="group" aria-label="Message actions">
-      <button type="button" className="msg-action" onClick={() => copy(text)} aria-label="Copy message">
-        {copied ? <span className="msg-copied"><Icon name="check" size={15} /> Copied</span> : 'Copy'}
+      <button
+        type="button"
+        className="msg-action msg-icon-action user-action-icon"
+        onClick={() => copy(text)}
+        aria-label={copied ? 'Copied message' : 'Copy message'}
+        title={copied ? 'Copied' : 'Copy'}
+      >
+        <Icon name={copied ? 'check' : 'copy'} size={14} />
       </button>
-      <button type="button" className="msg-action" onClick={onEdit} aria-label="Edit and resend as a new message">Edit &amp; resend</button>
+      <button
+        type="button"
+        className="msg-action msg-icon-action user-action-icon"
+        onClick={onEdit}
+        aria-label="Edit and resend as a new message"
+        title="Edit and resend"
+      >
+        <Icon name="edit" size={14} />
+      </button>
     </div>
   );
 }
