@@ -4140,3 +4140,22 @@ html[data-theme="light"] .composer-options-panel {
 .user-message-toggle:hover {
   text-decoration: underline;
 }
+
+
+.harness-status-chip {
+  cursor: default;
+  color: var(--foreground-muted);
+  background: var(--surface);
+}
+.harness-status-chip:hover {
+  color: var(--foreground-muted);
+  border-color: var(--border);
+  background: var(--surface);
+}
+.harness-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: .58;
+}
