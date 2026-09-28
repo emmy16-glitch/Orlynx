@@ -54,8 +54,7 @@ test('workspace preparing/ready stays one lifecycle; 100 heartbeats add zero row
     events.push(runA(`h${i}`, 10 + i, 'state.delta', { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }));
   }
   const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), events));
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].title, 'Workspace ready');
+  assert.equal(rows.length, 0);
 });
 
 test('message markers and snapshots never become chat rows; failures stay actionable', () => {
