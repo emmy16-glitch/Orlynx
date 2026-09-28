@@ -154,8 +154,10 @@ export default function ProductionApp() {
   const [aiProviders, setAiProviders] = useState<any[]>([]);
   const [showConnectAI, setShowConnectAI] = useState(false);
   const [aiPickerView, setAiPickerView] = useState<'agent' | 'model'>('model');
+  const [showModeMenu, setShowModeMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [tempFullAccess, setTempFullAccess] = useState(false);
+  const aiPrefRequestRef = useRef(0);
   const [connectingGithub, setConnectingGithub] = useState(false);
   const [syncingGithub, setSyncingGithub] = useState(false);
   const [syncStep, setSyncStep] = useState('');
@@ -837,40 +839,58 @@ export default function ProductionApp() {
 
   async function setAiPrefs(patch: { adapterId?: string; modelId?: string; mode?: string; permission?: string }) {
     if (!session) return;
+    const requestId = ++aiPrefRequestRef.current;
+    const previous = ai;
     setError('');
+
+    const optimisticModel = patch.modelId
+      ? aiModels.find((model: any) => String(model.id).toLowerCase() === String(patch.modelId).toLowerCase())
+      : undefined;
+
+    setAi((current: any) => ({
+      ...current,
+      ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId } : {}),
+      ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
+      ...(patch.permission !== undefined ? { permission: patch.permission } : {}),
+      ...(optimisticModel ? { model: optimisticModel, state: 'ready', message: 'Ready.' } : {}),
+    }));
+
     try {
-      const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }));
+      const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }));
+      if (requestId !== aiPrefRequestRef.current) return;
 
-      if (result.prefs?.adapterId) {
-        setAi((current: any) => ({ ...current, adapterId: result.prefs.adapterId }));
+      const selected = result.prefs?.modelId
+        ? aiModels.find((model: any) =>
+            String(model.id).toLowerCase() === String(result.prefs.modelId).toLowerCase()
+            && model.status === 'available')
+        : undefined;
+
+      setAi((current: any) => ({
+        ...current,
+        ...(result.prefs?.adapterId ? { adapterId: result.prefs.adapterId } : {}),
+        ...(result.prefs?.mode ? { mode: result.prefs.mode } : {}),
+        ...(result.prefs?.permission ? { permission: result.prefs.permission } : {}),
+        ...(selected ? { model: selected, state: 'ready', message: 'Ready.' } : {}),
+      }));
+
+      if (result.appliesTo === 'next-turn') {
+        setError('A task is running. This selection will be used for your next turn.');
       }
 
-      if (result.prefs?.modelId) {
-        const selected = aiModels.find((model: any) =>
-          String(model.id).toLowerCase() === String(result.prefs.modelId).toLowerCase() &&
-          model.status === 'available'
-        );
-        if (selected) {
-          setAi((current: any) => ({
-            ...current,
-            model: selected,
-            state: 'ready',
-            message: 'Ready.',
-          }));
-        }
+      // Adapter/model switches can change availability metadata. Mode/access
+      // already have authoritative prefs above, so avoid a second refresh that
+      // can visually snap the selector back while the save is settling.
+      if (patch.adapterId !== undefined || patch.modelId !== undefined) {
+        await refreshAi(session.id);
       }
-
-      if (result.prefs?.mode || result.prefs?.permission) {
-        setAi((current: any) => ({
-          ...current,
-          ...(result.prefs.mode ? { mode: result.prefs.mode } : {}),
-          ...(result.prefs.permission ? { permission: result.prefs.permission } : {}),
-        }));
-      }
-
-      if (result.appliesTo === 'next-turn') setError('A task is running. Your selection applies to the next turn.');
-      await refreshAi(session.id);
-    } catch (error: any) { setError(error.message || 'AI preference could not be saved.'); }
+    } catch (error: any) {
+      if (requestId === aiPrefRequestRef.current) setAi(previous);
+      setError(error.message || 'AI preference could not be saved.');
+    }
   }
 
   const submittingRef = useRef(false);
@@ -1266,7 +1286,7 @@ export default function ProductionApp() {
                   const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '') : '';
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
-                    {turn.userMessage && <article className="message-row user-message"><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><UserMessageText text={userText} /><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {turn.liveReply && !durable && !hideProgressNarration && <div className="message-text turn-response">{liveText}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
@@ -1312,45 +1332,31 @@ export default function ProductionApp() {
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>
-      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'agent'} aria-label="Choose AI agent">
+      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => { setShowModeMenu(false); setAiPickerView('agent'); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'agent'} aria-label="Choose AI agent">
         <Icon name="agents" size={13} />
         <span className="composer-chip-label">{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span>
         <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
         <Icon name="chevron" size={11} />
       </button>
-      <button type="button" className="composer-chip model-chip" onClick={() => { setAiPickerView('model'); setModelSearch(''); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'model'} aria-label="Choose OpenCode model">
+      <button type="button" className="composer-chip model-chip" onClick={() => { setShowModeMenu(false); setAiPickerView('model'); setModelSearch(''); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'model'} aria-label="Choose OpenCode model">
         <span className="composer-chip-label">{ai.model?.displayName || 'Choose model'}</span>
         <Icon name="chevron" size={11} />
       </button>
     </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-label="Choose AI agent"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
     {harnessStatusLabel && <span className="composer-chip harness-status-chip" role="status"><span className="harness-status-dot" aria-hidden="true" />{harnessStatusLabel}</span>}
     {runActive && <button type="button" className="composer-chip composer-stop-chip" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}><span aria-hidden>■</span><span>{stopping ? 'Stopping…' : 'Stop'}</span></button>}
-    <details className="composer-options">
-      <summary className="composer-chip mode-access-chip" aria-label="Mode and access">
-        <span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span>
-        <span className="chip-separator" aria-hidden>·</span>
-        <span>{ai.mode === 'build' ? (ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access') : 'Read only'}</span>
-        <Icon name="chevron" size={11} />
-      </summary>
-      <div className="composer-options-panel">
-        <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
-          {[
-            ['build', 'Build', 'Uses the development workspace only when the request needs execution or file changes'],
-            ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
-            ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
-          ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
-        </div></div>
-        {ai.mode === 'build'
-          ? <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
-              {[
-                ['full', 'Full project access', 'Can make project changes'],
-                ['ask-first', 'Ask first', 'Requests permission before changes'],
-                ['read-only', 'Read only', 'Cannot change project files'],
-              ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
-            </div></div>
-          : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
-      </div>
-    </details>
+    <button
+      type="button"
+      className="composer-chip mode-access-chip"
+      aria-label="Mode and access"
+      aria-expanded={showModeMenu}
+      onClick={() => { setShowConnectAI(false); setShowModeMenu((open) => !open); }}
+    >
+      <span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span>
+      <span className="chip-separator" aria-hidden>·</span>
+      <span>{ai.mode === 'build' ? (ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access') : 'Read only'}</span>
+      <Icon name="chevron" size={11} />
+    </button>
   </div>
   <textarea
     ref={composerBoxRef}
@@ -1370,7 +1376,7 @@ export default function ProductionApp() {
     disabled={!aiAccountConnected || !ai.model || !online}
   />
   {ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && composerExpanded && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}
-</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
+</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className={`composer-ai-dropdown view-${aiPickerView}`}>{renderAiSwitcher()}</div>}{showModeMenu && <div className="composer-mode-dropdown"><ModeAccessMenu mode={ai.mode} permission={ai.permission} online={online} onMode={(value) => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); if (value !== 'build') setShowModeMenu(false); }} onPermission={(value) => { setTempFullAccess(false); void setAiPrefs({ permission: value }); setShowModeMenu(false); }} onClose={() => setShowModeMenu(false)} /></div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
