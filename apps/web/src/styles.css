@@ -2311,10 +2311,6 @@ button, input, textarea, select { font: inherit; }
   white-space: nowrap;
   font-weight: 650;
 }
-.active-work-stop.ox-btn {
-  min-height: 44px;
-  flex: none;
-}
 .is-workspace.has-active-work .new-activity {
   bottom: 168px;
 }
@@ -4044,4 +4040,20 @@ html[data-theme="light"] .composer-options-panel {
   .thread-turn[data-state="streaming"] .turn-response {
     scroll-margin-bottom: 228px;
   }
+}
+
+
+.composer-stop-chip {
+  color: var(--danger, #b42318);
+  border-color: color-mix(in srgb, var(--danger, #b42318) 28%, var(--border));
+  background: color-mix(in srgb, var(--danger, #b42318) 7%, var(--surface));
+  font-weight: 700;
+}
+.composer-stop-chip:hover {
+  color: var(--danger, #b42318);
+  border-color: color-mix(in srgb, var(--danger, #b42318) 45%, var(--border-strong));
+}
+.composer-stop-chip:disabled {
+  opacity: .62;
+  cursor: wait;
 }

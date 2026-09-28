@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionPlaneFor, executionPlaneForSession } from '../src/direct-chat.ts';
-import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess } from '../src/agents.ts';
+import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
 // Keep routing tests deterministic: these assertions require no live workspace.
@@ -120,4 +120,13 @@ test('free OpenCode workspace models use public auth instead of a saved account 
   assert.equal(adapter.publicAccessForModel('opencode/muse-spark-1.3-contributor-free'), true);
   assert.equal(adapter.publicAccessForModel('opencode/muse-spark-1.3'), false);
   assert.equal(adapter.publicAccessForModel('anthropic/claude-sonnet-4'), undefined);
+});
+
+
+test('Build execution reserves prose for final results instead of narrating tool progress', () => {
+  const instruction = buildPresentationInstruction('build');
+  assert.match(instruction, /do not narrate routine progress/i);
+  assert.match(instruction, /Reserve normal assistant prose for the final result/i);
+  assert.equal(buildPresentationInstruction('plan'), '');
+  assert.equal(buildPresentationInstruction('ask'), '');
 });
