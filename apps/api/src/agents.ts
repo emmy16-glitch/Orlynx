@@ -467,10 +467,9 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     // Do not emit a second "Development environment ready" activity for the same turn.
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
-    const guardedText = [
+    const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
-      task.prompt,
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
@@ -479,7 +478,8 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       runId: run.id,
       sessionId,
       engineSessionId,
-      text: guardedText,
+      text: task.prompt,
+      system: privateSystem,
       agent: resolvedAgent.agent,
     });
     await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
@@ -635,13 +635,13 @@ export async function startRun(sessionId: string, project: string, userText: str
   const attachmentInstruction = availableAttachments.length
     ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
     : '';
-  const guardedText = [
+  const privateSystem = [
     instructionForModeAccess(mode, permission),
+    buildPresentationInstruction(mode),
     attachmentInstruction,
-    userText,
   ].filter(Boolean).join('\n\n');
   try {
-    await adapter.prompt(project, engineSession.id, guardedText, { model, agent: resolvedAgent.agent });
+    await adapter.prompt(project, engineSession.id, userText, { model, agent: resolvedAgent.agent, system: privateSystem });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
