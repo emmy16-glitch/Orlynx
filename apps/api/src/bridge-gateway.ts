@@ -11,6 +11,64 @@ import { markWorkspaceConnectionLost, shouldRecoverTransientBridgeClose, workspa
 import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
+import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, shouldSalvage, verifyHarness } from './harness.js';
+
+async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
+  const repository = controlPlaneRepository();
+  const session = await repository.getSession(sessionId);
+  if (!session) throw new Error('Session is unavailable for controlled publishing.');
+
+  await bridgeRequest(workspaceId, 'git.fetch', { approved: true }, 120_000);
+  const status = await bridgeRequest<{
+    branch?: string;
+    head?: string;
+    remoteHead?: string;
+    porcelain?: string;
+    ahead?: number;
+    behind?: number;
+  }>(workspaceId, 'git.status', {}, 30_000);
+
+  const branch = String(status.branch || '');
+  const head = String(status.head || '');
+  const porcelain = String(status.porcelain || '');
+  if (!branch || !head) throw new Error('Orlynx could not determine the Git branch and commit.');
+  if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
+  if (porcelain.trim()) throw new Error('Workspace still has uncommitted changes. Commit them before publishing.');
+  if (Number(status.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
+
+  if (status.remoteHead && status.remoteHead === head && Number(status.ahead || 0) === 0) {
+    return { branch, head, alreadyPublished: true };
+  }
+
+  const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspaceId, 'git.push', {
+    approved: true,
+    allowDefaultBranch: branch === 'main' || branch === 'master',
+  }, 120_000);
+  return { branch: String(pushed.branch || branch), head: String(pushed.head || head), alreadyPublished: false };
+}
+
+function continuationPayload(
+  source: Record<string, unknown>,
+  task: { id: string; runId?: string; sessionId: string; harness?: any },
+  engineSessionId: string,
+  text: string,
+) {
+  const system = [
+    String(source.system || ''),
+    task.harness ? harnessSystemInstruction(task.harness) : '',
+  ].filter(Boolean).join('\n\n');
+  return {
+    ...source,
+    taskId: task.id,
+    runId: task.runId,
+    sessionId: task.sessionId,
+    engineSessionId,
+    text,
+    system,
+    ...(task.harness ? { tools: openCodeToolsFor(task.harness) } : {}),
+  };
+}
 
 type BridgeAdapterState = { state?: string; reason?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
@@ -131,7 +189,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     if (!active || !authenticatedHello || ws.readyState !== ws.OPEN) return;
     try {
       for (const command of await repository.claimCommands(claims.workspaceId)) {
-        sendBridgeCommandNow(claims.workspaceId, { id: command.id, kind: command.kind, payload: command.payload });
+        let payload = command.payload;
+        if (command.kind === 'agent.run' && !String(payload.engineSessionId || '')) {
+          const adapterId = String(payload.adapterId || 'opencode');
+          const savedEngineSessionId = await repository.getAgentSession(claims.sessionId, adapterId);
+          if (savedEngineSessionId) payload = { ...payload, engineSessionId: savedEngineSessionId };
+        }
+        sendBridgeCommandNow(claims.workspaceId, { id: command.id, kind: command.kind, payload });
       }
     } catch { /* the next poll retries queued commands */ }
   }, 1_000);
@@ -206,56 +270,19 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
         publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
-          const taskId = String(command.payload.taskId || ''); const runId = String(command.payload.runId || ''); const task = taskId ? await repository.getTask(taskId) : null; const now = new Date().toISOString();
+          const taskId = String(command.payload.taskId || '');
+          const runId = String(command.payload.runId || '');
+          const task = taskId ? await repository.getTask(taskId) : null;
+          const now = new Date().toISOString();
+          const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
+
           if (task?.state === 'cancelled') {
             console.info(`[bridge] ignored late result for cancelled run=${runId}`);
             void promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
           }
-          if (task) { task.state = message.ok ? 'completed' : 'failed'; task.updatedAt = now; await repository.putTask(task); }
-          const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
-          if (memoryRun) {
-            memoryRun.state = message.ok ? 'completed' : 'failed';
-            memoryRun.activity = message.ok ? 'Ready for review' : 'Work needs attention';
-            memoryRun.finishedAt = now;
-            if (!message.ok) memoryRun.errorKind = classifyError(String(message.error || message.result?.error || ''));
-            store.save();
-          }
-          if (message.ok) {
-            const responseText = String(message.result?.responseText || '');
-            if (responseText) await repository.putMessage({ id: `msg_${runId || uuid()}`, sessionId: claims.sessionId, role: 'assistant', text: responseText, runId: runId || undefined, createdAt: now });
-            if (message.result?.engineSessionId) {
-              const adapterId = String(command.payload.adapterId || 'opencode');
-              await repository.putAgentSession(claims.sessionId, adapterId, String(message.result.engineSessionId));
-            }
-            const rawDiff = Array.isArray(message.result?.diff) ? message.result.diff as Array<Record<string, unknown>> : [];
-            const files = rawDiff.flatMap((item) => { const file = String(item.file || item.path || ''); if (!file || file.startsWith('/') || file.split('/').includes('..')) return []; return [{ path: file, action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const, before: typeof item.before === 'string' ? item.before : undefined, after: typeof item.after === 'string' ? item.after : undefined, diff: typeof item.diff === 'string' ? item.diff : undefined }]; });
-            if (files.length) {
-              const changeId = `chg_${uuid()}`;
-              await repository.putChangeSet({ id: changeId, sessionId: claims.sessionId, runId, baseSha: String(message.result?.head || ''), files, reviewState: 'pending', createdAt: now });
-              // Keep activity payloads bounded while still showing developers the
-              // actual patch that OpenCode produced. Full diffs remain in Changes.
-              let remainingDiffChars = 24_000;
-              const activityFiles = files.slice(0, 20).map((file) => {
-                const source = file.diff || file.after || file.before || '';
-                const diff = source && remainingDiffChars > 0 ? source.slice(0, Math.min(remainingDiffChars, 8_000)) : '';
-                remainingDiffChars -= diff.length;
-                return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
-              });
-              await repository.appendEvent({
-                eventId: `evt_${uuid()}`,
-                sessionId: claims.sessionId,
-                taskId,
-                runId,
-                workspaceId: claims.workspaceId,
-                type: 'changes.updated',
-                timestamp: now,
-                payload: { changeId, count: files.length, files: activityFiles },
-              });
-            }
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed. Review the result.' } });
-          } else {
+
+          if (!message.ok) {
             const adapterId = String(command.payload.adapterId || 'opencode');
             const detail = String(message.error || message.result?.error || `${adapterId} adapter could not complete the task.`);
             const errorKind = classifyError(detail);
@@ -272,6 +299,34 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                       : errorKind === 'engine'
                         ? 'The AI workspace connection was interrupted. Reconnect the workspace and try again.'
                         : 'Orlynx AI could not complete this task.';
+
+            if (task) {
+              task.state = 'failed';
+              task.updatedAt = now;
+              const effectivePermission = task.tempPermission || task.permission || 'full';
+              task.harness ||= createHarnessCheckpoint({
+                prompt: task.prompt,
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                plane: task.plane || 'workspace',
+                now,
+              });
+              task.harness = advanceHarnessPhase(task.harness, 'failed', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                now,
+              });
+              await repository.putTask(task);
+            }
+
+            if (memoryRun) {
+              memoryRun.state = 'failed';
+              memoryRun.activity = 'Work needs attention';
+              memoryRun.finishedAt = now;
+              memoryRun.errorKind = errorKind;
+              store.save();
+            }
+
             await repository.appendEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
@@ -286,8 +341,393 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 retryable: errorKind === 'rate_limit' || errorKind === 'engine',
               },
             });
+            await promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after failed result failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+            return;
           }
-          await promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after result failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+
+          const responseText = String(message.result?.responseText || '');
+          const engineSessionId = String(message.result?.engineSessionId || command.payload.engineSessionId || '');
+          if (engineSessionId) {
+            const adapterId = String(command.payload.adapterId || 'opencode');
+            await repository.putAgentSession(claims.sessionId, adapterId, engineSessionId);
+          }
+
+          const rawDiff = Array.isArray(message.result?.diff) ? message.result.diff as Array<Record<string, unknown>> : [];
+          const files = rawDiff.flatMap((item) => {
+            const file = String(item.file || item.path || '');
+            if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
+            return [{
+              path: file,
+              action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const,
+              before: typeof item.before === 'string' ? item.before : undefined,
+              after: typeof item.after === 'string' ? item.after : undefined,
+              diff: typeof item.diff === 'string' ? item.diff : undefined,
+            }];
+          });
+
+          if (files.length) {
+            const changeId = `chg_${uuid()}`;
+            await repository.putChangeSet({
+              id: changeId,
+              sessionId: claims.sessionId,
+              runId,
+              baseSha: String(message.result?.head || ''),
+              files,
+              reviewState: 'pending',
+              createdAt: now,
+            });
+
+            let remainingDiffChars = 24_000;
+            const activityFiles = files.slice(0, 20).map((file) => {
+              const source = file.diff || file.after || file.before || '';
+              const diff = source && remainingDiffChars > 0 ? source.slice(0, Math.min(remainingDiffChars, 8_000)) : '';
+              remainingDiffChars -= diff.length;
+              return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
+            });
+
+            await repository.appendEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'changes.updated',
+              timestamp: now,
+              payload: { changeId, count: files.length, files: activityFiles },
+            });
+          }
+
+          if (!task) {
+            if (responseText) await repository.putMessage({
+              id: `msg_${runId || uuid()}`,
+              sessionId: claims.sessionId,
+              role: 'assistant',
+              text: responseText,
+              runId: runId || undefined,
+              createdAt: now,
+            });
+            if (memoryRun) {
+              memoryRun.state = 'completed';
+              memoryRun.activity = 'Ready for review';
+              memoryRun.finishedAt = now;
+              store.save();
+            }
+            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
+            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed.' } });
+            await promoteNextQueuedRun(claims.sessionId).catch(() => {});
+            return;
+          }
+
+          const effectivePermission = task.tempPermission || task.permission || 'full';
+          task.harness ||= createHarnessCheckpoint({
+            prompt: task.prompt,
+            mode: task.mode || 'build',
+            permission: effectivePermission,
+            plane: task.plane || 'workspace',
+            now,
+          });
+          task.harness = advanceHarnessPhase(task.harness, 'verifying', {
+            mode: task.mode || 'build',
+            permission: effectivePermission,
+            now,
+          });
+          task.updatedAt = now;
+          await repository.putTask(task);
+
+          const pendingSteering = task.harness.inbox.filter((item) => !item.appliedAt);
+          if (pendingSteering.length && engineSessionId) {
+            const appliedAt = new Date().toISOString();
+            task.harness = {
+              ...task.harness,
+              inbox: task.harness.inbox.map((item) => item.appliedAt ? item : { ...item, appliedAt }),
+            };
+            task.harness = advanceHarnessPhase(task.harness, 'executing', {
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              now: appliedAt,
+            });
+            task.updatedAt = appliedAt;
+            await repository.putTask(task);
+
+            const updateText = [
+              'Continue the same Orlynx task. Apply these live user updates before finalizing:',
+              ...pendingSteering.map((item) => `[${item.action.toUpperCase()}] ${item.text}`),
+              'Do not repeat work that is already complete. Re-check the acceptance criteria after applying the update.',
+            ].join('\n');
+            await queueBridgeCommand(
+              claims.workspaceId,
+              'agent.run',
+              continuationPayload(command.payload, task, engineSessionId, updateText),
+              30 * 60_000,
+            );
+            console.info(`[harness] continued run=${runId} after steering updates=${pendingSteering.length}`);
+            return;
+          }
+
+          let recent = (await repository.listRecentEvents(claims.sessionId, 1000)).filter((event) => event.runId === runId);
+          task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
+          await repository.putTask(task);
+
+          let publishError = '';
+          const onlyPublishMissing = task.harness.verification.missing.length === 1
+            && task.harness.verification.missing[0] === 'publish';
+
+          if (onlyPublishMissing && effectivePermission === 'ask-first') {
+            const approvalId = `approval_${uuid()}`;
+            const approvalNow = new Date().toISOString();
+            task.state = 'waiting_approval';
+            task.partialText = responseText;
+            task.harness = advanceHarnessPhase(task.harness, 'waiting_approval', {
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              now: approvalNow,
+            });
+            task.updatedAt = approvalNow;
+            await repository.putTask(task);
+            await repository.putApproval({
+              id: approvalId,
+              sessionId: claims.sessionId,
+              taskId: task.id,
+              action: 'git.push.default',
+              state: 'pending',
+              context: {
+                taskId: task.id,
+                runId,
+                workspaceId: claims.workspaceId,
+                branch: (await repository.getSession(claims.sessionId))?.branch || '',
+              },
+              createdAt: approvalNow,
+            });
+            if (memoryRun) {
+              memoryRun.state = 'waiting_approval';
+              memoryRun.activity = 'Waiting for approval';
+              memoryRun.finishedAt = undefined;
+              store.save();
+            }
+            await repository.appendEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'approval.required',
+              timestamp: approvalNow,
+              payload: {
+                approvalId,
+                action: 'git.push.default',
+                detail: 'Publish the verified commit to the conversation branch.',
+              },
+            });
+            return;
+          }
+
+          if (onlyPublishMissing && effectivePermission === 'full') {
+            try {
+              const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId);
+              const publishedAt = new Date().toISOString();
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'receipt.created',
+                timestamp: publishedAt,
+                payload: {
+                  command: 'git push',
+                  publish: true,
+                  pushedBranch: published.branch,
+                  commitSha: published.head,
+                  alreadyPublished: published.alreadyPublished,
+                },
+              });
+              recent = (await repository.listRecentEvents(claims.sessionId, 1000)).filter((event) => event.runId === runId);
+              task.harness = verifyHarness(task.harness, recent, publishedAt);
+              await repository.putTask(task);
+            } catch (error) {
+              publishError = error instanceof Error ? error.message : 'Controlled Git publish failed.';
+            }
+          }
+
+          if (
+            task.harness.verification.status === 'passed'
+            && needsFinalSynthesis(task.harness, responseText)
+            && task.harness.salvageAttempts < 1
+            && engineSessionId
+          ) {
+            const synthesisNow = new Date().toISOString();
+            task.harness = {
+              ...task.harness,
+              salvageAttempts: task.harness.salvageAttempts + 1,
+            };
+            task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              now: synthesisNow,
+            });
+            task.updatedAt = synthesisNow;
+            await repository.putTask(task);
+
+            await queueBridgeCommand(
+              claims.workspaceId,
+              'agent.run',
+              continuationPayload(
+                command.payload,
+                task,
+                engineSessionId,
+                'Finalization pass. All required evidence is already satisfied. Do not call tools. Give the user a concise final result based only on the verified evidence and completed work.',
+              ),
+              10 * 60_000,
+            );
+            console.info(`[harness] forced final synthesis run=${runId}`);
+            return;
+          }
+
+          if (task.harness.verification.status !== 'passed') {
+            if (shouldSalvage(task.harness, responseText) && engineSessionId) {
+              const salvageNow = new Date().toISOString();
+              task.harness = {
+                ...task.harness,
+                salvageAttempts: task.harness.salvageAttempts + 1,
+              };
+              task.harness = advanceHarnessPhase(task.harness, 'executing', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                now: salvageNow,
+              });
+              task.updatedAt = salvageNow;
+              await repository.putTask(task);
+
+              const missing = task.harness.verification.missing.join(', ');
+              const continuation = [
+                'Continue the same task. Orlynx verification found missing acceptance evidence:',
+                missing,
+                publishError ? `Controlled publish note: ${publishError}` : '',
+                'Do only the remaining work. Verify it with concrete tool evidence, then give a concise final result.',
+                task.harness.verification.missing.includes('publish')
+                  ? 'If publishing is still required, prepare and commit the workspace locally; Orlynx will perform the authenticated push.'
+                  : '',
+              ].filter(Boolean).join('\n');
+
+              await queueBridgeCommand(
+                claims.workspaceId,
+                'agent.run',
+                continuationPayload(command.payload, task, engineSessionId, continuation),
+                30 * 60_000,
+              );
+              console.info(`[harness] salvage run=${runId} missing=${missing}`);
+              return;
+            }
+
+            const failedAt = new Date().toISOString();
+            const missing = task.harness.verification.missing;
+            task.state = 'failed';
+            task.partialText = responseText;
+            task.harness = {
+              ...advanceHarnessPhase(task.harness, 'failed', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                now: failedAt,
+              }),
+              verification: {
+                ...task.harness.verification,
+                status: 'failed',
+                checkedAt: failedAt,
+              },
+            };
+            task.updatedAt = failedAt;
+            await repository.putTask(task);
+
+            const verificationText = `Orlynx could not verify: ${missing.join(', ')}.`;
+            const finalText = [responseText, verificationText].filter(Boolean).join('\n\n');
+            if (finalText) await repository.putMessage({
+              id: `msg_${runId || uuid()}`,
+              sessionId: claims.sessionId,
+              role: 'assistant',
+              text: finalText,
+              runId: runId || undefined,
+              createdAt: failedAt,
+            });
+
+            if (memoryRun) {
+              memoryRun.state = 'failed';
+              memoryRun.activity = 'Verification needs attention';
+              memoryRun.finishedAt = failedAt;
+              memoryRun.errorKind = 'engine';
+              store.save();
+            }
+
+            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: failedAt, payload: {} });
+            await repository.appendEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'run.failed',
+              timestamp: failedAt,
+              payload: {
+                error: verificationText,
+                errorKind: 'engine',
+                recoverable: true,
+                missing,
+              },
+            });
+            await promoteNextQueuedRun(claims.sessionId).catch(() => {});
+            return;
+          }
+
+          const finalizingAt = new Date().toISOString();
+          task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
+            mode: task.mode || 'build',
+            permission: effectivePermission,
+            now: finalizingAt,
+          });
+          await repository.putTask(task);
+
+          if (responseText) await repository.putMessage({
+            id: `msg_${runId || uuid()}`,
+            sessionId: claims.sessionId,
+            role: 'assistant',
+            text: responseText,
+            runId: runId || undefined,
+            createdAt: finalizingAt,
+          });
+
+          const completedAt = new Date().toISOString();
+          task.state = 'completed';
+          task.partialText = undefined;
+          task.harness = advanceHarnessPhase(task.harness, 'completed', {
+            mode: task.mode || 'build',
+            permission: effectivePermission,
+            now: completedAt,
+          });
+          task.updatedAt = completedAt;
+          await repository.putTask(task);
+
+          if (memoryRun) {
+            memoryRun.state = 'completed';
+            memoryRun.activity = 'Ready for review';
+            memoryRun.finishedAt = completedAt;
+            store.save();
+          }
+
+          await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: completedAt, payload: {} });
+          await repository.appendEvent({
+            eventId: `evt_${uuid()}`,
+            sessionId: claims.sessionId,
+            taskId,
+            runId,
+            workspaceId: claims.workspaceId,
+            type: 'run.completed',
+            timestamp: completedAt,
+            payload: {
+              summary: 'Verified work completed.',
+              verification: task.harness.verification,
+            },
+          });
+
+          await promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after verified result failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         }
         return;
       }
@@ -338,6 +778,49 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         // turn ready/failed/stopped into a generic "preparing" row.
         if (type === 'workspace.state') {
           payload.state = String(payload.state || 'connecting');
+        }
+
+        const eventTaskId = String(message.event.taskId || '');
+        if (type === 'state.delta' && String(payload.scope || '') === 'harness' && String(payload.engineSessionId || '')) {
+          const adapterId = String(payload.adapterId || 'opencode');
+          await repository.putAgentSession(claims.sessionId, adapterId, String(payload.engineSessionId));
+        }
+
+        if (eventTaskId && (type === 'step.started' || type === 'approval.required' || type === 'approval.resolved')) {
+          const task = await repository.getTask(eventTaskId);
+          if (task) {
+            const effectivePermission = task.tempPermission || task.permission || 'full';
+            task.harness ||= createHarnessCheckpoint({
+              prompt: task.prompt,
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              plane: task.plane || 'workspace',
+            });
+
+            if (type === 'step.started') {
+              task.harness = consumeHarnessStep(task.harness, {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+              const budget = harnessBudgetStatus(task.harness);
+              payload.harnessStep = budget.step;
+              payload.harnessBudget = budget.budget;
+              payload.harnessRemaining = budget.remaining;
+              payload.harnessBudgetStage = budget.stage;
+            } else if (type === 'approval.required') {
+              task.harness = advanceHarnessPhase(task.harness, 'waiting_approval', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+            } else if (type === 'approval.resolved' && task.state === 'running') {
+              task.harness = advanceHarnessPhase(task.harness, 'executing', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+              });
+            }
+            task.updatedAt = new Date().toISOString();
+            await repository.putTask(task);
+          }
         }
 
         const eventId = bridgeEventKey(

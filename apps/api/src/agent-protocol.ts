@@ -33,6 +33,8 @@ export type CanonicalType = EventType;
 // durable type (or to extension.event with its sourceType preserved).
 const BRIDGE_CANONICAL_MAP: Record<string, CanonicalType> = {
   'message.delta': 'message.delta',
+  'step.started': 'step.started',
+  'step.finished': 'step.finished',
   'tool.requested': 'tool.requested',
   'tool.started': 'tool.started',
   'tool.output': 'tool.output',

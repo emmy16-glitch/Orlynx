@@ -331,10 +331,20 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     engineSessionId = String(created.body?.id || ''); if (!engineSessionId) throw new Error('OpenCode did not create a session.');
   }
 
+  // Persist the resumable engine-session checkpoint before tool work begins.
+  // If the bridge/API restarts mid-turn, the durable command replay can attach
+  // to this same OpenCode session instead of silently creating a new one.
+  bridgeEvent(ws, 'state.delta', {
+    scope: 'harness',
+    state: 'executing',
+    engineSessionId,
+  }, taskId, runId);
+
   const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
   if (payload.system) body.system = String(payload.system);
+  if (payload.tools && typeof payload.tools === 'object') body.tools = payload.tools;
   if (payload.model) body.model = payload.model;
   if (payload.agent) body.agent = payload.agent;
 
@@ -441,7 +451,10 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (status !== previousStatus) {
       toolStates.set(id, status);
       if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
-      else if (status === 'running') bridgeEvent(ws, 'tool.started', common, taskId, runId);
+      else if (status === 'running') {
+        bridgeEvent(ws, 'step.started', { stepId: id, tool: toolName, semanticType, title }, taskId, runId);
+        bridgeEvent(ws, 'tool.started', common, taskId, runId);
+      }
     }
 
     const currentOutput = String(state.output || '');
@@ -467,11 +480,13 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
         ...common,
         ...(typeof state.time?.end === 'number' ? { endedAt: state.time.end } : {}),
       }, taskId, runId);
+      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'success' }, taskId, runId);
     } else if (status === 'error' && previousStatus !== 'error') {
       bridgeEvent(ws, 'tool.failed', {
         ...common,
         error: String(state.error || 'Tool failed.').slice(0, 8_000),
       }, taskId, runId);
+      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
     }
   };
 

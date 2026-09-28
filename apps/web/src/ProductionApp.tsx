@@ -95,15 +95,132 @@ function isBuildProgressNarration(text: string): boolean {
   return /^(?:i(?:'m| am|'ll| will)\s+)?(?:starting|checking|inspecting|looking|reading|running|testing|building|setting up|opening|preparing|trying|verifying|reviewing|first checking|let me\b)/i.test(cleaned);
 }
 
+function safeLinkHref(value: string): string | undefined {
+  const href = value.trim();
+  return /^(?:https?:\/\/|mailto:)/i.test(href) ? href : undefined;
+}
+
+function inlineMarkdown(text: string, keyPrefix: string): React.ReactNode[] {
+  const pattern = /(\`[^\`\n]+\`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)\s]+\)|\*[^*\n]+\*|_[^_\n]+_)/g;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = pattern.exec(text))) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${index++}`;
+    if (token.startsWith('**') || token.startsWith('__')) {
+      parts.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith('~~')) {
+      parts.push(<del key={key}>{token.slice(2, -2)}</del>);
+    } else if (token.startsWith('`')) {
+      parts.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith('[')) {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = linkMatch ? safeLinkHref(linkMatch[2]) : undefined;
+      parts.push(href
+        ? <a key={key} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel={href.startsWith('http') ? 'noreferrer' : undefined}>{linkMatch![1]}</a>
+        : token);
+    } else {
+      parts.push(<em key={key}>{token.slice(1, -1)}</em>);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+function MarkdownText({ text, className = '' }: { text: string; className?: string }) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+
+  const paragraph = (items: string[]) => {
+    const content: React.ReactNode[] = [];
+    items.forEach((line, lineIndex) => {
+      if (lineIndex) content.push(<br key={`br-${key}-${lineIndex}`} />);
+      content.push(...inlineMarkdown(line, `p-${key}-${lineIndex}`));
+    });
+    blocks.push(<p key={`p-${key++}`}>{content}</p>);
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+
+    const fence = line.match(/^\s*\`\`\`([^\s]*)\s*$/);
+    if (fence) {
+      const language = fence[1];
+      const codeLines: string[] = [];
+      i += 1;
+      while (i < lines.length && !/^\s*\`\`\`\s*$/.test(lines[i])) codeLines.push(lines[i++]);
+      if (i < lines.length) i += 1;
+      blocks.push(<pre key={`code-${key++}`} className="chat-code-block"><code data-language={language || undefined}>{codeLines.join('\n')}</code></pre>);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length + 1);
+      blocks.push(React.createElement(`h${level}`, { key: `h-${key++}` }, inlineMarkdown(heading[2], `h-${key}`)));
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+        i += 1;
+      }
+      blocks.push(<ul key={`ul-${key++}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{inlineMarkdown(item, `ul-${key}-${itemIndex}`)}</li>)}</ul>);
+      continue;
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
+        i += 1;
+      }
+      blocks.push(<ol key={`ol-${key++}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{inlineMarkdown(item, `ol-${key}-${itemIndex}`)}</li>)}</ol>);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ''));
+        i += 1;
+      }
+      blocks.push(<blockquote key={`quote-${key++}`}>{quote.map((item, itemIndex) => <React.Fragment key={itemIndex}>{itemIndex > 0 && <br />}{inlineMarkdown(item, `q-${key}-${itemIndex}`)}</React.Fragment>)}</blockquote>);
+      continue;
+    }
+
+    const paragraphLines: string[] = [line];
+    i += 1;
+    while (
+      i < lines.length
+      && lines[i].trim()
+      && !/^\s*\`\`\`/.test(lines[i])
+      && !/^(#{1,4})\s+/.test(lines[i])
+      && !/^\s*[-*+]\s+/.test(lines[i])
+      && !/^\s*\d+[.)]\s+/.test(lines[i])
+      && !/^\s*>\s?/.test(lines[i])
+    ) {
+      paragraphLines.push(lines[i]);
+      i += 1;
+    }
+    paragraph(paragraphLines);
+  }
+
+  return <div className={`message-text markdown-text ${className}`.trim()}>{blocks}</div>;
+}
+
 function UserMessageText({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const longMessage = text.length > 700 || text.split(/\r?\n/).length > 8;
-  return <div className="user-message-body-wrap">
-    <div className={`message-text user-message-body ${longMessage && !expanded ? 'is-collapsed' : ''}`}>{text}</div>
-    {longMessage && <button type="button" className="user-message-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-      {expanded ? 'Show less' : 'Show more'}
-    </button>}
-  </div>;
+  return <div className="user-message-body-wrap"><MarkdownText text={text} className="user-message-body" /></div>;
 }
 
 export default function ProductionApp() {
@@ -154,8 +271,10 @@ export default function ProductionApp() {
   const [aiProviders, setAiProviders] = useState<any[]>([]);
   const [showConnectAI, setShowConnectAI] = useState(false);
   const [aiPickerView, setAiPickerView] = useState<'agent' | 'model'>('model');
+  const [showModeMenu, setShowModeMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [tempFullAccess, setTempFullAccess] = useState(false);
+  const aiPrefRequestRef = useRef(0);
   const [connectingGithub, setConnectingGithub] = useState(false);
   const [syncingGithub, setSyncingGithub] = useState(false);
   const [syncStep, setSyncStep] = useState('');
@@ -837,40 +956,58 @@ export default function ProductionApp() {
 
   async function setAiPrefs(patch: { adapterId?: string; modelId?: string; mode?: string; permission?: string }) {
     if (!session) return;
+    const requestId = ++aiPrefRequestRef.current;
+    const previous = ai;
     setError('');
+
+    const optimisticModel = patch.modelId
+      ? aiModels.find((model: any) => String(model.id).toLowerCase() === String(patch.modelId).toLowerCase())
+      : undefined;
+
+    setAi((current: any) => ({
+      ...current,
+      ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId } : {}),
+      ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
+      ...(patch.permission !== undefined ? { permission: patch.permission } : {}),
+      ...(optimisticModel ? { model: optimisticModel, state: 'ready', message: 'Ready.' } : {}),
+    }));
+
     try {
-      const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }));
+      const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }));
+      if (requestId !== aiPrefRequestRef.current) return;
 
-      if (result.prefs?.adapterId) {
-        setAi((current: any) => ({ ...current, adapterId: result.prefs.adapterId }));
+      const selected = result.prefs?.modelId
+        ? aiModels.find((model: any) =>
+            String(model.id).toLowerCase() === String(result.prefs.modelId).toLowerCase()
+            && model.status === 'available')
+        : undefined;
+
+      setAi((current: any) => ({
+        ...current,
+        ...(result.prefs?.adapterId ? { adapterId: result.prefs.adapterId } : {}),
+        ...(result.prefs?.mode ? { mode: result.prefs.mode } : {}),
+        ...(result.prefs?.permission ? { permission: result.prefs.permission } : {}),
+        ...(selected ? { model: selected, state: 'ready', message: 'Ready.' } : {}),
+      }));
+
+      if (result.appliesTo === 'next-turn') {
+        setError('A task is running. This selection will be used for your next turn.');
       }
 
-      if (result.prefs?.modelId) {
-        const selected = aiModels.find((model: any) =>
-          String(model.id).toLowerCase() === String(result.prefs.modelId).toLowerCase() &&
-          model.status === 'available'
-        );
-        if (selected) {
-          setAi((current: any) => ({
-            ...current,
-            model: selected,
-            state: 'ready',
-            message: 'Ready.',
-          }));
-        }
+      // Adapter/model switches can change availability metadata. Mode/access
+      // already have authoritative prefs above, so avoid a second refresh that
+      // can visually snap the selector back while the save is settling.
+      if (patch.adapterId !== undefined || patch.modelId !== undefined) {
+        await refreshAi(session.id);
       }
-
-      if (result.prefs?.mode || result.prefs?.permission) {
-        setAi((current: any) => ({
-          ...current,
-          ...(result.prefs.mode ? { mode: result.prefs.mode } : {}),
-          ...(result.prefs.permission ? { permission: result.prefs.permission } : {}),
-        }));
-      }
-
-      if (result.appliesTo === 'next-turn') setError('A task is running. Your selection applies to the next turn.');
-      await refreshAi(session.id);
-    } catch (error: any) { setError(error.message || 'AI preference could not be saved.'); }
+    } catch (error: any) {
+      if (requestId === aiPrefRequestRef.current) setAi(previous);
+      setError(error.message || 'AI preference could not be saved.');
+    }
   }
 
   const submittingRef = useRef(false);
@@ -951,7 +1088,7 @@ export default function ProductionApp() {
   async function stopRun() {
     if (stopping) return;
     const runningRuns = Object.values(agentStream.runs)
-      .filter((run) => run.state === 'running')
+      .filter((run) => run.state === 'running' || run.state === 'waiting_approval')
       .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''));
     const running = runningRuns[runningRuns.length - 1]?.id || lastRun?.id;
     if (!session || !running) return;
@@ -1075,10 +1212,26 @@ export default function ProductionApp() {
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
-  const runActive = runs.some((candidate: any) => candidate.state === 'running' || candidate.state === 'queued') || lastRun?.state === 'running' || lastRun?.state === 'queued';
+  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_approval'].includes(candidate.state))
+    || ['running', 'queued', 'waiting_approval'].includes(String(lastRun?.state || ''));
+  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_approval'].includes(candidate.state) && candidate.harness);
+  const activeHarness = activeHarnessRun?.harness;
+  const harnessRemaining = activeHarness ? Math.max(0, Number(activeHarness.stepBudget || 0) - Number(activeHarness.step || 0)) : null;
+  const harnessMissing = Array.isArray(activeHarness?.verification?.missing) ? activeHarness.verification.missing : [];
+  const harnessStatusLabel = activeHarness?.phase === 'verifying'
+    ? `Verifying${harnessMissing.length ? ` ${harnessMissing.slice(0, 2).join(' + ')}` : ' result'}`
+    : activeHarness?.phase === 'finalizing'
+      ? 'Finishing result'
+      : activeHarnessRun?.state === 'waiting_approval'
+        ? 'Waiting for approval'
+        : harnessRemaining !== null && harnessRemaining <= 3
+          ? `${harnessRemaining} step${harnessRemaining === 1 ? '' : 's'} left`
+          : '';
   const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
   const showWorkBar = tab === 'chat' && newActivity && Boolean(currentActivity || runActive);
-  const workBarLabel = waitingForUser && currentActivity?.category === 'approval' ? 'Waiting for you' : currentActivity?.title || 'Orlynx is working';
+  const workBarLabel = waitingForUser && currentActivity?.category === 'approval'
+    ? 'Waiting for you'
+    : currentActivity?.title || harnessStatusLabel || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
   // banners/cards elsewhere for the same failure (§183).
   const lastAssistantId = [...messages].reverse().find((m: any) => m.role === 'assistant')?.id;
@@ -1246,15 +1399,20 @@ export default function ProductionApp() {
                   const priorUserPrompt = durable && durableIndex > 0 && messages[durableIndex - 1]?.role === 'user'
                     ? String(messages[durableIndex - 1].text || '') : turn.userMessage ? String(turn.userMessage.text || '') : '';
                   const isLatestAssistant = durable ? durable.id === lastAssistantId : false;
-                  const turnActive = turn.state === 'streaming' || turn.state === 'queued';
+                  const turnActive = ['streaming', 'queued', 'waiting_input', 'waiting_approval', 'paused'].includes(turn.state);
+                  const turnStatusLabel = turn.state === 'waiting_approval' ? 'Waiting for approval'
+                    : turn.state === 'waiting_input' ? 'Waiting for input'
+                    : turn.state === 'paused' ? 'Paused'
+                    : turn.state === 'queued' ? 'Queued'
+                    : 'Working…';
                   const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '') : '';
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
-                    {turn.userMessage && <article className="message-row user-message"><span className="user-avatar"><Icon name="github" size={16} /></span><div className="message-content"><div className="message-meta"><b>You</b><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><UserMessageText text={userText} /><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
-                    {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta"><b>Orlynx AI</b>{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">Working…</span>}</div>
+                    {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><span className="agent-avatar"><Icon name="agents" size={16} /></span><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">{turnStatusLabel}</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
-                      {turn.liveReply && !durable && !hideProgressNarration && <div className="message-text turn-response">{liveText}{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
-                      {durable && <div className="message-text turn-response">{visibleChatText('assistant', durable.text, priorUserPrompt)}</div>}
+                      {turn.liveReply && !durable && !hideProgressNarration && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
+                      {durable && <div className="turn-response"><MarkdownText text={visibleChatText('assistant', durable.text, priorUserPrompt)} /></div>}
                       {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => { setAiPickerView('model'); setShowConnectAI(true); }} />}
                     </div></article>}
                   </div>;
@@ -1296,44 +1454,31 @@ export default function ProductionApp() {
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>
-      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'agent'} aria-label="Choose AI agent">
+      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => { setShowModeMenu(false); setAiPickerView('agent'); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'agent'} aria-label="Choose AI agent">
         <Icon name="agents" size={13} />
         <span className="composer-chip-label">{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span>
         <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
         <Icon name="chevron" size={11} />
       </button>
-      <button type="button" className="composer-chip model-chip" onClick={() => { setAiPickerView('model'); setModelSearch(''); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'model'} aria-label="Choose OpenCode model">
+      <button type="button" className="composer-chip model-chip" onClick={() => { setShowModeMenu(false); setAiPickerView('model'); setModelSearch(''); setShowConnectAI(true); }} aria-expanded={showConnectAI && aiPickerView === 'model'} aria-label="Choose OpenCode model">
         <span className="composer-chip-label">{ai.model?.displayName || 'Choose model'}</span>
         <Icon name="chevron" size={11} />
       </button>
     </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-label="Choose AI agent"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
+    {harnessStatusLabel && <span className="composer-chip harness-status-chip" role="status"><span className="harness-status-dot" aria-hidden="true" />{harnessStatusLabel}</span>}
     {runActive && <button type="button" className="composer-chip composer-stop-chip" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}><span aria-hidden>■</span><span>{stopping ? 'Stopping…' : 'Stop'}</span></button>}
-    <details className="composer-options">
-      <summary className="composer-chip mode-access-chip" aria-label="Mode and access">
-        <span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span>
-        <span className="chip-separator" aria-hidden>·</span>
-        <span>{ai.mode === 'build' ? (ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access') : 'Read only'}</span>
-        <Icon name="chevron" size={11} />
-      </summary>
-      <div className="composer-options-panel">
-        <div className="option-group"><span className="option-heading">Mode</span><div className="option-grid" role="group" aria-label="Mode">
-          {[
-            ['build', 'Build', 'Uses the development workspace only when the request needs execution or file changes'],
-            ['plan', 'Plan', 'Chats and plans directly; never changes files or starts cloud work'],
-            ['ask', 'Ask', 'Answers directly; never changes files or starts cloud work'],
-          ].map(([value, label, hint]) => <button key={value} type="button" className={ai.mode === value ? 'selected' : ''} aria-pressed={ai.mode === value} onClick={() => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.mode === value && <Icon name="check" size={14} />}</button>)}
-        </div></div>
-        {ai.mode === 'build'
-          ? <div className="option-group"><span className="option-heading">Access</span><div className="option-grid" role="group" aria-label="Access level">
-              {[
-                ['full', 'Full project access', 'Can make project changes'],
-                ['ask-first', 'Ask first', 'Requests permission before changes'],
-                ['read-only', 'Read only', 'Cannot change project files'],
-              ].map(([value, label, hint]) => <button key={value} type="button" className={ai.permission === value ? 'selected' : ''} aria-pressed={ai.permission === value} onClick={() => { setTempFullAccess(false); void setAiPrefs({ permission: value }); }} disabled={!online}><span><b>{label}</b><small>{hint}</small></span>{ai.permission === value && <Icon name="check" size={14} />}</button>)}
-            </div></div>
-          : <div className="mode-readonly-note"><Icon name="shield" size={14} /><span><b>{ai.mode === 'plan' ? 'Plan is chat-only.' : 'Ask is chat-only.'}</b><small>Your Build access setting is preserved for when you switch back.</small></span></div>}
-      </div>
-    </details>
+    <button
+      type="button"
+      className="composer-chip mode-access-chip"
+      aria-label="Mode and access"
+      aria-expanded={showModeMenu}
+      onClick={() => { setShowConnectAI(false); setShowModeMenu((open) => !open); }}
+    >
+      <span>{ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}</span>
+      <span className="chip-separator" aria-hidden>·</span>
+      <span>{ai.mode === 'build' ? (ai.permission === 'ask-first' ? 'Ask first' : ai.permission === 'read-only' ? 'Read only' : 'Full access') : 'Read only'}</span>
+      <Icon name="chevron" size={11} />
+    </button>
   </div>
   <textarea
     ref={composerBoxRef}
@@ -1353,7 +1498,7 @@ export default function ProductionApp() {
     disabled={!aiAccountConnected || !ai.model || !online}
   />
   {ai.mode === 'build' && ai.permission === 'ask-first' && aiAccountConnected && composerExpanded && <label className="temp-access"><input type="checkbox" checked={tempFullAccess} onChange={(event) => setTempFullAccess(event.target.checked)} /> Allow project changes for this task</label>}
-</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className="composer-ai-dropdown">{renderAiSwitcher()}</div>}</form>}
+</div><Button className="composer-send" type="submit" disabled={!composer.trim() || sending || !aiAccountConnected || !ai.model || !online} aria-label={sending ? 'Sending…' : running || lastRun?.state === 'queued' ? 'Queue task' : 'Send task'}>{sending ? <Spinner label="Sending" /> : <Icon name="send" />}</Button>{showConnectAI && <div className={`composer-ai-dropdown view-${aiPickerView}`}>{renderAiSwitcher()}</div>}{showModeMenu && <div className="composer-mode-dropdown"><ModeAccessMenu mode={ai.mode} permission={ai.permission} online={online} onMode={(value) => { if (value !== 'build') setTempFullAccess(false); void setAiPrefs({ mode: value }); if (value !== 'build') setShowModeMenu(false); }} onPermission={(value) => { setTempFullAccess(false); void setAiPrefs({ permission: value }); setShowModeMenu(false); }} onClose={() => setShowModeMenu(false)} /></div>}</form>}
           <nav className="mobile-project-nav" role="tablist" aria-label="Project workspace">{tabs.filter(([id]) => ['chat', 'files', 'more'].includes(id) || (id === 'changes' && changes.length > 0)).map(([id, label, icon]) => <button role="tab" key={id} aria-selected={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview'))} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} onClick={() => setTab(id)}><Icon name={icon} /><span>{label.split(' ')[0]}</span></button>)}</nav>
         </> : <>
           {page !== 'github' && <header className="simple-header"><button className="brand-lockup compact" onClick={() => setPage(integration.github?.connected ? 'github' : 'welcome')}><span className="brand-mark" /><b>Orlynx</b></button>{onboarded && <div className="simple-header-actions"><Badge tone={integration.github?.connected ? 'ok' : 'neutral'}><Icon name="github" />{integration.github?.connected ? 'Connected' : 'Reconnect'}</Badge><button className="icon-button" onClick={() => setPage('settings')} aria-label="Settings"><Icon name="settings" /></button></div>}</header>}
@@ -1429,6 +1574,82 @@ export default function ProductionApp() {
       </div>
     </div>
   );
+}
+
+function ModeAccessMenu({ mode, permission, online, onMode, onPermission, onClose }: {
+  mode: 'build' | 'plan' | 'ask';
+  permission: 'full' | 'ask-first' | 'read-only';
+  online: boolean;
+  onMode: (mode: 'build' | 'plan' | 'ask') => void;
+  onPermission: (permission: 'full' | 'ask-first' | 'read-only') => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const closeOnPointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('.mode-access-chip')) return;
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', closeOnKey);
+    window.addEventListener('pointerdown', closeOnPointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnKey);
+      window.removeEventListener('pointerdown', closeOnPointer);
+    };
+  }, [onClose]);
+
+  const modes = [
+    ['build', 'Build', 'Edit files, run commands and test in the workspace'],
+    ['plan', 'Plan', 'Inspect the project and produce a plan without changes'],
+    ['ask', 'Ask', 'Answer directly without changing project files'],
+  ] as const;
+  const permissions = [
+    ['full', 'Full access', 'Can change files and run approved project work'],
+    ['ask-first', 'Ask first', 'Requests permission before project changes'],
+    ['read-only', 'Read only', 'Can inspect and explain only'],
+  ] as const;
+
+  return <aside ref={menuRef} className="mode-access-popover" role="dialog" aria-modal="false" aria-label="Mode and access selector">
+    <div className="mode-menu-section">
+      <span className="mode-menu-heading">Mode</span>
+      <div className="mode-menu-list" role="listbox" aria-label="Mode">
+        {modes.map(([value, label, hint]) => <button
+          key={value}
+          type="button"
+          role="option"
+          aria-selected={mode === value}
+          className={mode === value ? 'selected' : ''}
+          onClick={() => onMode(value)}
+          disabled={!online}
+        >
+          <span><b>{label}</b><small>{hint}</small></span>
+          {mode === value && <Icon name="check" size={13} />}
+        </button>)}
+      </div>
+    </div>
+    <div className="mode-menu-section access-section">
+      <span className="mode-menu-heading">Access</span>
+      {mode === 'build'
+        ? <div className="mode-menu-list" role="listbox" aria-label="Access level">
+            {permissions.map(([value, label, hint]) => <button
+              key={value}
+              type="button"
+              role="option"
+              aria-selected={permission === value}
+              className={permission === value ? 'selected' : ''}
+              onClick={() => onPermission(value)}
+              disabled={!online}
+            >
+              <span><b>{label}</b><small>{hint}</small></span>
+              {permission === value && <Icon name="check" size={13} />}
+            </button>)}
+          </div>
+        : <div className="mode-menu-readonly"><Icon name="shield" size={13} /><span><b>Read-only while in {mode === 'plan' ? 'Plan' : 'Ask'}.</b><small>Your Build access choice is kept for when you switch back.</small></span></div>}
+    </div>
+  </aside>;
 }
 
 function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onClose }: {

@@ -24,6 +24,7 @@ import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, steeringActionFor, verifyHarness } from './harness.js';
 
 export const router = Router();
 
@@ -430,6 +431,97 @@ router.post('/sessions/:id/messages', async (req, res) => {
     durableSession = await repository.getSession(s.id);
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
+
+    const steeringAction = steeringActionFor(String(text));
+    if (steeringAction !== 'ignore') {
+      const activeTask = (await repository.listTasks(s.id))
+        .find((item) => ['running', 'waiting_approval'].includes(item.state) && (item.plane || 'workspace') === 'workspace');
+
+      if (activeTask) {
+        const now = new Date().toISOString();
+        const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
+
+        if (steeringAction === 'stop') {
+          if (activeTask.state === 'running') {
+            try {
+              const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
+              await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
+                adapterId: adapter.id,
+                taskId: activeTask.id,
+                runId: activeTask.runId,
+              }, 15_000);
+            } catch (error) {
+              console.warn(`[harness] stop command failed session=${s.id} task=${activeTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+            }
+          }
+
+          await repository.putTask(steeredTask);
+          const memoryRun = (store.db.runs[s.id] || []).find((item) => item.id === activeTask.runId);
+          if (memoryRun) {
+            memoryRun.state = 'cancelled';
+            memoryRun.finishedAt = now;
+            memoryRun.activity = 'Stopped';
+            store.save();
+          }
+          emit(s.id, 'run.failed', { taskId: activeTask.id, cancelled: true, steering: true }, activeTask.runId);
+          await promoteNextQueuedRun(s.id).catch(() => null);
+        } else {
+          await repository.putTask(steeredTask);
+          emit(s.id, 'state.delta', {
+            taskId: activeTask.id,
+            scope: 'harness',
+            steeringAction,
+            steeringRevision: steeredTask.harness?.steeringRevision,
+            message: steeringAction === 'replace' ? 'Updated the active Build request.' : 'Added context to the active Build request.',
+          }, activeTask.runId);
+        }
+
+        const ackRunId = `run_${uuid().slice(0, 8)}`;
+        const ackTaskId = `task_${uuid()}`;
+        const reply = steeringAction === 'stop'
+          ? 'Stopped the current Build task.'
+          : steeringAction === 'replace'
+            ? 'Updated the current Build task with your new direction.'
+            : 'Added that to the current Build task.';
+        const assistant = { id: `msg_${ackRunId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId: ackRunId, createdAt: now };
+        const ackRun = {
+          id: ackRunId,
+          sessionId: s.id,
+          engine: selectedAdapterId,
+          plane: 'direct' as const,
+          model: selectedModel || undefined,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          state: 'completed' as const,
+          activity: 'Ready',
+          startedAt: now,
+          finishedAt: now,
+        };
+        (store.db.messages[s.id] ||= []).push(assistant);
+        (store.db.runs[s.id] ||= []).push(ackRun as any);
+        store.save();
+        await repository.putMessage(assistant);
+        await repository.putTask({
+          id: ackTaskId,
+          sessionId: s.id,
+          workspaceId: 'direct',
+          plane: 'direct',
+          runId: ackRunId,
+          messageId: msg.id,
+          state: 'completed',
+          prompt: String(text),
+          modelId: selectedModel || undefined,
+          adapterId: selectedAdapterId,
+          mode: effectiveMode,
+          permission: prefs.permission,
+          createdAt: now,
+          updatedAt: now,
+        });
+        emit(s.id, 'message.end', { taskId: ackTaskId, instant: true, steering: steeringAction }, ackRunId);
+        emit(s.id, 'run.completed', { taskId: ackTaskId, summary: reply, instant: true, steering: steeringAction }, ackRunId);
+        return res.json({ message: msg, run: ackRun, plane: 'direct', instant: true, steering: steeringAction, targetRunId: activeTask.runId });
+      }
+    }
   }
 
   if (publishIntent) {
@@ -959,9 +1051,183 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
   if (decision === 'deny') {
     const denied = { ...approval, state: 'denied', resolvedAt: now };
     await repository.putApproval(denied);
+
+    if (approval.action === 'git.push.default' && approval.taskId) {
+      const task = await repository.getTask(approval.taskId);
+      if (task && task.state === 'waiting_approval') {
+        const permission = task.tempPermission || task.permission || 'ask-first';
+        task.harness ||= createHarnessCheckpoint({
+          prompt: task.prompt,
+          mode: task.mode || 'build',
+          permission,
+          plane: task.plane || 'workspace',
+          now,
+        });
+        task.state = 'failed';
+        task.harness = {
+          ...advanceHarnessPhase(task.harness, 'failed', { mode: task.mode || 'build', permission, now }),
+          verification: { ...task.harness.verification, status: 'failed', checkedAt: now },
+        };
+        task.updatedAt = now;
+        await repository.putTask(task);
+
+        const memoryRun = (store.db.runs[session.id] || []).find((item) => item.id === task.runId);
+        if (memoryRun) {
+          memoryRun.state = 'failed';
+          memoryRun.activity = 'Publish approval denied';
+          memoryRun.finishedAt = now;
+          memoryRun.errorKind = 'permission';
+          store.save();
+        }
+        emit(session.id, 'run.failed', {
+          taskId: task.id,
+          error: 'Publishing was not approved. The workspace changes remain available.',
+          errorKind: 'permission',
+          recoverable: true,
+        }, task.runId);
+        await promoteNextQueuedRun(session.id).catch(() => null);
+      }
+    }
+
     emit(session.id, 'approval.resolved', { approvalId: approval.id, action: approval.action, decision: 'deny', detail: 'Permission denied.' });
     await recordAudit(req, session.id, 'approval.resolve', 'denied', { approvalId: approval.id, action: approval.action });
     return res.json({ approval: denied });
+  }
+
+  if (approval.action === 'git.push.default') {
+    const taskId = String(approval.taskId || approval.context.taskId || '');
+    const task = taskId ? await repository.getTask(taskId) : null;
+    if (!task) return res.status(409).json({ error: 'The Build task waiting for this approval is no longer available.' });
+    if (task.state === 'cancelled' || task.harness?.phase === 'cancelled') {
+      const cancelledApproval = { ...approval, state: 'denied', resolvedAt: now };
+      await repository.putApproval(cancelledApproval);
+      return res.status(409).json({ error: 'This Build task was cancelled, so the pending approval can no longer run.', approval: cancelledApproval });
+    }
+
+    const workspaceId = String(approval.context.workspaceId || task.workspaceId || '');
+    const workspace = workspaceId ? await repository.getWorkspace(workspaceId) : await getWorkspace(session.id);
+    if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
+      return res.status(503).json({ error: 'The project workspace is not ready yet.' });
+    }
+
+    try {
+      await bridgeRequest(workspace.id, 'git.fetch', { approved: true }, 120_000);
+      const gitStatus = await bridgeRequest<{
+        branch?: string;
+        head?: string;
+        remoteHead?: string;
+        porcelain?: string;
+        ahead?: number;
+        behind?: number;
+      }>(workspace.id, 'git.status', {}, 30_000);
+
+      const branch = String(gitStatus.branch || '');
+      const head = String(gitStatus.head || '');
+      if (!branch || !head) throw new Error('Orlynx could not determine the current Git commit.');
+      if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
+      if (String(gitStatus.porcelain || '').trim()) throw new Error('The workspace still has uncommitted changes.');
+      if (Number(gitStatus.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
+
+      let publishedHead = head;
+      let alreadyPublished = Boolean(gitStatus.remoteHead && gitStatus.remoteHead === head && Number(gitStatus.ahead || 0) === 0);
+      if (!alreadyPublished) {
+        const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', {
+          approved: true,
+          allowDefaultBranch: branch === 'main' || branch === 'master',
+        }, 120_000);
+        publishedHead = String(pushed.head || head);
+      }
+
+      const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
+      await repository.putApproval(approvedRecord);
+      await repository.appendEvent({
+        eventId: `evt_${uuid()}`,
+        sessionId: session.id,
+        taskId: task.id,
+        runId: task.runId,
+        workspaceId: workspace.id,
+        type: 'approval.resolved',
+        timestamp: now,
+        payload: { approvalId: approval.id, action: approval.action, decision: 'allow_once', detail: 'Approved once.' },
+      });
+      await repository.appendEvent({
+        eventId: `evt_${uuid()}`,
+        sessionId: session.id,
+        taskId: task.id,
+        runId: task.runId,
+        workspaceId: workspace.id,
+        type: 'receipt.created',
+        timestamp: now,
+        payload: { command: 'git push', publish: true, pushedBranch: branch, commitSha: publishedHead, alreadyPublished },
+      });
+
+      const permission = task.tempPermission || task.permission || 'ask-first';
+      task.harness ||= createHarnessCheckpoint({
+        prompt: task.prompt,
+        mode: task.mode || 'build',
+        permission,
+        plane: task.plane || 'workspace',
+        now,
+      });
+      const events = (await repository.listRecentEvents(session.id, 1000)).filter((event) => event.runId === task.runId);
+      task.harness = verifyHarness(task.harness, events, now);
+
+      if (task.harness.verification.status !== 'passed') {
+        task.state = 'failed';
+        task.harness = {
+          ...advanceHarnessPhase(task.harness, 'failed', { mode: task.mode || 'build', permission, now }),
+          verification: { ...task.harness.verification, status: 'failed', checkedAt: now },
+        };
+        task.updatedAt = now;
+        await repository.putTask(task);
+        emit(session.id, 'run.failed', {
+          taskId: task.id,
+          error: `Publish completed, but Orlynx still could not verify: ${task.harness.verification.missing.join(', ')}.`,
+          errorKind: 'engine',
+          recoverable: true,
+        }, task.runId);
+        await promoteNextQueuedRun(session.id).catch(() => null);
+        return res.status(409).json({ approval: approvedRecord, verification: task.harness.verification });
+      }
+
+      task.harness = advanceHarnessPhase(task.harness, 'finalizing', { mode: task.mode || 'build', permission, now });
+      const finalText = [task.partialText || '', `Published \`${publishedHead.slice(0, 7)}\` to \`${branch}\`.`].filter(Boolean).join('\n\n');
+      if (finalText) await repository.putMessage({
+        id: `msg_${task.runId || uuid()}`,
+        sessionId: session.id,
+        role: 'assistant',
+        text: finalText,
+        runId: task.runId,
+        createdAt: now,
+      });
+
+      task.state = 'completed';
+      task.partialText = undefined;
+      task.harness = advanceHarnessPhase(task.harness, 'completed', { mode: task.mode || 'build', permission, now });
+      task.updatedAt = now;
+      await repository.putTask(task);
+
+      const memoryRun = (store.db.runs[session.id] || []).find((item) => item.id === task.runId);
+      if (memoryRun) {
+        memoryRun.state = 'completed';
+        memoryRun.activity = 'Ready for review';
+        memoryRun.finishedAt = now;
+        store.save();
+      }
+
+      emit(session.id, 'message.end', { taskId: task.id }, task.runId);
+      emit(session.id, 'run.completed', { taskId: task.id, summary: 'Verified work published.' }, task.runId);
+      await recordAudit(req, session.id, 'approval.resolve', 'approved_once', {
+        approvalId: approval.id,
+        action: approval.action,
+        branch,
+        commitSha: publishedHead,
+      });
+      await promoteNextQueuedRun(session.id).catch(() => null);
+      return res.json({ approval: approvedRecord, published: { branch, head: publishedHead, alreadyPublished }, verification: task.harness.verification });
+    } catch (error) {
+      return res.status(502).json({ error: error instanceof Error ? error.message : 'The approved publish could not be completed.' });
+    }
   }
 
   if (approval.action !== 'terminal.exec') {
@@ -1020,9 +1286,16 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
         catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
       }
     }
-    if (task.state === 'running' || task.state === 'queued') {
+    if (task.state === 'running' || task.state === 'queued' || task.state === 'waiting_approval') {
       task.state = 'cancelled';
       task.updatedAt = new Date().toISOString();
+      if (task.harness) {
+        task.harness = advanceHarnessPhase(task.harness, 'cancelled', {
+          mode: task.mode || 'build',
+          permission: task.tempPermission || task.permission || 'full',
+          now: task.updatedAt,
+        });
+      }
       await repository.putTask(task);
       const memoryRun = (store.db.runs[String(sessionId)] || []).find((item) => item.id === task.runId);
       if (memoryRun) { memoryRun.state = 'cancelled'; memoryRun.finishedAt = task.updatedAt; memoryRun.activity = 'Stopped'; store.save(); }
@@ -1057,6 +1330,16 @@ router.get('/sessions/:id/runs', async (req, res) => {
       messageId: task.messageId,
       mode: task.mode,
       permission: task.permission,
+      harness: task.harness ? {
+        phase: task.harness.phase,
+        step: task.harness.step,
+        stepBudget: task.harness.stepBudget,
+        steeringRevision: task.harness.steeringRevision,
+        verification: {
+          status: task.harness.verification.status,
+          missing: task.harness.verification.missing,
+        },
+      } : undefined,
       partialText: task.partialText,
       partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
       activity: task.state === 'running'

@@ -29,7 +29,7 @@ export interface ThreadTurn {
   liveReply?: LiveReplyView;
   /** Work owned by this run, in lifecycle-start order. */
   work: ActivityItem[];
-  state: 'streaming' | 'completed' | 'failed' | 'cancelled' | 'queued' | 'idle';
+  state: 'streaming' | 'completed' | 'failed' | 'cancelled' | 'queued' | 'waiting_input' | 'waiting_approval' | 'paused' | 'interrupted' | 'idle';
 }
 
 function runOfActivity(item: ActivityItem): string | undefined {

@@ -206,15 +206,12 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
   });
 
-  it('defaults to collapsed execution and only shows a detail chevron when detail exists', () => {
+  it('shows execution evidence inline without empty disclosure affordances', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
-    assert.match(parts, /className="ox-part-row"/);
-    assert.match(parts, /function hasRenderableDetail\(part: ThreadPart\)/);
-    assert.match(parts, /const expandable = hasRenderableDetail\(part\)/);
-    assert.match(parts, /className="ox-part-chevron"/);
-    assert.match(parts, /aria-expanded=\{expandable \? open : undefined\}/);
-    assert.match(parts, /aria-controls=\{expandable \? evidenceId : undefined\}/);
-    assert.doesNotMatch(parts, />View details</);
-    assert.doesNotMatch(parts, />View code & details</);
+    assert.match(parts, /const hasDetail = hasRenderableDetail\(part\)/);
+    assert.match(parts, /className="ox-part-detail is-visible"/);
+    assert.match(parts, /className="ox-raw ox-raw-visible"/);
+    assert.doesNotMatch(parts, /ox-part-chevron/);
+    assert.doesNotMatch(parts, /const expandable = hasRenderableDetail\(part\)/);
   });
 });

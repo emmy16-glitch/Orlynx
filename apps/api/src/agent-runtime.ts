@@ -30,6 +30,7 @@ export interface AgentPromptOptions {
   model?: { providerID: string; modelID: string };
   agent?: string;
   system?: string;
+  tools?: Record<string, boolean>;
 }
 
 export interface AgentDirectChatInput {
@@ -40,6 +41,7 @@ export interface AgentDirectChatInput {
   session: ProjectSession & { userId: string; projectId: string };
   modelId: string;
   mode: AgentMode;
+  harnessSystem?: string;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
   onActivity?: (type: EventType, payload: Record<string, unknown>) => void;
@@ -53,6 +55,7 @@ export interface AgentWorkspacePayloadInput {
   engineSessionId?: string | null;
   text: string;
   system?: string;
+  tools?: Record<string, boolean>;
   agent?: string;
 }
 
@@ -128,6 +131,7 @@ export const openCodeRuntime: AgentAdapter = {
       engineSessionId: input.engineSessionId || '',
       text: input.text,
       ...(input.system ? { system: input.system } : {}),
+      ...(input.tools ? { tools: input.tools } : {}),
       model,
       agent: input.agent,
       ...(publicAccess !== undefined ? { openCodePublicAccess: publicAccess } : {}),

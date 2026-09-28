@@ -42,10 +42,10 @@
   --text-h1: 28px;
   --text-h2: 20px;
   --text-h3: 16px;
-  --text-body: 14px;
-  --text-small: 13px;
+  --text-body: 15px;
+  --text-small: 13.5px;
   --text-meta: 12px;
-  --text-code: 12px;
+  --text-code: 12.5px;
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px; --sp-12: 48px;
   --radius-sm: 8px;
   --radius-md: 12px;

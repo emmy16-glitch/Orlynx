@@ -14,6 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -184,6 +185,24 @@ async function executeDirectTask(
 
   try {
     if (!adapter.streamDirectChat) throw new Error(`${adapter.displayName} does not support direct chat without a development environment.`);
+    const effectivePermission = task.tempPermission || task.permission || run.permission || 'full';
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      plane: 'direct',
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'context_loading', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+    });
+    await repository.putTask(task);
+    task.harness = advanceHarnessPhase(task.harness, 'executing', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+    });
+    await repository.putTask(task);
+
     const responseText = await adapter.streamDirectChat({
       runId: run.id,
       messageId: task.messageId,
@@ -192,6 +211,7 @@ async function executeDirectTask(
       session,
       modelId,
       mode: task.mode || run.mode || 'build',
+      harnessSystem: harnessSystemInstruction(task.harness),
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onActivity: (type, payload) => emit(session.id, type, { taskId: task.id, ...payload }, run.id),
       onDelta: (delta) => {
@@ -208,8 +228,59 @@ async function executeDirectTask(
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
 
     const now = new Date().toISOString();
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      plane: 'direct',
+      now,
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'verifying', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
+    task.harness = verifyHarness(task.harness, [], now);
+
+    if (task.harness.verification.status !== 'passed') {
+      task.state = 'failed';
+      task.partialText = responseText;
+      task.harness = {
+        ...advanceHarnessPhase(task.harness, 'failed', {
+          mode: task.mode || run.mode || 'build',
+          permission: effectivePermission,
+          now,
+        }),
+        verification: { ...task.harness.verification, status: 'failed', checkedAt: now },
+      };
+      task.updatedAt = now;
+      await repository.putTask(task);
+      run.state = 'failed';
+      run.activity = 'Needs development environment';
+      run.finishedAt = now;
+      run.errorKind = 'engine';
+      store.save();
+      emit(session.id, 'run.failed', {
+        taskId: task.id,
+        error: `This request needs workspace evidence Orlynx could not verify in direct chat: ${task.harness.verification.missing.join(', ')}.`,
+        errorKind: 'engine',
+        recoverable: true,
+      }, run.id);
+      return;
+    }
+
+    task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
     task.state = 'completed';
     task.partialText = responseText;
+    task.harness = advanceHarnessPhase(task.harness, 'completed', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
     task.updatedAt = now;
     await repository.putTask(task);
     await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, runId: run.id, createdAt: now });
@@ -231,6 +302,7 @@ async function executeDirectTask(
     console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
     task.state = 'failed';
     task.updatedAt = now;
+    if (task.harness) task.harness = advanceHarnessPhase(task.harness, 'failed', { mode: task.mode || 'build', permission: task.permission || 'full', now });
     await repository.putTask(task);
     run.state = 'failed';
     run.activity = 'Needs attention';
@@ -440,6 +512,16 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     }
     store.save();
 
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode,
+      permission,
+      plane: task.plane || 'workspace',
+      now: startedAt,
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'routing', { mode, permission, now: startedAt });
+    await repository.putTask(task);
+
     emit(sessionId, 'run.started', { taskId: task.id, messageId: task.messageId, plane: task.plane || 'workspace', engine: adapter.id, provider, model: modelId, mode, permission }, run.id);
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
@@ -467,9 +549,15 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     // Do not emit a second "Development environment ready" activity for the same turn.
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
+    task.harness = advanceHarnessPhase(task.harness, 'context_loading', { mode, permission });
+    await repository.putTask(task);
+    task.harness = advanceHarnessPhase(task.harness, 'executing', { mode, permission });
+    await repository.putTask(task);
+
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
+      harnessSystemInstruction(task.harness),
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
@@ -480,6 +568,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       engineSessionId,
       text: task.prompt,
       system: privateSystem,
+      tools: openCodeToolsFor(task.harness),
       agent: resolvedAgent.agent,
     });
     await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
@@ -594,6 +683,13 @@ export async function startRun(sessionId: string, project: string, userText: str
       mode,
       permission: prefs.permission,
       tempPermission: options.tempPermission,
+      harness: createHarnessCheckpoint({
+        prompt: userText,
+        mode,
+        permission,
+        plane,
+        now: admittedAt,
+      }),
       createdAt: admittedAt,
       updatedAt: admittedAt,
     };
@@ -635,13 +731,26 @@ export async function startRun(sessionId: string, project: string, userText: str
   const attachmentInstruction = availableAttachments.length
     ? `[Orlynx attachments: ${availableAttachments.map((item) => `${item.name} at ${item.path}`).join('; ')}. Read these project-local files when they are relevant to the request. Do not move or commit the .orlynx directory.]`
     : '';
+  let localHarness = createHarnessCheckpoint({
+    prompt: userText,
+    mode,
+    permission,
+    plane: 'workspace',
+  });
+  localHarness = advanceHarnessPhase(localHarness, 'executing', { mode, permission });
   const privateSystem = [
     instructionForModeAccess(mode, permission),
     buildPresentationInstruction(mode),
+    harnessSystemInstruction(localHarness),
     attachmentInstruction,
   ].filter(Boolean).join('\n\n');
   try {
-    await adapter.prompt(project, engineSession.id, userText, { model, agent: resolvedAgent.agent, system: privateSystem });
+    await adapter.prompt(project, engineSession.id, userText, {
+      model,
+      agent: resolvedAgent.agent,
+      system: privateSystem,
+      tools: openCodeToolsFor(localHarness),
+    });
   } catch (error) {
     run.state = 'failed'; run.finishedAt = new Date().toISOString();
     run.errorKind = classifyError(error instanceof Error ? error.message : '');
@@ -792,7 +901,18 @@ export async function cancelRun(sessionId: string, runId: string) {
     try { await getAgentAdapter(active.adapterId).abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
-  if (active?.task) { active.task.state = 'cancelled'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
+  if (active?.task) {
+    active.task.state = 'cancelled';
+    active.task.updatedAt = run.finishedAt;
+    if (active.task.harness) {
+      active.task.harness = advanceHarnessPhase(active.task.harness, 'cancelled', {
+        mode: active.task.mode || run.mode || 'build',
+        permission: active.task.tempPermission || active.task.permission || run.permission || 'full',
+        now: run.finishedAt,
+      });
+    }
+    await controlPlaneRepository().putTask(active.task);
+  }
   store.save();
   emit(sessionId, 'run.failed', { cancelled: true }, runId);
   return run;

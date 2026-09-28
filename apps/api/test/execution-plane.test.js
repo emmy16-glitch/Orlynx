@@ -150,7 +150,7 @@ test('workspace Build keeps private Orlynx guardrails separate from user text', 
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
   assert.match(agents, /const privateSystem = \[[\s\S]*?instructionForModeAccess\(mode, permission\)[\s\S]*?buildPresentationInstruction\(mode\)/);
   assert.match(agents, /text: task\.prompt,[\s\S]*?system: privateSystem/);
-  assert.match(agents, /adapter\.prompt\(project, engineSession\.id, userText, \{ model, agent: resolvedAgent\.agent, system: privateSystem \}\)/);
+  assert.match(agents, /adapter\.prompt\(project, engineSession\.id, userText, \{[\s\S]*?system: privateSystem,[\s\S]*?tools: openCodeToolsFor\(localHarness\)/);
   assert.doesNotMatch(agents, /text: guardedText/);
 });
 

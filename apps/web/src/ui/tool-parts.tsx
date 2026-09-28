@@ -1,23 +1,14 @@
 // Typed tool/part renderer registry (tool-ui inspired, Orlynx-native).
 //
 // One logical tool = one UI object that mutates in place. Each part kind gets
-// a purpose-built collapsed row + typed detail panel. Generic fallback exists
-// but is never the default for terminal/file/test/git/approval/preview.
-//
-// Row contract (all kinds):
-//   `✓ Title · summary                              ›`  (completed, compact)
-//   `◌ Title · summary                              ›`  (running, single motion cue)
-//   `✕ Title · summary                              ›`  (failed, recovery nearby)
-// Chevron is always visible when evidence exists — never inside ⋯.
+// a purpose-built row with meaningful evidence visible directly underneath.
+// Generic fallback exists but is never the default for terminal/file/test/git/
+// approval/preview. Raw output stays bounded so observability does not turn the
+// conversation into an unbounded terminal dump.
 
 import React from 'react';
 import { Icon } from './primitives';
 import type { ThreadPart } from '../agent-stream/parts';
-
-function useDisclosure(defaultOpen = false) {
-  const [open, setOpen] = React.useState(defaultOpen);
-  return { open, setOpen, toggle: () => setOpen((v) => !v) };
-}
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
@@ -71,23 +62,16 @@ function hasRenderableDetail(part: ThreadPart): boolean {
 }
 
 function Shell({ part, label, onResolveApproval }: { part: ThreadPart; label: string; onResolveApproval?: ResolveApproval }) {
-  const { open, toggle } = useDisclosure(part.kind === 'approval' && part.item.state === 'waiting');
   const item = part.item;
   const active = item.state === 'running';
   const failed = item.state === 'failed';
   const waiting = item.state === 'waiting' || item.state === 'queued';
-  const expandable = hasRenderableDetail(part);
-  const evidenceId = `ox-part-${item.id}`;
+  const hasDetail = hasRenderableDetail(part);
   return (
     <div className="ox-part" data-kind={part.kind} data-state={item.state} data-active={active ? 'true' : undefined}>
-      <button
-        type="button"
+      <div
         className="ox-part-row"
-        aria-expanded={expandable ? open : undefined}
-        aria-controls={expandable ? evidenceId : undefined}
         aria-label={`${item.title}${failed ? ', failed' : active ? ', in progress' : waiting ? ', waiting' : ''}`}
-        onClick={() => expandable && toggle()}
-        disabled={!expandable}
       >
         <span className="ox-part-mark" aria-hidden>
           {failed ? <Icon name="x" size={14} /> : item.state === 'success' ? <Icon name="check" size={14} /> : active ? <span className="ox-live-dot" /> : <Icon name="ring" size={14} />}
@@ -95,14 +79,9 @@ function Shell({ part, label, onResolveApproval }: { part: ThreadPart; label: st
         <span className="ox-part-title">{part.title}</span>
         {part.summary && <span className="ox-part-summary">{part.summary}</span>}
         {label && <span className="ox-part-kind">{label}</span>}
-        {expandable && (
-          <span className="ox-part-chevron" aria-hidden>
-            <Icon name="chevron" size={14} />
-          </span>
-        )}
-      </button>
-      {expandable && open && (
-        <div id={evidenceId} className="ox-part-detail">
+      </div>
+      {hasDetail && (
+        <div className="ox-part-detail is-visible">
           {childrenFor(part, onResolveApproval)}
         </div>
       )}
@@ -148,13 +127,9 @@ function CommandBlock({ command }: { command: string }) {
 
 function RawOutput({ output }: { output?: string }) {
   if (!output) return null;
-  const [show, setShow] = React.useState(false);
   return (
-    <div className="ox-raw">
-      <button type="button" className="ox-detail-toggle" aria-expanded={show} onClick={() => setShow((v) => !v)}>
-        {show ? 'Hide raw output' : 'Show raw output'}
-      </button>
-      {show && <pre aria-label="Raw command output">{output.slice(-50_000)}</pre>}
+    <div className="ox-raw ox-raw-visible">
+      <pre aria-label="Raw command output">{output.slice(-50_000)}</pre>
     </div>
   );
 }
@@ -215,10 +190,10 @@ function FileChangeDetail({ part }: { part: ThreadPart }) {
         ))}
       </ul>
       {files.filter((file) => file.diff).slice(0, 3).map((file) => (
-        <details className="ox-inline-diff" key={`diff:${file.path}`}>
-          <summary>{file.path} <span>{file.action || 'modify'}</span></summary>
+        <div className="ox-inline-diff ox-inline-diff-visible" key={`diff:${file.path}`}>
+          <div className="ox-inline-diff-title">{file.path} <span>{file.action || 'modify'}</span></div>
           <pre aria-label={`Diff for ${file.path}`}>{file.diff}</pre>
-        </details>
+        </div>
       ))}
       <RawOutput output={part.item.rawOutput} />
     </div>
