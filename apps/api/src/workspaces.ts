@@ -161,7 +161,7 @@ async function prepareWorkspaceOnce(
       if (workspace.provider === 'github-codespaces' && workspace.codespaceName && workspaceNeedsCodespaceReplacement(previousFailure) && provider.replace) {
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'codespace.replace',
-          message: 'Replacing the broken development environment with a fresh Codespace…',
+          message: 'Restarting with a fresh Codespace…',
         });
         workspace = await provider.replace({
           workspaceId: workspace.id,
@@ -359,7 +359,7 @@ async function prepareWorkspaceOnce(
         try {
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'codespace.replace',
-            message: 'The previous Codespace is no longer available. Starting a fresh development environment…',
+            message: 'Codespace unavailable — starting a fresh Codespace…',
           });
           if (!provider.replace) throw new Error('Workspace provider cannot replace this environment.');
           const replacement = await provider.replace({
