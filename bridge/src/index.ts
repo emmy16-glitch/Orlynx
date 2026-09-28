@@ -652,20 +652,49 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       const exclude = safePath('.git/info/exclude'); const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''; if (!current.split(/\r?\n/).includes('.orlynx/')) fs.appendFileSync(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}.orlynx/\n`);
       return { path: path.relative(REPO_ROOT, target).split(path.sep).join('/') };
     }
-    case 'git.status': return { branch: git(['branch', '--show-current']).trim(), head: git(['rev-parse', 'HEAD']).trim(), porcelain: git(['status', '--porcelain=v1']) };
+    case 'git.status': {
+      const branch = git(['branch', '--show-current']).trim();
+      const head = git(['rev-parse', 'HEAD']).trim();
+      const porcelain = git(['status', '--porcelain=v1']);
+      let upstream = '';
+      let remoteHead = '';
+      let ahead = 0;
+      let behind = 0;
+      try {
+        upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim();
+        remoteHead = git(['rev-parse', '@{u}']).trim();
+        const counts = git(['rev-list', '--left-right', '--count', '@{u}...HEAD']).trim().split(/\s+/).map(Number);
+        behind = Number.isFinite(counts[0]) ? counts[0] : 0;
+        ahead = Number.isFinite(counts[1]) ? counts[1] : 0;
+      } catch { /* new/local branches may not have an upstream yet */ }
+      return { branch, head, porcelain, upstream, remoteHead, ahead, behind };
+    }
+    case 'git.fetch': {
+      if (payload.approved !== true) throw new Error('Fetch requires an approved command.');
+      const authEnv = GITHUB_TOKEN ? {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
+      } : {};
+      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
+      return { output: git(['fetch', '--prune', 'origin'], 120_000, authEnv) };
+    }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
     case 'git.commit': { const message = String(payload.message || '').trim().slice(0, 240); if (!message) throw new Error('Commit message is required.'); git(['add', '--all']); git(['commit', '-m', message], 60_000); return { sha: git(['rev-parse', 'HEAD']).trim() }; }
     case 'git.push': {
       if (payload.approved !== true) throw new Error('Push requires an approved command.');
       const branch = git(['branch', '--show-current']).trim();
-      if (!branch || branch === 'main' || branch === 'master') throw new Error('Direct push to the default branch is denied.');
-      const authEnv = GITHUB_TOKEN ? {
+      const defaultBranch = branch === 'main' || branch === 'master';
+      if (!branch) throw new Error('Current Git branch is unavailable.');
+      if (defaultBranch && payload.allowDefaultBranch !== true) throw new Error('Direct push to the default branch requires explicit Orlynx control-plane approval.');
+      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
+      const authEnv = {
         GIT_CONFIG_COUNT: '1',
         GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
         GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
-      } : {};
-      return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch };
+      };
+      return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch, head: git(['rev-parse', 'HEAD']).trim() };
     }
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: ports() };
