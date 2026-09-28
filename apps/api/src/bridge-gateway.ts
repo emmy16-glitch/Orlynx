@@ -12,7 +12,7 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, shouldSalvage, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, shouldSalvage, verifyHarness } from './harness.js';
 
 async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
   const repository = controlPlaneRepository();
@@ -66,6 +66,7 @@ function continuationPayload(
     engineSessionId,
     text,
     system,
+    ...(task.harness ? { tools: openCodeToolsFor(task.harness) } : {}),
   };
 }
 
