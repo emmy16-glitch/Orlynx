@@ -40,6 +40,7 @@ export interface AgentDirectChatInput {
   session: ProjectSession & { userId: string; projectId: string };
   modelId: string;
   mode: AgentMode;
+  harnessSystem?: string;
   onDelta: (delta: string) => void;
   onStatus?: (message: string) => void;
   onActivity?: (type: EventType, payload: Record<string, unknown>) => void;
