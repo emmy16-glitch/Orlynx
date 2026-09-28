@@ -191,16 +191,16 @@ export function CloudStatus({ state }: { state?: string }) {
 export type ActivityDetailMode = 'summary' | 'code';
 
 export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = false }: { item: ActivityItem; detailMode?: ActivityDetailMode; isCurrent?: boolean }) {
-  // Summary mode is collapsed by default. Raw output is never auto-opened
-  // merely because the activity is current — the user opens it explicitly.
-  // Code mode (Changes tab, workstream opt-in) keeps full detail visible.
-  const [showEvidence, setShowEvidence] = React.useState(false);
+  // Observable work is visible by default. The transcript should show what the
+  // agent actually did without forcing the user through empty disclosure rows.
+  // Only duplicate raw output stays optional when richer structured evidence is
+  // already visible.
   const [showRaw, setShowRaw] = React.useState(false);
   React.useEffect(() => {
-    if (detailMode === 'code') { setShowEvidence(true); setShowRaw(true); }
+    if (detailMode === 'code') setShowRaw(true);
   }, [detailMode, item.id]);
 
-  const { title, summary, evidence, rawOutput, category, state, timestamp } = item;
+  const { title, summary, evidence, rawOutput, state, timestamp } = item;
   const timeLabel = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
   const uiState = toState(state);
   const files = Array.isArray(evidence?.files) ? evidence.files as { path: string; action?: string; diff?: string }[] : [];
@@ -209,11 +209,19 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
   const path = typeof evidence?.path === 'string' ? evidence.path : '';
   const toolTitle = typeof evidence?.toolTitle === 'string' ? evidence.toolTitle : '';
   const codePreview = typeof evidence?.code === 'string' ? evidence.code : '';
-  const hasEvidence = Boolean(evidence && Object.keys(evidence).length);
-  const detailsVisible = detailMode === 'code' || showEvidence;
-  const expandable = detailMode === 'summary' && Boolean(hasEvidence || rawOutput);
+  const structuredEvidence = Boolean(
+    command
+    || path
+    || codePreview
+    || files.length
+    || failures.length
+    || typeof evidence?.exitCode === 'number'
+    || typeof evidence?.passed === 'number'
+  );
+  const hasVisibleDetail = structuredEvidence || Boolean(rawOutput);
+  const rawVisible = detailMode === 'code' || !structuredEvidence || showRaw;
 
-  const details = detailsVisible && (hasEvidence || rawOutput) ? <div id={`ox-evidence-${item.id}`} className={`ox-evidence ${detailMode === 'code' ? 'ox-evidence-code' : ''}`}>
+  const details = hasVisibleDetail ? <div id={`ox-evidence-${item.id}`} className={`ox-evidence ${detailMode === 'code' ? 'ox-evidence-code' : ''}`}>
     {toolTitle && detailMode === 'code' && toolTitle !== title && <div className="ox-code-caption">{toolTitle}</div>}
     {command && <div className="ox-code-block">
       <span className="ox-code-label">Command</span>
@@ -233,8 +241,8 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
     </div>}
     {failures.length > 0 && <ul className="ox-failure-list">{failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>}
     {rawOutput && <div className="ox-raw">
-      {detailMode !== 'code' && <Button type="button" tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide raw output' : 'Show raw output'}</Button>}
-      {(detailMode === 'code' || showRaw) && <pre aria-label="Raw command output">{rawOutput}</pre>}
+      {structuredEvidence && detailMode !== 'code' && <Button type="button" tone="ghost" className="ox-detail-toggle" aria-expanded={showRaw} onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide duplicate raw output' : 'Show raw output'}</Button>}
+      {rawVisible && <pre aria-label="Raw command output">{rawOutput}</pre>}
     </div>}
   </div> : null;
 
@@ -246,14 +254,6 @@ export function TaskActivityRow({ item, detailMode = 'summary', isCurrent = fals
           <span className="ox-activity-title-text">{title}</span>
           {isCurrent && <span className="ox-current-label">Current</span>}
           {timeLabel && <time className="ox-activity-time">{timeLabel}</time>}
-          {expandable && <button
-            type="button"
-            className="ox-activity-disclosure"
-            aria-expanded={showEvidence}
-            aria-controls={`ox-evidence-${item.id}`}
-            aria-label={showEvidence ? `Hide details for ${title}` : `View details for ${title}`}
-            onClick={() => setShowEvidence((value) => !value)}
-          ><Icon name="chevron" size={14} /></button>}
         </div>
         {summary && <div className="small">{summary}</div>}
         {details}
