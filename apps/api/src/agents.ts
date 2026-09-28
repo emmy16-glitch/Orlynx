@@ -451,7 +451,8 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const connection = await adapter.readiness(session.project, sessionId);
     if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable for this workspace.`);
     const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId, adapter.status);
-    emit(sessionId, 'activity.started', { taskId: task.id, text: 'Development environment ready', adapterId: adapter.id }, run.id);
+    // Workspace readiness already has a single canonical workspace lifecycle row.
+    // Do not emit a second "Development environment ready" activity for the same turn.
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
     const guardedText = [
