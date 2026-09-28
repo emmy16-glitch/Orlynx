@@ -2311,10 +2311,6 @@ button, input, textarea, select { font: inherit; }
   white-space: nowrap;
   font-weight: 650;
 }
-.active-work-stop.ox-btn {
-  min-height: 44px;
-  flex: none;
-}
 .is-workspace.has-active-work .new-activity {
   bottom: 168px;
 }
