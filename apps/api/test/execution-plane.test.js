@@ -134,3 +134,12 @@ test('Build execution reserves prose for final results instead of narrating tool
   assert.equal(buildPresentationInstruction('plan'), '');
   assert.equal(buildPresentationInstruction('ask'), '');
 });
+
+
+test('workspace Build keeps internal guardrails separate from the user prompt', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /const privateSystem = \[[\s\S]*?instructionForModeAccess\(mode, permission\)[\s\S]*?buildPresentationInstruction\(mode\)[\s\S]*?\]\.filter\(Boolean\)\.join/);
+  assert.match(agents, /text: task\.prompt,[\s\S]*?system: privateSystem/);
+  assert.match(agents, /adapter\.prompt\(project, engineSession\.id, userText, \{ model, agent: resolvedAgent\.agent, system: privateSystem \}\)/);
+  assert.doesNotMatch(agents, /text: guardedText/);
+});
