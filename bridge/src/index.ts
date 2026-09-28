@@ -202,12 +202,12 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
 }
 
 async function ensureOpenCodeAuthMode(publicAccess: boolean): Promise<boolean> {
-  // Match direct chat: a connected OpenCode account wins even for zero-cost
-  // models. Public access is only the fallback when this workspace has no
-  // account credential. This prevents the shared public allowance from
-  // reporting "Free usage exceeded" while the user's authenticated CLI still
-  // has access.
-  const desired: OpenCodeAuthMode = publicAccess && !OPENCODE_API_KEY ? 'public' : 'account';
+  // A catalog-marked free model belongs to OpenCode's public/free route.
+  // Do not inject a saved account credential into that route: free-tier quota
+  // and availability are separate from paid/account authentication, and a
+  // stale saved key must never turn a free-model failure into "Reconnect AI".
+  // Paid/account models still require the isolated workspace credential.
+  const desired: OpenCodeAuthMode = publicAccess ? 'public' : 'account';
   if (desired === 'account' && !OPENCODE_API_KEY) {
     throw new Error('Connect your OpenCode account before using this paid model.');
   }
