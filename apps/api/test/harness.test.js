@@ -8,6 +8,7 @@ import {
   createHarnessCheckpoint,
   harnessBudgetStatus,
   harnessSystemInstruction,
+  openCodeToolsFor,
   shouldSalvage,
   steeringActionFor,
   toolFamiliesFor,
@@ -59,7 +60,7 @@ test('harness starts durable and progressively discloses tool families', () => {
   assert.ok(executing.toolFamilies.includes('tests'));
 
   assert.deepEqual(toolFamiliesFor({ mode: 'ask', permission: 'read-only', phase: 'executing' }), ['repository']);
-  assert.equal((await import('../src/harness.ts')).openCodeToolsFor({
+  assert.equal(openCodeToolsFor({
     ...executing,
     toolFamilies: ['repository'],
   }).write, false);
