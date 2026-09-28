@@ -296,9 +296,16 @@ async function executeDirectTask(
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
     const now = new Date().toISOString();
     const detail = error instanceof Error ? error.message : 'Direct chat failed.';
+    const classifiedDetail = classifyError(detail);
     const errorKind = error instanceof ProviderRequestError
-      ? error.statusCode === 429 ? 'rate_limit' : error.statusCode === 401 && !error.publicAccess ? 'auth' : 'engine'
-      : classifyError(detail);
+      ? error.statusCode === 429
+        ? 'rate_limit'
+        : error.statusCode === 401 && !error.publicAccess
+          ? 'auth'
+          : classifiedDetail !== 'unknown'
+            ? classifiedDetail
+            : 'engine'
+      : classifiedDetail;
     console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
     task.state = 'failed';
     task.updatedAt = now;
@@ -314,7 +321,7 @@ async function executeDirectTask(
       error: errorKind === 'rate_limit'
         ? 'The selected model is temporarily rate limited. Try again shortly.'
         : errorKind === 'quota'
-          ? 'The OpenCode account has reached its available quota or credits.'
+          ? 'The selected OpenCode access path has reached its current usage allowance.'
           : errorKind === 'auth'
             ? 'Reconnect your OpenCode account and try again.'
             : errorKind === 'model'
@@ -648,9 +655,12 @@ export async function startRun(sessionId: string, project: string, userText: str
     const plane = options.plane || 'workspace';
     if (plane === 'workspace' && !options.workspaceId) throw new Error('The development environment could not be initialized.');
     const durableTasks = await reconcileDurableTasks(sessionId);
-    const queuedAhead = durableTasks.filter((item) => item.state === 'queued').length;
-    if (queuedAhead >= maxQueuedTasks) {
-      const error = new Error(`Orlynx already has ${queuedAhead} queued tasks for this conversation. Wait for one to start or cancel a queued task.`);
+    const queuedTotal = durableTasks.filter((item) => item.state === 'queued').length;
+    const queuedAhead = durableTasks.filter((item) =>
+      item.state === 'queued' && (item.plane || 'workspace') === plane
+    ).length;
+    if (queuedTotal >= maxQueuedTasks) {
+      const error = new Error(`Orlynx already has ${queuedTotal} queued tasks for this conversation. Wait for one to start or cancel a queued task.`);
       (error as { errorKind?: string }).errorKind = 'queue_full';
       throw error;
     }
