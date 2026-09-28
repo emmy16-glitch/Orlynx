@@ -220,7 +220,6 @@ async function executeDirectTask(
     store.save();
     emit(session.id, 'message.end', { taskId: task.id }, run.id);
     emit(session.id, 'run.completed', { taskId: task.id, summary: 'Response completed.' }, run.id);
-    emit(session.id, 'activity.completed', { taskId: task.id, text: 'Response completed' }, run.id);
   } catch (error) {
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
     const now = new Date().toISOString();
@@ -444,8 +443,11 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
     if (task.plane === 'direct') {
-      emit(sessionId, 'activity.started', { taskId: task.id, text: 'Thinking…' }, run.id);
+      // Direct conversation streams as assistant text; it does not need a
+      // generic "Thinking/Response completed" work row. Wake the scheduler so
+      // one independent workspace Build lane can start alongside this response.
       void executeDirectTask(session, task, run, modelId, adapter);
+      promotionWakeups.add(sessionId);
       return run;
     }
 
@@ -483,6 +485,9 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       agent: resolvedAgent.agent,
     });
     await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
+    // A direct conversational turn may run beside this Build task, but another
+    // workspace task will still be blocked by lane-scoped task claiming.
+    promotionWakeups.add(sessionId);
     return run;
   } catch (error) {
     const now = new Date().toISOString();
@@ -698,7 +703,6 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
     if (active.task) { active.task.state = 'completed'; active.task.updatedAt = run.finishedAt; await controlPlaneRepository().putTask(active.task); }
     store.save();
     emit(sessionId, 'run.completed', { summary: 'Work completed. Review the result.' }, run.id);
-    emit(sessionId, 'activity.completed', { text: 'Work completed' }, run.id);
   } catch (error) {
     if (active.cancelled) return;
     run.state = 'failed';
