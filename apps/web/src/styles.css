@@ -4023,3 +4023,25 @@ html[data-theme="light"] .composer-options-panel {
   .model-chip .composer-chip-label { max-width: 34vw; }
   .mode-access-chip { max-width: 48vw; }
 }
+
+
+/* Build turns read top-to-bottom: work first, response last. */
+.turn-response {
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.turn-work + .turn-response {
+  border-top: 1px solid var(--border-subtle);
+}
+.thread-turn[data-state="streaming"] .turn-response {
+  scroll-margin-bottom: 160px;
+}
+@media (max-width: 760px) {
+  .turn-response {
+    margin-top: 10px;
+    padding-top: 9px;
+  }
+  .thread-turn[data-state="streaming"] .turn-response {
+    scroll-margin-bottom: 228px;
+  }
+}
