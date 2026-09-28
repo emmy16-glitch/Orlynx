@@ -1,5 +1,6 @@
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider } from './workspace-provider.js';
+import { codespacesPreviewUrl } from './codespaces-preview.js';
 import { bootstrapWorkspace } from './runtime-worker.js';
 import { githubUserAccessToken } from './github.js';
 import { controlPlaneRepository } from './storage.js';
@@ -332,5 +333,9 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
 
   async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
     await bootstrapWorkspace(workspace, values);
+  }
+
+  previewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
+    return codespacesPreviewUrl(workspace, port);
   }
 }
