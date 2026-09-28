@@ -289,7 +289,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             const error = errorKind === 'rate_limit'
               ? 'The AI provider is temporarily rate limiting requests. Wait a moment and try again.'
               : errorKind === 'quota'
-                ? 'The selected AI provider has reached its quota or available credits. Check that provider account or choose another model.'
+                ? 'The selected OpenCode access path has reached its current usage allowance. Orlynx prefers your connected OpenCode account when available; otherwise choose another free model.'
                 : errorKind === 'auth'
                   ? 'The AI provider connection needs to be refreshed before this model can be used.'
                   : errorKind === 'model'

@@ -106,7 +106,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           plane: event.plane,
           mode: event.mode,
         });
-        if (event.plane === 'workspace' || event.position) {
+        if (event.plane === 'workspace' || (event.position || 0) > 1) {
+          const ahead = Math.max(0, (event.position || 1) - 1);
           putActivity(state, {
             id: `queue:${event.runId}`,
             runId: event.runId,
@@ -116,8 +117,10 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
             timestamp: event.timestamp,
             state: 'queued',
             kind: 'agent',
-            title: 'Waiting to start Build task',
-            summary: event.position ? `Position ${event.position} · starts automatically` : 'Starts automatically',
+            title: event.plane === 'workspace' ? 'Build queued' : 'Response queued',
+            summary: ahead > 0
+              ? `${ahead} ${ahead === 1 ? 'task' : 'tasks'} ahead · starts automatically`
+              : 'Next · starts automatically',
           });
         }
       }

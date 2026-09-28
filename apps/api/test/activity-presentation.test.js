@@ -35,8 +35,12 @@ describe('canonical agent activity presentation', () => {
 
   it('labels queued Build work and preserves observable command/path evidence', () => {
     const queued = toActivities([event(1, 'run.queued', { position: 2, mode: 'build', plane: 'workspace' })])[0];
-    assert.equal(queued.title, 'Waiting to start Build task');
-    assert.equal(queued.summary, 'Position 2 · starts automatically');
+    assert.equal(queued.title, 'Build queued');
+    assert.equal(queued.summary, '1 task ahead · starts automatically');
+
+    const next = toActivities([event(1, 'run.queued', { position: 1, mode: 'build', plane: 'workspace' })])[0];
+    assert.equal(next.title, 'Build queued');
+    assert.equal(next.summary, 'Next · starts automatically');
 
     const command = toActivities([
       event(2, 'tool.started', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', title: 'git status', callId: 'cmd-1' }),

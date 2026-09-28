@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { executionPlaneFor, executionPlaneForSession, publishIntentFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
+import { classifyError } from '../src/ai.ts';
 
 // Keep routing tests deterministic: these assertions require no live workspace.
 test('an existing Codespace never changes the mode/request execution decision', () => {
@@ -133,6 +134,21 @@ test('free OpenCode workspace models use public auth instead of a saved account 
   assert.equal(adapter.publicAccessForModel('opencode/muse-spark-1.3'), false);
   assert.equal(adapter.publicAccessForModel('anthropic/claude-sonnet-4'), undefined);
 });
+
+test('free allowance errors are classified separately from runtime failures', () => {
+  assert.equal(classifyError('Free usage exceeded, subscribe to Go'), 'quota');
+  assert.equal(classifyError('usage limit exceeded'), 'quota');
+  assert.equal(classifyError('connection timed out'), 'engine');
+});
+
+test('workspace OpenCode keeps authenticated access available for free models', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /publicAccess && !OPENCODE_API_KEY \? 'public' : 'account'/);
+  assert.match(bridge, /event\.type === 'message\.part\.delta'/);
+  assert.match(bridge, /messageRoles\.get\(messageID\) !== 'assistant'/);
+  assert.match(bridge, /blockedTextParts/);
+});
+
 
 
 test('Build execution reserves prose for final results instead of narrating tool progress', () => {
