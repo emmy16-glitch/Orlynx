@@ -403,6 +403,7 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   const partMessages = new Map<string, string>();
   const partTexts = new Map<string, string>();
   const partEmitted = new Map<string, string>();
+  const blockedParts = new Set<string>();
 
   const append = (delta: string) => {
     if (!delta) return;
@@ -466,7 +467,7 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
           if (properties.field && properties.field !== 'text') continue;
           const messageID = String(properties.messageID || '');
           const partID = String(properties.partID || '');
-          if (!messageID || !partID) continue;
+          if (!messageID || !partID || blockedParts.has(partID)) continue;
           partMessages.set(partID, messageID);
           partTexts.set(partID, (partTexts.get(partID) || '') + String(properties.delta || ''));
           flushAssistantPart(partID);
@@ -475,10 +476,13 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
 
         if (type === 'message.part.updated' && properties.part?.type === 'text') {
           const part = properties.part;
-          if (part.ignored === true) continue;
           const messageID = String(part.messageID || '');
           const partID = String(part.id || '');
           if (!messageID || !partID) continue;
+          if (part.ignored === true || part.synthetic === true) {
+            blockedParts.add(partID);
+            continue;
+          }
           partMessages.set(partID, messageID);
           partTexts.set(partID, String(part.text || ''));
           flushAssistantPart(partID);
