@@ -460,7 +460,7 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     const src = app();
     assert.match(src, /function isBuildProgressNarration\(text: string\)/);
     assert.match(src, /const hideProgressNarration = turnActive && parts\.length > 0 && isBuildProgressNarration\(liveText\)/);
-    assert.match(src, /turn\.liveReply && !durable && !hideProgressNarration/);
+    assert.match(src, /turn\.liveReply && liveText && !durable && !hideProgressNarration/);
   });
 
   it('78: long user prompts stay fully visible and keep their full action text', () => {
