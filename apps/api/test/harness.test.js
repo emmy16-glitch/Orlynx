@@ -202,6 +202,16 @@ test('Postgres task storage persists harness checkpoints as JSONB', () => {
   assert.match(storage, /harness_state=EXCLUDED\.harness_state/);
 });
 
+test('durable workspace gateway verifies evidence and either salvages or completes explicitly', () => {
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(gateway, /task\.harness = verifyHarness\(task\.harness, recent/);
+  assert.match(gateway, /shouldSalvage\(task\.harness, responseText\)/);
+  assert.match(gateway, /needsFinalSynthesis\(task\.harness, responseText\)/);
+  assert.match(gateway, /controlledDefaultBranchPublish/);
+  assert.match(gateway, /type: 'run\.completed'/);
+  assert.match(gateway, /type: 'run\.failed'/);
+});
+
 test('OpenCode tool work emits canonical step boundaries for harness budgeting', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   const protocol = fs.readFileSync(new URL('../src/agent-protocol.ts', import.meta.url), 'utf8');
