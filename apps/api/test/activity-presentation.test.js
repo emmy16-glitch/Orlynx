@@ -17,7 +17,7 @@ describe('canonical agent activity presentation', () => {
       event(5, 'run.completed', { summary: 'Ready for review' }),
     ]);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Updating files');
+    assert.equal(rows[0].title, 'Updating middleware');
     assert.equal(rows[0].state, 'success');
     assert.equal(rows[0].sequence, 2);
   });
@@ -29,8 +29,8 @@ describe('canonical agent activity presentation', () => {
       event(3, 'activity.progress', { text: 'Reading files' }),
       event(4, 'run.completed', { summary: 'Ready for review' }),
     ]);
-    assert.deepEqual(rows.map((row) => row.title), ['Build task started', 'Inspecting the repository']);
-    assert.deepEqual(rows.map((row) => row.state), ['success', 'success']);
+    assert.deepEqual(rows.map((row) => row.title), ['Inspecting the repository']);
+    assert.deepEqual(rows.map((row) => row.state), ['success']);
   });
 
   it('labels queued Build work and preserves observable command/path evidence', () => {
@@ -45,7 +45,7 @@ describe('canonical agent activity presentation', () => {
       event(5, 'tool.completed', { tool: 'bash', command: 'git status -sb', path: '/workspaces/Echoo-main', callId: 'cmd-1' }),
     ])[0];
     assert.equal(command.category, 'git');
-    assert.equal(command.title, 'Inspecting Git state');
+    assert.equal(command.title, 'Checking Git status');
     assert.equal(command.evidence?.command, 'git status -sb');
     assert.equal(command.evidence?.path, '/workspaces/Echoo-main');
     assert.equal(command.rawOutput, '## main...origin/main');
@@ -59,8 +59,8 @@ describe('canonical agent activity presentation', () => {
       files: [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }],
     })]);
     assert.equal(row.category, 'file');
-    assert.equal(row.title, 'Updated files');
-    assert.equal(row.summary, '1 file changed');
+    assert.equal(row.title, 'Updated src/auth.ts');
+    assert.equal(row.summary, undefined);
     assert.deepEqual(row.evidence?.files, [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }]);
   });
 
@@ -206,9 +206,11 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
   });
 
-  it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {
+  it('defaults to collapsed execution and only shows a detail chevron when detail exists', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     assert.match(parts, /className="ox-part-row"/);
+    assert.match(parts, /function hasRenderableDetail\(part: ThreadPart\)/);
+    assert.match(parts, /const expandable = hasRenderableDetail\(part\)/);
     assert.match(parts, /className="ox-part-chevron"/);
     assert.match(parts, /aria-expanded=\{expandable \? open : undefined\}/);
     assert.match(parts, /aria-controls=\{expandable \? evidenceId : undefined\}/);
