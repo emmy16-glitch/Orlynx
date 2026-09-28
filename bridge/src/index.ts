@@ -331,6 +331,15 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     engineSessionId = String(created.body?.id || ''); if (!engineSessionId) throw new Error('OpenCode did not create a session.');
   }
 
+  // Persist the resumable engine-session checkpoint before tool work begins.
+  // If the bridge/API restarts mid-turn, the durable command replay can attach
+  // to this same OpenCode session instead of silently creating a new one.
+  bridgeEvent(ws, 'state.delta', {
+    scope: 'harness',
+    state: 'executing',
+    engineSessionId,
+  }, taskId, runId);
+
   const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
