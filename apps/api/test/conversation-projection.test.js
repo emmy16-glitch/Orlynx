@@ -180,7 +180,7 @@ describe('conversation projection: workspace lifecycle', () => {
     assert.equal(rows[0].summary, 'Connecting…');
   });
 
-  it('workspace recovery is explicit, then resolves to one ready row', () => {
+  it('workspace recovery is explicit while active, then disappears when ready', () => {
     fresh();
     const rows = toActivities([
       evt('workspace.preparing', { message: 'Starting GitHub Codespace…' }),
@@ -188,20 +188,17 @@ describe('conversation projection: workspace lifecycle', () => {
       evt('workspace.ready', { provider: 'github-codespaces' }),
       evt('workspace.ready', { provider: 'github-codespaces' }),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Workspace ready');
-    assert.equal(rows[0].state, 'success');
+    assert.equal(rows.length, 0);
   });
 
-  it('TEST 11: repeated workspace.ready does not duplicate', () => {
+  it('TEST 11: repeated workspace.ready stays out of transcript history', () => {
     fresh();
     const rows = toActivities([
       evt('workspace.preparing', { message: 'Starting…' }),
       evt('workspace.ready', {}),
       evt('workspace.ready', {}),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Workspace ready');
+    assert.equal(rows.length, 0);
   });
 });
 

@@ -26,7 +26,9 @@ const humanActivity = (value: string) => {
   if (/thinking|reasoning|reviewing|understanding/i.test(clean)) return 'Reviewing the request';
   if (/repository mapped|repository map/i.test(clean)) return 'Inspecting the repository';
   if (/reading files?/i.test(clean)) return 'Inspecting the repository';
-  if (/updating|editing|writing|changing files?/i.test(clean)) return 'Updating files';
+  if (/^(?:updating|editing|writing|changing)\s+/i.test(clean)) {
+    return /\bfiles?\b/i.test(clean) ? 'Updating files' : compact(clean, 96);
+  }
   if (/running tests?/i.test(clean)) return 'Running tests';
   if (/building/i.test(clean)) return 'Building project';
   return clean;
@@ -137,7 +139,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         errorKind: undefined,
       });
       const queued = state.activities[`queue:${event.runId}`];
-      if (queued) state.activities[queued.id] = { ...queued, state: 'success', title: 'Build task started', summary: undefined, sequence: event.sequence };
+      // Queue state is transient. Once real work begins, remove the placeholder
+      // instead of leaving a useless "Build task started" row in the transcript.
+      if (queued) delete state.activities[queued.id];
       const existing = state.messages[event.messageId];
       state.messages[event.messageId] = {
         id: event.messageId,
@@ -361,20 +365,32 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
 
     case 'ACTIVITY_END': {
       const prior = state.activities[event.activityId];
-      if (prior) state.activities[event.activityId] = { ...prior, state: 'success', sequence: event.sequence, title: event.text ? humanActivity(event.text) : prior.title };
+      if (!prior) return;
+      const finalTitle = event.text ? humanActivity(event.text) : prior.title;
+      // Completion belongs in the assistant response/result, not as a second
+      // lifecycle row underneath it.
+      if (/^(?:response|work) completed$/i.test(finalTitle)) {
+        delete state.activities[event.activityId];
+        return;
+      }
+      state.activities[event.activityId] = { ...prior, state: 'success', sequence: event.sequence, title: finalTitle };
       return;
     }
 
     case 'WORKSPACE_STATE': {
       const prior = state.activities[event.activityId];
+      // "Ready" is current infrastructure state, not useful task history.
+      // Resolve any preparing/recovery row by removing it from chat.
+      if (event.state === 'ready') {
+        delete state.activities[event.activityId];
+        return;
+      }
       const recovering = event.state === 'reconnecting' || /recover|replace|fresh|ssh|lost|interrupt/i.test(event.message || '');
-      const title = event.state === 'ready' ? 'Workspace ready'
-        : event.state === 'stopped' ? 'Workspace stopped'
-          : event.state === 'failed' ? 'Workspace needs attention'
-            : recovering ? 'Recovering workspace' : 'Preparing workspace';
-      const activityState: AgentStreamActivity['state'] = event.state === 'ready' ? 'success'
-        : event.state === 'stopped' ? 'cancelled'
-          : event.state === 'failed' ? 'failed' : 'running';
+      const title = event.state === 'stopped' ? 'Workspace stopped'
+        : event.state === 'failed' ? 'Workspace needs attention'
+          : recovering ? 'Recovering workspace' : 'Preparing workspace';
+      const activityState: AgentStreamActivity['state'] = event.state === 'stopped' ? 'cancelled'
+        : event.state === 'failed' ? 'failed' : 'running';
       putActivity(state, {
         id: event.activityId,
         runId: event.runId,
@@ -385,7 +401,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         state: activityState,
         kind: 'workspace',
         title,
-        summary: event.state === 'ready' ? undefined : event.message ? compact(event.message, 180) : undefined,
+        summary: event.message ? compact(event.message, 180) : undefined,
         evidence: event.provider ? { provider: event.provider } : prior?.evidence,
       });
       return;
@@ -494,6 +510,14 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
     case 'CHANGES_UPDATED': {
       const prior = state.activities[event.activityId];
       const count = event.count ?? event.files.length;
+      const paths = event.files.map((file) => {
+        const record = file && typeof file === 'object' ? file as Record<string, unknown> : {};
+        return String(record.path || '');
+      }).filter(Boolean);
+      const title = count === 1 && paths[0] ? `Updated ${compact(paths[0], 88)}` : `Updated ${count} files`;
+      const summary = count > 1 && paths.length
+        ? paths.slice(0, 3).map((path) => compact(path, 48)).join(' · ') + (paths.length > 3 ? ` · +${paths.length - 3} more` : '')
+        : undefined;
       putActivity(state, {
         id: event.activityId,
         runId: event.runId,
@@ -503,8 +527,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         timestamp: prior?.timestamp || event.timestamp,
         state: 'success',
         kind: 'changes',
-        title: 'Updated files',
-        summary: `${count} file${count === 1 ? '' : 's'} changed`,
+        title,
+        summary,
         evidence: { ...(event.changeId ? { changeId: event.changeId } : {}), files: event.files },
       });
       return;

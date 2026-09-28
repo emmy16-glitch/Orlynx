@@ -40,13 +40,43 @@ function filesOf(part: ThreadPart): { path: string; action?: string; diff?: stri
 type ApprovalDecision = 'allow_once' | 'deny';
 type ResolveApproval = (approvalId: string, decision: ApprovalDecision) => Promise<void>;
 
+function hasRenderableDetail(part: ThreadPart): boolean {
+  const evidence = asRecord(part.item.evidence);
+  const raw = Boolean(part.item.rawOutput);
+  const command = Boolean(str(evidence.command));
+  const path = Boolean(str(evidence.path));
+  const code = Boolean(str(evidence.code));
+  const files = filesOf(part).length > 0;
+  const counts = typeof evidence.passed === 'number' || typeof evidence.failed === 'number' || typeof evidence.skipped === 'number';
+  const failures = Array.isArray(evidence.failures) && evidence.failures.length > 0;
+  const branch = Boolean(str(evidence.branch));
+  const port = Boolean(str(evidence.port));
+  const action = Boolean(str(evidence.action));
+  const approval = Boolean(str(evidence.approvalId));
+
+  switch (part.kind) {
+    case 'terminal': return command || path || raw;
+    case 'test-result': return counts || failures || raw;
+    case 'build-result': return command || typeof evidence.exitCode === 'number' || raw;
+    case 'file-change': return files || raw;
+    case 'file-read': return path || code || raw;
+    case 'git': return command || branch || raw;
+    case 'preview': return command || port || raw;
+    case 'approval': return action || approval || raw;
+    case 'error':
+    case 'status':
+    case 'generic':
+    default: return command || path || raw;
+  }
+}
+
 function Shell({ part, label, onResolveApproval }: { part: ThreadPart; label: string; onResolveApproval?: ResolveApproval }) {
   const { open, toggle } = useDisclosure(part.kind === 'approval' && part.item.state === 'waiting');
   const item = part.item;
   const active = item.state === 'running';
   const failed = item.state === 'failed';
   const waiting = item.state === 'waiting' || item.state === 'queued';
-  const expandable = Boolean(item.evidence && Object.keys(item.evidence).length) || Boolean(item.rawOutput);
+  const expandable = hasRenderableDetail(part);
   const evidenceId = `ox-part-${item.id}`;
   return (
     <div className="ox-part" data-kind={part.kind} data-state={item.state} data-active={active ? 'true' : undefined}>

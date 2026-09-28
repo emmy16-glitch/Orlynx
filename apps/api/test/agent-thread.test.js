@@ -54,8 +54,7 @@ test('workspace preparing/ready stays one lifecycle; 100 heartbeats add zero row
     events.push(runA(`h${i}`, 10 + i, 'state.delta', { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }));
   }
   const rows = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), events));
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].title, 'Workspace ready');
+  assert.equal(rows.length, 0);
 });
 
 test('message markers and snapshots never become chat rows; failures stay actionable', () => {
@@ -144,12 +143,11 @@ test('server semanticType is authoritative over command-name heuristics', () => 
   assert.equal(part.kind, 'file-read');
 });
 
-test('workspace.state preserves ready failed and stopped rather than always preparing', () => {
+test('workspace.state keeps failures/stops visible while successful readiness stays state-only', () => {
   const ready = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
     runA('ws-1', 1, 'workspace.state', { state: 'ready', provider: 'orlynx-runner' }),
-  ]))[0];
-  assert.equal(ready.title, 'Workspace ready');
-  assert.equal(ready.state, 'success');
+  ]));
+  assert.equal(ready.length, 0);
 
   const failed = selectActivities(applyRawAgentEvents(emptyAgentStreamState(), [
     runA('ws-2', 1, 'workspace.state', { state: 'failed', message: 'boot failed' }),

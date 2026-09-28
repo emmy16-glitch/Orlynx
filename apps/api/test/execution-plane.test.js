@@ -153,3 +153,10 @@ test('workspace Build keeps private Orlynx guardrails separate from user text', 
   assert.match(agents, /adapter\.prompt\(project, engineSession\.id, userText, \{ model, agent: resolvedAgent\.agent, system: privateSystem \}\)/);
   assert.doesNotMatch(agents, /text: guardedText/);
 });
+
+
+test('durable scheduler permits one direct conversation beside one workspace Build run', () => {
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  assert.match(storage, /COALESCE\(active\.execution_plane, 'workspace'\) = COALESCE\(queued\.execution_plane, 'workspace'\)/);
+  assert.match(storage, /ORDER BY CASE WHEN queued\.execution_plane='direct' THEN 0 ELSE 1 END/);
+});
