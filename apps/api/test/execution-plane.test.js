@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { executionPlaneFor, executionPlaneForSession, publishIntentFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
@@ -142,4 +143,13 @@ test('Build execution reserves prose for final results instead of narrating tool
   assert.match(instruction, /Orlynx controlled publish\/review/i);
   assert.equal(buildPresentationInstruction('plan'), '');
   assert.equal(buildPresentationInstruction('ask'), '');
+});
+
+
+test('workspace Build keeps private Orlynx guardrails separate from user text', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /const privateSystem = \[[\s\S]*?instructionForModeAccess\(mode, permission\)[\s\S]*?buildPresentationInstruction\(mode\)/);
+  assert.match(agents, /text: task\.prompt,[\s\S]*?system: privateSystem/);
+  assert.match(agents, /adapter\.prompt\(project, engineSession\.id, userText, \{ model, agent: resolvedAgent\.agent, system: privateSystem \}\)/);
+  assert.doesNotMatch(agents, /text: guardedText/);
 });
