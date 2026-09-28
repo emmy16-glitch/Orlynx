@@ -543,6 +543,40 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             }
           }
 
+          if (
+            task.harness.verification.status === 'passed'
+            && needsFinalSynthesis(task.harness, responseText)
+            && task.harness.salvageAttempts < 1
+            && engineSessionId
+          ) {
+            const synthesisNow = new Date().toISOString();
+            task.harness = {
+              ...task.harness,
+              salvageAttempts: task.harness.salvageAttempts + 1,
+            };
+            task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              now: synthesisNow,
+            });
+            task.updatedAt = synthesisNow;
+            await repository.putTask(task);
+
+            await queueBridgeCommand(
+              claims.workspaceId,
+              'agent.run',
+              continuationPayload(
+                command.payload,
+                task,
+                engineSessionId,
+                'Finalization pass. All required evidence is already satisfied. Do not call tools. Give the user a concise final result based only on the verified evidence and completed work.',
+              ),
+              10 * 60_000,
+            );
+            console.info(`[harness] forced final synthesis run=${runId}`);
+            return;
+          }
+
           if (task.harness.verification.status !== 'passed') {
             if (shouldSalvage(task.harness, responseText) && engineSessionId) {
               const salvageNow = new Date().toISOString();
