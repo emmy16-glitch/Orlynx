@@ -368,10 +368,10 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.doesNotMatch(sendBlock, /catch[\s\S]{0,400}?setComposer\(''\)/);
   });
 
-  it('64/65: Send stays Send; Stop is a separate compact control for the active run', () => {
+  it('64/65: Send stays Send; Stop remains visible in the composer for the active run', () => {
     const src = app();
-    assert.match(src, /className="active-work-stop" onClick=\{stopRun\}/);
-    assert.match(src, /\{stopping \? 'Stopping…' : <><span aria-hidden>■<\/span> Stop<\/>\}/);
+    assert.match(src, /\{runActive && <button type="button" className="composer-chip composer-stop-chip" onClick=\{stopRun\}/);
+    assert.match(src, /<span aria-hidden>■<\/span><span>\{stopping \? 'Stopping…' : 'Stop'\}<\/span>/);
     assert.doesNotMatch(src, /composer-send[\s\S]{0,300}?stopRun/);
     assert.match(src, /aria-label=\{stopping \? 'Stopping the current task' : 'Stop the current task'\}/);
   });
@@ -415,14 +415,14 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
 
   it('67/77: send has a subtle press transition and reachable targets', () => {
     assert.match(css(), /\.composer-send\.ox-btn:active:not\(:disabled\) \{\s*transform: scale\(0\.95\)/);
-    assert.match(css(), /\.active-work-stop\.ox-btn \{\s*min-height: 44px/);
+    assert.match(css(), /\.composer-stop-chip \{[\s\S]*?font-weight: 700/);
     assert.match(css(), /\.active-work-pill \{\s*pointer-events: auto;[\s\S]*?min-height: 44px/);
   });
 
   it('71: streaming keeps a single subtle cue', () => {
     // The stream caret renders once inside the owning turn's live reply text.
     const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
-    assert.ok(streamLine?.includes('turn.liveReply.text'));
+    assert.ok(streamLine?.includes('liveText'));
     assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
   });
 
@@ -433,6 +433,13 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.ok(work >= 0 && response >= 0, 'work/response surfaces are present');
     assert.ok(work < response, 'Build work must stay above the final response');
     assert.match(css(), /\.turn-work \+ \.turn-response \{\s*border-top:/);
+  });
+
+  it('77: short Build progress narration is suppressed while typed work is visible', () => {
+    const src = app();
+    assert.match(src, /function isBuildProgressNarration\(text: string\)/);
+    assert.match(src, /const hideProgressNarration = turnActive && parts\.length > 0 && isBuildProgressNarration\(liveText\)/);
+    assert.match(src, /turn\.liveReply && !durable && !hideProgressNarration/);
   });
 });
 
