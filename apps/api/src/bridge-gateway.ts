@@ -189,7 +189,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     if (!active || !authenticatedHello || ws.readyState !== ws.OPEN) return;
     try {
       for (const command of await repository.claimCommands(claims.workspaceId)) {
-        sendBridgeCommandNow(claims.workspaceId, { id: command.id, kind: command.kind, payload: command.payload });
+        let payload = command.payload;
+        if (command.kind === 'agent.run' && !String(payload.engineSessionId || '')) {
+          const adapterId = String(payload.adapterId || 'opencode');
+          const savedEngineSessionId = await repository.getAgentSession(claims.sessionId, adapterId);
+          if (savedEngineSessionId) payload = { ...payload, engineSessionId: savedEngineSessionId };
+        }
+        sendBridgeCommandNow(claims.workspaceId, { id: command.id, kind: command.kind, payload });
       }
     } catch { /* the next poll retries queued commands */ }
   }, 1_000);
@@ -775,6 +781,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         }
 
         const eventTaskId = String(message.event.taskId || '');
+        if (type === 'state.delta' && String(payload.scope || '') === 'harness' && String(payload.engineSessionId || '')) {
+          const adapterId = String(payload.adapterId || 'opencode');
+          await repository.putAgentSession(claims.sessionId, adapterId, String(payload.engineSessionId));
+        }
+
         if (eventTaskId && (type === 'step.started' || type === 'approval.required' || type === 'approval.resolved')) {
           const task = await repository.getTask(eventTaskId);
           if (task) {
