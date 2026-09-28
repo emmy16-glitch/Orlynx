@@ -310,19 +310,18 @@ describe('conversation projection: results and failures', () => {
 });
 
 describe('conversation projection: presentation contract', () => {
-  it('TEST 19: main transcript uses typed parts with collapsed presentation', () => {
+  it('TEST 19: main transcript uses typed parts with visible evidence', () => {
     const app = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
     const parts = fs.readFileSync(path.join(webSrc, 'ui/tool-parts.tsx'), 'utf8');
-    // Work renders through the typed part registry inside thread turns —
-    // never through a single generic activity row.
     assert.match(app, /<PartRow part=\{part\} onResolveApproval=\{resolveApproval\} \/>/);
     assert.doesNotMatch(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
-    assert.match(parts, /useDisclosure\(part\.kind === 'approval' && part\.item\.state === 'waiting'\)/);
-    assert.match(parts, /const \[open, setOpen\] = React\.useState\(defaultOpen\)/);
-    assert.doesNotMatch(parts, /useDisclosure\(true\)/);
+    assert.match(parts, /className="ox-part-detail is-visible"/);
+    assert.match(parts, /className="ox-raw ox-raw-visible"/);
+    assert.doesNotMatch(parts, /ox-part-chevron/);
+    assert.doesNotMatch(parts, /useDisclosure\(/);
   });
 
-  it('TEST 20: raw output renders in a bounded scrollable detail container', () => {
+  it('TEST 20: raw output renders visibly in a bounded scrollable detail container', () => {
     const css = fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
     const components = fs.readFileSync(path.join(webSrc, 'ui/components.css'), 'utf8');
     for (const source of [css, components]) {
@@ -331,17 +330,14 @@ describe('conversation projection: presentation contract', () => {
     assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.transcript-activity-shell \.ox-raw pre \{\s*max-height: 240px/);
   });
 
-  it('raw-output disclosure stays keyboard-accessible while structured evidence stays inline', () => {
-    const product = fs.readFileSync(path.join(webSrc, 'ui/product.tsx'), 'utf8');
-    assert.match(product, /aria-expanded=\{showRaw\}/);
-    assert.match(product, /type="button"/);
-    assert.match(product, /const structuredEvidence = Boolean/);
-    assert.doesNotMatch(product, /showEvidence/);
+  it('visible evidence does not depend on an empty disclosure control', () => {
+    const parts = fs.readFileSync(path.join(webSrc, 'ui/tool-parts.tsx'), 'utf8');
+    assert.match(parts, /const hasDetail = hasRenderableDetail\(part\)/);
+    assert.match(parts, /\{hasDetail && \(/);
+    assert.doesNotMatch(parts, /aria-expanded=\{expandable/);
+    assert.doesNotMatch(parts, /Show raw output/);
   });
-
 });
-});
-
 describe('live working indicator and composer interaction (sections 60-81)', () => {
   const app = () => fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
   const components = () => fs.readFileSync(path.join(webSrc, 'ui/components.css'), 'utf8');
