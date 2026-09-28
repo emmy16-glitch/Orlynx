@@ -192,6 +192,20 @@ describe('canonical agent activity presentation', () => {
     assert.match(registry, /'Deny'/);
   });
 
+  it('keeps recoverable workspace startup inside the inline transcript', () => {
+    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+    const workspaces = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+    assert.match(app, /workspaceReadNotice && tab !== 'chat'/);
+    assert.doesNotMatch(app, /workspacePreparing && workspaceStalled/);
+    assert.doesNotMatch(app, /<AgentErrorCard title="Workspace connection interrupted\."/);
+    assert.match(workspaces, /Starting Codespace…/);
+    assert.match(workspaces, /Waiting for GitHub…/);
+    assert.match(workspaces, /Starting SSH and Orlynx bridge…/);
+    assert.match(workspaces, /Connecting Orlynx bridge…/);
+    assert.match(workspaces, /Starting OpenCode…/);
+    assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
+  });
+
   it('defaults to collapsed execution and keeps an always-visible detail chevron', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     assert.match(parts, /className="ox-part-row"/);
