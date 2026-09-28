@@ -322,6 +322,34 @@ export function shouldSalvage(checkpoint: HarnessCheckpoint, finalText: string):
   return false;
 }
 
+export function openCodeToolsFor(checkpoint: HarnessCheckpoint): Record<string, boolean> {
+  const enabled = new Set(checkpoint.toolFamilies);
+  const repository = enabled.has('repository');
+  const filesystem = enabled.has('filesystem');
+  const shell = enabled.has('terminal') || enabled.has('tests') || enabled.has('git') || enabled.has('preview') || enabled.has('deployment');
+  const browser = enabled.has('browser');
+
+  return {
+    read: repository || filesystem,
+    grep: repository,
+    glob: repository,
+    list: repository,
+    write: filesystem,
+    edit: filesystem,
+    patch: filesystem,
+    bash: shell,
+    shell,
+    webfetch: browser,
+    websearch: browser,
+  };
+}
+
+export function needsFinalSynthesis(checkpoint: HarnessCheckpoint, finalText: string): boolean {
+  const text = String(finalText || '').trim();
+  if (!text) return true;
+  return text.length < 220 && /\b(?:working on|starting|checking|looking into|next i(?:'ll| will)|still working|in progress|continuing)\b/i.test(text);
+}
+
 export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string {
   const budget = harnessBudgetStatus(checkpoint);
   const criteria = checkpoint.verification.required.length
