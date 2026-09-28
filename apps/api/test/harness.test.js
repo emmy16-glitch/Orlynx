@@ -214,7 +214,7 @@ test('OpenCode tool work emits canonical step boundaries for harness budgeting',
 test('active message admission steers the running workspace task rather than creating another Build task', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   assert.match(routes, /const steeringAction = steeringActionFor\(String\(text\)\)/);
-  assert.match(routes, /find\(\(item\) => item\.state === 'running' && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
+  assert.match(routes, /find\(\(item\) => \['running', 'waiting_approval'\]\.includes\(item\.state\) && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
   assert.match(routes, /applySteering\(activeTask, String\(text\), steeringAction, now\)/);
   assert.match(routes, /Added that to the current Build task\./);
   assert.match(routes, /bridgeCancelCommand/);
