@@ -24,10 +24,13 @@ test('adapter builds a generic workspace envelope with its own adapter id', () =
     sessionId: 'session-1',
     engineSessionId: 'engine-1',
     text: 'Inspect the repository.',
+    system: 'Private Orlynx instruction.',
     agent: 'build',
   });
   assert.equal(payload.adapterId, 'opencode');
   assert.equal(payload.taskId, 'task-1');
+  assert.equal(payload.text, 'Inspect the repository.');
+  assert.equal(payload.system, 'Private Orlynx instruction.');
   assert.deepEqual(payload.model, { providerID: 'openai', modelID: 'test-model' });
 });
 
@@ -46,6 +49,12 @@ test('durable storage persists only generic adapter identity, health and session
   assert.doesNotMatch(storage, /DO \$/);
   assert.doesNotMatch(storage, /getEngineSession\(/);
   assert.doesNotMatch(storage, /putEngineSession\(/);
+});
+
+test('workspace bridge sends private Orlynx guidance through OpenCode system', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /if \(payload\.system\) body\.system = String\(payload\.system\)/);
+  assert.match(bridge, /parts: \[\{ type: 'text', text: String\(payload\.text \|\| ''\) \}\]/);
 });
 
 test('workspace bridge can start without OpenCode and reports adapter status separately', () => {
