@@ -94,7 +94,7 @@ describe('workspace trust and AI control contract', () => {
   it('routes model recovery back into the unified AI controls', () => {
     assert.match(src, /onOpenModels=\{\(\) => \{ setAiPickerView\('model'\); setShowConnectAI\(true\); \}\}/, 'per-message recovery does not open the model picker');
     const product = fs.readFileSync(path.join(root, 'apps/web/src/ui/product.tsx'), 'utf8');
-    assert.match(product, /onClick=\{props\.onOpenModels\}>Change model<\/button>/, 'Change model action missing from failed response');
+    assert.match(product, /onClick=\{\(\) => \{ closeMenu\(\); props\.onOpenModels\(\); \}\}>Change model<\/button>/, 'Change model action missing from failed response menu');
     assert.doesNotMatch(src, /transcript-recovery-actions/, 'legacy global recovery block still present');
   });
 
