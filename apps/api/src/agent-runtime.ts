@@ -29,6 +29,7 @@ export interface AgentRuntimeStatus {
 export interface AgentPromptOptions {
   model?: { providerID: string; modelID: string };
   agent?: string;
+  system?: string;
 }
 
 export interface AgentDirectChatInput {
