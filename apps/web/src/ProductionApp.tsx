@@ -1454,6 +1454,80 @@ export default function ProductionApp() {
   );
 }
 
+function ModeAccessMenu({ mode, permission, online, onMode, onPermission, onClose }: {
+  mode: 'build' | 'plan' | 'ask';
+  permission: 'full' | 'ask-first' | 'read-only';
+  online: boolean;
+  onMode: (mode: 'build' | 'plan' | 'ask') => void;
+  onPermission: (permission: 'full' | 'ask-first' | 'read-only') => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const closeOnKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const closeOnPointer = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', closeOnKey);
+    window.addEventListener('pointerdown', closeOnPointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnKey);
+      window.removeEventListener('pointerdown', closeOnPointer);
+    };
+  }, [onClose]);
+
+  const modes = [
+    ['build', 'Build', 'Edit files, run commands and test in the workspace'],
+    ['plan', 'Plan', 'Inspect the project and produce a plan without changes'],
+    ['ask', 'Ask', 'Answer directly without changing project files'],
+  ] as const;
+  const permissions = [
+    ['full', 'Full access', 'Can change files and run approved project work'],
+    ['ask-first', 'Ask first', 'Requests permission before project changes'],
+    ['read-only', 'Read only', 'Can inspect and explain only'],
+  ] as const;
+
+  return <aside ref={menuRef} className="mode-access-popover" role="dialog" aria-modal="false" aria-label="Mode and access selector">
+    <div className="mode-menu-section">
+      <span className="mode-menu-heading">Mode</span>
+      <div className="mode-menu-list" role="listbox" aria-label="Mode">
+        {modes.map(([value, label, hint]) => <button
+          key={value}
+          type="button"
+          role="option"
+          aria-selected={mode === value}
+          className={mode === value ? 'selected' : ''}
+          onClick={() => onMode(value)}
+          disabled={!online}
+        >
+          <span><b>{label}</b><small>{hint}</small></span>
+          {mode === value && <Icon name="check" size={13} />}
+        </button>)}
+      </div>
+    </div>
+    <div className="mode-menu-section access-section">
+      <span className="mode-menu-heading">Access</span>
+      {mode === 'build'
+        ? <div className="mode-menu-list" role="listbox" aria-label="Access level">
+            {permissions.map(([value, label, hint]) => <button
+              key={value}
+              type="button"
+              role="option"
+              aria-selected={permission === value}
+              className={permission === value ? 'selected' : ''}
+              onClick={() => onPermission(value)}
+              disabled={!online}
+            >
+              <span><b>{label}</b><small>{hint}</small></span>
+              {permission === value && <Icon name="check" size={13} />}
+            </button>)}
+          </div>
+        : <div className="mode-menu-readonly"><Icon name="shield" size={13} /><span><b>Read-only while in {mode === 'plan' ? 'Plan' : 'Ask'}.</b><small>Your Build access choice is kept for when you switch back.</small></span></div>}
+    </div>
+  </aside>;
+}
+
 function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onClose }: {
   view: 'agent' | 'model';
   models: any[]; providers: any[]; adapters: any[]; selectedAdapterId: string; selectedModelId: string;
