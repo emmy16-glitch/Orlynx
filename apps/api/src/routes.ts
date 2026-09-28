@@ -19,7 +19,7 @@ import { safeName } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, executionPlaneForSession, instantReplyFor } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
@@ -120,6 +120,103 @@ router.use(async (req, res, next) => {
 function ownedSession(req: Request, id: string) {
   const session = store.db.sessions[id];
   return session && session.installationId === requestInstallationId(req) ? session : undefined;
+}
+
+
+type WorkspacePublishResult = {
+  branch: string;
+  head: string;
+  alreadyPublished?: boolean;
+  pullRequestUrl?: string;
+  pullRequestNumber?: number;
+};
+
+async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent): Promise<WorkspacePublishResult> {
+  const gate = canPerform(session.id, 'git.push');
+  if (!gate.allowed) throw new Error(gate.reason || 'Publishing is blocked by the current project access level.');
+  if (!durableStorageConfigured()) throw new Error('Controlled chat publishing requires the hosted Orlynx workspace.');
+
+  const repository = controlPlaneRepository();
+  const active = (await repository.listTasks(session.id)).some((task) => task.state === 'running' || task.state === 'queued');
+  if (active) throw new Error('Finish or stop the current Build task before publishing.');
+
+  const workspace = await getWorkspace(session.id);
+  if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
+    throw new Error('The development environment must be ready before publishing.');
+  }
+
+  await bridgeRequest(workspace.id, 'git.fetch', { approved: true });
+  let status = await bridgeRequest<{
+    branch?: string;
+    head?: string;
+    porcelain?: string;
+    upstream?: string;
+    remoteHead?: string;
+    ahead?: number;
+    behind?: number;
+  }>(workspace.id, 'git.status');
+
+  const branch = String(status.branch || '');
+  const head = String(status.head || '');
+  const porcelain = String(status.porcelain || '');
+  if (!branch || !head) throw new Error('Orlynx could not determine the current Git branch and commit.');
+  if (porcelain.trim()) throw new Error('There are uncommitted workspace changes. Commit them before publishing.');
+  if (Number(status.behind || 0) > 0) {
+    throw new Error(`origin/${branch} has ${Number(status.behind)} newer commit(s). Pull/rebase before publishing.`);
+  }
+
+  if (strategy === 'direct') {
+    if (branch !== session.branch) {
+      throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}. Switch back before publishing directly.`);
+    }
+    if (status.remoteHead && status.remoteHead === head && Number(status.ahead || 0) === 0) {
+      return { branch, head, alreadyPublished: true };
+    }
+    const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', {
+      approved: true,
+      allowDefaultBranch: branch === 'main' || branch === 'master',
+    });
+    const publishedBranch = String(pushed.branch || branch);
+    const publishedHead = String(pushed.head || head);
+    await recordAudit(req, session.id, 'git.push', 'completed', { branch: publishedBranch, commitSha: publishedHead, source: 'chat' });
+    return { branch: publishedBranch, head: publishedHead };
+  }
+
+  const baseBranch = session.branch;
+  let publishBranch = branch;
+  if (!/^orlynx\/[a-zA-Z0-9._-]+$/.test(publishBranch)) {
+    publishBranch = `orlynx/publish-${Date.now().toString(36)}`;
+    await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishBranch });
+    status = await bridgeRequest(workspace.id, 'git.status');
+  }
+  const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', { approved: true });
+  const pullRequest = await createGitHubPullRequest(
+    session.project,
+    baseBranch,
+    publishBranch,
+    'Orlynx changes',
+    `Changes prepared in Orlynx.\n\nCommit: ${String(pushed.head || head)}`,
+    requestInstallationId(req),
+  );
+
+  session.branch = publishBranch;
+  session.updatedAt = new Date().toISOString();
+  store.save();
+  const durableSession = await repository.getSession(session.id);
+  if (durableSession) await repository.putSession({ ...session, userId: durableSession.userId, projectId: durableSession.projectId });
+  await recordAudit(req, session.id, 'git.pull_request', 'completed', {
+    branch: publishBranch,
+    baseBranch,
+    commitSha: String(pushed.head || head),
+    pullRequestNumber: pullRequest.number,
+    source: 'chat',
+  });
+  return {
+    branch: publishBranch,
+    head: String(pushed.head || head),
+    pullRequestUrl: pullRequest.url,
+    pullRequestNumber: pullRequest.number,
+  };
 }
 
 async function persistRecoveredBranch(session: any, branch: string): Promise<void> {
