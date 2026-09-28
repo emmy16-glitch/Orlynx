@@ -315,6 +315,7 @@ export function verifyHarness(checkpoint: HarnessCheckpoint, events: OrlynxEvent
 export function shouldSalvage(checkpoint: HarnessCheckpoint, finalText: string): boolean {
   const text = String(finalText || '').trim();
   if (checkpoint.salvageAttempts >= 1) return false;
+  if (harnessBudgetStatus(checkpoint).stage === 'force-final') return false;
   if (checkpoint.verification.status === 'needs_more_work') return true;
   if (!text) return true;
   if (text.length < 180 && /\b(?:working on|starting|checking|looking into|next i(?:'ll| will)|still working|in progress)\b/i.test(text)) return true;
