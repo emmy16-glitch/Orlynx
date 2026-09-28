@@ -49,14 +49,39 @@ export function instantReplyFor(input: {
   return null;
 }
 
+export type PublishIntent = 'direct' | 'pull-request';
+
+export function publishIntentFor(text: string, branch = 'main'): PublishIntent | null {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/\b(?:puhs|pussh|psuh)\b/g, 'push')
+    .replace(/\bpubish\b/g, 'publish')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return null;
+  if (/\b(?:create|open|make)\s+(?:a\s+)?(?:pr|pull request)\b|\bpublish\b[\s\S]{0,40}\b(?:via|as)\s+(?:a\s+)?(?:pr|pull request)\b/.test(normalized)) {
+    return 'pull-request';
+  }
+
+  const target = branch.toLowerCase();
+  const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+(?:origin\/)?(?:main|master|current\s+branch|branch))?[.!?\s]*$/.test(normalized);
+  if (!direct) return null;
+
+  if (/\b(?:main|master)\b/.test(normalized)) return 'direct';
+  if (/\bcurrent\s+branch\b|\bbranch\b/.test(normalized)) return 'direct';
+  if (target === 'main' || target === 'master') return 'direct';
+  return 'direct';
+}
+
 export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane {
   if (mode === 'ask' || mode === 'plan') return 'direct';
   const value = text.toLowerCase();
   if (/^\s*(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks?|thank you)[!.?\s]*$/i.test(text)) return 'direct';
 
   const requiresMachine = /\b(git|gh\s+codespace|codespace|npm|pnpm|yarn|bun|pip|pytest|cargo|gradle|mvn|docker|compose|ffmpeg|terminal|shell|command|execute|install|uninstall|compile|run\s+(?:it|this|that|the\s+)?(?:in\s+codespace|in\s+the\s+codespace|tests?|build|app|server|dev|command)?|(?:carry\s+out|perform|conduct|re-?run|retry)\s+(?:the\s+)?(?:tests?|testing|build|lint|typecheck|checks?|command|script)|start\s+(?:the\s+)?(?:app|server|dev|local\s+host|localhost|codespace)|fetch|pull|checkout|switch\s+branch|git\s+status|git\s+log|git\s+diff|git\s+branch|pwd|ls\b|cat\b|grep\b|sed\b|curl\b|preview|deploy|migration|migrate|benchmark)\b/i.test(value);
-  const actionRequest = /^\s*(run|execute|start|check|inspect|verify|test|build|fetch|pull|checkout|open|list|show|install|fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|merge|revert|patch)\b/i.test(text);
-  const mutatesRepo = /\b(fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|merge|revert|patch)\b/i.test(value);
+  const actionRequest = /^\s*(run|execute|start|check|inspect|verify|test|build|fetch|pull|checkout|open|list|show|install|fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|puhs|pussh|psuh|publish|merge|revert|patch)\b/i.test(text);
+  const mutatesRepo = /\b(fix|implement|edit|modify|change|update|delete|create|add|remove|rename|refactor|rewrite|commit|push|puhs|pussh|psuh|publish|merge|revert|patch)\b/i.test(value);
   const inspectProject = /\b(check|inspect|verify|look\s+at|take\s+a\s+look\s+at)\b[\s\S]{0,60}\b(repo(?:sitory)?|codebase|project|files?|branch|working\s+tree|status|local\s+host|localhost)\b/i.test(text)
     || /\b(?:switch(?:ed)?|set)\b[\s\S]{0,40}\bbuild\b[\s\S]{0,80}\b(check|inspect|verify)\b/i.test(text)
     || /^\s*(check|inspect|verify)(?:\s+(?:it|this|that))?[!.?\s]*$/i.test(text);

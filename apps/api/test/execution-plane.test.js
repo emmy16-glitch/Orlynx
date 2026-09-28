@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executionPlaneFor, executionPlaneForSession } from '../src/direct-chat.ts';
+import { executionPlaneFor, executionPlaneForSession, publishIntentFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 
@@ -51,6 +51,15 @@ test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('What does this repository do?', 'build'), 'direct');
   assert.equal(executionPlaneFor('Explain the authentication flow', 'build'), 'direct');
   assert.equal(executionPlaneFor('Review this architecture and suggest improvements', 'ask'), 'direct');
+});
+
+test('explicit publish language is typo-tolerant and bypasses AI ambiguity', () => {
+  assert.equal(publishIntentFor('push to main', 'main'), 'direct');
+  assert.equal(publishIntentFor('puhs to main', 'main'), 'direct');
+  assert.equal(publishIntentFor('publish it', 'main'), 'direct');
+  assert.equal(publishIntentFor('create a PR', 'main'), 'pull-request');
+  assert.equal(publishIntentFor('explain how git push works', 'main'), null);
+  assert.equal(executionPlaneFor('puhs to main', 'build'), 'workspace');
 });
 
 test('runtime and mutating build work requests the development environment', () => {
