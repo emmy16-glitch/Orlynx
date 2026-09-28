@@ -1259,7 +1259,7 @@ export default function ProductionApp() {
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>
-      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent">
+      <button type="button" className="ai-control-trigger composer-chip agent-chip" onClick={() => setShowConnectAI((current) => !current)} aria-expanded={showConnectAI} aria-label="Choose AI agent and model">
         <Icon name="agents" size={13} />
         <span className="composer-chip-label">{selectedAgentAdapter?.displayName || 'Orlynx AI'}</span>
         <span className={`ai-control-state state-${selectedAgentAdapter?.state || ai.state || 'idle'}`} aria-hidden="true" />
@@ -1310,7 +1310,7 @@ export default function ProductionApp() {
         if (composer.trim() && !sending && aiAccountConnected && ai.model && online) void sendMessage();
       }
     }}
-    placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected || !ai.model ? 'Connect AI to start' : 'Ask Orlynx anything…'}
+    placeholder={!online ? 'Offline — draft saved' : !aiAccountConnected || !ai.model ? 'Connect AI to start' : `Ask Orlynx anything…`}
     aria-label="Message Orlynx AI"
     disabled={!aiAccountConnected || !ai.model || !online}
   />
