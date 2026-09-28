@@ -30,6 +30,7 @@ export interface AgentPromptOptions {
   model?: { providerID: string; modelID: string };
   agent?: string;
   system?: string;
+  tools?: Record<string, boolean>;
 }
 
 export interface AgentDirectChatInput {
