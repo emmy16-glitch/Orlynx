@@ -14,6 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction } from './harness.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -231,6 +232,7 @@ async function executeDirectTask(
     console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
     task.state = 'failed';
     task.updatedAt = now;
+    if (task.harness) task.harness = advanceHarnessPhase(task.harness, 'failed', { mode: task.mode || 'build', permission: task.permission || 'full', now });
     await repository.putTask(task);
     run.state = 'failed';
     run.activity = 'Needs attention';
@@ -440,6 +442,16 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     }
     store.save();
 
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode,
+      permission,
+      plane: task.plane || 'workspace',
+      now: startedAt,
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'routing', { mode, permission, now: startedAt });
+    await repository.putTask(task);
+
     emit(sessionId, 'run.started', { taskId: task.id, messageId: task.messageId, plane: task.plane || 'workspace', engine: adapter.id, provider, model: modelId, mode, permission }, run.id);
     emit(sessionId, 'message.start', { taskId: task.id, plane: task.plane || 'workspace', model: modelId }, run.id);
 
@@ -467,9 +479,15 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     // Do not emit a second "Development environment ready" activity for the same turn.
     if (resolvedAgent.note) emit(sessionId, 'activity.progress', { taskId: task.id, text: resolvedAgent.note, adapterId: adapter.id }, run.id);
 
+    task.harness = advanceHarnessPhase(task.harness, 'context_loading', { mode, permission });
+    await repository.putTask(task);
+    task.harness = advanceHarnessPhase(task.harness, 'executing', { mode, permission });
+    await repository.putTask(task);
+
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
+      harnessSystemInstruction(task.harness),
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
@@ -594,6 +612,13 @@ export async function startRun(sessionId: string, project: string, userText: str
       mode,
       permission: prefs.permission,
       tempPermission: options.tempPermission,
+      harness: createHarnessCheckpoint({
+        prompt: userText,
+        mode,
+        permission,
+        plane,
+        now: admittedAt,
+      }),
       createdAt: admittedAt,
       updatedAt: admittedAt,
     };
