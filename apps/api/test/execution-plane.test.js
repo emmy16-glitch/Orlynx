@@ -141,12 +141,19 @@ test('free allowance errors are classified separately from runtime failures', ()
   assert.equal(classifyError('connection timed out'), 'engine');
 });
 
-test('workspace OpenCode keeps authenticated access available for free models', () => {
+test('workspace OpenCode keeps free models on public auth and paid models on account auth', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
-  assert.match(bridge, /publicAccess && !OPENCODE_API_KEY \? 'public' : 'account'/);
+  assert.match(bridge, /const desired: OpenCodeAuthMode = publicAccess \? 'public' : 'account'/);
   assert.match(bridge, /event\.type === 'message\.part\.delta'/);
   assert.match(bridge, /messageRoles\.get\(messageID\) !== 'assistant'/);
   assert.match(bridge, /blockedTextParts/);
+});
+
+test('free-model provider rejection never tells the user to reconnect an optional account key', () => {
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(gateway, /const freePublicModel = command\.payload\.openCodePublicAccess === true/);
+  assert.match(gateway, /freePublicModel && classifiedErrorKind === 'auth'[\s\S]*?\? 'model'/);
+  assert.match(gateway, /This does not mean your account needs reconnecting/);
 });
 
 
