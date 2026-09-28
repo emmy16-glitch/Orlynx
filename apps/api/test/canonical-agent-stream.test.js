@@ -106,10 +106,11 @@ test('React consumes the canonical stream instead of a raw event switchboard', (
   assert.doesNotMatch(facade, /case 'tool\.started'/);
 });
 
-test('activity evidence has a visible chevron disclosure instead of hidden View details text', () => {
+test('activity evidence stays visible inline without empty disclosure controls', () => {
   const product = fs.readFileSync(new URL('../../web/src/ui/product.tsx', import.meta.url), 'utf8');
-  const css = fs.readFileSync(new URL('../../web/src/ui/components.css', import.meta.url), 'utf8');
-  assert.match(product, /className="ox-activity-disclosure"/);
-  assert.match(product, /aria-expanded=\{showEvidence\}/);
-  assert.match(css, /\.ox-activity-disclosure/);
+  assert.match(product, /const structuredEvidence = Boolean/);
+  assert.match(product, /const details = hasVisibleDetail \?/);
+  assert.match(product, /<span className="ox-code-label">Command<\/span>/);
+  assert.doesNotMatch(product, /className="ox-activity-disclosure"/);
+  assert.doesNotMatch(product, /showEvidence/);
 });
