@@ -331,13 +331,15 @@ describe('conversation projection: presentation contract', () => {
     assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.transcript-activity-shell \.ox-raw pre \{\s*max-height: 240px/);
   });
 
-  it('disclosure controls stay keyboard-accessible', () => {
+  it('raw-output disclosure stays keyboard-accessible while structured evidence stays inline', () => {
     const product = fs.readFileSync(path.join(webSrc, 'ui/product.tsx'), 'utf8');
-    assert.match(product, /aria-expanded=\{showEvidence\}/);
     assert.match(product, /aria-expanded=\{showRaw\}/);
-    assert.match(product, /aria-controls=\{`ox-evidence-\$\{item\.id\}`\}/);
     assert.match(product, /type="button"/);
+    assert.match(product, /const structuredEvidence = Boolean/);
+    assert.doesNotMatch(product, /showEvidence/);
   });
+
+});
 });
 
 describe('live working indicator and composer interaction (sections 60-81)', () => {
@@ -387,15 +389,17 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     const src = app();
     assert.match(src, /const currentActivity = transcriptActivities\.find\(\(item: any\) => item\.id === currentActivityId\)/);
     assert.match(src, /const showWorkBar = tab === 'chat' && newActivity && Boolean\(currentActivity \|\| runActive\)/);
-    assert.match(src, /workBarLabel = waitingForUser[\s\S]*?currentActivity\?\.title \|\| 'Orlynx is working'/);
+    assert.match(src, /workBarLabel = waitingForUser[\s\S]*?currentActivity\?\.title \|\| harnessStatusLabel \|\| 'Orlynx is working'/);
     const barStart = src.indexOf('active-work-bar');
     const barBlock = src.slice(barStart, barStart + 1200);
     assert.doesNotMatch(barBlock, /adapter|heartbeat|bridge|state\.delta/i);
   });
 
   it('75: waiting for approval is distinguishable from working', () => {
-    assert.match(app(), /waitingForUser && currentActivity\?\.category === 'approval' \? 'Waiting for you'/);
-    assert.match(app(), /data-state=\{waitingForUser \? 'waiting' : 'working'\}/);
+    const src = app();
+    assert.match(src, /activeHarnessRun\?\.state === 'waiting_approval'/);
+    assert.match(src, /waitingForUser && currentActivity\?\.category === 'approval'[\s\S]*?'Waiting for you'/);
+    assert.match(src, /data-state=\{waitingForUser \? 'waiting' : 'working'\}/);
     assert.match(css(), /\.active-work-pill\[data-state="waiting"\]/);
   });
 
@@ -426,7 +430,7 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
   it('76: Build work renders before the live or durable response text', () => {
     const src = app();
     const work = src.indexOf('className="turn-work"');
-    const response = src.indexOf('className="message-text turn-response"');
+    const response = src.indexOf('className="turn-response"');
     assert.ok(work >= 0 && response >= 0, 'work/response surfaces are present');
     assert.ok(work < response, 'Build work must stay above the final response');
     assert.match(css(), /\.turn-work \+ \.turn-response \{\s*border-top:/);
@@ -439,13 +443,13 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.match(src, /turn\.liveReply && !durable && !hideProgressNarration/);
   });
 
-  it('78: long user prompts collapse without changing their full action text', () => {
+  it('78: long user prompts stay fully visible and keep their full action text', () => {
     const src = app();
     assert.match(src, /function UserMessageText\(\{ text \}: \{ text: string \}\)/);
-    assert.match(src, /text\.length > 700 \|\| text\.split/);
-    assert.match(src, /\{expanded \? 'Show less' : 'Show more'\}/);
-    assert.match(src, /<UserMessageText text=\{userText\} \/><UserMessageActions text=\{userText\}/);
-    assert.match(css(), /\.user-message-body\.is-collapsed \{[\s\S]*?max-height: 8\.4rem;[\s\S]*?overflow: hidden/);
+    assert.match(src, /<MarkdownText text=\{text\} className="user-message-body" \/>/);
+    assert.match(src, /<UserMessageActions text=\{userText\} onEdit=/);
+    assert.doesNotMatch(src, /text\.length > 700 \|\| text\.split/);
+    assert.doesNotMatch(src, /Show more|Show less/);
   });
 
   it('79: legacy private wrappers are scrubbed even when access instructions came first', () => {
