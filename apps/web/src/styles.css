@@ -1,3 +1,4 @@
+@import "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap";
 @import "./ui/tokens.css";
 @import "./ui/components.css";
 
@@ -4514,4 +4515,129 @@ html[data-theme="light"] .composer-options-panel {
   }
   .model-chip .composer-chip-label { max-width: 38vw; }
   .mode-access-chip { max-width: 46vw; }
+}
+
+
+/* === Readable streamed conversation: 2026-09-28 === */
+.message-row {
+  max-width: 780px;
+}
+.assistant-message .message-content {
+  max-width: 720px;
+}
+.assistant-message-meta,
+.user-message-meta {
+  min-height: 16px;
+  margin-bottom: 3px;
+}
+.assistant-message-meta:empty {
+  display: none;
+}
+.markdown-text {
+  font-family: var(--font-sans);
+  font-size: 15.5px;
+  line-height: 1.66;
+  letter-spacing: -.004em;
+  color: var(--foreground);
+}
+.markdown-text > :first-child { margin-top: 0; }
+.markdown-text > :last-child { margin-bottom: 0; }
+.markdown-text p {
+  margin: 0 0 10px;
+}
+.markdown-text h2,
+.markdown-text h3,
+.markdown-text h4,
+.markdown-text h5 {
+  margin: 17px 0 7px;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+.markdown-text h2 { font-size: 20px; }
+.markdown-text h3 { font-size: 17px; }
+.markdown-text h4,
+.markdown-text h5 { font-size: 15.5px; }
+.markdown-text strong {
+  font-weight: 700;
+}
+.markdown-text em {
+  font-style: italic;
+}
+.markdown-text ul,
+.markdown-text ol {
+  margin: 7px 0 12px;
+  padding-left: 24px;
+}
+.markdown-text li {
+  margin: 4px 0;
+  padding-left: 2px;
+}
+.markdown-text li::marker {
+  color: var(--foreground-subtle);
+}
+.markdown-text code:not(pre code) {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: .88em;
+  background: var(--surface-muted);
+}
+.markdown-text .chat-code-block {
+  margin: 10px 0 13px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  line-height: 1.58;
+}
+.markdown-text blockquote {
+  margin: 10px 0 13px;
+  border-left: 2px solid var(--border-strong);
+  padding: 3px 0 3px 12px;
+  color: var(--foreground-muted);
+}
+.markdown-text a {
+  color: var(--info);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.user-message-bubble .markdown-text {
+  font-size: 15px;
+  line-height: 1.58;
+}
+.turn-response {
+  color: var(--foreground);
+}
+.turn-response > .markdown-text {
+  width: 100%;
+}
+.stream-caret {
+  margin-top: 2px;
+}
+.transcript-activity-shell .ox-activity-title {
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+.transcript-activity-shell .small {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.transcript-activity-shell .ox-evidence {
+  margin-top: 6px;
+  padding-top: 8px;
+}
+.transcript-activity-shell .ox-command,
+.transcript-activity-shell .ox-code-preview pre,
+.transcript-activity-shell .ox-raw pre {
+  font-size: 12.5px;
+}
+@media (max-width: 620px) {
+  .markdown-text {
+    font-size: 15px;
+    line-height: 1.62;
+  }
+  .user-message-bubble .markdown-text {
+    font-size: 14.5px;
+  }
 }
