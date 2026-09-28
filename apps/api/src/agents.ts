@@ -14,7 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
-import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor } from './harness.js';
+import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -185,6 +185,24 @@ async function executeDirectTask(
 
   try {
     if (!adapter.streamDirectChat) throw new Error(`${adapter.displayName} does not support direct chat without a development environment.`);
+    const effectivePermission = task.tempPermission || task.permission || run.permission || 'full';
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      plane: 'direct',
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'context_loading', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+    });
+    await repository.putTask(task);
+    task.harness = advanceHarnessPhase(task.harness, 'executing', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+    });
+    await repository.putTask(task);
+
     const responseText = await adapter.streamDirectChat({
       runId: run.id,
       messageId: task.messageId,
@@ -193,6 +211,7 @@ async function executeDirectTask(
       session,
       modelId,
       mode: task.mode || run.mode || 'build',
+      harnessSystem: harnessSystemInstruction(task.harness),
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onActivity: (type, payload) => emit(session.id, type, { taskId: task.id, ...payload }, run.id),
       onDelta: (delta) => {
@@ -209,8 +228,60 @@ async function executeDirectTask(
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
 
     const now = new Date().toISOString();
+    const effectivePermission = task.tempPermission || task.permission || run.permission || 'full';
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      plane: 'direct',
+      now,
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'verifying', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
+    task.harness = verifyHarness(task.harness, [], now);
+
+    if (task.harness.verification.status !== 'passed') {
+      task.state = 'failed';
+      task.partialText = responseText;
+      task.harness = {
+        ...advanceHarnessPhase(task.harness, 'failed', {
+          mode: task.mode || run.mode || 'build',
+          permission: effectivePermission,
+          now,
+        }),
+        verification: { ...task.harness.verification, status: 'failed', checkedAt: now },
+      };
+      task.updatedAt = now;
+      await repository.putTask(task);
+      run.state = 'failed';
+      run.activity = 'Needs development environment';
+      run.finishedAt = now;
+      run.errorKind = 'engine';
+      store.save();
+      emit(session.id, 'run.failed', {
+        taskId: task.id,
+        error: `This request needs workspace evidence Orlynx could not verify in direct chat: ${task.harness.verification.missing.join(', ')}.`,
+        errorKind: 'engine',
+        recoverable: true,
+      }, run.id);
+      return;
+    }
+
+    task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
     task.state = 'completed';
     task.partialText = responseText;
+    task.harness = advanceHarnessPhase(task.harness, 'completed', {
+      mode: task.mode || run.mode || 'build',
+      permission: effectivePermission,
+      now,
+    });
     task.updatedAt = now;
     await repository.putTask(task);
     await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, runId: run.id, createdAt: now });
