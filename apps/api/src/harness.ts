@@ -273,11 +273,20 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
 
     if (event.type === 'tool.completed' || event.type === 'terminal.exited') {
       const command = String(payload.command || '').toLowerCase();
+      const semanticType = String(payload.semanticType || '').toLowerCase();
       const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : 0;
       if (exitCode === 0 && /\bgit\s+commit\b/.test(command)) found.add('commit');
       if (exitCode === 0 && /\bgit\s+push\b/.test(command)) found.add('publish');
-      if (exitCode === 0 && /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b/.test(command)) found.add('build');
-      if (exitCode === 0 && /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\bpytest\b|\bplaywright\b/.test(command)) found.add('tests');
+      if (exitCode === 0 && (
+        semanticType === 'build-result'
+        || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b/.test(command)
+        || /\btsc\b/.test(command)
+      )) found.add('build');
+      if (exitCode === 0 && (
+        semanticType === 'test-result'
+        || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b/.test(command)
+        || /\bnode\s+--test\b|\bpytest\b|\bplaywright\b|\bvitest\b|\bjest\b/.test(command)
+      )) found.add('tests');
     }
   }
   return found;
