@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
 import { toThreadParts } from '../../web/src/agent-stream/parts.ts';
-import { redactEventString } from '../src/events.ts';
+import { redactEventString, sanitizeEvent } from '../src/events.ts';
 
 const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${sequence}`) => ({
   eventId, sessionId: 'session-a', runId, sequence, timestamp: new Date(sequence * 1000).toISOString(), type, payload,
@@ -190,6 +190,15 @@ describe('canonical agent activity presentation', () => {
     assert.equal(parts[0].item.evidence?.sourceType, 'agent.reflection');
     assert.match(String(parts[0].item.evidence?.orlynxText), /browser Preview is still unverified/);
     assert.match(String(parts[0].item.evidence?.modelText), /provider forwarding layer/);
+  });
+
+  it('sanitizes historical event payloads before replay or reflection reuse', () => {
+    const historical = sanitizeEvent(event(9, 'tool.output', {
+      out: '[auth] generated admin token: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      authorization: 'Bearer ghp_abcdefghijklmnopqrstuvwxyz123456',
+    }));
+    assert.equal(historical.payload.out, '[auth] generated admin token: [redacted]');
+    assert.equal(historical.payload.authorization, '[redacted]');
   });
 
   it('redacts likely credentials before event output can reach chat or durable storage', () => {
