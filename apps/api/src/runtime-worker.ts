@@ -153,7 +153,7 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
 
 
 async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
-  const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey, githubUserToken);
+  const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
   const totalTimeoutMs = Math.max(90_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 2 * 60_000));
   const attemptTimeoutMs = Math.min(
     60_000,
