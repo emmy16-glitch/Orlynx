@@ -276,6 +276,33 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   assert.match(memory, /scope: 'environment'/);
 });
 
+test('agent memory is user-scoped, relevance-gated, and cannot overwrite another user', () => {
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
+  assert.match(memory, /function lessonId\(userId: string/);
+  assert.match(memory, /\.update\(\[userId, scope,/);
+  assert.match(memory, /if \(overlap === 0\) return 0/);
+  assert.match(storage, /WHERE agent_lessons\.user_id=EXCLUDED\.user_id/);
+});
+
+test('bridge lifecycle events use the awaited durable live broadcaster', () => {
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const events = fs.readFileSync(new URL('../src/events.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(gateway, /repository\.appendEvent\(/);
+  assert.match(gateway, /persistLiveEvent/);
+  assert.match(events, /export async function emitPersisted/);
+  assert.match(events, /subscribers\.get\(sessionId\).*res\.write/s);
+  assert.match(events, /eventSubscribers\.get\(sessionId\).*listener/s);
+});
+
+test('real workspace reflection carries an id and emits Model to Orlynx activity', () => {
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(gateway, /reflectionId: task\.harness\.reflectionAttempts/);
+  assert.match(bridge, /agent\.dialogue\.model/);
+  assert.match(bridge, /Model\\s\*\[→>-\]\\s\*Orlynx:/);
+});
+
 test('durable workspace gateway verifies evidence and either salvages or completes explicitly', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
   assert.match(gateway, /task\.harness = verifyHarness\(task\.harness, recent/);
