@@ -85,6 +85,16 @@ test('legacy idle/broken Codespaces migrate to the preferred warm runner without
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'github-codespaces'), false);
 });
 
+test('broken Codespace recovery escapes to the preferred warm runner before replacing another Codespace', () => {
+  const workspaces = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  const failover = workspaces.indexOf("stage: 'workspace.failover'");
+  const replacement = workspaces.indexOf("stage: 'codespace.replace'", failover);
+  assert.ok(failover >= 0, 'broken Codespace path must expose warm-runner failover');
+  assert.ok(replacement > failover, 'warm-runner failover must be attempted before creating another Codespace');
+  assert.match(workspaces, /defaultWorkspaceProviderId\(\) === 'orlynx-runner'/);
+  assert.match(workspaces, /runnerRecoveryAttempted/);
+});
+
 test('workspace message admission adopts legacy runners before reconnect mutation', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   const adopt = routes.indexOf('workspaceShouldAdoptPreferredRunner(workspace, undefined, workspaceAdapter?.state)');
