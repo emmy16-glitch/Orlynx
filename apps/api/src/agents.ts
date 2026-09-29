@@ -568,6 +568,98 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       }, nextQueued.runId);
       return promoteNextQueuedRunInner(sessionId);
     }
+
+    // Build must never silently execute against a stale checkout. This is
+    // deliberately after runtime/adapter readiness but before task claim, so a
+    // user sees the repository check as preparation and no model/tool work can
+    // begin until branch/freshness truth is known.
+    emit(sessionId, 'activity.progress', {
+      taskId: nextQueued.id,
+      sourceType: 'repository.sync',
+      text: `Checking ${session.branch} against GitHub…`,
+    }, nextQueued.runId);
+
+    let gitSync: {
+      state?: 'current' | 'synced' | 'branch_mismatch' | 'blocked_dirty' | 'blocked_diverged';
+      branch?: string;
+      targetBranch?: string;
+      head?: string;
+      previousHead?: string;
+      remoteHead?: string;
+      ahead?: number;
+      behind?: number;
+      porcelain?: string;
+      updatedBy?: number;
+    };
+    try {
+      gitSync = await bridgeRequest(readyWorkspace.id, 'git.sync', {
+        approved: true,
+        branch: session.branch,
+      }, 120_000);
+    } catch (error) {
+      const now = new Date().toISOString();
+      const detail = error instanceof Error ? error.message : 'Repository freshness check failed.';
+      nextQueued.state = 'failed';
+      nextQueued.updatedAt = now;
+      await repository.putTask(nextQueued);
+      const failedRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+      if (failedRun) {
+        failedRun.state = 'failed';
+        failedRun.activity = 'Repository sync unavailable';
+        failedRun.finishedAt = now;
+        failedRun.errorKind = 'engine';
+      }
+      store.save();
+      emit(sessionId, 'run.failed', {
+        taskId: nextQueued.id,
+        error: `Orlynx could not verify the workspace against GitHub before Build: ${detail}`,
+        errorKind: 'engine',
+        recoverable: true,
+      }, nextQueued.runId);
+      return promoteNextQueuedRunInner(sessionId);
+    }
+
+    if (gitSync.state === 'synced') {
+      console.info(`[repository] synced session=${sessionId} workspace=${readyWorkspace.id} branch=${session.branch} commits=${gitSync.updatedBy || 0} head=${String(gitSync.head || '').slice(0, 12)}`);
+      emit(sessionId, 'activity.progress', {
+        taskId: nextQueued.id,
+        sourceType: 'repository.sync',
+        text: `Workspace updated to latest ${session.branch} · ${gitSync.updatedBy || 0} commit${Number(gitSync.updatedBy || 0) === 1 ? '' : 's'} fast-forwarded.`,
+        branch: session.branch,
+        head: gitSync.head,
+        previousHead: gitSync.previousHead,
+      }, nextQueued.runId);
+    }
+
+    if (gitSync.state === 'branch_mismatch' || gitSync.state === 'blocked_dirty' || gitSync.state === 'blocked_diverged') {
+      const now = new Date().toISOString();
+      const dirtyFiles = String(gitSync.porcelain || '').trim().split(/\r?\n/).filter(Boolean).slice(0, 8);
+      const detail = gitSync.state === 'branch_mismatch'
+        ? `Workspace is on ${gitSync.branch || 'another branch'}, but this conversation targets ${gitSync.targetBranch || session.branch}.`
+        : gitSync.state === 'blocked_dirty'
+          ? `Workspace is ${gitSync.behind || 0} commit${Number(gitSync.behind || 0) === 1 ? '' : 's'} behind origin/${session.branch} and has uncommitted changes${dirtyFiles.length ? `: ${dirtyFiles.join(', ')}` : ''}.`
+          : `Workspace branch has diverged from origin/${session.branch} (ahead ${gitSync.ahead || 0}, behind ${gitSync.behind || 0}).`;
+
+      nextQueued.state = 'failed';
+      nextQueued.updatedAt = now;
+      await repository.putTask(nextQueued);
+      const failedRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+      if (failedRun) {
+        failedRun.state = 'failed';
+        failedRun.activity = 'Repository needs safe reconciliation';
+        failedRun.finishedAt = now;
+        failedRun.errorKind = 'input';
+      }
+      store.save();
+      emit(sessionId, 'run.failed', {
+        taskId: nextQueued.id,
+        error: `${detail} Orlynx stopped before executing stale or conflicting code; local work was not discarded.`,
+        errorKind: 'input',
+        recoverable: true,
+        repositorySync: gitSync,
+      }, nextQueued.runId);
+      return promoteNextQueuedRunInner(sessionId);
+    }
   }
 
   const task = await repository.claimQueuedTask(sessionId, nextQueued.id);
