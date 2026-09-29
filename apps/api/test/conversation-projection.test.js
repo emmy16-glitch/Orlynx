@@ -320,12 +320,14 @@ describe('conversation projection: presentation contract', () => {
     assert.match(app, /<PartRow part=\{part\} onResolveApproval=\{resolveApproval\} \/>/);
     assert.doesNotMatch(app, /<TaskActivityRow item=\{item\} detailMode="summary"/);
     assert.match(parts, /className="ox-part-detail is-visible"/);
-    assert.match(parts, /className="ox-raw ox-raw-visible"/);
+    assert.match(parts, /className="ox-raw-toggle"/);
+    assert.match(parts, /aria-expanded=\{open\}/);
+    assert.match(parts, /Show output/);
     assert.doesNotMatch(parts, /ox-part-chevron/);
     assert.doesNotMatch(parts, /useDisclosure\(/);
   });
 
-  it('TEST 20: raw output renders visibly in a bounded scrollable detail container', () => {
+  it('TEST 20: raw output stays bounded and opens on demand instead of flooding chat', () => {
     const css = fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
     const components = fs.readFileSync(path.join(webSrc, 'ui/components.css'), 'utf8');
     for (const source of [css, components]) {
