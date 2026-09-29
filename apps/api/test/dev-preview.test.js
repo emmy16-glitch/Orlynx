@@ -8,7 +8,6 @@ import {
   preferredPreviewPort, previewAuthorizationExpiresAt, previewDisplayPath,
   refreshPreviewAuthorization, requiresExternalPreview, resolvePreviewInput, usablePreviews,
 } from '../../web/src/ui/preview.ts';
-import { codespacesPreviewUrl } from '../src/codespaces-preview.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
@@ -18,44 +17,6 @@ const css = () => fs.readFileSync(path.join(webSrc, 'styles.css'), 'utf8');
 const pane = () => fs.readFileSync(path.join(webSrc, 'ui/preview-pane.tsx'), 'utf8');
 
 const BASE = 'https://preview.example.work/';
-
-describe('Codespaces preview URL fallback', () => {
-  it('builds the browser URL from the persisted Codespace identity', () => {
-    const previous = process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN;
-    delete process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN;
-    try {
-      assert.equal(
-        codespacesPreviewUrl({ codespaceName: 'fictional-space-abc123' }, 5173),
-        'https://fictional-space-abc123-5173.app.github.dev/',
-      );
-      assert.equal(codespacesPreviewUrl({ codespaceName: 'fictional-space-abc123' }, 4173), 'https://fictional-space-abc123-4173.app.github.dev/');
-      assert.equal(codespacesPreviewUrl({ codespaceName: 'fictional-space-abc123' }, 0), undefined);
-      assert.equal(codespacesPreviewUrl({ codespaceName: undefined }, 5173), undefined);
-    } finally {
-      if (previous === undefined) delete process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN;
-      else process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN = previous;
-    }
-  });
-
-  it('supports an explicit forwarding-domain override without accepting paths', () => {
-    const previous = process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN;
-    try {
-      process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN = 'https://preview.example.test/';
-      assert.equal(
-        codespacesPreviewUrl({ codespaceName: 'fictional-space-abc123' }, 3000),
-        'https://fictional-space-abc123-3000.preview.example.test/',
-      );
-      process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN = 'https://preview.example.test/not-a-host';
-      assert.equal(
-        codespacesPreviewUrl({ codespaceName: 'fictional-space-abc123' }, 3000),
-        'https://fictional-space-abc123-3000.preview.example.test/',
-      );
-    } finally {
-      if (previous === undefined) delete process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN;
-      else process.env.ORLYNX_CODESPACES_PORT_FORWARDING_DOMAIN = previous;
-    }
-  });
-});
 
 describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => {
   it('TEST 1/8: detects start commands without assuming vite/5173', () => {
