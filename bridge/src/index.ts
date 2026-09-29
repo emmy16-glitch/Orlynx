@@ -400,6 +400,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const toolParts = new Map<string, Record<string, any>>();
   const toolStates = new Map<string, string>();
   const toolOutputs = new Map<string, string>();
+  const toolFailureTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let reflectionDiagnosticEmitted = false;
 
   const emitRetry = (status: Record<string, any>) => {
@@ -499,11 +500,15 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
     const code = typeof codeCandidate === 'string' ? codeCandidate : '';
     const semanticType = toolSemanticType(toolName, command, filePath);
+    const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata as Record<string, any> : {};
+    const exitCodeCandidate = metadata.exitCode ?? metadata.exit_code ?? metadata.code;
+    const exitCode = Number.isFinite(Number(exitCodeCandidate)) ? Number(exitCodeCandidate) : undefined;
     const common = {
       tool: toolName,
       callId: id,
       semanticType,
       title,
+      ...(exitCode !== undefined ? { exitCode } : {}),
       ...(command ? { command: command.slice(0, 4_000) } : {}),
       ...(filePath ? { path: filePath.slice(0, 1_200) } : {}),
       ...(code ? { code: code.slice(0, 24_000) } : {}),
@@ -538,17 +543,32 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     }
 
     if (status === 'completed' && previousStatus !== 'completed') {
+      const pendingFailure = toolFailureTimers.get(id);
+      if (pendingFailure) clearTimeout(pendingFailure);
+      toolFailureTimers.delete(id);
       bridgeEvent(ws, 'tool.completed', {
         ...common,
         ...(typeof state.time?.end === 'number' ? { endedAt: state.time.end } : {}),
       }, taskId, runId);
       bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'success' }, taskId, runId);
     } else if (status === 'error' && previousStatus !== 'error') {
-      bridgeEvent(ws, 'tool.failed', {
-        ...common,
-        error: String(state.error || 'Tool failed.').slice(0, 8_000),
-      }, taskId, runId);
-      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
+      const priorTimer = toolFailureTimers.get(id);
+      if (priorTimer) clearTimeout(priorTimer);
+      const timer = setTimeout(() => {
+        toolFailureTimers.delete(id);
+        if (toolStates.get(id) !== 'error') return;
+        // Some OpenCode bash/tool events briefly report error before the final
+        // completed part arrives. Delay the visible failure slightly so an
+        // error→completed transition with exitCode 0 does not flash a false
+        // red health-check row.
+        bridgeEvent(ws, 'tool.failed', {
+          ...common,
+          error: String(state.error || 'Tool failed.').slice(0, 8_000),
+        }, taskId, runId);
+        bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
+      }, 250);
+      timer.unref?.();
+      toolFailureTimers.set(id, timer);
     }
   };
 
@@ -680,6 +700,8 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
   } finally {
     streamAbort.abort();
+    for (const timer of toolFailureTimers.values()) clearTimeout(timer);
+    toolFailureTimers.clear();
     try { await iterator?.return?.(); } catch {}
     activeAgents.delete(taskId);
   }
