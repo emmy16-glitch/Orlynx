@@ -5,8 +5,41 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
 const durableQueues = new Map<string, Promise<void>>();
 const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
+const SENSITIVE_PAYLOAD_KEY = /(?:^|[_-])(token|secret|password|authorization|cookie|credential|api[_-]?key)(?:$|[_-])/i;
+
+export function redactSensitiveText(value: string): string {
+  let text = String(value || '');
+  text = text.replace(/(generated\s+admin\s+token\b[^:\n]{0,80}:\s*)([A-Za-z0-9._~+/=-]{16,})/gi, '$1[redacted]');
+  text = text.replace(/(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{12,})/gi, '$1[redacted]');
+  text = text.replace(/(\b(?:access[_ -]?token|refresh[_ -]?token|api[_ -]?key|secret|password|authorization)\b\s*(?:=|:)\s*)([^\s"'<>]{8,})/gi, '$1[redacted]');
+  text = text.replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[redacted]');
+  text = text.replace(/\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/g, '[redacted]');
+  // Avoid treating normal 40-char Git commit SHAs as secrets, but suppress
+  // long random hex credentials such as generated admin/session tokens.
+  text = text.replace(/\b[a-f0-9]{48,}\b/gi, '[redacted]');
+  return text;
+}
+
+function redactValue(value: unknown, key = '', depth = 0): unknown {
+  if (depth > 8) return '[redacted-depth]';
+  if (SENSITIVE_PAYLOAD_KEY.test(key)) return '[redacted]';
+  if (typeof value === 'string') return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, '', depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
+      childKey,
+      redactValue(childValue, childKey, depth + 1),
+    ]));
+  }
+  return value;
+}
+
+export function redactSensitivePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(payload) as Record<string, unknown>;
+}
 
 function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  payload = redactSensitivePayload(payload);
   const encoded = JSON.stringify(payload);
   if (Buffer.byteLength(encoded) <= MAX_EVENT_PAYLOAD_BYTES) return payload;
   const clipped: Record<string, unknown> = { ...payload, truncated: true };
