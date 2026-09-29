@@ -1,12 +1,12 @@
 # End-to-end verification
 
-This document defines the production verification contract.
+This is the production release contract for Orlynx.
 
-Passing unit tests or seeing a local screenshot is not proof that the deployed product works.
+Passing unit tests is necessary but does not by itself prove that live GitHub, model, runner, Codespaces or Render integrations are healthy.
 
-## Automated CI
+## Automated repository verification
 
-Every pull request and push to main should run the repository's actual verification commands:
+Every release candidate should run the repository's supported verification commands:
 
 ~~~text
 npm ci
@@ -17,197 +17,175 @@ npm run build
 
 Do not invent a lint gate when the repository has no lint script.
 
-## Exact-revision rule
+## Revision truth
 
-Every production verification report should identify:
+A production claim should record:
 
-- repository commit SHA;
-- CI result for that SHA;
-- deployed Render revision;
-- runner revision/image where relevant;
-- live checks performed.
+1. exact Git commit SHA;
+2. GitHub Actions result for that SHA;
+3. Render deployed revision;
+4. startup/health result;
+5. live smoke-test evidence for external integrations affected by the change.
 
-Do not merge CI and production evidence into one vague “green” status.
+## Cross-device conversation scenario
 
-## Core production scenario
+Verify on two separate browsers/devices:
 
-A healthy release should support the following path where credentials and provider availability permit:
+1. connect GitHub on phone;
+2. open a repository and send several messages;
+3. confirm messages are durable;
+4. connect the same GitHub identity on a fresh laptop/browser with empty localStorage;
+5. immediately after OAuth, confirm server-owned recent projects/conversations appear without requiring a second reload;
+6. open the same repository/branch;
+7. confirm the existing conversation resumes instead of a blank duplicate session;
+8. send a laptop message;
+9. return to the phone and refresh/foreground;
+10. confirm the laptop message appears.
 
-1. open Orlynx;
-2. connect GitHub through the real GitHub App;
-3. choose an authorized repository;
-4. restore/open the durable project session;
-5. select the connected model, mode, access level and agent;
-6. send an Ask/Plan question and see real streaming output;
-7. send a natural follow-up during the response and confirm it remains in the same run;
-8. send a Build request;
-9. confirm Orlynx uses the warm runner when configured/healthy;
-10. confirm Codespaces can act as fallback/recovery when policy permits;
-11. confirm authenticated bridge readiness;
-12. confirm OpenCode adapter readiness independently from workspace readiness;
-13. receive normalized live activity;
-14. send “also check X” during Build and confirm same-run continuation;
-15. send “queue this / do this next” and confirm a separate visible queued task;
-16. edit/cancel a queued task;
-17. confirm queued work never runs beside active/waiting work;
-18. verify missing acceptance evidence keeps the run working instead of reporting success;
-19. force a diagnosable contradiction and confirm ordered Investigation blocks;
-20. background/lock the phone and return;
-21. replay missed events without duplicate work rows;
-22. inspect files and changes;
-23. verify Preview from a browser-resolvable provider URL;
-24. approve/publish through the controlled GitHub path;
-25. confirm the exact requested branch target is preserved;
-26. reload or open another authenticated device and recover the durable project session.
+The test proves that localStorage is only a convenience pointer.
 
-## Current production components
+## Active-run continuation scenario
 
-The architecture contains real implementations for:
+1. start a Build task;
+2. while it is executing, send “also check this”;
+3. confirm the new user message is attached to the same run;
+4. send another normal follow-up;
+5. confirm no fake acknowledgement run appears;
+6. allow the task to enter verification;
+7. send a late follow-up near finalization;
+8. confirm the run continues/requeues under the same task identity and incorporates it before completion.
 
-- GitHub App install/OAuth flow and authorized repository listing;
-- short-lived installation tokens and signed webhooks;
-- durable Postgres control-plane storage;
-- encrypted stored provider credentials;
-- direct model Ask/Plan streaming;
-- durable message/task admission;
-- same-run live continuation;
-- explicit sequential queueing;
-- warm-runner workspace provider;
-- GitHub Codespaces fallback/recovery provider;
-- authenticated workspace bridge;
-- OpenCode Agent Adapter #1;
-- PTY terminal;
-- filesystem operations;
-- Git operations;
-- test/build execution;
-- Preview-port/browser-surface discovery;
-- canonical durable event replay;
-- ordered Investigation presentation;
-- harness verification;
-- approval records and audit log;
-- controlled GitHub publication;
-- verified learned lessons.
+## Explicit queue scenario
 
-There is intentionally no production demo/native agent fallback.
+1. start active work;
+2. send “queue this” or “do this next”;
+3. confirm a separate queued task appears;
+4. confirm position/mode are visible;
+5. edit the queued prompt;
+6. confirm durable chat/history reflects the edit;
+7. cancel another queued item;
+8. confirm queued work does not run beside active or waiting work;
+9. confirm the next task starts automatically after terminal completion.
 
-## Conversation tests
+## Workspace and adapter scenario
 
-Verify:
+### Warm runner
 
-- greetings/general conversation route through the selected model;
-- Ask/Plan do not require workspace startup when execution is unnecessary;
-- Build uses workspace execution;
-- “also...” stays in the active run;
-- “queue...” creates new durable work;
-- a follow-up arriving during finalization is not lost;
-- retry/resend preserves immutable history expectations;
-- cancelling a run does not report completion.
+When configured:
 
-## Queue tests
+1. opening a repository schedules background prewarm;
+2. the browser remains usable while compute warms;
+3. runner workspace becomes bridge-ready;
+4. OpenCode adapter reaches ready independently.
 
-Verify:
+### Codespaces fallback
 
-- only one active/waiting task owns execution;
-- queue position matches durable scheduler order;
-- edits persist in chat/history;
-- cancellation persists;
-- cross-lane queued work remains sequential behind active work;
-- an API restart does not erase queued tasks.
+When runner preparation fails and fallback is enabled:
 
-## Investigation and verification tests
+1. preserve the durable task/session;
+2. switch execution provider;
+3. create/connect Codespaces;
+4. attach the same bridge contract;
+5. continue the task without creating a new conversation.
 
-Verify:
+## OpenCode runtime recovery scenario
 
-- task acceptance criteria are inferred from the request;
-- changes/tests/build/Preview/publication evidence satisfy only the relevant criterion;
-- contradictory evidence starts bounded reflection;
-- Investigation numbering/order is stable;
-- useful model hypothesis is shown without private chain-of-thought;
-- verification runs again after corrective work;
-- learned memory is stored only after reflection + verification pass.
+Verify both a healthy runtime and a simulated stale/missing binary path.
 
-## Memory tests
+Expected recovery:
+
+1. bridge remains connected;
+2. configured OpenCode path fails its version probe;
+3. bridge searches known runner/workspace binary locations;
+4. if still unavailable, bridge installs the pinned CPU-compatible native package into its private self-heal directory;
+5. repaired binary passes the version probe;
+6. OpenCode server starts;
+7. adapter transitions to ready;
+8. the queued Build task resumes.
+
+If network/package infrastructure genuinely prevents repair, Orlynx may still report adapter unavailable, but the workspace itself must remain usable and the error must not be presented as total project loss.
+
+## Preview scenario
+
+1. start the development server;
+2. verify listener/port;
+3. reject API-only JSON roots as browser Preview;
+4. verify provider forwarding;
+5. verify browser-resolvable URL;
+6. open Preview;
+7. for Codespaces + Vite, confirm Orlynx-managed host compatibility works without a repository-specific config edit;
+8. ensure a provider forwarding failure does not cause destructive project config changes.
+
+## Investigation / verification scenario
+
+Create a task where the first hypothesis is wrong.
 
 Verify:
 
-- lessons are isolated by user;
-- repository lessons do not contaminate unrelated projects without relevance;
-- environment lessons still require query overlap;
-- at most the bounded relevant set is injected;
-- fresh evidence can contradict remembered lessons;
-- secrets are cleaned before lesson persistence.
+1. Investigation 1 shows the Orlynx observation and model's next check;
+2. tool evidence appears under the same diagnostic flow;
+3. a corrected Investigation follows when needed;
+4. private chain-of-thought is never rendered;
+5. final completion occurs only when inferred acceptance evidence is satisfied.
 
-## Preview tests
-
-Verify:
-
-- API-only JSON roots are not presented as browser Preview;
-- Codespaces forwarding is checked before repository configuration edits;
-- supported Vite repositories receive Orlynx-managed host compatibility;
-- loopback-only/internal agent ports are not exposed as user Preview;
-- runner Preview uses the signed gateway path;
-- dev-server process exit invalidates Preview readiness.
-
-## Mobile/reconnect checks
-
-Manual or browser-automation verification should cover at least:
-
-- 360px;
-- 390px;
-- 412px;
-- keyboard open/close;
-- long streaming task while reading older chat;
-- auto-follow stops when scrolled upward;
-- New activity affordance;
-- Wi-Fi → cellular transition;
-- background/sleep during a running task;
-- foreground reconnect and event replay;
-- offline draft preservation;
-- Android back navigation;
-- model/mode/access/agent controls;
-- queue tray and edit/cancel behavior;
-- Investigation block scrolling.
-
-## Security checks
+## Streaming and reconnect scenario
 
 Verify:
 
-- repository APIs reject unauthorized access;
-- read-only/approval policies are server-enforced;
-- webhook signatures are verified;
-- duplicate GitHub delivery IDs are rejected durably;
-- GitHub/provider/bridge secrets never appear in browser payloads;
-- secret-like event content is redacted before persistence;
+- live model deltas arrive incrementally;
+- browser backgrounding does not cancel server work;
+- reconnect uses the durable event cursor;
+- replay does not duplicate logical tools;
+- stale snapshots do not rewind fresher streamed text;
+- scrolling upward stops auto-follow;
+- New activity returns the user to the latest content.
+
+## GitHub publication scenario
+
+Verify:
+
+- explicit branch target is preserved;
+- ambiguous/different branch target is not guessed;
+- agent shell has no unrestricted GitHub credentials;
+- unsafe/dirty/behind states are rejected as required;
+- controlled publication returns durable evidence;
+- default-branch publication occurs only through the explicitly authorized Orlynx path;
+- PR publication works when the policy/strategy requires it;
+- audit records are written.
+
+## Security scenario
+
+Verify:
+
+- unauthorized session access is rejected;
+- durable session restore uses the authenticated GitHub user identity;
+- a different GitHub user cannot enumerate or open another user's sessions;
+- read-only/Ask-first policies are enforced server-side;
+- webhook signatures and delivery dedupe work;
+- bridge credentials are scoped;
+- raw GitHub/provider secrets are absent from browser payloads;
+- event payload redaction occurs before persistence;
 - historical replay remains sanitized;
-- agent shell lacks unrestricted GitHub credentials;
-- explicit publication branch is not silently changed;
-- consequential actions create audit evidence;
-- user A cannot retrieve user B's learned lessons.
+- learned lessons are user-isolated.
 
-## Production-data checks
+## Persistence scenario
 
-Hosted production must not depend on:
+Hosted production must survive API restart without losing:
 
-- browser localStorage for authoritative session state;
-- process memory for task truth;
-- local JSON for production durable state.
+- sessions;
+- messages;
+- queued tasks;
+- event history;
+- AI preferences;
+- workspace records;
+- approvals;
+- change sets;
+- learned lessons.
 
-Postgres remains authoritative.
+## Current boundaries
 
-Operational retention should be documented and tested for webhook receipts, bridge commands, event payloads, conversation data, learned lessons and audit records as policies evolve.
+Do not claim a future feature merely because architecture has an extension point.
 
-## Current explicit boundaries
+Examples that remain roadmap-dependent unless separately implemented/verified include additional production coding-agent adapters, team-shared memory, production-outcome learning and general autonomous scheduled maintenance.
 
-Do not claim a feature exists merely because the architecture can support it.
-
-Examples of roadmap items that require their own implementation/verification before being called current:
-
-- additional coding-agent adapters beyond OpenCode;
-- team/shared memory;
-- multi-agent parallel orchestration;
-- production-outcome learning;
-- autonomous scheduled maintenance;
-- enterprise policy packs;
-- extra runner backends.
-
-See [product-vision-and-roadmap.md](product-vision-and-roadmap.md).
+See product-vision-and-roadmap.md.

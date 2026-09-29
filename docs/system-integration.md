@@ -2,146 +2,91 @@
 
 Orlynx is a phone-first control plane over real GitHub repositories, durable project conversations, replaceable compute providers and real coding-agent runtimes.
 
-Production does not fall back to a demo agent or simulated cloud state.
+Production never substitutes a fake agent or simulated workspace for an unavailable integration.
 
 ## Product flow
 
-1. The user connects GitHub through the Orlynx GitHub App.
-2. Orlynx lists only repositories authorized for that installation.
-3. Opening a repository creates or restores an identity-owned durable project session.
-4. Chat is the primary workspace.
-5. Ask/Plan can use the direct model lane without starting mutable compute.
-6. Build work is durably admitted before execution.
-7. Orlynx prefers the configured warm runner and can use GitHub Codespaces as fallback/recovery.
-8. The authenticated Orlynx bridge connects the selected workspace to the control plane.
-9. The selected coding-agent adapter runs inside that workspace. OpenCode is Adapter #1.
-10. User follow-ups normally continue the same active run; explicit “queue/next/after this” wording creates separate queued work.
-11. Runtime events are normalized, redacted and persisted before browser replay.
-12. The harness verifies the requested outcome.
-13. If evidence conflicts with expectations, Orlynx and the connected model iterate through bounded Investigation rounds.
-14. The user reviews files, changes, tests, Preview and publication evidence.
-15. GitHub publication occurs only through the controlled Orlynx publication path.
-16. A verified post-reflection resolution may become a user-scoped learned lesson for future relevant work.
+1. The user connects GitHub through the Orlynx GitHub App and OAuth identity flow.
+2. Orlynx lists repositories authorized to the current installation.
+3. Opening a repository creates or resumes the durable user + repository + branch conversation.
+4. Ask and Plan can use the direct model lane when mutable execution is unnecessary.
+5. Build work is admitted to the durable task ledger.
+6. Orlynx prefers a prewarmed Orlynx runner when configured.
+7. GitHub Codespaces remains a fallback/recovery provider.
+8. The authenticated Orlynx bridge exposes repository-scoped execution primitives.
+9. OpenCode runs as Agent Adapter #1; adapter health is independent from workspace health.
+10. Runtime activity is normalized, redacted, persisted and streamed to the browser.
+11. Orlynx verifies acceptance evidence before claiming completion.
+12. Consequential GitHub publication goes through Orlynx-controlled authorization and audit.
 
 ## Control plane
 
-The Render/API control plane owns:
+The Render control plane owns:
 
-- GitHub App installation and OAuth handoff;
-- repository authorization;
-- durable users/projects/sessions/messages/tasks/events;
+- GitHub identity and repository authorization;
+- durable sessions/messages/tasks/events;
+- direct AI chat;
 - same-run continuation and explicit queueing;
-- model/mode/permission/agent preferences;
-- harness checkpoints and verification;
-- reflection/investigation orchestration;
-- verified memory;
+- harness verification/reflection;
+- verified lesson memory;
 - encrypted provider credentials;
-- workspace lifecycle orchestration;
+- workspace orchestration;
 - approvals and audit;
-- change sets;
 - controlled GitHub publication.
 
-When DATABASE_URL or POSTGRES_URL is configured, Postgres is authoritative.
+Postgres is production truth.
 
-Local JSON storage exists only for local development/tests and is not production truth.
+## Execution plane
 
-## Direct execution lane
+Execution comes from WorkspaceProvider.
 
-Ask/Plan work that does not require project mutation can execute directly in the control plane through the selected model provider.
+### Orlynx runner
 
-This avoids starting compute merely to answer a question.
+Preferred when configured. It uses isolated, prebuilt workspaces and can prewarm before the user sends Build work.
 
-The direct lane still participates in durable messages, run identity, live streaming, same-run continuation, cancellation and durable final output.
+### GitHub Codespaces
 
-## Workspace execution plane
+Supported fallback/recovery provider. Codespaces use the same bridge/task/event product contracts.
 
-Build execution runs outside the Render web process.
+The product conversation does not change identity when the compute provider changes.
 
-The workspace provider owns the mutable checkout, filesystem, PTY/shell, test/build execution, Git state, Preview ports and coding-agent runtime.
+## Workspace bridge
 
-Supported providers are:
+Every execution provider runs the Orlynx bridge.
 
-- **Orlynx Runner** — preferred when configured;
-- **GitHub Codespaces** — fallback/recovery.
+The bridge initiates an authenticated outbound connection to the control plane using a short-lived credential scoped to the user/session/workspace/connection.
 
-Both use the same Orlynx bridge contract.
-
-## Bridge
-
-The bridge initiates an authenticated outbound WebSocket connection to Orlynx using a short-lived scoped credential.
-
-It provides the execution operations Orlynx needs while keeping control-plane credentials out of the model shell.
-
-Commands are persisted before the low-latency socket dispatch path, so reconnect/restart recovery remains possible.
+The bridge exposes files, PTY/shell, Git, tests, builds, Preview discovery and registered agent adapters.
 
 ## Agent abstraction
 
-OpenCode is the first production coding-agent adapter.
+OpenCode is the first production agent adapter.
 
-Orlynx orchestration depends on an adapter boundary so future real runtimes can implement the same session/event/task contracts without changing the product architecture.
-
-An adapter failure does not redefine workspace health. Shell/files/Git/Preview may remain usable while one agent runtime is unavailable.
+Orlynx owns task identity, permissions, verification, event persistence, memory and presentation. Future adapters implement that contract rather than creating a second architecture.
 
 ## Conversation continuity
 
-Natural follow-ups such as “also check this” or “finish it” stay attached to the active run while steering remains open.
+Durable conversations are owned by GitHub user identity, not one device.
 
-Clear next-task intent creates queued work.
+After GitHub login on a new laptop or phone, the client retrieves server-owned sessions and restores the conversation even when localStorage is empty.
 
-Queued work is durable, ordered, visible, editable/cancellable before start, and sequential.
+## Runtime self-healing
 
-A queued task does not start while another task is running, waiting for input or waiting for approval.
+OpenCode binary availability is treated as a repairable adapter-runtime problem.
 
-## Verification and Investigation
+The bridge checks the configured path and known runner/workspace locations. If no usable binary exists, it can install the pinned CPU-compatible native OpenCode package into a private runtime repair directory and probe it again before declaring binary_unavailable.
 
-Orlynx infers evidence requirements from the user's request.
+The workspace itself remains independently usable when the agent adapter is unhealthy.
 
-Examples include changes, tests, build, Preview, commit, publication, deployment and browser research.
+## Security
 
-When evidence is missing, Orlynx should continue or report the exact unresolved boundary.
+- no PAT-entry flow;
+- installation/user tokens stay server-side;
+- bridge credentials are scoped and short-lived;
+- secret-like event payload data is redacted before durable storage/streaming;
+- historical evidence is sanitized before reflection;
+- lessons are user-isolated;
+- repository execution is outside the Render control-plane process;
+- consequential publication is explicit and audited.
 
-When evidence contradicts expectations, the Investigation loop records:
-
-- Orlynx observation;
-- model hypothesis/next check;
-- actual tool evidence;
-- correction/verification.
-
-Private hidden chain-of-thought is not part of this integration contract.
-
-## Learning
-
-Orlynx learning is a verified memory layer, not model retraining.
-
-A lesson can be persisted only after reflection occurred and the harness later verified the outcome.
-
-Lessons remain user-isolated and relevance-gated.
-
-See [learning-and-memory.md](learning-and-memory.md).
-
-## GitHub security
-
-- GitHub App only; no PAT user flow.
-- Installation tokens are short-lived and server-side.
-- Repository authorization is revalidated.
-- User-scoped authorization is used for provider operations that require it.
-- Webhooks require X-Hub-Signature-256.
-- Delivery IDs are persisted durably for idempotency.
-- Deleting/suspending an installation invalidates active repository capability.
-- Agent shells do not receive unrestricted GitHub credentials.
-- Explicit publication target is never silently remapped.
-
-## Production guarantees
-
-Production should fail closed for authorization/security failures and fail recoverably for infrastructure failures.
-
-Examples:
-
-- lost browser → work remains durable;
-- SSE disconnect → replay from sequence;
-- runner failure → Codespaces fallback when allowed;
-- agent failure → preserve other workspace capabilities;
-- ambiguous branch → investigate/clarify rather than guess;
-- missing verification evidence → do not claim success.
-
-See [architecture-overview.md](architecture-overview.md) for the full architecture.
+See architecture-overview.md for the complete topology.

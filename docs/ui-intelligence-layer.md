@@ -1,10 +1,8 @@
-# Historical design archaeology — UI intelligence layer
+# Historical UI intelligence implementation notes
 
-> This file records the state of the early Orlynx UI prototype and the decisions made during that redesign. Statements about simulated agents, local cloud state, missing OAuth, old React/Vite versions, or the repository having only an initial commit are historical and are **not current product truth**. For current behavior use [orlynx-overview.md](orlynx-overview.md), [architecture-overview.md](architecture-overview.md), [orlynx-ui-architecture.md](orlynx-ui-architecture.md), and [orlynx-screen-inventory.md](orlynx-screen-inventory.md).
+> **Historical document.** This file records the early UI-system migration and is retained for provenance. Statements about simulated agents, local cloud state, early Vite/React versions or missing production integrations describe the prototype at that time and are not current Orlynx product truth. For the current UI architecture use [orlynx-ui-architecture.md](orlynx-ui-architecture.md), [orlynx-screen-inventory.md](orlynx-screen-inventory.md), [canonical-agent-stream.md](canonical-agent-stream.md) and [../README.md](../README.md).
 
----
-
-## Original record
+# Orlynx UI Intelligence Layer
 
 ## 1. Repository state before implementation
 - Monorepo (npm workspaces): `apps/api` (Express+TS, SSE, sessions/changes/attachments/cloud stubs), `apps/web` (React 18 + Vite 5, no UI lib), `packages/shared` (event/session types), `bridge/` (outbound-WS prototype), `data/` runtime dir (untracked).

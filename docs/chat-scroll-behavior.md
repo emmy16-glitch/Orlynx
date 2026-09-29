@@ -1,50 +1,57 @@
-# Chat Scroll Behavior
+# Chat scroll behavior
 
-The conversation and activity work stream scroll with the page (`window`), not a
-nested chat container. This keeps touch scrolling natural and allows the mobile
-keyboard and viewport to resize without trapping the composer in a second scroller.
+Orlynx treats scroll position as user intent.
 
 ## Follow mode
 
-- A passive `window` scroll listener measures the distance to the page bottom.
-- At less than 140px, the reader is considered near the latest content.
-- Event reconciliation and React state updates are batched to one animation frame.
-- New activity follows the page only if the reader was already near the bottom.
-- Scrolling upward disables follow immediately. Incoming work continues below and
-  the user gets a “↓ New activity” button instead of a forced scroll.
-- Tapping that button smoothly scrolls to the latest content and clears the
-  indicator. Returning close to the bottom resumes follow mode.
-- Message send only scrolls when follow mode was already active.
+When the reader is near the newest content, streamed assistant output and meaningful work can keep the page pinned to the latest point.
 
-The scroll listener does not react to every streamed token because assistant text
-is committed as a message rather than a per-token event in the current adapter.
-Meaningful stream event batches update the activity projection; unchanged IDs are
-ignored before rendering.
+If the user scrolls upward, follow mode stops immediately.
 
-## Expansion and output
+Incoming output continues below and a New activity affordance returns the reader to the newest content.
 
-Activity details expand inline to avoid replacing or resetting the chat viewport.
-Only raw output becomes its own scrollable surface, only after an explicit user
-action, and it has a bounded maximum height. Long code and output wrap safely.
-Collapsing details does not invoke page scroll. Browsers preserve native keyboard,
-rotation, and visual viewport behavior; viewport resize itself never triggers an
-auto-scroll.
+Orlynx must never repeatedly yank the viewport downward while the user is reading older history.
 
-## Mobile and accessibility
+## Streaming
 
-The new-activity button sits above the composer and bottom tabs. Status is in the
-sticky header rather than a floating overlay, keeping the composer unobstructed.
-Touch controls retain minimum target sizing, status copy is textual (not color-only),
-and the latest meaningful failure/completion is announced politely without
-announcing raw log lines or individual tokens. Reduced-motion settings are
-respected.
+Direct assistant deltas can update incrementally.
 
-## Manual verification checklist
+Activity/event batches are reconciled by stable identity.
 
-- Stay at bottom during activity and confirm follow mode.
-- Scroll upward during activity; confirm no yank and the new-activity button.
-- Tap new activity and verify return to bottom.
-- Expand/collapse rows above and below the viewport.
-- Open long raw output and confirm only that block scrolls.
-- Check 360/390/412px layouts, keyboard open/close, orientation change, and
-  desktop widths. Browser automation/device coverage is not currently configured.
+Scroll behavior is based on rendered content and the user's position, not on whether a particular update was a token, tool event or status transition.
+
+## Expansion
+
+Typed tool details and Investigation blocks expand inline.
+
+Only intentionally bounded detail regions such as long raw output or long Investigation content use their own internal scroll.
+
+Expanding/collapsing detail must not forcibly reset the page position.
+
+## Mobile keyboard
+
+Visual viewport/keyboard changes do not count as user intent to jump to the bottom.
+
+The composer remains usable above project navigation and safe-area insets.
+
+## Accessibility
+
+Meaningful milestones may be announced politely.
+
+Individual tokens, telemetry and raw log lines are not screen-reader announcement spam.
+
+Reduced-motion preferences are respected.
+
+## Verification
+
+Test:
+
+- live follow while already at bottom;
+- manual scroll upward during streaming;
+- New activity action;
+- long assistant message;
+- Queue/Investigation expansion;
+- keyboard open/close;
+- rotation;
+- 360/390/412px phone widths;
+- desktop widths.

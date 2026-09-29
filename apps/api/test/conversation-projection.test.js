@@ -87,6 +87,29 @@ describe('conversation projection: adapter heartbeat suppression', () => {
   });
 });
 
+describe('cross-device durable conversation restore', () => {
+  it('hydrates server-owned sessions after GitHub OAuth even on a fresh browser', () => {
+    const source = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+    const callbackStart = source.indexOf("if (callback === 'connected')");
+    const bootStart = source.indexOf('const boot = async', callbackStart);
+    const callbackBlock = source.slice(callbackStart, bootStart);
+    assert.match(callbackBlock, /\/v1\/sessions\?limit=50/);
+    assert.match(callbackBlock, /durableSessions/);
+    assert.match(callbackBlock, /await openSession\(latest\)/);
+  });
+
+  it('authorizes restored sessions by stable GitHub user identity and persists session rebinding', () => {
+    const routes = fs.readFileSync(path.join(root, 'apps/api/src/routes.ts'), 'utf8');
+    const storage = fs.readFileSync(path.join(root, 'apps/api/src/storage.ts'), 'utf8');
+    assert.match(routes, /session\?\.userId === connection\.userId/);
+    assert.match(routes, /session\.userId === userId/);
+    assert.match(routes, /listSessionsByUser\(connection\.userId, 200\)/);
+    assert.match(routes, /const resumed = \{ \.\.\.existing, installationId/);
+    assert.match(storage, /installation_id=EXCLUDED\.installation_id/);
+    assert.match(storage, /branch=EXCLUDED\.branch/);
+  });
+});
+
 describe('conversation projection: continuing project turns', () => {
   it('keeps active-run follow-ups inside one stable conversation turn', () => {
     const stream = emptyAgentStreamState();

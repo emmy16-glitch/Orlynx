@@ -1,195 +1,101 @@
-# Agent Activity Presentation
+# Agent activity presentation
 
-> Superseded in scope by [canonical agent protocol + conversation
-> architecture](canonical-agent-stream.md): server-side canonicalization
-> (`apps/api/src/agent-protocol.ts`), thread projection
-> (`apps/web/src/agent-stream/thread.ts`), typed parts
-> (`apps/web/src/agent-stream/parts.ts`) and the part renderer registry
-> (`apps/web/src/ui/tool-parts.tsx`). `AgentWorkStream`/`TaskActivityRow`
-> remain only as compatibility surfaces; the transcript renders thread turns
-> with typed parts.
+The current conversation renderer is based on the canonical Orlynx event protocol, thread projection and typed message parts.
 
-Orlynx accepts low-level runtime activity as input and presents users with
-meaningful progress, evidence, and next actions. The primary conversation is not a
-terminal transcript. Raw provider events are normalized in the existing event
-stream and displayed progressively through `AgentWorkStream` and
-`TaskActivityRow`.
+Historical AgentWorkStream/TaskActivityRow paths may remain as compatibility surfaces, but they are not the source of truth for the current transcript.
+
+See canonical-agent-stream.md.
 
 ## Experience contract
 
-The default work stream answers: **What is happening? What changed? Did it work?
-Does it need me?** A user may drill down when they need proof or diagnostics:
+The default view should answer:
 
-1. **Human summary:** e.g. “Running API tests”, “4 integration tests failed”,
-   “Updated 3 files”, “API health check could not connect”.
-2. **Structured code/execution evidence:** command, path, changed files, bounded
-   edit snippets/final diffs, counts, exit code, and user-facing error context.
-   The user can choose **Summary** (evidence on demand) or **Code** (evidence
-   opened automatically). The browser remembers that choice; Build defaults to
-   Code when no preference exists.
-3. **Raw output:** stdout/stderr, stack fragments, and test transcript remain a
-   separate explicit disclosure even in Code mode, shown in a bounded,
-   independently scrollable region.
+- what is happening?
+- what changed?
+- did it work?
+- does it need me?
 
-Provider tool names and payload shapes are not rendered as chat content. Message
-deltas are conversation text, not activity cards. Private chain-of-thought is never
-included; the stream describes observable actions only.
+Detailed evidence is progressively disclosed.
 
-## Normalized event model
+The conversation is not a raw terminal transcript.
 
-`packages/shared/src/index.ts` owns the UI-facing `ActivityEvent` contract. A
-provider's event shape remains in the canonical `OrlynxEvent` envelope and is
-projected by `apps/web/src/ui/mapping.ts`:
+## Typed parts
 
-```ts
-type ActivityEvent = {
-  id: string;
-  runId?: string;
-  taskId?: string;
-  sequence: number;
-  timestamp: string;
-  category: 'agent' | 'search' | 'file' | 'command' | 'test' | 'build' |
-    'git' | 'cloud' | 'preview' | 'approval' | 'error';
-  state: 'queued' | 'running' | 'success' | 'failed' | 'waiting' | 'cancelled';
-  title: string;
-  summary?: string;
-  evidence?: Record<string, unknown>;
-  rawRef?: string;
-  rawOutput?: string;
-  collapsible?: boolean;
-};
-```
+Current activity can be projected into typed parts such as:
 
-`rawRef` identifies the source event receipt; the client retains raw output only as
-part of the session's bounded event window. `evidence` contains small structured
-metadata, not an unbounded terminal transcript. The UI model is a projection and
-does not change the session/run truth owned by the API.
+- terminal;
+- file change/read;
+- test result;
+- build result;
+- Git;
+- Preview;
+- approval;
+- error;
+- status;
+- generic fallback.
 
-### Runtime mapping
+One logical tool owns one stable UI lifecycle.
 
-| Runtime input | Normalized presentation |
-| --- | --- |
-| `run.started`, `activity.started`, `activity.progress` | One stable run action row; later observable progress updates that row. Reasoning-like wording is translated to action-oriented copy. |
-| `tool.started` → completed/failed/output | One correlated tool activity (call ID where supplied, otherwise run/tool identity); observable command/path/edit input is retained in bounded evidence while command, test, build, search, file, and Git actions receive product language. |
-| `receipt.created` | Command/test/build/health-check result, exit status, parsed counts and failure names, with raw receipt behind details. |
-| `changes.updated` / repeated `file.changed` | One code-change row with deduplicated paths and create/modify/delete evidence; workspace results may include bounded exact diff snippets while the complete reviewable diff stays in Changes. |
-| workspace lifecycle | Preparing/reconnecting/ready/stopped language; provider and port mechanics stay hidden. |
-| approval lifecycle | A waiting-for-approval summary, resolved in place when available. |
-| `run.completed` / `run.failed` | Closes running rows for that run and presents completion, cancellation, or attention state. |
-| message deltas, state snapshots | Not activity rows; chat text and session state have their own UI. |
+Repeated output updates the same object rather than adding a card for every event.
 
-Every input with a stable event ID is deduplicated before mapping; events are
-sequence-sorted. Lifecycle rows keep stable IDs while their state/title changes.
-History is bounded to the latest 100 normalized rows by the mapper; the normal
-view shows a compact recent window, and older rows are available on demand.
+## Investigation blocks
 
-## Grouping and summaries
+Safe reflection dialogue is grouped into ordered Investigation sections.
 
-- A run's initial activity and subsequent progress update the same agent row.
-- Tool start/finish events correlate by `toolCallId`/`callId` when provided. For
-  legacy adapters, the current run + tool name is the fallback correlation key.
-- File changes deduplicate by path and collect action metadata. They never produce
-  a line per event in the main stream.
-- Test output parsing recognizes common `passed`/`failed`/`skipped` summaries,
-  Mocha-style counts, and Node TAP counters. Named failing cases are surfaced as
-  evidence when the adapter output includes recognizable failure markers.
-- Raw test/command output is not used as the title or summary. Known timeouts and
-  connection-refused checks receive human-readable explanations, with original
-  diagnostic text kept behind “Show raw output”.
-- Duplicate replay does not create a second card. Repeated, distinct invocations
-  remain distinct when the adapter supplies a call ID or event identity.
+An Investigation can show:
 
-When an adapter does not provide a tool-call ID, same-name concurrent tool calls
-in one run cannot always be correlated perfectly. Providers should supply stable
-call IDs and structured receipts for the best reconciliation.
+- Orlynx observation;
+- connected model hypothesis/next check;
+- evidence from actual tools;
+- later correction.
 
-## Activity lifecycle and current status
+Private hidden chain-of-thought is never rendered.
 
-`LiveActivityPill` provides a compact status in the sticky header: Idle, Working,
-Waiting for you, Waiting for approval, Paused, Reconnecting, Completed, or Failed.
-It can be opened to see the current action. Stop is available while a run is active.
-Exactly one latest in-progress/waiting row is emphasized as the current step;
-older activity remains visible but visually quieter. Completed history is muted and
-bounded. Work does not expose internal “thinking” events.
+## Adapter/runtime status
 
-Meaningful milestones use a polite, atomic screen-reader status: failure, test or
-build completion, and terminal work state. Individual tokens, raw log lines, and
-routine progress events are not announced. Buttons have labels and expanded-state
-semantics; details remain reachable by keyboard. Color is paired with text/icons.
-Motion is restrained and honors `prefers-reduced-motion`.
+Normal ready/heartbeat status remains quiet.
 
-## Scroll, mobile, and long sessions
+Actionable failures become visible.
 
-The conversation scrolls with the page instead of a nested terminal container.
-When the reader is within 140px of the bottom, incoming activity is batched to an
-animation frame and the page may follow the new bottom. Once the reader scrolls up,
-follow mode stops and a “New activity” action appears. Tapping it smoothly returns
-to the latest content. Expanding evidence does not install a separate page-level
-scroll area; only an explicitly opened raw-output block scrolls independently.
+When the adapter returns to ready, resolved infrastructure noise should disappear instead of permanently cluttering the transcript.
 
-The sticky header status wraps on narrow screens, keeps the composer/tabs usable,
-and does not float over the composer. Output blocks have a viewport-bounded height,
-word wrapping, and independent intentional scrolling. The browser retains native
-keyboard and orientation resize behavior; no scroll-to-bottom is triggered by
-visual viewport changes. WebView/device validation is still required to confirm
-keyboard behavior on target hardware.
+“AI runtime unavailable” refers to adapter health, not total workspace loss.
 
-## Reconnect and deduplication
+## Evidence
 
-SSE replay uses a monotonic per-session sequence (`?after=N`) and each event has a
-stable `eventId`. The client filters seen IDs, orders events by sequence, batches
-state updates to one animation frame, and caps the in-memory raw event window at
-300. The mapper applies a second ID-deduplication guard and reconciles transitions
-in place. Reconnect therefore replays missed work without creating duplicate
-visible activity. See [streaming-and-reconnect.md](streaming-and-reconnect.md).
+Useful evidence can include:
 
-## Raw output retention and security
+- command;
+- file/path;
+- bounded output;
+- changed files;
+- test counts/failures;
+- build result;
+- Preview URL/state;
+- Git/publication receipt.
 
-Raw output lives in event receipts, not in chat message text. A receipt is rendered
-as a reference plus concise evidence by default. Production persists the canonical
-event ledger in durable Postgres; local JSON is development/test fallback only. Client projections remain bounded so replay and long-running sessions do not produce unbounded browser memory growth. Individual output payloads are not yet stored in a
-separate blob/log service or expired independently, so adapters should avoid
-putting secrets or excessively large transcripts in event payloads. Future durable
-providers should use a bounded raw-log store and expose authorized receipt
-references while retaining this presentation contract.
+Large raw output is bounded and only exposed intentionally.
 
-## Verification and performance considerations
+## Replay
 
-Automated coverage in `apps/api/test/activity-presentation.test.js` exercises
-progress lifecycle coalescing, TAP/test count parsing, failure evidence, file
-grouping, event replay deduplication, timeout translation, output references, and
-100+ activity events. `ui-intelligence.test.js` protects grouping and component
-registry conventions. Build/typecheck validates the shared contract and React
-components.
+Durable event IDs and per-session sequence make replay idempotent.
 
-The event input is capped, batches are flushed once per animation frame, mapper
-output is bounded, and raw output appears only when requested. The UI uses no
-per-token terminal renderer or virtualization dependency. Browser profiling for
-very long streamed assistant messages, memory over multi-hour sessions, device
-rotation, and keyboard interactions remains a manual/device validation item.
+A reconnect must not turn one logical tool into multiple visible activities.
 
-### Example normalized failure and recovery
+## Secret hygiene
 
-```text
-● Working — Verifying the API
-✕ Tests failed — 22 passed · 4 failed
-  [View results] → [Show raw output]
-● Updating files
-✕ API health check failed — The service health check could not connect.
-  [View details] → [Show raw output]
-✓ API restarted
-● Running tests
-✓ Tests passed — 26 passed · 0 failed
-✓ Ready for review
-```
+Event payloads are sanitized before persistence/streaming and again when historical evidence is replayed.
 
-Summary mode keeps commands and implementation evidence one action away. Code
-mode reveals observable commands, paths, edit snippets and final diff evidence
-inline while preserving raw diagnostics as a separate explicit action.
+UI rendering should never depend on displaying credentials.
 
+## Scroll
 
-## Current Investigation presentation
+Streaming follows the latest content only when the reader remains near the bottom.
 
-Reflection dialogue now uses ordered Investigation blocks grouped by reflection identity. These blocks are a specialized status presentation inside the canonical thread and should not be collapsed back into generic raw activity rows.
+Reading history disables auto-follow until the user returns to the latest point.
 
-Secret-like event content is sanitized before durable persistence/streaming and historical replay is sanitized again before reflection.
+## Completion
+
+Progress text is not a final answer.
+
+Where the task has inferred acceptance criteria, completion should correspond to actual verification evidence.

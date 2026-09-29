@@ -1,123 +1,68 @@
 # Secrets and environment classification
 
-Render is the production control plane. The browser receives no GitHub, bridge or model-provider secret values.
+Orlynx treats the browser, control plane and workspace as different trust boundaries.
 
-## Public client configuration
+## Browser-safe configuration
 
-Client-visible VITE_* values must not contain credentials.
+The client must not contain GitHub App private material, provider credentials, bridge signing material or workspace secrets.
 
-The web client talks to Orlynx routes and uses authenticated product/session state rather than embedding infrastructure credentials.
+VITE-prefixed values must be treated as public bundle data.
 
-## Server secrets
+## Render control-plane secrets
 
-Examples of server-only configuration include the relevant set of:
+The production Render service may require values such as:
 
-- GITHUB_APP_ID
-- GITHUB_APP_SLUG
-- GITHUB_CLIENT_ID
-- GITHUB_APP_CLIENT_SECRET
-- GITHUB_APP_PRIVATE_KEY
-- GITHUB_WEBHOOK_SECRET
-- ORLYNX_CREDENTIAL_ENCRYPTION_KEY
-- ORLYNX_BRIDGE_SIGNING_SECRET
-- ORLYNX_SESSION_SECRET
-- ORLYNX_SETUP_TOKEN
-- ORLYNX_RUNNER_TOKEN
-- model/provider credentials stored by the supported connection flow
+- DATABASE_URL or POSTGRES_URL;
+- ORLYNX_CREDENTIAL_ENCRYPTION_KEY;
+- ORLYNX_BRIDGE_SIGNING_SECRET;
+- ORLYNX_SESSION_SECRET;
+- GITHUB_APP_ID;
+- GITHUB_APP_SLUG;
+- GITHUB_CLIENT_ID;
+- GITHUB_APP_CLIENT_SECRET;
+- GITHUB_APP_PRIVATE_KEY;
+- GITHUB_WEBHOOK_SECRET;
+- runner URL/token configuration when a warm runner is used.
 
-Exact required values are documented in .env.example and subsystem deployment docs.
+The exact active set is documented in .env.example.
 
-Names may be reported as missing during startup. Secret values must never be printed.
+Values must never be printed into normal logs or returned to the browser.
 
-## GitHub credentials
+## Workspace secrets
 
-Normal users do not paste PATs into Orlynx.
+A workspace receives only credentials required for narrowly scoped execution.
 
-GitHub repository authorization comes through the Orlynx GitHub App.
+Bridge credentials are short-lived and scoped to user/session/workspace/connection.
 
-Installation/user credentials remain server-side and are short-lived or encrypted as appropriate.
+The agent shell does not receive unrestricted GitHub publication credentials.
 
-The agent workspace does not receive unrestricted GitHub credentials.
-
-Controlled publication is performed through Orlynx policy rather than by handing the coding agent an authenticated push shell.
-
-## Provider/model credentials
-
-Provider credentials are stored server-side and encrypted where persisted.
-
-The browser receives connection/health state, not raw keys.
-
-A disconnected or expired provider must produce an explicit needs-attention state rather than silently switching credentials/models.
-
-## Bridge credentials
-
-Bridge credentials are:
-
-- short-lived;
-- signed;
-- scoped to the intended user/session/workspace/connection;
-- used only for the control-plane ↔ workspace bridge relationship.
-
-They are not general-purpose API tokens.
-
-## Workspace environment
-
-The workspace may receive the minimum environment necessary to run repository work and the selected agent runtime.
-
-The bridge filters sensitive control-plane environment variables from generic shell execution where possible.
-
-Repository code is untrusted from the infrastructure perspective.
+Connected OpenCode account credentials are delivered only through the protected workspace/runtime path when required.
 
 ## Event redaction
 
-Event payloads are sanitized before durable storage and before streaming.
+The bridge and control plane sanitize event payloads before streaming/durable persistence.
 
-Current redaction covers common shapes such as:
+Current redaction includes common forms of:
 
-- GitHub token prefixes;
-- API-key-like strings;
-- authorization/bearer values;
-- fields whose key names contain token/secret/password/private key/API key/credential/authorization;
-- long secret-like values in obvious token contexts.
+- GitHub tokens;
+- API keys;
+- bearer/authorization values;
+- token/password/secret fields.
 
 Historical events are sanitized again before replay/reflection.
 
-This is defense in depth.
+## Learning-memory redaction
 
-Do not intentionally emit secrets into terminal output on the assumption that redaction will always catch them.
+Verified learned lessons are separately cleaned before storage.
 
-## Learned-memory redaction
+Memory is not an alternate secret store.
 
-Verified lesson memory uses a separate cleaning step that strips common bearer/token/password/secret/API-key forms before persistence.
+## Runtime repair
 
-Learned lessons are user-scoped.
+The OpenCode self-heal path installs only the pinned native OpenCode runtime package into an Orlynx-private runtime directory. It does not copy GitHub/model secrets into npm command arguments.
 
-Environment/repository lessons from one user must not be injected into another user's run.
+## Production validation
 
-## Browser storage
+Startup/health diagnostics may report missing variable names or capability state, but never secret values.
 
-Do not store raw credentials in localStorage, sessionStorage, IndexedDB, URL query parameters or client logs.
-
-Browser storage may contain non-secret convenience state such as theme, drafts or recent-session pointers.
-
-## Logs and diagnostics
-
-Operational logs should use identifiers and high-level status.
-
-Timing/diagnostic logs may contain session/run/model identifiers, provider name, duration, CPU/RSS measurements and error category/status.
-
-They should not contain raw keys/tokens or private GitHub credentials.
-
-## Health endpoints
-
-Health/status endpoints may expose whether GitHub is configured, whether durable storage is healthy and whether a provider/runner/adapter is ready.
-
-They must not expose secret values.
-
-## Rotation and compromise
-
-Credential rotation should invalidate the old credential path as quickly as the external provider permits.
-
-Bridge credentials are intentionally short-lived to reduce rotation complexity.
-
-If a secret is suspected to have leaked, do not rely on redaction after the fact; rotate/revoke the underlying credential.
+Render is the active production control plane. Vercel-specific secret instructions are historical and must not be used for current deployment.
