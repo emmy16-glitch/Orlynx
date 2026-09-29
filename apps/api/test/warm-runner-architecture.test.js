@@ -75,6 +75,10 @@ test('legacy idle/broken Codespaces migrate to the preferred warm runner without
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stopped-space', state: 'stopped', failureCode: undefined }, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'half-ready', state: 'ready', bridgeState: 'disconnected', failureCode: undefined }, 'orlynx-runner'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'healthy-space', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'healthy-space', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner', 'ready'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'busy-agent', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner', 'busy'), false);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'unstable-agent', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner', 'unavailable'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'failed-agent', state: 'ready', bridgeState: 'ready', failureCode: undefined }, 'orlynx-runner', 'failed'), true);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'busy-space', state: 'starting', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'connecting-space', state: 'connecting', bridgeState: 'connecting', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stopping-space', state: 'stopping', failureCode: undefined }, 'orlynx-runner'), false);
@@ -83,10 +87,11 @@ test('legacy idle/broken Codespaces migrate to the preferred warm runner without
 
 test('workspace message admission adopts legacy runners before reconnect mutation', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  const adopt = routes.indexOf('workspaceShouldAdoptPreferredRunner(workspace)');
+  const adopt = routes.indexOf('workspaceShouldAdoptPreferredRunner(workspace, undefined, workspaceAdapter?.state)');
   const refresh = routes.indexOf('workspaceNeedsRuntimeRefresh(workspace)', adopt);
   assert.ok(adopt >= 0, 'workspace admission must check legacy-provider adoption');
   assert.ok(refresh > adopt, 'legacy provider adoption must happen before runtime refresh/reconnect mutation');
+  assert.match(routes, /getWorkspaceAgentAdapter\(workspace\.id, selectedAdapterId \|\| 'opencode'\)/);
   assert.match(routes, /repositoryId = workspace\?\.repositoryId/);
 });
 
