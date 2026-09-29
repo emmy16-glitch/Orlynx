@@ -464,8 +464,10 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
 
 export function userInputRequest(finalText: string): string | undefined {
   const text = String(finalText || '').trim();
-  if (!/^\[NEEDS_USER_INPUT\]/i.test(text)) return undefined;
-  return text.replace(/^\[NEEDS_USER_INPUT\]\s*/i, '').trim() || 'Orlynx needs information only you can provide before it can continue.';
+  const marker = /\[NEEDS_USER_INPUT\]\s*([\s\S]*)/i.exec(text);
+  if (!marker) return undefined;
+  const question = String(marker[1] || '').trim();
+  return question || 'Orlynx needs information only you can provide before it can continue.';
 }
 
 export function openCodeToolsFor(checkpoint: HarnessCheckpoint): Record<string, boolean> {
