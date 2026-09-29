@@ -1,94 +1,86 @@
 # Agent adapters
 
-Orlynx owns the workspace, task ledger, permissions, events, review flow and UI.
-Coding agents plug into that product through an adapter contract. An adapter is
-not the workspace and cannot make shell/files/Git unavailable merely because its
-own runtime is unhealthy.
+Orlynx owns the workspace, task ledger, permissions, events, verification, memory, review flow and UI.
 
-OpenCode is **Agent Adapter #1**. Additional real adapters (for example Cline)
-must implement the same Orlynx-owned contract instead of adding a parallel
-workspace architecture.
+Coding agents plug into that product through an adapter contract.
 
-## Adapter registry (`apps/api/src/agent-runtime.ts`)
+An adapter is not the workspace.
 
-Each registered adapter declares:
+OpenCode is **Agent Adapter #1**.
 
-- stable `id` and human `displayName`;
-- capabilities such as workspace execution, streaming, plan mode, approvals,
-  resumable sessions and diff support;
-- readiness/status methods;
-- model parsing;
-- session/messages/status/diff/prompt/abort methods;
-- bridge run/cancel command names;
-- a workspace payload builder.
+## Adapter boundary
 
-The task orchestrator resolves the adapter from persisted task/session state and
-does not hard-code OpenCode model/auth/bridge payload rules.
+Each registered adapter can describe:
+
+- stable ID/display name;
+- capabilities;
+- readiness;
+- model parsing/discovery;
+- session lifecycle;
+- streaming;
+- prompt/cancel;
+- tool/change/diff support;
+- bridge command mapping.
+
+The task orchestrator resolves the adapter from durable task/session state.
 
 ## Durable identity
 
-Adapter selection survives API restarts:
+Adapter selection is persisted per session and snapshotted on admitted tasks.
 
-- `tasks.adapter_id` snapshots the adapter chosen for admitted work;
-- `ai_session_prefs.adapter_id` stores the current conversation default;
-- `workspace_agent_adapters` stores health per workspace + adapter;
-- `agent_sessions` stores engine-session IDs by session + adapter.
+Changing the picker during an active task applies to the appropriate future work rather than silently rewriting an already-admitted run.
 
-Legacy OpenCode workspace/session persistence has been migrated away. Production
-uses the generic adapter tables as the only source of truth; the startup migration
-copies any older data once and drops the old `engine_sessions` table and
-`workspaces.opencode_state` column.
+## Workspace versus adapter
 
-## Workspace vs adapter lifecycle
+Workspace lifecycle and agent lifecycle are independent.
 
-Workspace lifecycle describes the selected execution provider (Orlynx Runner or GitHub Codespaces) + authenticated Orlynx bridge.
+Workspace providers currently include:
 
-Adapter lifecycle is independent:
+- Orlynx runner;
+- GitHub Codespaces fallback.
 
-`not_installed → installing → starting → ready → busy`
+Adapter lifecycle can include:
 
-and may enter `unavailable` or `failed`.
+~~~text
+not_installed → installing → starting → ready → busy
+                                  ↘ unavailable / failed
+~~~
 
-A workspace can therefore be healthy while OpenCode is failed. Shell, files,
-Git, terminal and ports remain available. Only tasks assigned to the failed
-adapter are blocked/failed.
+A workspace can remain healthy while OpenCode is unavailable.
 
-## OpenCode adapter
+Files, Git and shell capability should not disappear merely because one coding-agent runtime failed.
 
-OpenCode currently provides the first production adapter. Its implementation
-uses the private OpenCode server inside the workspace and the existing
-OpenCode HTTP/session APIs, but those details are contained behind the adapter
-boundary.
+## OpenCode binary recovery
 
-Queued work waits until the selected adapter is ready. Adapter-ready wake-ups
-are coalesced without being dropped, so a readiness signal that arrives while a
-queue-promotion pass is already running triggers another pass. A terminal adapter
-failure produces an adapter-specific run failure and does not mark the
-development environment failed.
+Before declaring OpenCode binary_unavailable, the bridge:
 
-The chat composer exposes an **Agent** picker separately from the model picker.
-The selected adapter is persisted in session preferences and also snapshotted on
-each admitted task so rapid picker changes cannot alter or race an already-sent
-task.
+1. probes the configured binary;
+2. probes known Orlynx runner/workspace locations;
+3. checks native packages already installed in the private runtime;
+4. if needed, installs the pinned CPU-compatible native package in a private self-heal directory;
+5. probes again;
+6. starts the OpenCode server when healthy.
 
-When another adapter is added, the expected work is:
+Runner images and Codespaces bootstrap also smoke-test the pinned native binary before normal use.
+
+This reduces stale-workspace/path failures.
+
+It cannot guarantee availability during a genuine package/network/provider outage; in that case the adapter can be unavailable while the workspace remains intact.
+
+## Adding another adapter
+
+A new production adapter should require:
 
 1. implement/register the adapter;
-2. provision its private runtime inside the workspace;
-3. map its observable events into Orlynx events;
+2. provision its private runtime;
+3. map observable events into Orlynx canonical events;
 4. define capabilities/model/session behavior;
-5. add adapter-specific tests.
+5. add failure/recovery tests.
 
-It should not require rewriting Codespaces, Git, files, terminal, queueing or
-the primary chat UI.
+It must not create a second session system, queue, permission model or chat UI.
 
+## UI contract
 
-## Relationship to the Orlynx harness
+Agent selection is separate from model selection.
 
-The adapter does not decide when a task is verified or complete.
-
-Orlynx owns acceptance criteria, live steering, reflection, queue ordering and verified memory. The adapter supplies reasoning/execution capability behind those boundaries.
-
-## Future adapter standard
-
-A future adapter is acceptable only if it can plug into the same durable session/task/event/permission contracts without creating a parallel product architecture.
+Infrastructure failure copy should identify the failed capability accurately. “AI runtime unavailable” must not imply repository/workspace loss when only the adapter is unhealthy.
