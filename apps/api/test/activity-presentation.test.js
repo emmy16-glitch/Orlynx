@@ -319,8 +319,9 @@ describe('canonical agent activity presentation', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     assert.match(parts, /className="ox-investigation"/);
-    assert.match(parts, /ox-investigation-speaker">Orlynx/);
-    assert.match(parts, /ox-investigation-speaker">Model/);
+    assert.match(parts, /className="ox-investigation-step"/);
+    assert.match(parts, /line\.side === 'orlynx' \? 'Orlynx' : 'Model'/);
+    assert.match(parts, /Reviewing Orlynx’s evidence and choosing the next check/);
     assert.match(app, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]/);
     assert.match(app, /activeHarnessRun\?\.state === 'waiting_input'/);
     assert.match(app, /replace\(\/\^Model\\s\*\[→>-\]/);
