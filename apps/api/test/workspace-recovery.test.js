@@ -162,8 +162,8 @@ test('Codespace bootstrap prewarms Playwright browser dependencies once per vers
 
 test('Codespace SSH bootstrap retries transient readiness races instead of one-shot timing out', () => {
   const source = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
-  assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 2 \* 60_000/);
-  assert.match(source, /ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS \|\| 45_000/);
+  assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 5 \* 60_000/);
+  assert.match(source, /ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS \|\| 150_000/);
   assert.match(source, /Codespace SSH not ready yet/);
   assert.match(source, /bootstrap attempts/);
   assert.match(source, /HTTP\\s\+\(\?:401\|403\|404\)/);
