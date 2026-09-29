@@ -14,6 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
 import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 
 export type Engine = AgentAdapterId;
@@ -203,6 +204,18 @@ async function executeDirectTask(
     });
     await repository.putTask(task);
 
+    const directProvider = adapter.parseModel(modelId).providerID;
+    const directLessons = await relevantAgentLessons(session, task.prompt, directProvider).catch(() => []);
+    task.harness = {
+      ...task.harness,
+      lessonsApplied: directLessons.map((lesson) => lesson.id),
+    };
+    await repository.putTask(task);
+    const directHarnessSystem = [
+      harnessSystemInstruction(task.harness),
+      agentMemoryInstruction(directLessons),
+    ].filter(Boolean).join('\n\n');
+
     const responseText = await adapter.streamDirectChat({
       runId: run.id,
       messageId: task.messageId,
@@ -211,7 +224,7 @@ async function executeDirectTask(
       session,
       modelId,
       mode: task.mode || run.mode || 'build',
-      harnessSystem: harnessSystemInstruction(task.harness),
+      harnessSystem: directHarnessSystem,
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onActivity: (type, payload) => emit(session.id, type, { taskId: task.id, ...payload }, run.id),
       onDelta: (delta) => {
@@ -561,10 +574,17 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     task.harness = advanceHarnessPhase(task.harness, 'executing', { mode, permission });
     await repository.putTask(task);
 
+    const lessons = await relevantAgentLessons(session, task.prompt, provider).catch(() => []);
+    task.harness = {
+      ...task.harness,
+      lessonsApplied: lessons.map((lesson) => lesson.id),
+    };
+    await repository.putTask(task);
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
       harnessSystemInstruction(task.harness),
+      agentMemoryInstruction(lessons),
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
