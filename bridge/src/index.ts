@@ -1117,6 +1117,47 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
       return { output: git(['fetch', '--prune', 'origin'], 120_000, authEnv) };
     }
+    case 'git.sync': {
+      if (payload.approved !== true) throw new Error('Repository sync requires an approved control-plane command.');
+      const targetBranch = String(payload.branch || '').trim();
+      if (!targetBranch || targetBranch.startsWith('-') || targetBranch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(targetBranch)) {
+        throw new Error('Repository sync branch is invalid.');
+      }
+      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
+
+      const authEnv = {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
+      };
+      const branch = git(['branch', '--show-current']).trim();
+      const headBefore = git(['rev-parse', 'HEAD']).trim();
+      const porcelainBefore = git(['status', '--porcelain=v1']);
+      if (branch !== targetBranch) {
+        return { state: 'branch_mismatch', branch, targetBranch, head: headBefore, porcelain: porcelainBefore };
+      }
+
+      git(['fetch', '--prune', 'origin', targetBranch], 120_000, authEnv);
+      const remoteRef = `origin/${targetBranch}`;
+      const remoteHead = git(['rev-parse', remoteRef]).trim();
+      const counts = git(['rev-list', '--left-right', '--count', `${remoteRef}...HEAD`]).trim().split(/\s+/).map(Number);
+      const behind = Number.isFinite(counts[0]) ? counts[0] : 0;
+      const ahead = Number.isFinite(counts[1]) ? counts[1] : 0;
+
+      if (behind === 0) {
+        return { state: 'current', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+      }
+      if (porcelainBefore.trim()) {
+        return { state: 'blocked_dirty', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+      }
+      if (ahead > 0) {
+        return { state: 'blocked_diverged', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+      }
+
+      git(['merge', '--ff-only', remoteRef], 120_000);
+      const head = git(['rev-parse', 'HEAD']).trim();
+      return { state: 'synced', branch, head, previousHead: headBefore, remoteHead, ahead: 0, behind: 0, updatedBy: behind };
+    }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
     case 'git.commit': { const message = String(payload.message || '').trim().slice(0, 240); if (!message) throw new Error('Commit message is required.'); git(['add', '--all']); git(['commit', '-m', message], 60_000); return { sha: git(['rev-parse', 'HEAD']).trim() }; }
