@@ -23,7 +23,7 @@ function valid(body: BootstrapRequest): boolean {
 function bootstrapScript(body: BootstrapRequest, bridge: string): string {
   const env = [
     `ORLYNX_CONTROL=${body.bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${body.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${body.workspaceId}`,
-    `ORLYNX_SESSION_ID=${body.sessionId}`, `ORLYNX_USER_ID=${body.userId}`, `ORLYNX_CONNECTION_ID=${body.connectionId}`, `OPENCODE_SERVER_PASSWORD=${body.openCodePassword}`,
+    `ORLYNX_SESSION_ID=${body.sessionId}`, `ORLYNX_USER_ID=${body.userId}`, `ORLYNX_CONNECTION_ID=${body.connectionId}`, `OPENCODE_SERVER_PASSWORD=${body.openCodePassword}`, `ORLYNX_GITHUB_TOKEN=${body.githubUserToken}`,
   ].map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
@@ -76,46 +76,45 @@ if ! "$opencode_bin" --version >"$runtime/opencode-version.txt" 2>"$runtime/open
 fi
 
 # GitHub CLI versions before 2.98 bind the helper listener used by
-# "gh codespace ports forward" to all interfaces. Use a private, checksum-
-# verified current binary when the Codespace image ships an older CLI.
-gh_bin=""
-if command -v gh >/dev/null 2>&1; then
-  gh_line="$(gh --version 2>/dev/null | head -n1 || true)"
-  gh_major="$(printf '%s' "$gh_line" | sed -nE 's/^gh version ([0-9]+)\\..*/\\1/p')"
-  gh_minor="$(printf '%s' "$gh_line" | sed -nE 's/^gh version [0-9]+\\.([0-9]+)\\..*/\\1/p')"
-  if test -n "$gh_major" && test -n "$gh_minor" && { test "$gh_major" -gt 2 || { test "$gh_major" -eq 2 && test "$gh_minor" -ge 98; }; }; then
-    gh_bin="$(command -v gh)"
-  fi
+# "gh codespace ports forward" to all interfaces. Prefer a private, checksum-
+# verified current binary when the Codespace image ships an older CLI. Failure
+# to download it must not break the workspace: the bridge will detect an old
+# CLI and leave remote Preview pending rather than forwarding unsafely.
+gh_bin="$(command -v gh 2>/dev/null || true)"
+gh_safe=0
+if test -n "$gh_bin"; then
+  gh_line="$("$gh_bin" --version 2>/dev/null | head -n1 || true)"
+  gh_major="$(printf '%s' "$gh_line" | sed -nE 's/^gh version ([0-9]+)\..*/\1/p')"
+  gh_minor="$(printf '%s' "$gh_line" | sed -nE 's/^gh version [0-9]+\.([0-9]+)\..*/\1/p')"
+  if test -n "$gh_major" && test -n "$gh_minor" && { test "$gh_major" -gt 2 || { test "$gh_major" -eq 2 && test "$gh_minor" -ge 98; }; }; then gh_safe=1; fi
 fi
-if test -z "$gh_bin"; then
-  gh_bin="$runtime/gh"
-  if ! test -x "$gh_bin" || ! "$gh_bin" --version 2>/dev/null | head -n1 | grep -q "gh version 2.101.0"; then
+if test "$gh_safe" -ne 1; then
+  private_gh="$runtime/gh"
+  if test -x "$private_gh" && "$private_gh" --version 2>/dev/null | head -n1 | grep -q "gh version 2.101.0"; then
+    gh_bin="$private_gh"
+  else
     archive="$runtime/gh_2.101.0_linux_\${gh_arch}.tar.gz"
     url="https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_\${gh_arch}.tar.gz"
+    rm -f "$archive"
+    downloaded=0
     if command -v curl >/dev/null 2>&1; then
-      curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$archive"
+      curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$archive" && downloaded=1 || true
     elif command -v wget >/dev/null 2>&1; then
-      wget -qO "$archive" "$url"
-    else
-      echo "Codespace needs curl or wget to install the private GitHub CLI helper." >&2
-      exit 1
+      wget -qO "$archive" "$url" && downloaded=1 || true
     fi
-    printf '%s  %s\\n' "$gh_sha" "$archive" | sha256sum -c - >/dev/null
-    gh_tmp="$runtime/gh-install"
-    rm -rf "$gh_tmp"
-    mkdir -p "$gh_tmp"
-    tar -xzf "$archive" -C "$gh_tmp"
-    cp "$gh_tmp/gh_2.101.0_linux_\${gh_arch}/bin/gh" "$gh_bin"
-    chmod 700 "$gh_bin"
-    rm -rf "$gh_tmp" "$archive"
+    if test "$downloaded" -eq 1 && printf '%s  %s\n' "$gh_sha" "$archive" | sha256sum -c - >/dev/null 2>&1; then
+      gh_tmp="$runtime/gh-install"
+      rm -rf "$gh_tmp"
+      mkdir -p "$gh_tmp"
+      if tar -xzf "$archive" -C "$gh_tmp" >/dev/null 2>&1 && cp "$gh_tmp/gh_2.101.0_linux_\${gh_arch}/bin/gh" "$private_gh"; then
+        chmod 700 "$private_gh"
+        gh_bin="$private_gh"
+      fi
+      rm -rf "$gh_tmp"
+    fi
+    rm -f "$archive"
   fi
 fi
-"$gh_bin" --version >"$runtime/gh-version.txt" 2>"$runtime/gh-version.err" || {
-  echo "Private GitHub CLI helper failed its startup smoke test." >&2
-  tail -c 1000 "$runtime/gh-version.err" >&2 || true
-  exit 1
-}
-
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
 # Reuse the password of an OpenCode server left running in this Codespace.
