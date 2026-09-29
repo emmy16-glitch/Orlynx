@@ -8,7 +8,7 @@ const MAX_PROVIDERS = 64;
 const runtimeSessions = new Map<string, string>();
 const MAX_RUNTIME_SESSIONS = 256;
 const TRANSIENT_RUNTIME_STATUSES = new Set([502, 503, 504]);
-const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 150_000;
+const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 75_000;
 const DEFAULT_RUNTIME_WAKE_POLL_MS = 2_000;
 const RUNTIME_PREWARM_TTL_MS = 5 * 60_000;
 const RUNTIME_PREWARM_FAILURE_BACKOFF_MS = 30_000;
@@ -196,11 +196,33 @@ async function waitForRuntimeReady(
   const configuredPoll = Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS || DEFAULT_RUNTIME_WAKE_POLL_MS);
   const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(5_000, configuredTimeout) : DEFAULT_RUNTIME_WAKE_TIMEOUT_MS;
   const pollMs = Number.isFinite(configuredPoll) ? Math.max(0, configuredPoll) : DEFAULT_RUNTIME_WAKE_POLL_MS;
-  let announced = false;
   let lastStatus: number | undefined;
+  let attempt = 0;
+  let lastProgressBucket = -1;
 
+  const reportProgress = (force = false) => {
+    if (!onStatus) return;
+    const elapsedMs = performance.now() - started;
+    const bucket = elapsedMs < 5_000 ? 0
+      : elapsedMs < 15_000 ? 1
+        : elapsedMs < 30_000 ? 2
+          : elapsedMs < 50_000 ? 3
+            : 4;
+    if (!force && bucket === lastProgressBucket) return;
+    lastProgressBucket = bucket;
+    const suffix = lastStatus ? ` · HTTP ${lastStatus}` : '';
+    const message = bucket === 0 ? 'Checking AI runtime…'
+      : bucket === 1 ? `AI runtime is waking · retrying connection${suffix}`
+        : bucket === 2 ? `AI runtime is still waking · ${attempt} checks completed${suffix}`
+          : bucket === 3 ? `AI runtime is taking longer than expected · recovery continues${suffix}`
+            : `AI runtime is still unavailable · final recovery checks${suffix}`;
+    onStatus(message);
+  };
+
+  reportProgress(true);
   while (performance.now() - started < timeoutMs) {
     signal.throwIfAborted();
+    attempt += 1;
     try {
       const response = await runtimeFetch('/global/health', {
         headers: { Accept: 'application/json' },
@@ -208,6 +230,7 @@ async function waitForRuntimeReady(
       }, Math.min(12_000, timeoutMs));
       if (response.ok) {
         onTiming?.('runtimeReadyMs', performance.now() - started);
+        onStatus?.(attempt > 1 ? 'AI runtime ready · continuing your conversation…' : 'AI runtime ready…');
         return;
       }
       lastStatus = response.status;
@@ -219,13 +242,11 @@ async function waitForRuntimeReady(
       }
     }
 
-    if (!announced) {
-      announced = true;
-      onStatus?.('Starting AI runtime…');
-    }
+    reportProgress();
     await wait(pollMs, signal);
   }
 
+  onStatus?.('AI runtime could not recover in time.');
   throw new ProviderRequestError(
     lastStatus
       ? `OpenCode runtime remained unavailable (HTTP ${lastStatus}).`
