@@ -25,6 +25,13 @@ function redactEventValue(value: unknown): unknown {
   return value;
 }
 
+export function sanitizeEvent(event: OrlynxEvent): OrlynxEvent {
+  return {
+    ...event,
+    payload: redactEventValue(event.payload || {}) as Record<string, unknown>,
+  };
+}
+
 function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
   payload = redactEventValue(payload) as Record<string, unknown>;
   const encoded = JSON.stringify(payload);
@@ -130,18 +137,25 @@ export function emit(sessionId: string, type: EventType, payload: Record<string,
 }
 
 export async function durableHistory(sessionId: string, after = 0, limit = 200): Promise<OrlynxEvent[]> {
-  return durableStorageConfigured() ? controlPlaneRepository().listEvents(sessionId, after, limit) : history(sessionId, after, limit);
+  const events = durableStorageConfigured()
+    ? await controlPlaneRepository().listEvents(sessionId, after, limit)
+    : history(sessionId, after, limit);
+  return events.map(sanitizeEvent);
 }
 
 export async function recentHistory(sessionId: string, limit = 300): Promise<OrlynxEvent[]> {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 300, 500));
-  return durableStorageConfigured()
-    ? controlPlaneRepository().listRecentEvents(sessionId, safeLimit)
+  const events = durableStorageConfigured()
+    ? await controlPlaneRepository().listRecentEvents(sessionId, safeLimit)
     : (store.db.events[sessionId] || []).slice(-safeLimit);
+  return events.map(sanitizeEvent);
 }
 
 export function history(sessionId: string, after = 0, limit = 200): OrlynxEvent[] {
-  return (store.db.events[sessionId] || []).filter((e) => e.sequence > after).slice(0, limit);
+  return (store.db.events[sessionId] || [])
+    .filter((e) => e.sequence > after)
+    .slice(0, limit)
+    .map(sanitizeEvent);
 }
 
 // SSE response registry (Response-like with write())
