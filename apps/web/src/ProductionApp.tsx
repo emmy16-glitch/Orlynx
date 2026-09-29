@@ -273,6 +273,10 @@ export default function ProductionApp() {
   const [showConnectAI, setShowConnectAI] = useState(false);
   const [aiPickerView, setAiPickerView] = useState<'agent' | 'model'>('model');
   const [showModeMenu, setShowModeMenu] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [queueEditId, setQueueEditId] = useState<string | null>(null);
+  const [queueDraft, setQueueDraft] = useState('');
+  const [queueBusy, setQueueBusy] = useState<string | null>(null);
   const [modelSearch, setModelSearch] = useState('');
   const [tempFullAccess, setTempFullAccess] = useState(false);
   const aiPrefRequestRef = useRef(0);
@@ -1019,6 +1023,8 @@ export default function ProductionApp() {
     if (!session || !text || submittingRef.current || sending || !online) return false;
     if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return false; }
     submittingRef.current = true;
+    nearBottomRef.current = true;
+    setNewActivity(false);
     setSending(true); setError('');
     const clientId = uid();
     try {
@@ -1097,6 +1103,44 @@ export default function ProductionApp() {
     try { await j(await fetch(`/v1/agent-runs/${running}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }) })); await refreshSession(session.id); }
     catch (error: any) { setError(error.message || 'The current task could not be stopped.'); }
     finally { setStopping(false); }
+  }
+
+  async function cancelQueuedRun(run: any) {
+    if (!session || !run?.id || queueBusy) return;
+    setQueueBusy(String(run.id)); setError('');
+    try {
+      await j(await fetch(`/v1/agent-runs/${encodeURIComponent(String(run.id))}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: session.id }),
+      }));
+      if (queueEditId === run.taskId) { setQueueEditId(null); setQueueDraft(''); }
+      await refreshSession(session.id);
+    } catch (error: any) {
+      setError(error.message || 'Queued task could not be cancelled.');
+    } finally {
+      setQueueBusy(null);
+    }
+  }
+
+  async function saveQueuedRun(run: any) {
+    if (!session || !run?.taskId || queueBusy) return;
+    const text = queueDraft.trim();
+    if (!text) { setError('Queued task text cannot be empty.'); return; }
+    setQueueBusy(String(run.taskId)); setError('');
+    try {
+      await j(await fetch(`/v1/sessions/${encodeURIComponent(session.id)}/tasks/${encodeURIComponent(String(run.taskId))}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }));
+      setQueueEditId(null); setQueueDraft('');
+      await refreshSession(session.id);
+    } catch (error: any) {
+      setError(error.message || 'Queued task could not be updated.');
+    } finally {
+      setQueueBusy(null);
+    }
   }
 
   useEffect(() => {
@@ -1213,6 +1257,9 @@ export default function ProductionApp() {
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
+  const queuedRuns = useMemo(() => runs
+    .filter((candidate: any) => candidate.state === 'queued')
+    .sort((a: any, b: any) => Number(a.queuePosition || 0) - Number(b.queuePosition || 0) || Date.parse(a.startedAt || '') - Date.parse(b.startedAt || '')), [runs]);
   const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_approval'].includes(candidate.state))
     || ['running', 'queued', 'waiting_approval'].includes(String(lastRun?.state || ''));
   const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_approval'].includes(candidate.state) && candidate.harness);
@@ -1424,6 +1471,7 @@ export default function ProductionApp() {
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
                     {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {turn.followUpMessages?.map((followUp) => <article className="message-row user-message task-follow-up" key={followUp.id}><div className="user-message-stack"><div className="message-meta user-message-meta"><span>Update to current task</span><time>{new Date(followUp.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={visibleChatText('user', followUp.text, '')} /></div></div></article>)}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">{turnStatusLabel}</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {turn.liveReply && liveText && !durable && !hideProgressNarration && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
@@ -1466,6 +1514,26 @@ export default function ProductionApp() {
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { nearBottomRef.current = true; window.scrollTo({ top: document.documentElement.scrollHeight, behavior: jumpBehavior() }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span></div></div>}
+              {tab === 'chat' && showQueue && queuedRuns.length > 0 && <aside className="queue-panel" aria-label="Queued tasks">
+                <div className="queue-panel-head"><div><b>Queued tasks</b><span>These continue in this project conversation.</span></div><button type="button" className="icon-button" aria-label="Close queue" onClick={() => setShowQueue(false)}><Icon name="close" /></button></div>
+                <div className="queue-list">
+                  {queuedRuns.map((queued: any, index: number) => <div className="queue-item" key={queued.taskId || queued.id}>
+                    <div className="queue-position">{queued.queuePosition || index + 1}</div>
+                    <div className="queue-copy">
+                      {queueEditId === queued.taskId
+                        ? <textarea rows={3} value={queueDraft} onChange={(event) => setQueueDraft(event.target.value)} aria-label={`Edit queued task ${index + 1}`} />
+                        : <p>{queued.prompt || 'Queued project task'}</p>}
+                      <small>{queued.plane === 'direct' ? 'Conversation' : 'Build'} · {queued.mode || ai.mode}</small>
+                    </div>
+                    <div className="queue-actions">
+                      {queueEditId === queued.taskId
+                        ? <><button type="button" onClick={() => void saveQueuedRun(queued)} disabled={queueBusy === queued.taskId}>Save</button><button type="button" onClick={() => { setQueueEditId(null); setQueueDraft(''); }}>Cancel edit</button></>
+                        : <button type="button" onClick={() => { setQueueEditId(queued.taskId); setQueueDraft(String(queued.prompt || '')); }}>Edit</button>}
+                      <button type="button" className="queue-cancel" onClick={() => void cancelQueuedRun(queued)} disabled={queueBusy === queued.id}>Cancel task</button>
+                    </div>
+                  </div>)}
+                </div>
+              </aside>}
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>
@@ -1481,6 +1549,7 @@ export default function ProductionApp() {
       </button>
     </> : <button type="button" className="ai-control-trigger composer-chip connect" onClick={() => { setAiPickerView('agent'); setShowConnectAI(true); }} aria-label="Choose AI agent"><Icon name="agents" size={13} /><span className="composer-chip-label">Connect AI</span><Icon name="chevron" size={11} /></button>}
     {harnessStatusLabel && <span className="composer-chip harness-status-chip" role="status"><span className="harness-status-dot" aria-hidden="true" />{harnessStatusLabel}</span>}
+    {queuedRuns.length > 0 && <button type="button" className="composer-chip queue-chip" aria-expanded={showQueue} onClick={() => setShowQueue((open) => !open)}><Icon name="clock" size={13} /><span>Queue {queuedRuns.length}</span></button>}
     {runActive && <button type="button" className="composer-chip composer-stop-chip" onClick={stopRun} disabled={stopping} aria-label={stopping ? 'Stopping the current task' : 'Stop the current task'}><span aria-hidden>■</span><span>{stopping ? 'Stopping…' : 'Stop'}</span></button>}
     <button
       type="button"
