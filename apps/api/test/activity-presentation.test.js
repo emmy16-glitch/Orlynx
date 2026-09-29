@@ -186,9 +186,14 @@ describe('canonical agent activity presentation', () => {
       }),
     ]);
     assert.equal(rows.length, 3);
-    assert.match(rows[0].title, /^Orlynx → Model:/);
-    assert.match(rows[1].title, /^Model → Orlynx:/);
-    assert.match(rows[2].title, /^Orlynx learned/);
+    assert.equal(rows[0].title, 'Orlynx → Model');
+    assert.equal(rows[0].summary, 'preview is unverified although localhost returned HTTP 200.');
+    assert.equal(rows[0].evidence?.reflectionId, 1);
+    assert.equal(rows[1].title, 'Model → Orlynx');
+    assert.equal(rows[1].summary, 'inspect forwarding and authentication instead of restarting Vite.');
+    assert.equal(rows[1].evidence?.reflectionId, 1);
+    assert.equal(rows[2].title, 'Orlynx learned');
+    assert.match(rows[2].summary || '', /saved 2 reusable lessons/);
   });
 
   it('workspace tool streaming preserves exit code and suppresses transient error flashes', () => {
@@ -245,7 +250,10 @@ describe('canonical agent activity presentation', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     assert.match(parts, /const hasDetail = hasRenderableDetail\(part\)/);
     assert.match(parts, /className="ox-part-detail is-visible"/);
-    assert.match(parts, /className="ox-raw ox-raw-visible"/);
+    assert.match(parts, /className="ox-raw-toggle"/);
+    assert.match(parts, /Show output/);
+    assert.match(parts, /function DialogueRow/);
+    assert.match(parts, /Reflection \$\{reflectionId\}/);
     assert.doesNotMatch(parts, /ox-part-chevron/);
     assert.doesNotMatch(parts, /const expandable = hasRenderableDetail\(part\)/);
   });
