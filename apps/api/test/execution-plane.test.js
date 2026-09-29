@@ -237,6 +237,21 @@ test('Build admission proves repository freshness before model execution', () =>
   assert.match(bridge, /state: 'branch_mismatch'/);
 });
 
+test('Codespace bridge receives GitHub credentials and repairs missing preflight auth automatically', () => {
+  const runtime = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  const worker = fs.readFileSync(new URL('../../../runtime-worker/src/index.ts', import.meta.url), 'utf8');
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+
+  assert.match(runtime, /ORLYNX_GITHUB_TOKEN=\$\{githubUserToken\}/);
+  assert.match(runtime, /bootstrapScript\(workspace, values, bridgeUrl, openCodeApiKey, githubUserToken\)/);
+  assert.match(worker, /ORLYNX_GITHUB_TOKEN=\$\{body\.githubUserToken\}/);
+  assert.match(agents, /repositoryCredentialMissing/);
+  assert.match(agents, /GitHub credentials are unavailable in this workspace/);
+  assert.match(agents, /reason: repositoryCredentialMissing \? 'repository_credentials'/);
+  assert.match(agents, /Refreshing GitHub access for this workspace/);
+  assert.match(agents, /errorKind: 'repository'/);
+});
+
 test('Build dependency hydration avoids accidental lockfile churn', () => {
   assert.match(buildPresentationInstruction('build'), /prefer npm ci rather than npm install/i);
   assert.match(buildPresentationInstruction('build'), /Do not leave package-lock\.json changed unless the task intentionally changes dependencies/i);
