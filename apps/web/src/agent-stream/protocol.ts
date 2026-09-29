@@ -13,6 +13,7 @@ export type StreamProjectionEvent =
   | (Base & { type: 'RUN_STARTED'; messageId: string; userMessageId?: string; plane?: string; model?: string; mode?: AgentMode; permission?: PermissionProfile })
   | (Base & { type: 'RUN_FINISHED'; summary?: string })
   | (Base & { type: 'RUN_ERROR'; error?: string; errorKind?: string; cancelled?: boolean; retryable?: boolean })
+  | (Base & { type: 'RUN_STATE'; state: RunState; message?: string })
   | (Base & { type: 'TEXT_START'; messageId: string; role: 'assistant' })
   | (Base & { type: 'TEXT_CONTENT'; messageId: string; delta: string })
   | (Base & { type: 'TEXT_END'; messageId: string })
