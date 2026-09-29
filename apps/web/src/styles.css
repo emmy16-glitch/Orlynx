@@ -1,4 +1,4 @@
-@import "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap";
+@import "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap";
 @import "./ui/tokens.css";
 @import "./ui/components.css";
 
@@ -4716,39 +4716,70 @@ html[data-theme="light"] .composer-options-panel {
 /* Ordered Orlynx ↔ model reflection. Keep the reasoning summary visible
    without mixing it into raw terminal output or exposing private chain-of-thought. */
 .ox-investigation {
+  min-width: 0;
   display: grid;
-  gap: 8px;
-  max-height: min(42vh, 320px);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  gap: 7px;
   padding: 10px 12px 12px;
   border-left: 2px solid var(--border);
   background: var(--surface-muted);
   border-radius: 0 10px 10px 0;
+  font-family: var(--font-sans);
 }
 .ox-investigation-line {
+  min-width: 0;
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 22px 52px minmax(0, 1fr);
+  gap: 8px;
   align-items: start;
 }
-.ox-investigation-speaker {
-  padding-top: 1px;
+.ox-investigation-step {
+  min-width: 20px;
+  min-height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
   color: var(--foreground-subtle);
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: .04em;
-  text-transform: uppercase;
+  background: var(--surface);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+.ox-investigation-speaker {
+  padding-top: 2px;
+  color: var(--foreground-muted);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 .ox-investigation-line p {
+  min-width: 0;
   margin: 0;
   color: var(--foreground);
-  font-size: 12px;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.52;
+  overflow-wrap: anywhere;
+}
+.ox-investigation-line.is-pending {
+  opacity: .72;
 }
 .ox-investigation-line.is-pending p {
   color: var(--foreground-muted);
+}
+@media (max-width: 620px) {
+  .ox-investigation {
+    padding: 9px 10px 10px;
+  }
+  .ox-investigation-line {
+    grid-template-columns: 20px 46px minmax(0, 1fr);
+    gap: 7px;
+  }
+  .ox-investigation-line p {
+    font-size: 12px;
+  }
 }
 
 
@@ -4872,9 +4903,10 @@ html[data-theme="light"] .composer-options-panel {
   line-height: 1.4;
 }
 .ox-investigation {
-  max-height: 220px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* Never create a nested scroll trap inside the conversation. */
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
 }
 
 @media (max-width: 899px) {

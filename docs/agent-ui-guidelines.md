@@ -36,7 +36,7 @@ Do not bypass this with a second raw-event UI.
 - natural follow-ups remain in the same active turn;
 - explicit queued work is visibly separate;
 - queued and active work are not conflated;
-- Investigation dialogue is ordered and bounded;
+- Investigation dialogue is one stable live object per run segment and remains strictly ordered by event sequence;
 - private hidden chain-of-thought is never shown;
 - completed work becomes visually quiet;
 - only current work animates.
@@ -70,6 +70,8 @@ Verify at 360/390/412px plus desktop.
 
 Queue controls, Investigation blocks, composer, approvals, changes and Preview must remain usable with keyboard open.
 
+Investigation content must use the page's normal scroll; do not add a nested overflow region that can capture mobile swipe gestures.
+
 ## Scrolling
 
 Follow live output only while the reader remains near the bottom.
@@ -89,6 +91,8 @@ Do not dump provider payloads directly into chat.
 ## Design
 
 Use semantic tokens and the existing Orlynx visual system.
+
+Use one primary UI typeface consistently across navigation, headings, chat, controls and Investigation dialogue. Monospace is reserved for code, commands, paths and terminal output.
 
 Keep touch targets accessible, focus states visible, state understandable without color, and reduced motion respected.
 

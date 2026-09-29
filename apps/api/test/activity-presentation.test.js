@@ -170,7 +170,7 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
-  it('groups one reflection cycle into an ordered Investigation dialogue', () => {
+  it('streams one reflection cycle into one stable ordered Investigation object', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -184,10 +184,15 @@ describe('canonical agent activity presentation', () => {
       }),
     ]);
     const parts = toThreadParts(rows);
+    assert.equal(rows.length, 1);
     assert.equal(parts.length, 1);
     assert.equal(parts[0].kind, 'status');
-    assert.equal(parts[0].title, 'Investigation 2');
+    assert.equal(parts[0].title, 'Investigation');
     assert.equal(parts[0].item.evidence?.sourceType, 'agent.reflection');
+    assert.deepEqual(
+      parts[0].item.evidence?.dialogue?.map((line) => [line.reflectionId, line.side]),
+      [[2, 'orlynx'], [2, 'model']],
+    );
     assert.match(String(parts[0].item.evidence?.orlynxText), /browser Preview is still unverified/);
     assert.match(String(parts[0].item.evidence?.modelText), /provider forwarding layer/);
   });
@@ -209,7 +214,7 @@ describe('canonical agent activity presentation', () => {
     assert.equal(redactEventString('Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456'), 'Authorization: Bearer [redacted-github-token]');
   });
 
-  it('streams Orlynx ↔ model diagnostic exchanges as distinct visible rows', () => {
+  it('coalesces multiple Orlynx ↔ model cycles immediately instead of reorganizing later', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -222,14 +227,28 @@ describe('canonical agent activity presentation', () => {
         text: 'Model → Orlynx: inspect forwarding and authentication instead of restarting Vite.',
       }),
       event(3, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 2,
+        text: 'Orlynx → Model: forwarding now responds but browser embedding is still unverified.',
+      }),
+      event(4, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 2,
+        text: 'Model → Orlynx: verify the signed preview URL in the browser surface.',
+      }),
+      event(5, 'activity.progress', {
         sourceType: 'agent.memory',
         text: 'Orlynx learned from this verified recovery · saved 2 reusable lessons.',
       }),
     ]);
-    assert.equal(rows.length, 3);
-    assert.match(rows[0].title, /^Orlynx → Model:/);
-    assert.match(rows[1].title, /^Model → Orlynx:/);
-    assert.match(rows[2].title, /^Orlynx learned/);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].title, 'Investigation');
+    assert.equal(rows[0].item?.evidence, undefined);
+    assert.deepEqual(
+      rows[0].evidence?.dialogue?.map((line) => [line.reflectionId, line.side, line.sequence]),
+      [[1, 'orlynx', 1], [1, 'model', 2], [2, 'orlynx', 3], [2, 'model', 4]],
+    );
+    assert.match(rows[1].title, /^Orlynx learned/);
   });
 
   it('workspace tool streaming preserves exit code and suppresses transient error flashes', () => {
@@ -282,12 +301,27 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
   });
 
+  it('uses one UI font family and Investigation never creates a nested mobile scroll trap', () => {
+    const tokens = fs.readFileSync(new URL('../../web/src/ui/tokens.css', import.meta.url), 'utf8');
+    const css = fs.readFileSync(new URL('../../web/src/styles.css', import.meta.url), 'utf8');
+    assert.match(tokens, /--font-display:\s*"Manrope"/);
+    assert.match(tokens, /--font-sans:\s*"Manrope"/);
+    assert.doesNotMatch(css, /Source\+Sans|Source Sans 3/);
+    const investigationStart = css.indexOf('/* Ordered Orlynx ↔ model reflection');
+    const investigationCss = css.slice(investigationStart, investigationStart + 5000);
+    assert.match(investigationCss, /font-family:\s*var\(--font-sans\)/);
+    assert.match(investigationCss, /max-height:\s*none/);
+    assert.match(investigationCss, /overflow:\s*visible/);
+    assert.doesNotMatch(investigationCss, /overscroll-behavior:\s*contain/);
+  });
+
   it('renders reflections as one compact Investigation surface and keeps waiting_input active', () => {
     const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     assert.match(parts, /className="ox-investigation"/);
-    assert.match(parts, /ox-investigation-speaker">Orlynx/);
-    assert.match(parts, /ox-investigation-speaker">Model/);
+    assert.match(parts, /className="ox-investigation-step"/);
+    assert.match(parts, /line\.side === 'orlynx' \? 'Orlynx' : 'Model'/);
+    assert.match(parts, /Reviewing Orlynx’s evidence and choosing the next check/);
     assert.match(app, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]/);
     assert.match(app, /activeHarnessRun\?\.state === 'waiting_input'/);
     assert.match(app, /replace\(\/\^Model\\s\*\[→>-\]/);

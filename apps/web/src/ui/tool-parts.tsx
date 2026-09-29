@@ -282,21 +282,47 @@ function ApprovalDetail({ part, onResolveApproval }: { part: ThreadPart; onResol
 function StatusDetail({ part }: { part: ThreadPart }) {
   const evidence = asRecord(part.item.evidence);
   if (str(evidence.sourceType) !== 'agent.reflection') return <GenericDetail part={part} />;
-  const reflectionId = Number(evidence.reflectionId || 1);
-  const orlynxText = str(evidence.orlynxText);
-  const modelText = str(evidence.modelText);
+
+  const dialogue = Array.isArray(evidence.dialogue)
+    ? evidence.dialogue.flatMap((value) => {
+        const line = asRecord(value);
+        const side = str(line.side);
+        const text = str(line.text);
+        const reflectionId = Math.max(1, Number(line.reflectionId || 1) || 1);
+        const sequence = Number(line.sequence || 0);
+        return (side === 'orlynx' || side === 'model') && text
+          ? [{ side, text, reflectionId, sequence }]
+          : [];
+      }).sort((a, b) => a.sequence - b.sequence)
+    : [];
+
+  const legacyId = Number(evidence.reflectionId || 1);
+  const legacyOrlynx = str(evidence.orlynxText);
+  const legacyModel = str(evidence.modelText);
+  const lines = dialogue.length ? dialogue : [
+    ...(legacyOrlynx ? [{ side: 'orlynx' as const, text: legacyOrlynx, reflectionId: legacyId, sequence: 1 }] : []),
+    ...(legacyModel ? [{ side: 'model' as const, text: legacyModel, reflectionId: legacyId, sequence: 2 }] : []),
+  ];
+  const latest = lines[lines.length - 1];
+  const awaitingModel = Boolean(latest && latest.side === 'orlynx' && part.item.state === 'running');
+
   return (
-    <div className="ox-investigation" aria-label={`Investigation ${reflectionId} dialogue`}>
-      {orlynxText && <div className="ox-investigation-line" data-speaker="orlynx">
-        <span className="ox-investigation-speaker">Orlynx</span>
-        <p>{orlynxText}</p>
-      </div>}
-      {modelText ? <div className="ox-investigation-line" data-speaker="model">
+    <div className="ox-investigation" aria-label="Orlynx and model investigation dialogue">
+      {lines.map((line, index) => (
+        <div
+          className="ox-investigation-line"
+          data-speaker={line.side}
+          key={`${line.reflectionId}:${line.side}:${line.sequence}:${index}`}
+        >
+          <span className="ox-investigation-step" aria-label={`Investigation ${line.reflectionId}`}>{line.reflectionId}</span>
+          <span className="ox-investigation-speaker">{line.side === 'orlynx' ? 'Orlynx' : 'Model'}</span>
+          <p>{line.text}</p>
+        </div>
+      ))}
+      {awaitingModel && <div className="ox-investigation-line is-pending" data-speaker="model">
+        <span className="ox-investigation-step" aria-hidden>{latest.reflectionId}</span>
         <span className="ox-investigation-speaker">Model</span>
-        <p>{modelText}</p>
-      </div> : <div className="ox-investigation-line is-pending" data-speaker="model">
-        <span className="ox-investigation-speaker">Model</span>
-        <p>Reviewing the evidence and choosing the next check…</p>
+        <p>Reviewing Orlynx’s evidence and choosing the next check…</p>
       </div>}
     </div>
   );

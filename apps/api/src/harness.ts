@@ -475,8 +475,8 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     evidenceText,
     lessonText,
     stagnant,
-    'You are the reasoning layer. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
-    'Before calling the next tool, stream exactly one concise public diagnostic line beginning with "Model → Orlynx:". State only the current hypothesis and next check; do not expose private chain-of-thought.',
+    'You are the connected reasoning layer; Orlynx is the control and evidence layer. When Orlynx asks because the evidence does not explain something, answer the specific Orlynx question instead of making Orlynx guess. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
+    'Before calling the next tool, stream exactly one concise public diagnostic line beginning with "Model → Orlynx:". State only the evidence-grounded hypothesis and next check. If the evidence is insufficient, say which check would resolve the uncertainty instead of inventing certainty. Do not expose private chain-of-thought.',
     checkpoint.verification.missing.includes('preview')
       ? 'When localhost is healthy but Preview is not, diagnose Orlynx/provider forwarding before editing the repository. Orlynx already supplies cloud-preview compatibility to supported dev servers such as Vite. Change project config only when fresh evidence proves the application itself overrides or blocks the provider-safe defaults. If a diagnostic-only project change is no longer needed after the provider issue is resolved, revert it before completion.'
       : '',
@@ -544,8 +544,8 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
     checkpoint.verification.required.includes('preview')
       ? 'For a cloud-workspace development server, bind the app to 0.0.0.0 (for example Vite --host 0.0.0.0) unless the framework has a verified equivalent. Do not treat a loopback-only 127.0.0.1 listener as remotely previewable. Let Orlynx verify provider forwarding separately.'
       : '',
-    'When an observation is unexpected or conflicts with another signal, do not guess. Inspect the evidence and let the connected reasoning model form the next hypothesis.',
-    'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools can determine. Escalate only for genuinely human-only input or permission.',
+    'When an observation is unexpected, ambiguous, unknown, or conflicts with another signal, Orlynx must not invent an explanation. Treat the connected model as the reasoning partner: ask it to interpret the evidence and choose the next check, then verify that hypothesis with tools.',
+    'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools or the connected model can determine. Escalate only for genuinely human-only input or permission.',
     'Do not claim completion until Orlynx verification criteria are satisfied. Progress text is not a final answer.',
   ].filter(Boolean).join(' ');
 }

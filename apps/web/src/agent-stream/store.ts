@@ -371,6 +371,54 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       // must not become another generic "Thought" row.
       if (event.sourceType === 'pty.output') return;
       const prior = state.activities[event.activityId];
+
+      if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model') {
+        const detail = event.type === 'ACTIVITY_UPDATE' && event.detail && typeof event.detail === 'object'
+          ? event.detail as Record<string, unknown>
+          : {};
+        const reflectionId = Math.max(1, Number(detail.reflectionId || 1) || 1);
+        const side = event.sourceType.endsWith('.model') ? 'model' : 'orlynx';
+        const rawText = String(detail.text || event.text || '');
+        const text = rawText
+          .replace(/^Orlynx\s*[→>-]\s*Model:\s*/i, '')
+          .replace(/^Model\s*[→>-]\s*Orlynx:\s*/i, '')
+          .trim();
+        const priorEvidence = prior?.evidence && typeof prior.evidence === 'object'
+          ? prior.evidence as Record<string, unknown>
+          : {};
+        const priorDialogue = Array.isArray(priorEvidence.dialogue)
+          ? priorEvidence.dialogue.filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
+          : [];
+        const dialogue = priorDialogue
+          .filter((line) => !(Number(line.reflectionId || 0) === reflectionId && String(line.side || '') === side))
+          .concat([{ reflectionId, side, text, sequence: event.sequence }])
+          .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+        const latestOrlynx = [...dialogue].reverse().find((line) => line.side === 'orlynx');
+        const latestModel = [...dialogue].reverse().find((line) => line.side === 'model');
+
+        putActivity(state, {
+          id: event.activityId,
+          runId: event.runId,
+          taskId: event.taskId,
+          sequence: event.sequence,
+          startedSequence: prior?.startedSequence || event.sequence,
+          timestamp: prior?.timestamp || event.timestamp,
+          state: 'running',
+          kind: 'agent',
+          title: 'Investigation',
+          summary: `Orlynx ↔ Model · ${dialogue.length} ${dialogue.length === 1 ? 'update' : 'updates'}`,
+          sourceType: 'agent.reflection',
+          evidence: {
+            sourceType: 'agent.reflection',
+            reflectionId,
+            dialogue,
+            ...(latestOrlynx?.text ? { orlynxText: String(latestOrlynx.text) } : {}),
+            ...(latestModel?.text ? { modelText: String(latestModel.text) } : {}),
+          },
+        });
+        return;
+      }
+
       const title = event.sourceType === 'repository.map' ? 'Inspecting the repository' : humanActivity(event.text);
       putActivity(state, {
         id: event.activityId,

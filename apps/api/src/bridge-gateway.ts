@@ -744,7 +744,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 payload: {
                   sourceType: 'agent.dialogue.orlynx',
                   reflectionId: task.harness.reflectionAttempts,
-                  text: `Orlynx → Model: still unverified: ${missing}.${contradiction ? ` ${contradiction}` : ' Re-check the evidence and choose the next diagnostic step.'}`,
+                  text: `Orlynx → Model: I cannot verify ${missing}.${contradiction ? ` ${contradiction}` : ''} What does the current evidence imply, and what is the next check that would resolve the uncertainty?`,
                 },
               });
 

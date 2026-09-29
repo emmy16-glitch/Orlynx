@@ -126,19 +126,22 @@ Required rules:
 
 ## 9. Model and agent humility
 
-The connected model can form hypotheses.
+The connected model is Orlynx's reasoning partner; Orlynx is the control and evidence layer.
+
+When Orlynx does not know what an observation means, has conflicting evidence, or cannot choose the next check from verified facts, it must not guess. Orlynx should ask the selected model a concrete evidence question, receive a concise hypothesis/next check, and then verify that hypothesis with tools.
 
 Orlynx should distinguish:
 
 ~~~text
 observed fact
-hypothesis
+Orlynx question
+model hypothesis
 check
 evidence
 verified conclusion
 ~~~
 
-Do not promote a hypothesis to product truth because it sounds plausible.
+Do not promote a hypothesis to product truth because it sounds plausible. Do not ask the user for something the model plus available tools can determine.
 
 ## 10. Memory discipline
 
