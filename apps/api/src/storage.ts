@@ -43,6 +43,24 @@ export interface BridgeCommand {
   updatedAt: string;
 }
 
+export interface AgentLessonRecord {
+  id: string;
+  userId: string;
+  projectId?: string;
+  sessionId?: string;
+  scope: 'session' | 'repository' | 'environment';
+  title: string;
+  problem: string;
+  lesson: string;
+  evidence: string[];
+  tags: string[];
+  provider?: string;
+  successCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+}
+
 export interface WorkspaceJobRecord {
   id: string;
   workspaceId: string;
@@ -116,6 +134,9 @@ export interface ControlPlaneRepository {
   recordWebhookDelivery(deliveryId: string, event: string): Promise<boolean>;
   recordAudit(value: { id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail?: Record<string, unknown>; createdAt: string }): Promise<void>;
   listAudit(sessionId: string, limit?: number): Promise<Array<{ id: string; userId: string; sessionId?: string; projectId?: string; action: string; outcome: string; detail: Record<string, unknown>; createdAt: string }>>;
+  putAgentLesson(value: AgentLessonRecord): Promise<void>;
+  listAgentLessons(userId: string, projectId?: string, limit?: number): Promise<AgentLessonRecord[]>;
+  touchAgentLessons(ids: string[], usedAt?: string): Promise<void>;
   pruneOperationalData(now?: Date): Promise<void>;
 }
 
@@ -160,6 +181,24 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS workspace_agent_adapters (workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, adapter_id text NOT NULL, state text NOT NULL, reason text, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,adapter_id))`,
   `CREATE TABLE IF NOT EXISTS change_sets (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS webhook_deliveries (delivery_id text PRIMARY KEY, event text NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS agent_lessons (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id),
+    project_id text REFERENCES projects(id) ON DELETE CASCADE,
+    session_id text REFERENCES sessions(id) ON DELETE SET NULL,
+    scope text NOT NULL,
+    title text NOT NULL,
+    problem text NOT NULL,
+    lesson text NOT NULL,
+    evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+    provider text,
+    success_count integer NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    last_used_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS agent_lessons_lookup_idx ON agent_lessons(user_id, project_id, updated_at DESC)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS audit_log_session_idx ON audit_log(session_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS webhook_deliveries_received_idx ON webhook_deliveries(received_at)`,
@@ -258,6 +297,26 @@ function mapTask(row: Record<string, unknown>): TaskRecord {
     harness: (row.harness_state || undefined) as TaskRecord['harness'],
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
+  };
+}
+
+function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    projectId: row.project_id ? String(row.project_id) : undefined,
+    sessionId: row.session_id ? String(row.session_id) : undefined,
+    scope: String(row.scope) as AgentLessonRecord['scope'],
+    title: String(row.title),
+    problem: String(row.problem),
+    lesson: String(row.lesson),
+    evidence: Array.isArray(row.evidence) ? row.evidence.map(String) : [],
+    tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+    provider: row.provider ? String(row.provider) : undefined,
+    successCount: Number(row.success_count || 1),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    lastUsedAt: row.last_used_at ? iso(row.last_used_at) : undefined,
   };
 }
 
@@ -577,6 +636,32 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       projectId: r.project_id ? String(r.project_id) : undefined, action: String(r.action), outcome: String(r.outcome),
       detail: (r.detail || {}) as Record<string, unknown>, createdAt: iso(r.created_at),
     }));
+  }
+  async putAgentLesson(v: AgentLessonRecord) {
+    await this.initialize();
+    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,title,problem,lesson,evidence,tags,provider,success_count,created_at,updated_at,last_used_at)
+      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
+      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,updated_at=EXCLUDED.updated_at`;
+  }
+  async listAgentLessons(userId: string, projectId?: string, limit = 40) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 100));
+    const result = projectId
+      ? await this.sql.query(
+          `SELECT * FROM agent_lessons WHERE user_id=$1 AND (project_id=$2 OR project_id IS NULL) ORDER BY CASE WHEN project_id=$2 THEN 0 ELSE 1 END,last_used_at DESC NULLS LAST,updated_at DESC LIMIT $3`,
+          [userId, projectId, safeLimit],
+        )
+      : await this.sql.query(
+          `SELECT * FROM agent_lessons WHERE user_id=$1 AND project_id IS NULL ORDER BY last_used_at DESC NULLS LAST,updated_at DESC LIMIT $2`,
+          [userId, safeLimit],
+        );
+    return rows<Record<string, unknown>>(result).map(mapAgentLesson);
+  }
+  async touchAgentLessons(ids: string[], usedAt = new Date().toISOString()) {
+    await this.initialize();
+    const safe = [...new Set(ids.filter(Boolean))].slice(0, 20);
+    if (!safe.length) return;
+    await this.sql.query('UPDATE agent_lessons SET last_used_at=$2 WHERE id = ANY($1::text[])', [safe, usedAt]);
   }
   async pruneOperationalData(now = new Date()) {
     await this.initialize();
