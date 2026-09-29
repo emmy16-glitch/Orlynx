@@ -6,7 +6,27 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 const durableQueues = new Map<string, Promise<void>>();
 const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
 
+function redactEventString(value: string): string {
+  return String(value || '')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[redacted-api-key]')
+    .replace(/((?:admin\s+)?token|password|secret|api[_ -]?key|authorization|bearer)(\s*(?:[:=]|is)?\s*)([A-Za-z0-9._~+/=-]{16,})/ig, '$1$2[redacted]')
+    .replace(/((?:admin\s+)?token[^\n]{0,80}?)([a-f0-9]{40,128})\b/ig, '$1[redacted]');
+}
+function redactEventValue(value: unknown): unknown {
+  if (typeof value === 'string') return redactEventString(value);
+  if (Array.isArray(value)) return value.map(redactEventValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /token|secret|password|private.?key|api.?key|credential|authorization/i.test(key) ? '[redacted]' : redactEventValue(item),
+    ]));
+  }
+  return value;
+}
+
 function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  payload = redactEventValue(payload) as Record<string, unknown>;
   const encoded = JSON.stringify(payload);
   if (Buffer.byteLength(encoded) <= MAX_EVENT_PAYLOAD_BYTES) return payload;
   const clipped: Record<string, unknown> = { ...payload, truncated: true };
