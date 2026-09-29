@@ -125,22 +125,23 @@ if test "${ORLYNX_PREWARM_BROWSER_RUNTIME:-1}" != "0" && grep -Eq '"(playwright|
   playwright_marker="$runtime/playwright-$playwright_version.ready"
   if ! test -f "$playwright_marker"; then
     echo "Preparing Playwright Chromium runtime $playwright_version…" >&2
-    if test -x "$repo_root/node_modules/.bin/playwright"; then
-      playwright_cli="$repo_root/node_modules/.bin/playwright"
-    else
-      playwright_cli="npx --yes playwright@$playwright_version"
+    playwright_root="$runtime/playwright-cli-$playwright_version"
+    playwright_cli="$playwright_root/node_modules/.bin/playwright"
+    if ! test -x "$playwright_cli"; then
+      mkdir -p "$playwright_root"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix "$playwright_root" --no-save --no-audit --no-fund "playwright@$playwright_version" >/dev/null
     fi
 
     # install-deps is idempotent. Codespaces provide sudo; skip the apt work
     # when the critical Chromium GTK/ATK dependency is already present.
     if ! (ldconfig -p 2>/dev/null || true) | grep -q 'libatk-1.0.so.0'; then
-      (cd "$repo_root" && $playwright_cli install-deps chromium)
+      "$playwright_cli" install-deps chromium
     fi
-    (cd "$repo_root" && $playwright_cli install chromium)
+    "$playwright_cli" install chromium
 
     # Prove the exact browser/runtime combination can start before exposing the
     # workspace as ready. This catches missing shared libraries such as libatk.
-    (cd "$repo_root" && node -e 'const { chromium }=require("playwright"); (async()=>{const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e);process.exit(1)})')
+    PLAYWRIGHT_MODULE="$playwright_root/node_modules/playwright" node -e 'const { chromium }=require(process.env.PLAYWRIGHT_MODULE); (async()=>{const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e);process.exit(1)})'
     touch "$playwright_marker"
   fi
 fi
