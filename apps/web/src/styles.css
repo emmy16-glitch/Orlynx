@@ -4711,3 +4711,38 @@ html[data-theme="light"] .composer-options-panel {
     max-width: 100%;
   }
 }
+
+
+/* Ordered Orlynx ↔ model reflection. Keep the reasoning summary visible
+   without mixing it into raw terminal output or exposing private chain-of-thought. */
+.ox-investigation {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-left: 2px solid var(--border);
+  background: var(--surface-muted);
+  border-radius: 0 10px 10px 0;
+}
+.ox-investigation-line {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+.ox-investigation-speaker {
+  padding-top: 1px;
+  color: var(--foreground-subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.ox-investigation-line p {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ox-investigation-line.is-pending p {
+  color: var(--foreground-muted);
+}
