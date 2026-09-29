@@ -168,3 +168,62 @@
 @media (prefers-reduced-motion: reduce) {
   .ox-live-dot { animation: none; border-top-color: color-mix(in srgb, var(--agent-working) 30%, var(--border)); }
 }
+
+
+/* Reflection transcript: keep the controller ↔ model discussion visually
+   distinct from terminal/tool evidence without hiding observable work. */
+.ox-dialogue {
+  margin: 8px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface-muted);
+}
+.ox-dialogue-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ox-dialogue-badge {
+  flex: none;
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-meta);
+  font-weight: 650;
+}
+.ox-dialogue-role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  font-weight: 650;
+}
+.ox-dialogue-source {
+  margin-left: auto;
+  color: var(--foreground-subtle);
+  font-size: var(--text-meta);
+}
+.ox-dialogue-text {
+  margin-top: 6px;
+  color: var(--foreground-muted);
+  font-size: var(--text-small);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ox-raw-toggle {
+  min-height: 32px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 4px 7px;
+  color: var(--foreground-muted);
+  background: transparent;
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+.ox-raw-toggle:hover { color: var(--foreground); background: var(--surface-hover); }
+.ox-raw-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ox-raw > pre.ox-raw-visible { margin-top: 6px; }
