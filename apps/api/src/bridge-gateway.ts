@@ -826,6 +826,60 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
+          // A follow-up can land after the initial steering check while
+          // verification/final synthesis is still running. Re-read durable task
+          // state before learning/finalizing so no human update is silently
+          // stranded behind a completed run.
+          const latestBeforeFinalize = await repository.getTask(task.id);
+          const lateSteering = latestBeforeFinalize?.harness?.inbox.filter((item) => !item.appliedAt) || [];
+          if (latestBeforeFinalize && lateSteering.length && engineSessionId) {
+            const continuedAt = new Date().toISOString();
+            latestBeforeFinalize.harness = {
+              ...latestBeforeFinalize.harness!,
+              inbox: latestBeforeFinalize.harness!.inbox.map((item) => item.appliedAt ? item : { ...item, appliedAt: continuedAt }),
+            };
+            latestBeforeFinalize.harness = advanceHarnessPhase(latestBeforeFinalize.harness, 'executing', {
+              mode: latestBeforeFinalize.mode || 'build',
+              permission: effectivePermission,
+              now: continuedAt,
+            });
+            latestBeforeFinalize.state = 'running';
+            latestBeforeFinalize.updatedAt = continuedAt;
+            await repository.putTask(latestBeforeFinalize);
+
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'activity.progress',
+              timestamp: continuedAt,
+              payload: {
+                sourceType: 'agent.dialogue.orlynx',
+                reflectionId: latestBeforeFinalize.harness.steeringRevision || 1,
+                text: 'Orlynx → Model: a newer user follow-up arrived before finalization. Continue this same run and incorporate it before completing.',
+              },
+            });
+
+            await queueBridgeCommand(
+              claims.workspaceId,
+              'agent.run',
+              continuationPayload(
+                command.payload,
+                latestBeforeFinalize,
+                engineSessionId,
+                [
+                  'Continue the same Orlynx task. A user update arrived just before finalization:',
+                  ...lateSteering.map((item) => `[${item.action.toUpperCase()}] ${item.text}`),
+                  'Incorporate the update, preserve completed work, then re-verify before finalizing.',
+                ].join('\n'),
+              ),
+              30 * 60_000,
+            );
+            return;
+          }
+
           const durableSessionForMemory = await repository.getSession(claims.sessionId);
           if (durableSessionForMemory && (task.harness.reflectionAttempts || 0) > 0) {
             const learned = await rememberVerifiedLesson({
