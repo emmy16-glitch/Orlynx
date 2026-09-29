@@ -5,6 +5,7 @@ import { executionPlaneFor, executionPlaneForSession, publishIntentFor } from '.
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 import { classifyError } from '../src/ai.ts';
+import { createHarnessCheckpoint, needsSelectedModelReview, selectedModelReviewInstruction } from '../src/harness.ts';
 
 // Keep routing tests deterministic: these assertions require no live workspace.
 test('an existing Codespace never changes the mode/request execution decision', () => {
@@ -40,6 +41,40 @@ test('a ready workspace preserves Build continuity while Ask and Plan stay light
   // the direct classifier remains authoritative until it is actually ready.
   assert.equal(executionPlaneForSession('Explain this file', 'build', connecting), 'direct');
   assert.equal(executionPlaneForSession('Explain this file', 'ask', null), 'direct');
+});
+
+test('verified Build work must be challenged by the currently selected model before finalization', () => {
+  const checkpoint = createHarnessCheckpoint({
+    prompt: 'Fix the bug and run tests',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  checkpoint.verification = {
+    required: ['tests'],
+    satisfied: ['tests'],
+    missing: [],
+    status: 'passed',
+    checkedAt: new Date().toISOString(),
+  };
+
+  assert.equal(needsSelectedModelReview(checkpoint, 'build', 'opencode/model-a'), true);
+  checkpoint.modelReviewAttempts = 1;
+  checkpoint.modelReviewModelId = 'opencode/model-a';
+  assert.equal(needsSelectedModelReview(checkpoint, 'build', 'opencode/model-a'), false);
+  assert.equal(needsSelectedModelReview(checkpoint, 'build', 'opencode/model-b'), true);
+  assert.equal(needsSelectedModelReview(checkpoint, 'ask', 'opencode/model-a'), false);
+
+  const instruction = selectedModelReviewInstruction(checkpoint, 'opencode/model-b', ['tests passed'], []);
+  assert.match(instruction, /independent reasoning\/quality partner/i);
+  assert.match(instruction, /Do not merely agree with Orlynx/i);
+  assert.match(instruction, /Model → Orlynx: verified/i);
+
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(gateway, /needsSelectedModelReview\(task\.harness/);
+  assert.match(gateway, /mandatory selected-model review/);
+  assert.match(gateway, /Orlynx → Model: verification passed/);
+  assert.match(gateway, /modelReviewCompletedAt/);
 });
 
 test('Build ask-first permits observable runtime work without granting file changes', () => {
