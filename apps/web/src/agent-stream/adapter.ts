@@ -78,15 +78,16 @@ function phaseId(event: RawEvent): string {
   const raw = str(event.payload?.sourceType).toLowerCase();
   const reflectionId = str(event.payload?.reflectionId) || String(event.sequence || 0);
   // Providers are free to emit many low-level status names. Collapse routine
-  // status into stable semantic phases, but preserve each explicit Orlynx ↔
-  // model reflection exchange and durable-memory update as its own visible row.
+  // status into stable semantic phases. Orlynx ↔ Model dialogue deliberately
+  // shares ONE run-scoped activity identity: the store appends ordered lines
+  // into that object as they stream, so the UI never explodes into temporary
+  // rows and then reorganizes itself later.
   const source = raw === 'repository.map' ? 'repository'
     : raw === 'opencode.retry' ? 'provider-retry'
       : raw === 'pty.output' ? 'pty-output'
-        : raw === 'agent.dialogue.orlynx' ? `reflection-${reflectionId}-orlynx`
-          : raw === 'agent.dialogue.model' ? `reflection-${reflectionId}-model`
-            : raw === 'agent.memory' ? `memory-${event.sequence || reflectionId}`
-              : 'agent';
+        : raw === 'agent.dialogue.orlynx' || raw === 'agent.dialogue.model' ? 'reflection'
+          : raw === 'agent.memory' ? `memory-${event.sequence || reflectionId}`
+            : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
 
