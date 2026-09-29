@@ -229,6 +229,15 @@ test('workspace Build keeps private Orlynx guardrails separate from user text', 
 });
 
 
+test('repository preflight transport interruptions requeue Build instead of reporting AI runtime failure', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /transportInterrupted/);
+  assert.match(agents, /markWorkspaceConnectionLost\(readyWorkspace\.id\)/);
+  assert.match(agents, /nextQueued\.state = 'queued'/);
+  assert.match(agents, /repository_preflight_recovery/);
+  assert.match(agents, /GitHub check paused · reconnecting workspace/);
+});
+
 test('durable scheduler permits one direct conversation beside one workspace Build run', () => {
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   assert.match(storage, /COALESCE\(active\.execution_plane, 'workspace'\) = COALESCE\(queued\.execution_plane, 'workspace'\)/);
