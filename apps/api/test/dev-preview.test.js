@@ -78,6 +78,7 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     const ports = [
       { port: 5173, url: `${BASE}5173/` },
       { port: 22, url: `${BASE}22/` },
+      { port: 2222, url: `${BASE}2222/` },
       { port: 5432, url: `${BASE}5432/` },
       { port: 5173, url: `${BASE}5173/` },
       { port: 3000 },
@@ -85,7 +86,21 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     const usable = usablePreviews(ports);
     assert.deepEqual(usable.map((p) => p.port), [5173]);
     assert.equal(isPreviewablePort(22), false);
+    assert.equal(isPreviewablePort(2222), false);
     assert.equal(isPreviewablePort(5173), true);
+  });
+
+  it('bridge and API require an application port rather than any listening socket', () => {
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+    const routes = fs.readFileSync(path.join(root, 'apps/api/src/routes.ts'), 'utf8');
+    const gateway = fs.readFileSync(path.join(root, 'apps/api/src/bridge-gateway.ts'), 'utf8');
+    assert.match(bridge, /NON_PREVIEW_PORTS = new Set\(\[22, 23, 25, 2222/);
+    assert.match(bridge, /async function httpPreviewReady\(port: number\)/);
+    assert.match(bridge, /await httpPreviewReady\(port\)/);
+    assert.match(bridge, /port === servicePort/);
+    assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
+    assert.match(gateway, /type: 'preview\.ready'/);
+    assert.match(gateway, /verified: true/);
   });
 
   it('prefers likely frontends but never invents a URL', () => {
