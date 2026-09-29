@@ -38,9 +38,9 @@ if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node
 # The launcher can cache an AVX2 build on x64 machines that require the baseline binary.
 machine="$(uname -m)"
 case "$machine" in
-  x86_64|amd64) opencode_arch="x64" ;;
-  aarch64|arm64) opencode_arch="arm64" ;;
-  *) echo "Unsupported Codespace architecture for OpenCode: $machine" >&2; exit 1 ;;
+  x86_64|amd64) opencode_arch="x64"; gh_arch="amd64"; gh_sha="9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8" ;;
+  aarch64|arm64) opencode_arch="arm64"; gh_arch="arm64"; gh_sha="b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f" ;;
+  *) echo "Unsupported Codespace architecture: $machine" >&2; exit 1 ;;
 esac
 opencode_libc=""
 if test -f /etc/alpine-release || (ldd --version 2>&1 || true) | grep -qi musl; then opencode_libc="-musl"; fi
@@ -74,6 +74,48 @@ if ! "$opencode_bin" --version >"$runtime/opencode-version.txt" 2>"$runtime/open
   tail -c 1000 "$runtime/opencode-version.err" >&2 || true
   exit 1
 fi
+
+# GitHub CLI versions before 2.98 bind the helper listener used by
+# "gh codespace ports forward" to all interfaces. Use a private, checksum-
+# verified current binary when the Codespace image ships an older CLI.
+gh_bin=""
+if command -v gh >/dev/null 2>&1; then
+  gh_line="$(gh --version 2>/dev/null | head -n1 || true)"
+  gh_major="$(printf '%s' "$gh_line" | sed -nE 's/^gh version ([0-9]+)\\..*/\\1/p')"
+  gh_minor="$(printf '%s' "$gh_line" | sed -nE 's/^gh version [0-9]+\\.([0-9]+)\\..*/\\1/p')"
+  if test -n "$gh_major" && test -n "$gh_minor" && { test "$gh_major" -gt 2 || { test "$gh_major" -eq 2 && test "$gh_minor" -ge 98; }; }; then
+    gh_bin="$(command -v gh)"
+  fi
+fi
+if test -z "$gh_bin"; then
+  gh_bin="$runtime/gh"
+  if ! test -x "$gh_bin" || ! "$gh_bin" --version 2>/dev/null | head -n1 | grep -q "gh version 2.101.0"; then
+    archive="$runtime/gh_2.101.0_linux_\${gh_arch}.tar.gz"
+    url="https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_\${gh_arch}.tar.gz"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$archive"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$archive" "$url"
+    else
+      echo "Codespace needs curl or wget to install the private GitHub CLI helper." >&2
+      exit 1
+    fi
+    printf '%s  %s\\n' "$gh_sha" "$archive" | sha256sum -c - >/dev/null
+    gh_tmp="$runtime/gh-install"
+    rm -rf "$gh_tmp"
+    mkdir -p "$gh_tmp"
+    tar -xzf "$archive" -C "$gh_tmp"
+    cp "$gh_tmp/gh_2.101.0_linux_\${gh_arch}/bin/gh" "$gh_bin"
+    chmod 700 "$gh_bin"
+    rm -rf "$gh_tmp" "$archive"
+  fi
+fi
+"$gh_bin" --version >"$runtime/gh-version.txt" 2>"$runtime/gh-version.err" || {
+  echo "Private GitHub CLI helper failed its startup smoke test." >&2
+  tail -c 1000 "$runtime/gh-version.err" >&2 || true
+  exit 1
+}
+
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
 # Reuse the password of an OpenCode server left running in this Codespace.
@@ -88,6 +130,7 @@ if test -n "$existing_password"; then
 fi
 printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
+printf 'ORLYNX_GH_BIN=%s\\n' "$gh_bin" >> "$runtime/workspace.env"
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a
 . "$runtime/workspace.env"
