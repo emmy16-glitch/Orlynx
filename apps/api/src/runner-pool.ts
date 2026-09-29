@@ -17,6 +17,9 @@ export interface RunnerHostHealth {
   latencyMs: number;
   checkedAt: number;
   detail?: string;
+  capabilities?: {
+    browserE2e?: boolean;
+  };
 }
 
 type CircuitState = { failures: number; openUntil: number };
@@ -152,6 +155,7 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
       stopped?: number;
       draining?: boolean;
       workspace?: { state?: string } | null;
+      capabilities?: { browserE2e?: boolean };
     };
     const capacity = Math.max(1, Number(body.capacity || 1));
     const running = Math.max(0, Number(body.running ?? (body.workspace?.state === 'running' ? 1 : 0)));
@@ -167,6 +171,7 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
       latencyMs: Date.now() - started,
       checkedAt: Date.now(),
       detail: response.ok ? undefined : `HTTP ${response.status}`,
+      capabilities: body.capabilities,
     };
     healthCache.set(host.id, result);
     if (result.ok) noteRunnerHostSuccess(host.id);
@@ -194,6 +199,17 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
 export async function runnerPoolSnapshot(force = false): Promise<Array<{ host: RunnerHostConfig; health: RunnerHostHealth }>> {
   const hosts = runnerHosts();
   return Promise.all(hosts.map(async (host) => ({ host, health: await probeRunnerHost(host, force) })));
+}
+
+export function taskRequiresBrowserE2e(text: string): boolean {
+  return /\b(?:playwright|end[- ]to[- ]end|e2e|browser\s+(?:test|testing|automation)|visual\s+regression|screenshot\s+test|axe\s+(?:test|audit)|lighthouse)\b/i.test(String(text || ''));
+}
+
+export async function runnerHostSupportsBrowserE2e(hostId?: string): Promise<boolean | undefined> {
+  const host = runnerHostById(hostId);
+  if (!host) return undefined;
+  const health = await probeRunnerHost(host, true);
+  return health.capabilities?.browserE2e;
 }
 
 export async function rankedRunnerHosts(exclude = new Set<string>()): Promise<RunnerHostConfig[]> {

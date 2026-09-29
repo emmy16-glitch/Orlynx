@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.ORLYNX_RUNNER_TOKEN || '';
@@ -21,6 +21,20 @@ const PREVIEW_COOKIE = 'orlynx_preview';
 
 let bridgeChild = null;
 let lastActivityTouchMs = 0;
+let cachedBrowserRuntimeReady;
+
+function browserRuntimeReady() {
+  if (process.env.ORLYNX_BROWSER_RUNTIME_READY === '1') return true;
+  if (process.env.ORLYNX_BROWSER_RUNTIME_READY === '0') return false;
+  if (typeof cachedBrowserRuntimeReady === 'boolean') return cachedBrowserRuntimeReady;
+  const probe = spawnSync('sh', ['-lc', [
+    "ldconfig -p 2>/dev/null | grep -q 'libatk-1.0.so.0'",
+    "ldconfig -p 2>/dev/null | grep -Eq 'libnss3\\.so|libnss3\\.so\\.1d'",
+    "ldconfig -p 2>/dev/null | grep -Eq 'libgbm\\.so\\.1|libgbm\\.so'",
+  ].join(' && ')], { encoding: 'utf8', timeout: 5_000 });
+  cachedBrowserRuntimeReady = probe.status === 0;
+  return cachedBrowserRuntimeReady;
+}
 
 function touchActivity(force = false) {
   const now = Date.now();
@@ -372,6 +386,9 @@ async function route(req, res) {
       stopped,
       available: running ? 0 : 1,
       draining: process.env.ORLYNX_RUNNER_DRAINING === '1',
+      capabilities: {
+        browserE2e: browserRuntimeReady(),
+      },
       workspace: state ? { runnerId: state.runnerId, state: state.state } : null,
     });
   }

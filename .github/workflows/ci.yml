@@ -62,6 +62,9 @@ jobs:
       - name: Build runner runtime image
         run: docker build --file runner-runtime/Dockerfile --tag orlynx-runner-runtime:ci .
 
+      - name: Verify runner Chromium can actually launch
+        run: docker run --rm orlynx-runner-runtime:ci node /opt/orlynx/browser-smoke.mjs
+
       - name: Build runner manager image
         run: docker build --file runner-manager/Dockerfile --tag orlynx-runner-manager:ci .
 

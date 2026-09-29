@@ -472,6 +472,9 @@ async function route(req, res) {
       region: HOST_REGION || undefined,
       image: IMAGE,
       cacheEnabled: process.env.ORLYNX_RUNNER_GIT_CACHE !== '0',
+      capabilities: {
+        browserE2e: process.env.ORLYNX_RUNNER_BROWSER_E2E !== '0',
+      },
       ...counts,
     });
   }

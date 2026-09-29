@@ -11,7 +11,8 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
-import { markWorkspaceConnectionLost, workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { markWorkspaceConnectionLost, migrateRunnerWorkspaceToCodespacesForCapability, workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { runnerHostSupportsBrowserE2e, taskRequiresBrowserE2e } from './runner-pool.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
@@ -527,6 +528,27 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       return promoteNextQueuedRunInner(sessionId);
     }
     if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+
+    if (readyWorkspace.provider === 'orlynx-runner' && taskRequiresBrowserE2e(nextQueued.prompt)) {
+      const browserReady = await runnerHostSupportsBrowserE2e(readyWorkspace.runnerHostId).catch(() => undefined);
+      if (browserReady === false) {
+        emit(sessionId, 'activity.progress', {
+          taskId: nextQueued.id,
+          sourceType: 'workspace.capability',
+          capability: 'browserE2e',
+          text: 'Browser E2E runtime is not available on this runner · switching automatically…',
+        }, nextQueued.runId);
+        const migrated = await migrateRunnerWorkspaceToCodespacesForCapability(readyWorkspace, 'browserE2e');
+        await scheduleWorkspacePreparation({
+          sessionId,
+          userId: migrated.userId,
+          projectId: migrated.projectId,
+          repositoryId: migrated.repositoryId,
+          branch: migrated.branch,
+        }, { allowFallback: true, reason: 'browser_capability' });
+        return null;
+      }
+    }
 
     const adapterId = nextQueued.adapterId || 'opencode';
     const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);

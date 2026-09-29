@@ -99,6 +99,32 @@ test('distributed runner pool ranks healthy capacity and defaults to a global 50
   }
 });
 
+test('runner image bakes and verifies Chromium E2E runtime', () => {
+  const dockerfile = fs.readFileSync(new URL('../../../runner-runtime/Dockerfile', import.meta.url), 'utf8');
+  const smoke = fs.readFileSync(new URL('../../../runner-runtime/browser-smoke.mjs', import.meta.url), 'utf8');
+  const direct = fs.readFileSync(new URL('../../../runner-direct/index.mjs', import.meta.url), 'utf8');
+  const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
+  const workflow = fs.readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.63\.0/);
+  assert.match(dockerfile, /playwright install --with-deps chromium/);
+  assert.match(dockerfile, /PLAYWRIGHT_BROWSERS_PATH=\/ms-playwright/);
+  assert.match(smoke, /chromium\.launch/);
+  assert.match(workflow, /Verify runner Chromium can actually launch/);
+  assert.match(direct, /browserE2e: browserRuntimeReady\(\)/);
+  assert.match(manager, /browserE2e: process\.env\.ORLYNX_RUNNER_BROWSER_E2E/);
+});
+
+test('runner pool carries browser capability and detects E2E task intent', () => {
+  const pool = fs.readFileSync(new URL('../src/runner-pool.ts', import.meta.url), 'utf8');
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(pool, /browserE2e\?: boolean/);
+  assert.match(pool, /taskRequiresBrowserE2e/);
+  assert.match(pool, /playwright\|end\[- \]to\[- \]end\|e2e/);
+  assert.match(agents, /runnerHostSupportsBrowserE2e/);
+  assert.match(agents, /migrateRunnerWorkspaceToCodespacesForCapability/);
+  assert.match(agents, /reason: 'browser_capability'/);
+});
+
 test('runner pool persists host ownership and manager exposes cache/capacity/drain controls', () => {
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   const pool = fs.readFileSync(new URL('../src/runner-pool.ts', import.meta.url), 'utf8');
