@@ -145,6 +145,7 @@ export function buildPresentationInstruction(mode: AgentMode): string {
     'GitHub authentication is managed by the Orlynx GitHub App. The provider shell intentionally does not receive GitHub tokens.',
     'Never ask the user to run gh auth login, paste a PAT, or expose a GitHub token. Do not use gh auth status as evidence that Orlynx is disconnected from GitHub.',
     'Do not run raw git push from the provider shell. Prepare and commit changes locally, then report that they are ready for Orlynx controlled publish/review unless the Orlynx publish action itself confirms publication.',
+    'When a repository already has a package-lock.json and the goal is only to install existing dependencies, prefer npm ci rather than npm install. Do not leave package-lock.json changed unless the task intentionally changes dependencies.',
     'Reserve normal assistant prose for the final result, a necessary user question, or an approval that genuinely requires user input.',
   ].join(' ');
 }
