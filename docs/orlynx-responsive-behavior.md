@@ -1,56 +1,67 @@
-# Orlynx Responsive Behavior
+# Orlynx responsive behavior
 
-## Breakpoint intent
+Orlynx is mobile-first but not mobile-only.
 
-| Width | Layout |
-| --- | --- |
-| 1500px+ | desktop project rail, center conversation, contextual right column |
-| 1201–1499px | desktop project rail + center workspace; optional context column hidden |
-| 851–1200px | tablet/workstation: global rail, centered project work area, no right panel |
-| 561–850px | mobile/tablet: rail becomes bottom navigation; workspace tabs remain visible |
-| 320–560px | narrow phone: stacked forms/cards, compact chat, one-column lists and details |
+## Intent
 
-These boundaries are in `apps/web/src/styles.css`. Content uses min-width:0,
-wrapping/truncation, and scroll-bounded code/log areas to prevent long paths and
-commands from introducing horizontal page overflow.
+Wide screens may expose repository/context information beside the conversation.
+Phones keep the project focused on the current task.
+
+## Project navigation
+
+The current compact project navigation is:
+
+~~~text
+Chat · Files · Changes · More
+~~~
+
+Preview and Terminal are contextual surfaces reached through More/project controls rather than permanent extra bottom tabs.
+
+## Mobile
+
+At narrow widths:
+
+- one primary content column;
+- composer remains reachable above safe-area navigation;
+- queue tray fits within the viewport;
+- Investigation blocks use bounded internal scrolling;
+- long paths/output cannot create horizontal page overflow;
+- file/change details become one-at-a-time flows;
+- keyboard resize must not force the conversation to the bottom;
+- streaming auto-follow stops as soon as the user intentionally scrolls upward.
 
 ## Desktop
 
-- The left rail remains at 254px with global navigation and recent projects.
-- Repository/branch, search, cloud action, and profile action sit in the workspace
-  header; project navigation is a horizontal secondary row.
-- Chat and project views occupy the center; the right column summarizes cloud,
-  repository, changes, and preview. It disappears instead of becoming a permanent
-  third-party dashboard on smaller screens.
-- The composer aligns to the workspace's content region and does not cover the
-  contextual panel.
+Desktop may show a persistent navigation rail and additional context, but Chat remains the primary project work surface.
 
-## Mobile and keyboard
+Do not turn wider layouts into a VS Code clone or infrastructure dashboard.
 
-- The global rail is replaced by Home/Projects/Agents/Cloud/Settings bottom nav on
-  global screens. A project uses Chat/Files/Changes/Preview/More tabs; Terminal is
-  inside More so the conversation tabs stay easy to reach.
-- Tabs and bottom navigation reserve the device safe-area inset. The composer is
-  pinned above project navigation; its text field shrinks before actions do.
-- Context moves into dedicated Cloud/Changes/Preview views instead of squeezing a
-  desktop side panel into a phone column.
-- Repository selection, settings, commit confirmation, file list, and diff details
-  become one-column / one-file-at-a-time flows.
-- Chat page scroll follows only when already near the latest content; the keyboard
-  and orientation do not initiate an auto-scroll. See
-  [`chat-scroll-behavior.md`](chat-scroll-behavior.md).
+## Cross-device continuity
 
-## Density and touch
+Responsive layout and conversation identity are separate concerns.
 
-Use 44px action targets, full-width primary actions on narrow forms, 12–16px
-content gutters, and no forced split diff. Status remains text + symbol, not color
-alone. Raw logs and terminal output get an independent max-height only when
-explicitly opened. Long text wraps; paths can break anywhere without widening the
-page.
+The same server-owned project session must restore on phone, tablet or laptop after the same GitHub user authenticates.
 
-## Verification status
+## Required manual viewport checks
 
-The production build covers all CSS/TS. Automated registry tests protect component
-presence; no browser automation/emulator is configured. A visual device pass should
-check 360, 390, 412, 768, 1024, 1280, and 1440px, keyboard open/close, rotation,
-scroll follow, long paths, and external preview frame sizing before release.
+At minimum verify:
+
+- 360px;
+- 390px;
+- 412px;
+- 768px;
+- 1024px;
+- 1280px;
+- 1440px.
+
+Also verify:
+
+- keyboard open/close;
+- orientation change;
+- long streamed answer;
+- reading old content while streaming;
+- Queue edit/cancel;
+- Investigation expansion;
+- approvals;
+- Preview;
+- reconnect after background/sleep.
