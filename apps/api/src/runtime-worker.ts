@@ -119,7 +119,7 @@ test -n "$repo_root"
 # Browser/E2E preparation belongs to workspace bootstrap, not the first test.
 # Only Playwright repositories pay this cost, and each Playwright version is
 # prepared once per persistent Codespace.
-if test "\\${ORLYNX_PREWARM_BROWSER_RUNTIME:-1}" != "0" && grep -Eq '"(playwright|@playwright/test|@axe-core/playwright)"' "$repo_root/package.json" "$repo_root/package-lock.json" 2>/dev/null; then
+if test "\${ORLYNX_PREWARM_BROWSER_RUNTIME:-1}" != "0" && grep -Eq '"(playwright|@playwright/test|@axe-core/playwright)"' "$repo_root/package.json" "$repo_root/package-lock.json" 2>/dev/null; then
   playwright_version="$(cd "$repo_root" && node -e 'try { const p=require("./package-lock.json"); process.stdout.write(p.packages?.["node_modules/playwright"]?.version || p.packages?.["node_modules/playwright-core"]?.version || "") } catch {}' 2>/dev/null || true)"
   test -n "$playwright_version" || playwright_version="1.63.0"
   playwright_marker="$runtime/playwright-$playwright_version.ready"
