@@ -187,10 +187,10 @@ describe('canonical agent activity presentation', () => {
     ]);
     assert.equal(rows.length, 3);
     assert.equal(rows[0].title, 'Orlynx → Model');
-    assert.equal(rows[0].summary, 'preview is unverified although localhost returned HTTP 200.');
+    assert.equal(rows[0].summary, 'preview is unverified although localhost returned HTTP 200');
     assert.equal(rows[0].evidence?.reflectionId, 1);
     assert.equal(rows[1].title, 'Model → Orlynx');
-    assert.equal(rows[1].summary, 'inspect forwarding and authentication instead of restarting Vite.');
+    assert.equal(rows[1].summary, 'inspect forwarding and authentication instead of restarting Vite');
     assert.equal(rows[1].evidence?.reflectionId, 1);
     assert.equal(rows[2].title, 'Orlynx learned');
     assert.match(rows[2].summary || '', /saved 2 reusable lessons/);
