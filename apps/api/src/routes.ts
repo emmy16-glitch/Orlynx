@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
-import { durableHistory, emit, recentHistory, subscribe, subscribeEvents } from './events.js';
+import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -1203,26 +1203,19 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
 
       const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
       await repository.putApproval(approvedRecord);
-      await repository.appendEvent({
-        eventId: `evt_${uuid()}`,
-        sessionId: session.id,
-        taskId: task.id,
-        runId: task.runId,
-        workspaceId: workspace.id,
-        type: 'approval.resolved',
-        timestamp: now,
-        payload: { approvalId: approval.id, action: approval.action, decision: 'allow_once', detail: 'Approved once.' },
-      });
-      await repository.appendEvent({
-        eventId: `evt_${uuid()}`,
-        sessionId: session.id,
-        taskId: task.id,
-        runId: task.runId,
-        workspaceId: workspace.id,
-        type: 'receipt.created',
-        timestamp: now,
-        payload: { command: 'git push', publish: true, pushedBranch: branch, commitSha: publishedHead, alreadyPublished },
-      });
+      await emitPersisted(session.id, 'approval.resolved', {
+        approvalId: approval.id,
+        action: approval.action,
+        decision: 'allow_once',
+        detail: 'Approved once.',
+      }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
+      await emitPersisted(session.id, 'receipt.created', {
+        command: 'git push',
+        publish: true,
+        pushedBranch: branch,
+        commitSha: publishedHead,
+        alreadyPublished,
+      }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
 
       const permission = task.tempPermission || task.permission || 'ask-first';
       task.harness ||= createHarnessCheckpoint({
