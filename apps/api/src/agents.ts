@@ -11,7 +11,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
-import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { markWorkspaceConnectionLost, workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
@@ -600,6 +600,55 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     } catch (error) {
       const now = new Date().toISOString();
       const detail = error instanceof Error ? error.message : 'Repository freshness check failed.';
+      const transportInterrupted = /workspace (?:connection )?interrupted|workspace did not respond|bridge|socket|connection (?:closed|lost|interrupted)|transport|timed out|timeout/i.test(detail);
+
+      if (transportInterrupted) {
+        const lost = await markWorkspaceConnectionLost(readyWorkspace.id).catch(() => null);
+        nextQueued.state = 'queued';
+        nextQueued.updatedAt = now;
+        if (nextQueued.harness) {
+          nextQueued.harness = advanceHarnessPhase(nextQueued.harness, 'routing', {
+            mode: nextQueued.mode || 'build',
+            permission: nextQueued.tempPermission || nextQueued.permission || 'full',
+            now,
+          });
+        }
+        await repository.putTask(nextQueued);
+
+        const recoveringRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+        if (recoveringRun) {
+          recoveringRun.state = 'queued';
+          recoveringRun.activity = 'Reconnecting workspace';
+          recoveringRun.finishedAt = undefined;
+          recoveringRun.errorKind = undefined;
+        }
+        store.save();
+
+        emit(sessionId, 'run.state', {
+          taskId: nextQueued.id,
+          state: 'queued',
+          message: 'Repository check paused because the workspace connection dropped. Reconnecting and retrying automatically.',
+        }, nextQueued.runId);
+        emit(sessionId, 'activity.progress', {
+          taskId: nextQueued.id,
+          sourceType: 'repository.sync',
+          state: 'recovering',
+          text: 'GitHub check paused · reconnecting workspace…',
+        }, nextQueued.runId);
+
+        const repair = lost || readyWorkspace;
+        void scheduleWorkspacePreparation({
+          sessionId: repair.sessionId,
+          userId: repair.userId,
+          projectId: repair.projectId,
+          repositoryId: repair.repositoryId,
+          branch: repair.branch,
+        }, { allowFallback: true, reason: 'repository_preflight_recovery' }).catch((repairError) => {
+          console.warn(`[repository] preflight workspace recovery failed session=${sessionId}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+        });
+        return null;
+      }
+
       nextQueued.state = 'failed';
       nextQueued.updatedAt = now;
       await repository.putTask(nextQueued);
