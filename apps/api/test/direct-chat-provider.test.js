@@ -107,7 +107,7 @@ test('catalog remains visible when stored credential cannot decrypt', async () =
 });
 
 
-test('deterministic chat turns bypass the model', () => {
+test('product facts stay deterministic while normal conversation goes to the model', () => {
   assert.match(
     instantReplyFor({ text: 'what repo are you connected to currently?', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
     /emmy16-glitch\/Orlynx.*main/i,
@@ -116,9 +116,9 @@ test('deterministic chat turns bypass the model', () => {
     instantReplyFor({ text: 'can u pull changes from main??', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
     /Switch to \*\*Build\*\*/i,
   );
-  assert.match(
+  assert.equal(
     instantReplyFor({ text: 'hello', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
-    /Orlynx.*main/i,
+    null,
   );
   assert.equal(
     instantReplyFor({ text: 'Explain the authentication architecture', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
