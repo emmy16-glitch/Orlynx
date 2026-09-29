@@ -571,25 +571,66 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     }
     if (adapterState.state === 'failed') {
       const now = new Date().toISOString();
-      nextQueued.state = 'failed';
+
+      // A persisted adapter failure is recoverable infrastructure state, not a
+      // terminal verdict on a newly submitted Build. This is especially
+      // important when an old workspace row survives while another bridge or
+      // runner is healthy: immediately failing the new run produces the false
+      // "AI runtime unavailable" loop the user sees.
+      console.warn(`[queue] stale failed adapter requires workspace repair session=${sessionId} task=${nextQueued.id} workspace=${readyWorkspace.id} adapter=${adapterId} reason=${adapterState.reason || 'unknown'}`);
+
+      nextQueued.state = 'queued';
       nextQueued.updatedAt = now;
+      if (nextQueued.harness) {
+        nextQueued.harness = advanceHarnessPhase(nextQueued.harness, 'routing', {
+          mode: nextQueued.mode || 'build',
+          permission: nextQueued.tempPermission || nextQueued.permission || 'full',
+          now,
+        });
+      }
       await repository.putTask(nextQueued);
-      const failedRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
-      if (failedRun) {
-        failedRun.state = 'failed';
-        failedRun.activity = 'Agent adapter unavailable';
-        failedRun.finishedAt = now;
-        failedRun.errorKind = 'engine';
+      await repository.putWorkspaceAgentAdapter({
+        workspaceId: readyWorkspace.id,
+        adapterId,
+        state: 'starting',
+        reason: 'Recovering a previously failed workspace adapter before Build.',
+        updatedAt: now,
+      });
+
+      const recoveringRun = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === nextQueued.runId);
+      if (recoveringRun) {
+        recoveringRun.state = 'queued';
+        recoveringRun.activity = 'Repairing workspace AI runtime';
+        recoveringRun.finishedAt = undefined;
+        recoveringRun.errorKind = undefined;
       }
       store.save();
-      emit(sessionId, 'run.failed', {
+
+      emit(sessionId, 'run.state', {
         taskId: nextQueued.id,
-        adapterId,
-        error: `${adapterId} adapter could not start in the development environment. The workspace itself is still available.`,
-        errorKind: 'engine',
-        recoverable: true,
+        state: 'queued',
+        message: 'The previous workspace AI process failed. Your Build is saved while Orlynx repairs or reassigns this workspace automatically.',
       }, nextQueued.runId);
-      return promoteNextQueuedRunInner(sessionId);
+      emit(sessionId, 'activity.progress', {
+        taskId: nextQueued.id,
+        sourceType: 'agent.runtime.wait',
+        adapterId,
+        state: 'recovering',
+        text: 'Repairing this workspace AI runtime · Build will continue automatically…',
+      }, nextQueued.runId);
+
+      const lost = await markWorkspaceConnectionLost(readyWorkspace.id).catch(() => null);
+      const repair = lost || readyWorkspace;
+      void scheduleWorkspacePreparation({
+        sessionId: repair.sessionId,
+        userId: repair.userId,
+        projectId: repair.projectId,
+        repositoryId: repair.repositoryId,
+        branch: repair.branch,
+      }, { allowFallback: true, reason: 'adapter_failed_recovery' }).catch((repairError) => {
+        console.warn(`[queue] adapter-failed workspace repair failed session=${sessionId}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+      });
+      return null;
     }
 
     // Build must never silently execute against a stale checkout. This is
