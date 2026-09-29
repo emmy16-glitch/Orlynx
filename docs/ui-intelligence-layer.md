@@ -1,3 +1,7 @@
+# Historical UI intelligence implementation notes
+
+> **Historical document.** This file records the early UI-system migration and is retained for provenance. Statements about simulated agents, local cloud state, early Vite/React versions or missing production integrations describe the prototype at that time and are not current Orlynx product truth. For the current UI architecture use [orlynx-ui-architecture.md](orlynx-ui-architecture.md), [orlynx-screen-inventory.md](orlynx-screen-inventory.md), [canonical-agent-stream.md](canonical-agent-stream.md) and [../README.md](../README.md).
+
 # Orlynx UI Intelligence Layer
 
 ## 1. Repository state before implementation
