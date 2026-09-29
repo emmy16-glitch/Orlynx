@@ -83,6 +83,7 @@ test('Codespace bootstrap provides a private authenticated safe GitHub CLI for P
 
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
+  assert.match(bridge, /const GITHUB_TOKEN = process\.env\.GITHUB_TOKEN \|\| process\.env\.ORLYNX_GITHUB_TOKEN \|\| ''/);
   assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
   assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
   assert.doesNotMatch(bridge, /--all-interfaces/);
