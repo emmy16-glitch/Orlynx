@@ -191,6 +191,14 @@ describe('canonical agent activity presentation', () => {
     assert.match(rows[2].title, /^Orlynx learned/);
   });
 
+  it('workspace tool streaming preserves exit code and suppresses transient error flashes', () => {
+    const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+    assert.match(bridge, /metadata\.exitCode \?\? metadata\.exit_code \?\? metadata\.code/);
+    assert.match(bridge, /toolFailureTimers/);
+    assert.match(bridge, /setTimeout\(\(\) => \{/);
+    assert.match(bridge, /toolStates\.get\(id\) !== 'error'/);
+  });
+
   it('chat consumes canonical stream selectors rather than raw lifecycle reducers', () => {
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     // Thread projection owns turn grouping by run/user-message IDs — timestamp
