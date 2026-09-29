@@ -65,6 +65,27 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
   }
 });
 
+test('workspace bridge repairs a missing or stale OpenCode binary before declaring the adapter unavailable', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /resolveOpenCodeBinary/);
+  assert.match(bridge, /repairOpenCodeBinary/);
+  assert.match(bridge, /opencode-self-heal/);
+  assert.match(bridge, /opencode-linux-x64-baseline/);
+  assert.match(bridge, /opencode-linux-arm64/);
+  assert.match(bridge, /\/opt\/orlynx\/bin\/opencode/);
+  assert.match(bridge, /npm.*install|spawnSync\('npm'/s);
+  assert.match(bridge, /binary_unavailable/);
+
+  for (const relative of ['../src/runtime-worker.ts', '../../../runtime-worker/src/index.ts']) {
+    const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
+    assert.match(source, /OPENCODE_VERSION=%s/);
+  }
+
+  const runner = fs.readFileSync(new URL('../../../runner-runtime/Dockerfile', import.meta.url), 'utf8');
+  assert.match(runner, /ENV OPENCODE_VERSION=\$\{OPENCODE_VERSION\}/);
+});
+
+
 
 test('Codespace bootstrap provides a private authenticated safe GitHub CLI for Preview forwarding', () => {
   for (const relative of ['../src/runtime-worker.ts', '../../../runtime-worker/src/index.ts']) {
