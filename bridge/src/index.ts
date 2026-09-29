@@ -807,7 +807,7 @@ async function codespacePortMetadata(force = false): Promise<Map<number, Codespa
   if (!force && codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
   if (codespacePortsPending) return codespacePortsPending;
 
-  codespacePortsPending = new Promise((resolve) => {
+  const pending = new Promise<Map<number, CodespacePortMetadata>>((resolve) => {
     const child = spawn('gh', [
       'codespace', 'ports',
       '-c', codespace,
@@ -830,17 +830,17 @@ async function codespacePortMetadata(force = false): Promise<Map<number, Codespa
     };
     const timer = setTimeout(() => {
       try { child.kill('SIGTERM'); } catch {}
-      finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+      finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
     }, 3_000);
     timer.unref?.();
 
     child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-64_000); });
-    child.once('error', () => finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map()));
+    child.once('error', () => finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>()));
     child.once('exit', (code) => {
-      if (code !== 0) return finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+      if (code !== 0) return finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
       try {
         const rows = JSON.parse(stdout || '[]') as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
-        const value = new Map(rows.flatMap((row) => {
+        const value = new Map<number, CodespacePortMetadata>(rows.flatMap((row) => {
           const port = Number(row.sourcePort);
           return Number.isInteger(port) && port > 0
             ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
@@ -849,12 +849,15 @@ async function codespacePortMetadata(force = false): Promise<Map<number, Codespa
         codespacePortsCache = { key: cacheKey, expiresAt: Date.now() + 15_000, value };
         finish(value);
       } catch {
-        finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+        finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
       }
     });
-  }).finally(() => { codespacePortsPending = undefined; });
+  }).finally(() => {
+    if (codespacePortsPending === pending) codespacePortsPending = undefined;
+  });
 
-  return codespacePortsPending;
+  codespacePortsPending = pending;
+  return pending;
 }
 
 async function ensureCodespaceForwardedPort(port: number): Promise<CodespacePortMetadata | undefined> {
