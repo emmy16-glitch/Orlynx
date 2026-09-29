@@ -456,6 +456,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   let workspaceId: string | undefined;
   let automaticWorkspaceInput: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string } | undefined;
   let durableSession: any = null;
+  let queueAfterActive = false;
 
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
@@ -541,6 +542,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     const activeTask = existingTasks
       .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    queueAfterActive = Boolean(activeTask && explicitQueue);
 
     if (activeTask && !explicitQueue) {
       const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
@@ -838,6 +840,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
       mode: effectiveMode,
       plane,
       ...(workspaceId ? { workspaceId } : {}),
+      ...(queueAfterActive ? { queueAfterActive: true } : {}),
       ...(fullAccessForThisTask ? { tempPermission: 'full' as const } : {}),
       messageId: msg.id,
     });
