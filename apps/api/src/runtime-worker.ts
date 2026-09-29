@@ -124,25 +124,32 @@ if test "\${ORLYNX_PREWARM_BROWSER_RUNTIME:-1}" != "0" && grep -Eq '"(playwright
   test -n "$playwright_version" || playwright_version="1.63.0"
   playwright_marker="$runtime/playwright-$playwright_version.ready"
   if ! test -f "$playwright_marker"; then
-    echo "Preparing Playwright Chromium runtime $playwright_version…" >&2
-    playwright_root="$runtime/playwright-cli-$playwright_version"
-    playwright_cli="$playwright_root/node_modules/.bin/playwright"
-    if ! test -x "$playwright_cli"; then
-      mkdir -p "$playwright_root"
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix "$playwright_root" --no-save --no-audit --no-fund "playwright@$playwright_version" >/dev/null
-    fi
+    if ! (
+      set -e
+      echo "Preparing Playwright Chromium runtime $playwright_version…" >&2
+      playwright_root="$runtime/playwright-cli-$playwright_version"
+      playwright_cli="$playwright_root/node_modules/.bin/playwright"
+      if ! test -x "$playwright_cli"; then
+        mkdir -p "$playwright_root"
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix "$playwright_root" --no-save --no-audit --no-fund "playwright@$playwright_version" >/dev/null
+      fi
 
-    # install-deps is idempotent. Codespaces provide sudo; skip the apt work
-    # when the critical Chromium GTK/ATK dependency is already present.
-    if ! (ldconfig -p 2>/dev/null || true) | grep -q 'libatk-1.0.so.0'; then
-      "$playwright_cli" install-deps chromium
-    fi
-    "$playwright_cli" install chromium
+      # install-deps is idempotent. Codespaces provide sudo; skip the apt work
+      # when the critical Chromium GTK/ATK dependency is already present.
+      if ! (ldconfig -p 2>/dev/null || true) | grep -q 'libatk-1.0.so.0'; then
+        "$playwright_cli" install-deps chromium
+      fi
+      "$playwright_cli" install chromium
 
-    # Prove the exact browser/runtime combination can start before exposing the
-    # workspace as ready. This catches missing shared libraries such as libatk.
-    PLAYWRIGHT_MODULE="$playwright_root/node_modules/playwright" node -e 'const { chromium }=require(process.env.PLAYWRIGHT_MODULE); (async()=>{const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e);process.exit(1)})'
-    touch "$playwright_marker"
+      # Prove the exact browser/runtime combination can start before exposing the
+      # browser capability. Workspace bootstrap itself must survive a temporary
+      # third-party apt/npm mirror failure so non-browser Build work can proceed.
+      PLAYWRIGHT_MODULE="$playwright_root/node_modules/playwright" node -e 'const { chromium }=require(process.env.PLAYWRIGHT_MODULE); (async()=>{const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e);process.exit(1)})'
+      touch "$playwright_marker"
+    ); then
+      echo "Playwright Chromium prewarm failed; continuing workspace bootstrap without browser E2E readiness." >&2
+      rm -f "$playwright_marker"
+    fi
   fi
 fi
 

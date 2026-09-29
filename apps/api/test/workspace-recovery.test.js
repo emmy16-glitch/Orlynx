@@ -158,6 +158,8 @@ test('Codespace bootstrap prewarms Playwright browser dependencies once per vers
   assert.match(source, /libatk-1\.0\.so\.0/);
   assert.match(source, /playwright-\$playwright_version\.ready/);
   assert.match(source, /chromium\.launch/);
+  assert.match(source, /if ! \(\s*set -e[\s\S]*install-deps chromium/);
+  assert.match(source, /Playwright Chromium prewarm failed; continuing workspace bootstrap/);
 });
 
 test('Codespace SSH bootstrap retries transient readiness races instead of one-shot timing out', () => {
