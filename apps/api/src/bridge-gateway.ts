@@ -684,7 +684,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               memoryRun.state = 'failed';
               memoryRun.activity = 'Verification needs attention';
               memoryRun.finishedAt = failedAt;
-              memoryRun.errorKind = 'engine';
+              memoryRun.errorKind = 'verification';
               store.save();
             }
 
@@ -699,7 +699,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               timestamp: failedAt,
               payload: {
                 error: verificationText,
-                errorKind: 'engine',
+                errorKind: 'verification',
                 recoverable: true,
                 missing,
               },
