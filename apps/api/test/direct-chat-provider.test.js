@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
 import { listZenModels } from '../src/zen.ts';
-import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, instantReplyFor } from '../src/direct-chat.ts';
+import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, instantReplyFor, publishIntentFor } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
 const catalog = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
@@ -107,23 +107,29 @@ test('catalog remains visible when stored credential cannot decrypt', async () =
 });
 
 
-test('deterministic chat turns bypass the model', () => {
+test('only authoritative local facts bypass the connected model', () => {
   assert.match(
     instantReplyFor({ text: 'what repo are you connected to currently?', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
     /emmy16-glitch\/Orlynx.*main/i,
   );
-  assert.match(
+  assert.equal(
     instantReplyFor({ text: 'can u pull changes from main??', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
-    /Switch to \*\*Build\*\*/i,
+    null,
   );
-  assert.match(
+  assert.equal(
     instantReplyFor({ text: 'hello', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
-    /Orlynx.*main/i,
+    null,
   );
   assert.equal(
     instantReplyFor({ text: 'Explain the authentication architecture', mode: 'plan', project: 'emmy16-glitch/Orlynx', branch: 'main' }),
     null,
   );
+});
+
+test('explicit publish targets never silently push a different branch', () => {
+  assert.equal(publishIntentFor('push to main', 'feature/demo'), null);
+  assert.equal(publishIntentFor('push to current branch', 'feature/demo'), 'direct');
+  assert.equal(publishIntentFor('push to main', 'main'), 'direct');
 });
 
 test('OpenCode runtime never projects user message parts as assistant streaming', () => {

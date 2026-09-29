@@ -68,6 +68,24 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(gateway, /verified: true/);
   });
 
+  it('applies Vite Codespaces host compatibility globally without editing repositories', () => {
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+    assert.match(bridge, /function codespacesPreviewEnvironment\(\)/);
+    assert.match(bridge, /GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN/);
+    assert.match(bridge, /__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS/);
+    assert.match(bridge, /const allowed = \`.\$\{domain\}\`/);
+    assert.match(bridge, /codespacesPreviewEnvironment\(\), \.\.\.extra/);
+    assert.doesNotMatch(bridge, /allowedHosts:\s*true/);
+  });
+
+  it('does not promote API-only HTTP errors into browser Preview candidates', () => {
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+    assert.match(bridge, /const contentType = String\(response\.headers\.get\('content-type'\)/);
+    assert.match(bridge, /response\.status >= 200 && response\.status < 400/);
+    assert.match(bridge, /contentType\.includes\('text\/html'\)/);
+    assert.doesNotMatch(bridge, /response\.status >= 100 && response\.status <= 599/);
+  });
+
   it('Codespaces Preview uses only confirmed GitHub forwarding metadata', () => {
     const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
     const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');

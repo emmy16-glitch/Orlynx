@@ -15,12 +15,6 @@ export function instantReplyFor(input: {
   branch: string;
 }): string | null {
   const text = input.text.trim();
-  const lower = text.toLowerCase();
-
-  if (/^(hi|hello|hey|yo|wass?up|what'?s up|good\s+(morning|afternoon|evening))[!.?\s]*$/i.test(text)) {
-    return `Hi — you're in **${input.project}** on **${input.branch}**. What do you want to work on?`;
-  }
-
   if (/\b(what|which)\s+(repo|repository|project)\b[\s\S]{0,35}\b(connected|open|using|working|currently)\b|\bwhat\s+(repo|repository|project)\s+(are|r)\s+(you|u)\b/i.test(text)) {
     return `Currently connected to **${input.project}** on **${input.branch}**.`;
   }
@@ -33,17 +27,6 @@ export function instantReplyFor(input: {
       return 'In **Plan mode**, I can read repository context, explain the codebase, investigate issues, and produce implementation plans. I will not run commands or change files until you switch to **Build**.';
     }
     return 'In **Ask mode**, I can read repository context and answer questions about the codebase. I will not run commands or change files until you switch to **Build**.';
-  }
-
-  if (input.mode !== 'build' && executionPlaneFor(text, 'build') === 'workspace') {
-    const action = /\bpull\b/i.test(lower)
-      ? 'Pulling changes'
-      : /\b(git\s+status|status)\b/i.test(lower)
-        ? 'Checking Git status'
-        : /\b(start|run)\b[\s\S]{0,25}\b(local\s*host|localhost|server|app|dev)\b/i.test(lower)
-          ? 'Starting the local app/server'
-          : 'That request';
-    return `${action} needs the development environment, so it cannot run in **${input.mode === 'plan' ? 'Plan' : 'Ask'} mode**. Switch to **Build** and send the same request; Orlynx will route it straight to the workspace instead of asking the chat model.`;
   }
 
   return null;
@@ -65,6 +48,11 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
   }
 
   const target = branch.toLowerCase();
+  const explicitDefaultTarget = /\b(?:origin\/)?(main|master)\b/.exec(normalized)?.[1];
+  // Never translate an explicit branch target into "whatever branch this
+  // conversation currently uses". If the target differs, let the model/workspace
+  // lane reason about switching branches or ask for clarification.
+  if (explicitDefaultTarget && explicitDefaultTarget !== target) return null;
   const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+(?:origin\/)?(?:main|master|current\s+branch|branch))?[.!?\s]*$/.test(normalized);
   if (!direct) return null;
 

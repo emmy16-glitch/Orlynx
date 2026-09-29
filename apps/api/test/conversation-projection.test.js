@@ -7,6 +7,7 @@ import { activityTranscriptLabel, buildConversationTimeline, chatActivities, par
 import { emptyAgentStreamState } from '../../web/src/agent-stream/protocol.ts';
 import { applyRawAgentEvents, reconcileAgentStream } from '../../web/src/agent-stream/store.ts';
 import { selectLiveReplies } from '../../web/src/agent-stream/view.ts';
+import { buildThread } from '../../web/src/agent-stream/thread.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
@@ -83,6 +84,31 @@ describe('conversation projection: adapter heartbeat suppression', () => {
       evt('state.delta', { scope: 'bridge', state: 'ready' }),
     ]);
     assert.equal(recovered.length, 0);
+  });
+});
+
+describe('conversation projection: continuing project turns', () => {
+  it('keeps active-run follow-ups inside one stable conversation turn', () => {
+    const stream = emptyAgentStreamState();
+    stream.runs['run-a'] = {
+      id: 'run-a',
+      state: 'running',
+      messageId: 'assistant:run-a',
+      userMessageId: 'u1',
+      mode: 'build',
+      startedAt: '2026-09-29T10:00:00.000Z',
+    };
+    const messages = [
+      { id: 'u1', role: 'user', text: 'Start localhost', createdAt: '2026-09-29T10:00:00.000Z' },
+      { id: 'u2', role: 'user', text: 'What have you done?', runId: 'run-a', createdAt: '2026-09-29T10:01:00.000Z' },
+      { id: 'u3', role: 'user', text: 'Also check Preview', runId: 'run-a', createdAt: '2026-09-29T10:02:00.000Z' },
+    ];
+    const thread = buildThread(messages, [], [], stream);
+    assert.equal(thread.length, 1);
+    assert.equal(thread[0].runId, 'run-a');
+    assert.deepEqual(thread[0].userMessages.map((message) => message.id), ['u1', 'u2', 'u3']);
+    assert.equal(thread[0].userMessage?.id, 'u3');
+    assert.equal(thread[0].userMessageId, 'u1');
   });
 });
 
@@ -419,12 +445,30 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.doesNotMatch(barBlock, /adapter|heartbeat|bridge|state\.delta/i);
   });
 
-  it('75: waiting for approval is distinguishable from working', () => {
+  it('75: waiting for user input or approval is distinguishable from working', () => {
     const src = app();
+    assert.match(src, /activeHarnessRun\?\.state === 'waiting_input'/);
     assert.match(src, /activeHarnessRun\?\.state === 'waiting_approval'/);
-    assert.match(src, /waitingForUser && currentActivity\?\.category === 'approval'[\s\S]*?'Waiting for you'/);
+    assert.match(src, /const waitingForUser = activeHarnessRun\?\.state === 'waiting_input'/);
     assert.match(src, /data-state=\{waitingForUser \? 'waiting' : 'working'\}/);
     assert.match(css(), /\.active-work-pill\[data-state="waiting"\]/);
+  });
+
+  it('queue tray exposes editable cancellable durable work without cluttering the transcript', () => {
+    const src = app();
+    assert.match(src, /<details className="queue-tray"/);
+    assert.match(src, /<QueuedTaskItem[^>]*onSave=\{editQueuedTask\}[^>]*onCancel=\{cancelQueuedTask\}/);
+    assert.match(src, /method: 'PATCH'/);
+    assert.match(src, /method: 'DELETE'/);
+    assert.match(src, /Queue · \{queuedTasks\.length\}/);
+  });
+
+  it('live streaming follows the bottom smoothly only while the user is following live', () => {
+    const src = app();
+    assert.match(src, /const following = followAfterUserScroll\(distance\)/);
+    assert.match(src, /if \(!nearBottomRef\.current \|\| tab !== 'chat' \|\| page !== 'workspace'\) return/);
+    assert.match(src, /requestAnimationFrame\(\(\) => window\.scrollTo\(\{ top: document\.documentElement\.scrollHeight \}\)\)/);
+    assert.match(src, /if \(!nearBottomRef\.current && batch\.some\(\(item\) => isFollowWorthyEvent/);
   });
 
   it('60/62/72: one calm motion language, current activity only', () => {

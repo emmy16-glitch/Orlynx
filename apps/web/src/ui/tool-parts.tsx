@@ -54,8 +54,11 @@ function hasRenderableDetail(part: ThreadPart): boolean {
     case 'git': return command || branch || raw;
     case 'preview': return command || port || raw;
     case 'approval': return action || approval || raw;
-    case 'error':
     case 'status':
+      return str(evidence.sourceType) === 'agent.reflection'
+        ? Boolean(str(evidence.orlynxText) || str(evidence.modelText))
+        : command || path || raw;
+    case 'error':
     case 'generic':
     default: return command || path || raw;
   }
@@ -107,8 +110,9 @@ function childrenFor(part: ThreadPart, onResolveApproval?: ResolveApproval): Rea
       return <PreviewDetail part={part} />;
     case 'approval':
       return <ApprovalDetail part={part} onResolveApproval={onResolveApproval} />;
-    case 'error':
     case 'status':
+      return <StatusDetail part={part} />;
+    case 'error':
     case 'generic':
     default:
       return <GenericDetail part={part} />;
@@ -271,6 +275,29 @@ function ApprovalDetail({ part, onResolveApproval }: { part: ThreadPart; onResol
       )}
       {part.item.state === 'waiting' && !approvalId && <div className="small">This permission request cannot be acted on from chat because it came from legacy history.</div>}
       {error && <div className="small ox-inline-error" role="alert">{error}</div>}
+    </div>
+  );
+}
+
+function StatusDetail({ part }: { part: ThreadPart }) {
+  const evidence = asRecord(part.item.evidence);
+  if (str(evidence.sourceType) !== 'agent.reflection') return <GenericDetail part={part} />;
+  const reflectionId = Number(evidence.reflectionId || 1);
+  const orlynxText = str(evidence.orlynxText);
+  const modelText = str(evidence.modelText);
+  return (
+    <div className="ox-investigation" aria-label={`Investigation ${reflectionId} dialogue`}>
+      {orlynxText && <div className="ox-investigation-line" data-speaker="orlynx">
+        <span className="ox-investigation-speaker">Orlynx</span>
+        <p>{orlynxText}</p>
+      </div>}
+      {modelText ? <div className="ox-investigation-line" data-speaker="model">
+        <span className="ox-investigation-speaker">Model</span>
+        <p>{modelText}</p>
+      </div> : <div className="ox-investigation-line is-pending" data-speaker="model">
+        <span className="ox-investigation-speaker">Model</span>
+        <p>Reviewing the evidence and choosing the next check…</p>
+      </div>}
     </div>
   );
 }

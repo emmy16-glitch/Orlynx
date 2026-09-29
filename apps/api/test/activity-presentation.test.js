@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { activityTranscriptLabel, buildConversationTimeline, chatActivities, parseTestCounts, toActivities } from '../../web/src/ui/mapping.ts';
+import { toThreadParts } from '../../web/src/agent-stream/parts.ts';
+import { redactEventString, sanitizeEvent } from '../src/events.ts';
 
 const event = (sequence, type, payload = {}, runId = 'run-a', eventId = `evt-${sequence}`) => ({
   eventId, sessionId: 'session-a', runId, sequence, timestamp: new Date(sequence * 1000).toISOString(), type, payload,
@@ -168,6 +170,45 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
+  it('groups one reflection cycle into an ordered Investigation dialogue', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 2,
+        text: 'Orlynx → Model: localhost is healthy but browser Preview is still unverified.',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 2,
+        text: 'Model → Orlynx: check the provider forwarding layer instead of restarting the app.',
+      }),
+    ]);
+    const parts = toThreadParts(rows);
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0].kind, 'status');
+    assert.equal(parts[0].title, 'Investigation 2');
+    assert.equal(parts[0].item.evidence?.sourceType, 'agent.reflection');
+    assert.match(String(parts[0].item.evidence?.orlynxText), /browser Preview is still unverified/);
+    assert.match(String(parts[0].item.evidence?.modelText), /provider forwarding layer/);
+  });
+
+  it('sanitizes historical event payloads before replay or reflection reuse', () => {
+    const historical = sanitizeEvent(event(9, 'tool.output', {
+      out: '[auth] generated admin token: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      authorization: 'Bearer ghp_abcdefghijklmnopqrstuvwxyz123456',
+    }));
+    assert.equal(historical.payload.out, '[auth] generated admin token: [redacted]');
+    assert.equal(historical.payload.authorization, '[redacted]');
+  });
+
+  it('redacts likely credentials before event output can reach chat or durable storage', () => {
+    assert.equal(
+      redactEventString('[auth] generated admin token: 1bdc0ec863f6963f54c0fe630c1a5cf7476c147f0779de44630d5398f3e5ce17'),
+      '[auth] generated admin token: [redacted]',
+    );
+    assert.equal(redactEventString('Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456'), 'Authorization: Bearer [redacted-github-token]');
+  });
+
   it('streams Orlynx ↔ model diagnostic exchanges as distinct visible rows', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
@@ -239,6 +280,17 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /Connecting Orlynx bridge…/);
     assert.match(workspaces, /Starting OpenCode…/);
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
+  });
+
+  it('renders reflections as one compact Investigation surface and keeps waiting_input active', () => {
+    const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+    assert.match(parts, /className="ox-investigation"/);
+    assert.match(parts, /ox-investigation-speaker">Orlynx/);
+    assert.match(parts, /ox-investigation-speaker">Model/);
+    assert.match(app, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]/);
+    assert.match(app, /activeHarnessRun\?\.state === 'waiting_input'/);
+    assert.match(app, /replace\(\/\^Model\\s\*\[→>-\]/);
   });
 
   it('shows execution evidence inline without empty disclosure affordances', () => {

@@ -25,6 +25,8 @@ export interface ThreadTurn {
   runId?: string;
   userMessageId?: string;
   userMessage?: PersistedChatMessage;
+  /** All user messages explicitly attached to this run, including live follow-ups. */
+  userMessages: PersistedChatMessage[];
   assistantMessage?: PersistedChatMessage;
   liveReply?: LiveReplyView;
   /** Work owned by this run, in lifecycle-start order. */
@@ -48,7 +50,7 @@ export function buildThread(
   const ensureTurn = (key: string, runId?: string): ThreadTurn => {
     let turn = byKey.get(key);
     if (!turn) {
-      turn = { key, runId, work: [], state: 'idle' };
+      turn = { key, runId, userMessages: [], work: [], state: 'idle' };
       byKey.set(key, turn);
       turns.push(turn);
     }
@@ -68,11 +70,14 @@ export function buildThread(
   const userTurnKey = new Map<string, string>();
   for (const message of messages) {
     if (message.role !== 'user') continue;
-    const runId = Object.values(stream.runs).find((run) => run.userMessageId === message.id)?.id;
+    const runId = message.runId || Object.values(stream.runs).find((run) => run.userMessageId === message.id)?.id;
     const key = runId ? `run:${runId}` : `user:${message.id}`;
     const turn = ensureTurn(key, runId);
+    if (!turn.userMessages.some((item) => item.id === message.id)) turn.userMessages.push(message);
+    // Keep the newest user message as the convenient prompt pointer while
+    // preserving every follow-up in userMessages for rendering.
     turn.userMessage = message;
-    turn.userMessageId = message.id;
+    turn.userMessageId ||= message.id;
     userTurnKey.set(message.id, key);
   }
 
@@ -86,7 +91,8 @@ export function buildThread(
         const user = messages.find((m) => m.id === run.userMessageId);
         if (user) {
           turn.userMessage = user;
-          turn.userMessageId = user.id;
+          if (!turn.userMessages.some((item) => item.id === user.id)) turn.userMessages.push(user);
+          turn.userMessageId ||= user.id;
         }
       }
     }
@@ -107,7 +113,8 @@ export function buildThread(
       const user = messages.find((m) => m.id === reply.userMessageId);
       if (user) {
         turn.userMessage = user;
-        turn.userMessageId = user.id;
+        if (!turn.userMessages.some((item) => item.id === user.id)) turn.userMessages.push(user);
+        turn.userMessageId ||= user.id;
       }
     }
   }
@@ -149,12 +156,18 @@ export function buildThread(
   // Stable chronological order: anchor each turn to its user message time,
   // then first work sequence. Never re-sort on every delta (no jumping rows).
   const timeOf = (turn: ThreadTurn): number => {
+    if (turn.userMessages.length) {
+      const times = turn.userMessages.map((message) => Date.parse(message.createdAt)).filter(Number.isFinite);
+      if (times.length) return Math.min(...times);
+    }
     if (turn.userMessage) return Date.parse(turn.userMessage.createdAt) || 0;
     const first = turn.work[0];
     return first ? Date.parse(first.timestamp) || 0 : 0;
   };
   turns.sort((a, b) => timeOf(a) - timeOf(b) || a.key.localeCompare(b.key));
   for (const turn of turns) {
+    turn.userMessages.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
+    if (turn.userMessages.length) turn.userMessage = turn.userMessages[turn.userMessages.length - 1];
     turn.work.sort((a, b) => (a.sequence || 0) - (b.sequence || 0) || a.key.localeCompare(b.key));
   }
   return turns;

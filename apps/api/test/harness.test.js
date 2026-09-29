@@ -11,6 +11,7 @@ import {
   detectEvidenceContradictions,
   openCodeToolsFor,
   prepareReflection,
+  queueIntentFor,
   reflectionInstruction,
   shouldReflect,
   shouldSalvage,
@@ -229,6 +230,26 @@ test('waiting-for-user is a real paused harness state with no active tools', () 
   assert.deepEqual(waiting.toolFamilies, []);
 });
 
+test('Preview reflection diagnoses provider transport before mutating project config', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'start localhost and open preview',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = advanceHarnessPhase(cp, 'executing', { mode: 'build', permission: 'full' });
+  cp = verifyHarness(cp, [
+    evt(1, 'tool.completed', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+  ]);
+  cp = prepareReflection(cp, [
+    evt(1, 'tool.completed', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+  ]);
+  const instruction = reflectionInstruction(cp);
+  assert.match(instruction, /diagnose Orlynx\/provider forwarding before editing the repository/i);
+  assert.match(instruction, /diagnostic-only project change is no longer needed/i);
+  assert.match(instruction, /detach the process cleanly/i);
+});
+
 test('human-only input can be requested after the streamed model diagnostic', () => {
   const value = userInputRequest('Model → Orlynx: the repository cannot reveal this secret.\n\n[NEEDS_USER_INPUT] Please provide the deployment token.');
   assert.equal(value, 'Please provide the deployment token.');
@@ -303,6 +324,17 @@ test('real workspace reflection carries an id and emits Model to Orlynx activity
   assert.match(bridge, /Model\\s\*\[→>-\]\\s\*Orlynx:/);
 });
 
+test('direct and workspace runs never finalize with unapplied follow-up input', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(agents, /const latestBeforeFinalize = await repository\.getTask\(task\.id\)/);
+  assert.match(agents, /unappliedBeforeFinalize/);
+  assert.match(agents, /Continuing with your latest message/);
+  assert.match(gateway, /const latestBeforeFinalize = await repository\.getTask\(task\.id\)/);
+  assert.match(gateway, /const lateSteering = latestBeforeFinalize\?\.harness\?\.inbox\.filter/);
+  assert.match(gateway, /a newer user follow-up arrived before finalization/i);
+});
+
 test('durable workspace gateway verifies evidence and either salvages or completes explicitly', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
   assert.match(gateway, /task\.harness = verifyHarness\(task\.harness, recent/);
@@ -324,12 +356,49 @@ test('OpenCode tool work emits canonical step boundaries for harness budgeting',
   assert.match(protocol, /'step\.finished': 'step\.finished'/);
 });
 
-test('active message admission steers the running workspace task rather than creating another Build task', () => {
+test('active message admission continues the same task across direct and workspace planes', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  assert.match(routes, /const steeringAction = steeringActionFor\(String\(text\)\)/);
-  assert.match(routes, /find\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\) && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
+  assert.match(routes, /const requestedSteeringAction = steeringActionFor\(String\(text\)\)/);
+  assert.match(routes, /filter\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\)\)/);
+  assert.match(routes, /requestedSteeringAction === 'ignore' \? 'append' : requestedSteeringAction/);
+  assert.match(routes, /const closingPhase = unresolvedTask\?\.harness\?\.phase === 'verifying' \|\| unresolvedTask\?\.harness\?\.phase === 'finalizing'/);
+  assert.match(routes, /queueAfterActive = Boolean\(unresolvedTask && \(explicitQueue \|\| !activeTask\)\)/);
+  assert.match(routes, /if \(publishIntent && !queueAfterActive\)/);
+  assert.match(routes, /msg\.runId = activeTask\.runId/);
   assert.match(routes, /resumeWaitingInputTask\(s\.id, waitingInputTask\.id, String\(text\)\)/);
   assert.match(routes, /applySteering\(activeTask, String\(text\), steeringAction, now\)/);
-  assert.match(routes, /Added that to the current Build task\./);
+  assert.match(routes, /continued: true/);
+  assert.match(routes, /cancelDirectRun/);
   assert.match(routes, /bridgeCancelCommand/);
+  assert.doesNotMatch(routes, /const ackRunId =/);
+  assert.doesNotMatch(routes, /Added that to the current Build task\./);
+});
+
+test('only explicit next-work language creates a separate queued task', () => {
+  assert.equal(queueIntentFor('also check the mobile view'), false);
+  assert.equal(queueIntentFor('what have you done so far?'), false);
+  assert.equal(queueIntentFor('queue this: run the accessibility audit'), true);
+  assert.equal(queueIntentFor('after this is finished, run the full test suite'), true);
+  assert.equal(queueIntentFor('do this next: inspect the API'), true);
+});
+
+test('durable queue exposes edit and cancel controls against the scheduler ledger', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(routes, /router\.get\('\/sessions\/:id\/tasks'/);
+  assert.match(routes, /router\.patch\('\/sessions\/:id\/tasks\/:taskId'/);
+  assert.match(routes, /router\.delete\('\/sessions\/:id\/tasks\/:taskId'/);
+  assert.match(routes, /Only queued tasks can be edited/);
+  assert.match(routes, /Only queued tasks can be cancelled here/);
+  assert.match(routes, /const explicitQueue = queueIntentFor\(String\(text\)\)/);
+  assert.match(routes, /a\.plane === 'direct' \? 0 : 1/);
+});
+
+test('direct Ask and Plan continue the same task inbox before finalizing', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /for \(let continuationRound = 0; continuationRound < 4; continuationRound \+= 1\)/);
+  assert.match(agents, /freshTask\.harness\?\.inbox\.filter\(\(item\) => !item\.appliedAt\)/);
+  assert.match(agents, /Continue the same Orlynx conversation/);
+  assert.match(agents, /latestContinuation/);
+  assert.match(agents, /runId: run\.id/);
+  assert.match(agents, /agent\.dialogue\.orlynx/);
 });

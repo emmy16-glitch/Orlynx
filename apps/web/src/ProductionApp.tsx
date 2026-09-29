@@ -63,6 +63,10 @@ function visibleChatText(role: string, text: string, prompt = ''): string {
   let cleaned = (index >= 0 ? text.slice(index + marker.length) : text)
     .replace(/^\s*Conversation so far:[\s\S]*?Assistant:\s*/i, '')
     .trim();
+  // Reflection diagnostics have their own ordered Investigation surface.
+  // Strip only the leading public diagnostic line from the normal assistant
+  // bubble so the same Model → Orlynx sentence is not rendered twice.
+  cleaned = cleaned.replace(/^Model\s*[→>-]\s*Orlynx:[^\n]*(?:\n+|$)/i, '').trimStart();
   const request = prompt.trim();
 
   // Older workspace runs sent private Orlynx guardrails and the user prompt as
@@ -224,12 +228,62 @@ function UserMessageText({ text }: { text: string }) {
   return <div className="user-message-body-wrap"><MarkdownText text={text} className="user-message-body" /></div>;
 }
 
+function QueuedTaskItem({ task, onSave, onCancel }: {
+  task: any;
+  onSave: (taskId: string, text: string) => Promise<void>;
+  onCancel: (taskId: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(task.prompt || ''));
+  const [busy, setBusy] = useState<'save' | 'cancel' | null>(null);
+  const [rowError, setRowError] = useState('');
+
+  useEffect(() => {
+    if (!editing) setDraft(String(task.prompt || ''));
+  }, [task.prompt, editing]);
+
+  const save = async () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy('save'); setRowError('');
+    try { await onSave(task.id, text); setEditing(false); }
+    catch (error) { setRowError(error instanceof Error ? error.message : 'Queued task could not be updated.'); }
+    finally { setBusy(null); }
+  };
+  const cancel = async () => {
+    if (busy) return;
+    setBusy('cancel'); setRowError('');
+    try { await onCancel(task.id); }
+    catch (error) { setRowError(error instanceof Error ? error.message : 'Queued task could not be cancelled.'); }
+    finally { setBusy(null); }
+  };
+
+  return <div className="queue-item" data-state={task.state}>
+    <div className="queue-item-head">
+      <span className="queue-position">#{task.position || '?'}</span>
+      <span className="queue-mode">{task.mode === 'build' ? 'Build' : task.mode === 'plan' ? 'Plan' : 'Ask'}</span>
+      <span className="queue-plane">{task.plane === 'workspace' ? 'Workspace' : 'Chat'}</span>
+    </div>
+    {editing
+      ? <textarea className="queue-edit" rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} aria-label="Edit queued task" />
+      : <p className="queue-prompt">{String(task.prompt || '')}</p>}
+    <div className="queue-actions">
+      {editing
+        ? <><button type="button" onClick={() => { setDraft(String(task.prompt || '')); setEditing(false); }} disabled={Boolean(busy)}>Keep</button><button type="button" onClick={() => void save()} disabled={!draft.trim() || Boolean(busy)}>{busy === 'save' ? 'Saving…' : 'Save'}</button></>
+        : <button type="button" onClick={() => setEditing(true)} disabled={Boolean(busy)}>Edit</button>}
+      <button type="button" className="queue-cancel" onClick={() => void cancel()} disabled={Boolean(busy)}>{busy === 'cancel' ? 'Cancelling…' : 'Cancel'}</button>
+    </div>
+    {rowError && <div className="queue-error" role="alert">{rowError}</div>}
+  </div>;
+}
+
 export default function ProductionApp() {
   const [page, setPage] = useState<Page>('welcome');
   const [tab, setTab] = useState<Tab>('chat');
   const [session, setSession] = useState<any>(null);
   const [lastRun, setLastRun] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
   const [integration, setIntegration] = useState<any>({ github: {}, githubAvailable: true, ai: { available: false }, workspace: { terminalAvailable: false, cloudAvailable: false, previewAvailable: false } });
   const [repos, setRepos] = useState<Repo[]>([]);
   const [repoQuery, setRepoQuery] = useState('');
@@ -387,18 +441,19 @@ export default function ProductionApp() {
     if (inFlight) return inFlight;
 
     const refresh = (async () => {
-      const [messageData, changeData, details, runData, attachmentData] = await Promise.all([
+      const [messageData, changeData, details, runData, attachmentData, taskData] = await Promise.all([
         fetch(`/v1/sessions/${id}/messages`).then((response) => j<any[]>(response)),
         fetch(`/v1/sessions/${id}/changes`).then((response) => j<any[]>(response)),
         fetch(`/v1/sessions/${id}`).then((response) => j<any>(response)),
         fetch(`/v1/sessions/${id}/runs`).then((response) => j<any[]>(response)),
         fetch(`/v1/sessions/${id}/attachments`).then((response) => j<any[]>(response)),
+        fetch(`/v1/sessions/${id}/tasks`).then((response) => j<any[]>(response)),
       ]);
 
       // Ignore a response for a conversation the user has already left.
       if (currentSessionRef.current?.id && currentSessionRef.current.id !== id) return;
 
-      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData); setRuns(runData);
+      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData); setRuns(runData); setTasks(taskData);
       const latestRun = runData.slice(-1)[0] || null;
       setLastRun(latestRun); runRef.current = latestRun;
 
@@ -789,6 +844,22 @@ export default function ProductionApp() {
     if (decision === 'allow_once') void refreshPorts();
   }
 
+  async function editQueuedTask(taskId: string, text: string) {
+    if (!session?.id) throw new Error('Open a project before editing the queue.');
+    await j(await fetch(`/v1/sessions/${session.id}/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }));
+    await refreshSession(session.id);
+  }
+
+  async function cancelQueuedTask(taskId: string) {
+    if (!session?.id) throw new Error('Open a project before cancelling queued work.');
+    await j(await fetch(`/v1/sessions/${session.id}/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }));
+    await refreshSession(session.id);
+  }
+
   async function loadRepositories() {
     setRepoBusy(true); setError('');
     try { const response = await j<any>(await fetch('/v1/repos')); setIntegration((current: any) => ({ ...current, github: response.connection })); setRepos(response.github || []); setSelectedRepo(null); setBranches([]); }
@@ -1012,8 +1083,9 @@ export default function ProductionApp() {
   }
 
   const submittingRef = useRef(false);
-  // overrideText resends an earlier prompt as a NEW run: history is never
-  // rewritten, repository state is never replayed, only continued.
+  // Retry after a completed/failed turn starts new work; history is never rewritten by retry.
+  // Messages sent during active work are attached server-side to that same run,
+  // preserving one continuous conversation without spawning a parallel chat.
   async function sendMessage(overrideText?: string): Promise<boolean> {
     const text = (overrideText ?? composer).trim();
     if (!session || !text || submittingRef.current || sending || !online) return false;
@@ -1213,9 +1285,10 @@ export default function ProductionApp() {
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
-  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_approval'].includes(candidate.state))
-    || ['running', 'queued', 'waiting_approval'].includes(String(lastRun?.state || ''));
-  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_approval'].includes(candidate.state) && candidate.harness);
+  const queuedTasks = tasks.filter((task: any) => task.state === 'queued').sort((a: any, b: any) => Number(a.position || 0) - Number(b.position || 0));
+  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(candidate.state))
+    || ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(String(lastRun?.state || ''));
+  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_input', 'waiting_approval'].includes(candidate.state) && candidate.harness);
   const activeHarness = activeHarnessRun?.harness;
   const harnessRemaining = activeHarness ? Math.max(0, Number(activeHarness.stepBudget || 0) - Number(activeHarness.step || 0)) : null;
   const harnessMissing = Array.isArray(activeHarness?.verification?.missing) ? activeHarness.verification.missing : [];
@@ -1223,14 +1296,17 @@ export default function ProductionApp() {
     ? `Verifying${harnessMissing.length ? ` ${harnessMissing.slice(0, 2).join(' + ')}` : ' result'}`
     : activeHarness?.phase === 'finalizing'
       ? 'Finishing result'
-      : activeHarnessRun?.state === 'waiting_approval'
-        ? 'Waiting for approval'
-        : harnessRemaining !== null && harnessRemaining <= 3
+      : activeHarnessRun?.state === 'waiting_input'
+        ? 'Waiting for you'
+        : activeHarnessRun?.state === 'waiting_approval'
+          ? 'Waiting for approval'
+          : harnessRemaining !== null && harnessRemaining <= 3
           ? `${harnessRemaining} step${harnessRemaining === 1 ? '' : 's'} left`
           : '';
-  const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
+  const waitingForUser = activeHarnessRun?.state === 'waiting_input'
+    || (currentActivity?.state === 'waiting' && currentActivity?.category === 'approval');
   const showWorkBar = tab === 'chat' && newActivity && Boolean(currentActivity || runActive);
-  const workBarLabel = waitingForUser && currentActivity?.category === 'approval'
+  const workBarLabel = waitingForUser
     ? 'Waiting for you'
     : currentActivity?.title || harnessStatusLabel || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
@@ -1408,7 +1484,8 @@ export default function ProductionApp() {
                 </div></div>}
                 {thread.map((turn) => {
                   const parts = toThreadParts(turn.work);
-                  const userText = turn.userMessage ? visibleChatText('user', turn.userMessage.text, '') : '';
+                  const turnUserMessages = turn.userMessages?.length ? turn.userMessages : turn.userMessage ? [turn.userMessage] : [];
+                  const latestTurnUser = turnUserMessages[turnUserMessages.length - 1];
                   const durable = turn.assistantMessage;
                   const durableIndex = durable ? messages.findIndex((candidate) => candidate.id === durable.id) : -1;
                   const priorUserPrompt = durable && durableIndex > 0 && messages[durableIndex - 1]?.role === 'user'
@@ -1420,10 +1497,13 @@ export default function ProductionApp() {
                     : turn.state === 'paused' ? 'Paused'
                     : turn.state === 'queued' ? 'Queued'
                     : 'Working…';
-                  const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, turn.userMessage ? String(turn.userMessage.text || '') : '') : '';
+                  const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, latestTurnUser ? String(latestTurnUser.text || '') : '') : '';
                   const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
-                    {turn.userMessage && <article className="message-row user-message"><div className="user-message-stack"><div className="message-meta user-message-meta"><time>{new Date(turn.userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(turn.userMessage!.text || ''))} /></div></article>}
+                    {turnUserMessages.map((userMessage: any, userIndex: number) => {
+                      const userText = visibleChatText('user', userMessage.text, '');
+                      return <article className="message-row user-message" data-continuation={userIndex > 0 ? 'true' : undefined} key={userMessage.id}><div className="user-message-stack"><div className="message-meta user-message-meta">{userIndex > 0 && <span className="continuation-label">Follow-up</span>}<time>{new Date(userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(userMessage.text || ''))} /></div></article>;
+                    })}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">{turnStatusLabel}</span>}</div>
                       {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
                       {turn.liveReply && liveText && !durable && !hideProgressNarration && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
@@ -1466,6 +1546,10 @@ export default function ProductionApp() {
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { nearBottomRef.current = true; window.scrollTo({ top: document.documentElement.scrollHeight, behavior: jumpBehavior() }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span></div></div>}
+              {tab === 'chat' && queuedTasks.length > 0 && <details className="queue-tray" open={queuedTasks.length <= 2}>
+                <summary><span><Icon name="clock" size={14} />Queue · {queuedTasks.length}</span><small>{queuedTasks.length === 1 ? '1 task waiting' : `${queuedTasks.length} tasks waiting`}</small><Icon name="chevron" size={12} /></summary>
+                <div className="queue-list">{queuedTasks.map((task: any) => <QueuedTaskItem key={task.id} task={task} onSave={editQueuedTask} onCancel={cancelQueuedTask} />)}</div>
+              </details>}
               {tab === 'chat' && <form className={`composer ${composerExpanded ? 'is-expanded' : 'is-idle'}`} onSubmit={(event) => { event.preventDefault(); sendMessage(); }}><details className="attachment-menu"><summary className="attach-button" aria-label="Add attachment"><Icon name="paperclip" /></summary><div className="attachment-popover"><label><Icon name="file" />Files<input type="file" hidden onChange={uploadFile} /></label><label><Icon name="preview" />Photos<input type="file" accept="image/*" hidden onChange={uploadFile} /></label><label><Icon name="camera" />Camera<input type="file" accept="image/*" capture="environment" hidden onChange={uploadFile} /></label><button type="button" onClick={() => setTab('files')}><Icon name="folder" />Repository file</button><div className="attachment-link"><input type="url" value={attachmentLink} onChange={(event) => setAttachmentLink(event.target.value)} placeholder="https://…" aria-label="Link to attach" /><button type="button" onClick={addAttachmentLink}>Add link</button></div></div></details><div className="composer-body">
   <div className="composer-controls">
     {aiAccountConnected ? <>

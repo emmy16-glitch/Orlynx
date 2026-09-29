@@ -75,9 +75,16 @@ describe('retry semantics (§§144-149, 175-178, 183, 185)', () => {
   });
 
   it('resend creates a new attempt; history is never rewritten', () => {
-    assert.match(app(), /overrideText \?\? composer/);
-    assert.match(app(), /if \(!overrideText\) \{ setComposer\(''\);/);
-    assert.match(app(), /history is never\s*\n?\s*\/\/? ?rewritten|never\s*\n.*rewritten/s);
+    const src = app();
+    assert.match(src, /overrideText \?\? composer/);
+    assert.match(src, /const clientId = uid\(\)/);
+    assert.match(src, /fetch\(\`\/v1\/sessions\/\$\{session\.id\}\/messages\`, \{ method: 'POST'/);
+    assert.match(src, /if \(!overrideText\) \{ setComposer\(''\);/);
+    const editStart = src.indexOf('function editAndResend');
+    const editEnd = src.indexOf('async function startCloud', editStart);
+    const editBlock = src.slice(editStart, editEnd);
+    assert.match(editBlock, /setComposer\(text\)/);
+    assert.doesNotMatch(editBlock, /setMessages\(|PUT|PATCH/);
   });
 });
 

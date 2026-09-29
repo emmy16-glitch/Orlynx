@@ -29,6 +29,7 @@ export interface TaskOptions {
   messageId?: string;
   plane?: ExecutionPlane;
   workspaceId?: string;
+  queueAfterActive?: boolean;
 }
 
 const staleTaskGraceMs = 15_000;
@@ -37,6 +38,8 @@ const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS ||
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
   const queued = tasks.filter((item) => item.state === 'queued');
+  const hasActive = tasks.some((item) => ['running', 'waiting_input', 'waiting_approval'].includes(item.state));
+  if (hasActive) return undefined;
   return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
 }
 
@@ -224,10 +227,10 @@ async function executeDirectTask(
       }, run.id);
     }
 
-    const responseText = await adapter.streamDirectChat({
+    const streamDirectTurn = async (prompt: string, messageId?: string) => adapter.streamDirectChat!({
       runId: run.id,
-      messageId: task.messageId,
-      prompt: task.prompt,
+      messageId,
+      prompt,
       acceptedAt: task.createdAt,
       session,
       modelId,
@@ -244,9 +247,87 @@ async function executeDirectTask(
         else scheduleFlush();
       },
     });
+
+    let responseText = await streamDirectTurn(task.prompt, task.messageId);
+
+    // Direct Ask/Plan follows the same continuation contract as workspace
+    // Build. Messages received while the provider is answering are stored in
+    // the task inbox; before finalizing, feed them back to the connected model
+    // in the same Orlynx run instead of creating a parallel chat/run.
+    for (let continuationRound = 0; continuationRound < 4; continuationRound += 1) {
+      const freshTask = await repository.getTask(task.id);
+      if (!freshTask || freshTask.state === 'cancelled') return;
+      const pendingSteering = freshTask.harness?.inbox.filter((item) => !item.appliedAt) || [];
+      if (!pendingSteering.length) {
+        Object.assign(task, freshTask);
+        break;
+      }
+
+      const appliedAt = new Date().toISOString();
+      if (freshTask.harness) {
+        freshTask.harness = {
+          ...freshTask.harness,
+          inbox: freshTask.harness.inbox.map((item) => item.appliedAt ? item : { ...item, appliedAt }),
+        };
+      }
+      freshTask.state = 'running';
+      freshTask.updatedAt = appliedAt;
+      await repository.putTask(freshTask);
+      Object.assign(task, freshTask);
+
+      const updateText = [
+        'Continue the same Orlynx conversation. The user sent these updates while you were answering:',
+        ...pendingSteering.map((item) => `[${item.action.toUpperCase()}] ${item.text}`),
+        visible ? `Your response already streamed so far:\n${visible.slice(-8_000)}` : '',
+        'Respond to the newest user intent and correct or extend the existing answer as needed. Do not restart the conversation or repeat completed explanation.',
+      ].filter(Boolean).join('\n\n');
+
+      emit(session.id, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: task.harness?.steeringRevision || continuationRound + 1,
+        text: `Orlynx → Model: the user added context while this response was running. Continue the same conversation and incorporate the update before finalizing.`,
+      }, run.id);
+
+      if (visible && !visible.endsWith('\n\n')) {
+        visible += '\n\n';
+        pendingDelta += '\n\n';
+        flushDelta();
+      }
+      const history = await repository.listMessages(session.id);
+      const latestContinuation = [...history].reverse().find((message) => message.role === 'user' && message.runId === run.id);
+      await streamDirectTurn(updateText, latestContinuation?.id);
+      responseText = visible;
+    }
+    if (visible) responseText = visible;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
     flushDelta();
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
+
+    // Close the race where a follow-up lands just after the last continuation
+    // round. Keep the same task/run identity and let the durable promoter resume
+    // it again; never finalize while unapplied human input is still in the inbox.
+    const latestBeforeFinalize = await repository.getTask(task.id);
+    const unappliedBeforeFinalize = latestBeforeFinalize?.harness?.inbox.some((item) => !item.appliedAt) || false;
+    if (latestBeforeFinalize && unappliedBeforeFinalize) {
+      const queuedAt = new Date().toISOString();
+      latestBeforeFinalize.state = 'queued';
+      latestBeforeFinalize.updatedAt = queuedAt;
+      await repository.putTask(latestBeforeFinalize);
+      Object.assign(task, latestBeforeFinalize);
+      run.state = 'queued';
+      run.activity = 'Continuing with your latest message';
+      run.finishedAt = undefined;
+      run.errorKind = undefined;
+      store.save();
+      emit(session.id, 'run.state', {
+        taskId: task.id,
+        state: 'queued',
+        continued: true,
+        message: 'A newer follow-up arrived. Continuing the same conversation before finalizing.',
+      }, run.id);
+      return;
+    }
 
     const now = new Date().toISOString();
     task.harness ||= createHarnessCheckpoint({
@@ -791,9 +872,11 @@ export async function startRun(sessionId: string, project: string, userText: str
     if (plane === 'workspace' && !options.workspaceId) throw new Error('The development environment could not be initialized.');
     const durableTasks = await reconcileDurableTasks(sessionId);
     const queuedTotal = durableTasks.filter((item) => item.state === 'queued').length;
-    const queuedAhead = durableTasks.filter((item) =>
-      item.state === 'queued' && (item.plane || 'workspace') === plane
-    ).length;
+    const queuedAhead = options.queueAfterActive
+      ? durableTasks.filter((item) => item.state === 'queued').length
+      : durableTasks.filter((item) =>
+          item.state === 'queued' && (item.plane || 'workspace') === plane
+        ).length;
     if (queuedTotal >= maxQueuedTasks) {
       const error = new Error(`Orlynx already has ${queuedTotal} queued tasks for this conversation. Wait for one to start or cancel a queued task.`);
       (error as { errorKind?: string }).errorKind = 'queue_full';
@@ -828,13 +911,16 @@ export async function startRun(sessionId: string, project: string, userText: str
       mode,
       permission: prefs.permission,
       tempPermission: options.tempPermission,
-      harness: createHarnessCheckpoint({
-        prompt: userText,
-        mode,
-        permission,
-        plane,
-        now: admittedAt,
-      }),
+      harness: {
+        ...createHarnessCheckpoint({
+          prompt: userText,
+          mode,
+          permission,
+          plane,
+          now: admittedAt,
+        }),
+        ...(options.queueAfterActive ? { queueAfterActive: true } : {}),
+      },
       createdAt: admittedAt,
       updatedAt: admittedAt,
     };

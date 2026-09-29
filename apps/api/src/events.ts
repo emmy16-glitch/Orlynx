@@ -6,7 +6,34 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 const durableQueues = new Map<string, Promise<void>>();
 const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
 
+export function redactEventString(value: string): string {
+  return String(value || '')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[redacted-api-key]')
+    .replace(/((?:admin\s+)?token|password|secret|api[_ -]?key|authorization|bearer)(\s*(?:[:=]|is)?\s*)([A-Za-z0-9._~+/=-]{16,})/ig, '$1$2[redacted]')
+    .replace(/((?:admin\s+)?token[^\n]{0,80}?)([a-f0-9]{40,128})\b/ig, '$1[redacted]');
+}
+function redactEventValue(value: unknown): unknown {
+  if (typeof value === 'string') return redactEventString(value);
+  if (Array.isArray(value)) return value.map(redactEventValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /token|secret|password|private.?key|api.?key|credential|authorization/i.test(key) ? '[redacted]' : redactEventValue(item),
+    ]));
+  }
+  return value;
+}
+
+export function sanitizeEvent(event: OrlynxEvent): OrlynxEvent {
+  return {
+    ...event,
+    payload: redactEventValue(event.payload || {}) as Record<string, unknown>,
+  };
+}
+
 function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  payload = redactEventValue(payload) as Record<string, unknown>;
   const encoded = JSON.stringify(payload);
   if (Buffer.byteLength(encoded) <= MAX_EVENT_PAYLOAD_BYTES) return payload;
   const clipped: Record<string, unknown> = { ...payload, truncated: true };
@@ -110,18 +137,25 @@ export function emit(sessionId: string, type: EventType, payload: Record<string,
 }
 
 export async function durableHistory(sessionId: string, after = 0, limit = 200): Promise<OrlynxEvent[]> {
-  return durableStorageConfigured() ? controlPlaneRepository().listEvents(sessionId, after, limit) : history(sessionId, after, limit);
+  const events = durableStorageConfigured()
+    ? await controlPlaneRepository().listEvents(sessionId, after, limit)
+    : history(sessionId, after, limit);
+  return events.map(sanitizeEvent);
 }
 
 export async function recentHistory(sessionId: string, limit = 300): Promise<OrlynxEvent[]> {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 300, 500));
-  return durableStorageConfigured()
-    ? controlPlaneRepository().listRecentEvents(sessionId, safeLimit)
+  const events = durableStorageConfigured()
+    ? await controlPlaneRepository().listRecentEvents(sessionId, safeLimit)
     : (store.db.events[sessionId] || []).slice(-safeLimit);
+  return events.map(sanitizeEvent);
 }
 
 export function history(sessionId: string, after = 0, limit = 200): OrlynxEvent[] {
-  return (store.db.events[sessionId] || []).filter((e) => e.sequence > after).slice(0, limit);
+  return (store.db.events[sessionId] || [])
+    .filter((e) => e.sequence > after)
+    .slice(0, limit)
+    .map(sanitizeEvent);
 }
 
 // SSE response registry (Response-like with write())

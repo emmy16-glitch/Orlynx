@@ -183,6 +183,12 @@ export function consumeHarnessStep(
   return next;
 }
 
+export function queueIntentFor(text: string): boolean {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return /^(?:please\s+)?(?:queue|enqueue)\b|\b(?:queue|enqueue)\s+(?:this|that|it|the\s+(?:task|request))\b|\b(?:after|once)\s+(?:this|that|the\s+current\s+(?:task|work))\s+(?:is\s+)?(?:done|finished|complete)|\bwhen\s+(?:you(?:'re|\s+are)|this\s+is)\s+(?:done|finished)\b|^(?:next\s+task|do\s+this\s+next)\b/i.test(value);
+}
+
 export function steeringActionFor(text: string): SteeringAction {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return 'ignore';
@@ -456,6 +462,12 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     stagnant,
     'You are the reasoning layer. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
     'Before calling the next tool, stream exactly one concise public diagnostic line beginning with "Model → Orlynx:". State only the current hypothesis and next check; do not expose private chain-of-thought.',
+    checkpoint.verification.missing.includes('preview')
+      ? 'When localhost is healthy but Preview is not, diagnose Orlynx/provider forwarding before editing the repository. Orlynx already supplies cloud-preview compatibility to supported dev servers such as Vite. Change project config only when fresh evidence proves the application itself overrides or blocks the provider-safe defaults. If a diagnostic-only project change is no longer needed after the provider issue is resolved, revert it before completion.'
+      : '',
+    checkpoint.verification.missing.includes('preview')
+      ? 'For long-running dev servers, detach the process cleanly from the tool invocation and redirect its stdio to a log before verifying the port. Do not keep retrying a shell command that timed out only because its background child kept the tool pipe open.'
+      : '',
     'Use tools to test the next hypothesis. Prefer inspection and reversible actions. Do not tell the user a subsystem is broken unless the evidence supports that exact conclusion.',
     'If information or authorization can be obtained with available tools, obtain it yourself. Ask the user only when a required secret, choice, physical action, or permission genuinely cannot be derived or performed.',
     'If user input is genuinely unavoidable, begin the final response with [NEEDS_USER_INPUT] and ask one precise question. Otherwise continue autonomously until verification passes or the reflection budget is exhausted.',

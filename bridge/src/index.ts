@@ -92,11 +92,40 @@ function safePath(relative = '.'): string {
   return result;
 }
 
-function output(value: string | Buffer | null | undefined): string { return String(value || '').slice(0, MAX_OUTPUT); }
+function redactSecrets(value: string): string {
+  return String(value || '')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[redacted-api-key]')
+    .replace(/((?:admin\s+)?token|password|secret|api[_ -]?key|authorization|bearer)(\s*(?:[:=]|is)?\s*)([A-Za-z0-9._~+/=-]{16,})/ig, '$1$2[redacted]')
+    .replace(/((?:admin\s+)?token[^\n]{0,80}?)([a-f0-9]{40,128})\b/ig, '$1[redacted]');
+}
+function redactValue(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /token|secret|password|private.?key|api.?key|credential|authorization/i.test(key) ? '[redacted]' : redactValue(item),
+    ]));
+  }
+  return value;
+}
+function output(value: string | Buffer | null | undefined): string { return redactSecrets(String(value || '')).slice(0, MAX_OUTPUT); }
+function codespacesPreviewEnvironment(): NodeJS.ProcessEnv {
+  const domain = String(process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || '').trim().replace(/^\.+/, '');
+  if (process.env.CODESPACES !== 'true' || !/^[a-z0-9.-]+$/i.test(domain)) return {};
+  const allowed = `.${domain}`;
+  const current = String(process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!current.includes(allowed)) current.push(allowed);
+  return { __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: current.join(',') };
+}
 function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) if (!/(ORLYNX_WORKSPACE_TOKEN|OPENCODE_SERVER_PASSWORD|TOKEN|SECRET|PRIVATE.?KEY|API.?KEY|CREDENTIAL)/i.test(name)) env[name] = value;
-  return { ...env, ...extra };
+  return { ...env, ...codespacesPreviewEnvironment(), ...extra };
 }
 function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
   const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment(extraEnv) });
@@ -262,7 +291,8 @@ function bridgeEvent(ws: WebSocket, type: string, payload: Record<string, unknow
   if (ws.readyState !== WebSocket.OPEN) return;
   const sequence = ++bridgeEventSequence;
   const eventId = `${CONNECTION_ID || WORKSPACE_ID || 'bridge'}:${sequence}`;
-  ws.send(JSON.stringify({ kind: 'EVENT', event: { eventId, sequence, type, payload, taskId, runId } }));
+  const safePayload = redactValue(payload) as Record<string, unknown>;
+  ws.send(JSON.stringify({ kind: 'EVENT', event: { eventId, sequence, type, payload: safePayload, taskId, runId } }));
 }
 
 type OpenCodeEvent = { type?: string; properties?: Record<string, any> };
@@ -768,9 +798,13 @@ async function httpPreviewReady(port: number): Promise<boolean> {
       signal: AbortSignal.timeout(1_500),
       headers: { Accept: 'text/html,*/*;q=0.8', 'User-Agent': 'Orlynx-Preview-Probe/1.0' },
     });
-    // Any valid HTTP response proves this is a web endpoint. 4xx/5xx still
-    // count as HTTP; the Preview surface can show the application's response.
-    return response.status >= 100 && response.status <= 599;
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    // Preview means a browser surface, not merely "some TCP service speaks
+    // HTTP". Accept successful/redirect responses, and HTML error/login pages,
+    // but reject JSON/text API 4xx roots such as server-dashboard :3001 before
+    // its frontend build exists.
+    return (response.status >= 200 && response.status < 400)
+      || (response.status >= 400 && response.status < 500 && contentType.includes('text/html'));
   } catch {
     return false;
   }

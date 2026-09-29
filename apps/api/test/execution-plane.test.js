@@ -58,6 +58,8 @@ test('plain conversation does not start a development environment', () => {
 test('explicit publish language is typo-tolerant and bypasses AI ambiguity', () => {
   assert.equal(publishIntentFor('push to main', 'main'), 'direct');
   assert.equal(publishIntentFor('puhs to main', 'main'), 'direct');
+  assert.equal(publishIntentFor('push to main', 'feature/demo'), null);
+  assert.equal(publishIntentFor('push to master', 'main'), null);
   assert.equal(publishIntentFor('publish it', 'main'), 'direct');
   assert.equal(publishIntentFor('create a PR', 'main'), 'pull-request');
   assert.equal(publishIntentFor('explain how git push works', 'main'), null);
@@ -99,10 +101,26 @@ test('plan and ask modes remain direct even when the wording asks for execution'
 });
 
 
+test('explicit after-current queue intent waits behind active work across execution lanes', () => {
+  const active = { id: 'active-build', state: 'running', plane: 'workspace', prompt: 'Build it', createdAt: '', updatedAt: '' };
+  const deferred = { id: 'deferred-chat', state: 'queued', plane: 'direct', prompt: 'Explain next', harness: { queueAfterActive: true }, createdAt: '', updatedAt: '' };
+  assert.equal(chooseNextQueuedTask([active, deferred]), undefined);
+  active.state = 'completed';
+  assert.equal(chooseNextQueuedTask([active, deferred])?.id, 'deferred-chat');
+});
+
 test('direct chat bypasses a blocked workspace task in the queue', () => {
   const first = { id: 'build-task', state: 'queued', plane: 'workspace', prompt: 'Run tests', createdAt: '', updatedAt: '' };
   const second = { id: 'chat-task', state: 'queued', plane: 'direct', prompt: 'hi', createdAt: '', updatedAt: '' };
   assert.equal(chooseNextQueuedTask([first, second])?.id, 'chat-task');
+});
+
+test('queued work never starts concurrently with unresolved active work', () => {
+  const queued = { id: 'queued', state: 'queued', plane: 'direct', prompt: 'next', createdAt: '', updatedAt: '' };
+  for (const state of ['running', 'waiting_input', 'waiting_approval']) {
+    const active = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+    assert.equal(chooseNextQueuedTask([active, queued]), undefined, state);
+  }
 });
 
 
