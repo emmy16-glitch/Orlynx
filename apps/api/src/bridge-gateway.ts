@@ -12,7 +12,7 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
@@ -880,8 +880,68 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
+          if (needsSelectedModelReview(task.harness, task.mode || 'build', task.modelId) && engineSessionId && task.modelId) {
+            const reviewAt = new Date().toISOString();
+            const durableSessionForReview = await repository.getSession(claims.sessionId);
+            const lessons = durableSessionForReview
+              ? await relevantAgentLessons(durableSessionForReview, task.prompt, memoryRun?.provider).catch(() => [])
+              : [];
+
+            task.harness = {
+              ...advanceHarnessPhase(task.harness, 'executing', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                now: reviewAt,
+              }),
+              modelReviewAttempts: (task.harness.modelReviewAttempts || 0) + 1,
+              modelReviewModelId: task.modelId,
+              lessonsApplied: [...new Set([...(task.harness.lessonsApplied || []), ...lessons.map((lesson) => lesson.id)])],
+            };
+            task.state = 'running';
+            task.updatedAt = reviewAt;
+            await repository.putTask(task);
+
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'activity.progress',
+              timestamp: reviewAt,
+              payload: {
+                sourceType: 'agent.dialogue.orlynx',
+                reflectionId: `review:${task.harness.modelReviewAttempts}`,
+                modelId: task.modelId,
+                text: `Orlynx → Model: verification passed. Before I finalize, independently review the evidence and completed work. Challenge unsupported claims or missed requirements, fix anything questionable, and only approve what the evidence supports.`,
+              },
+            });
+
+            await queueBridgeCommand(
+              claims.workspaceId,
+              'agent.run',
+              continuationPayload(
+                command.payload,
+                task,
+                engineSessionId,
+                [
+                  selectedModelReviewInstruction(
+                    task.harness,
+                    task.modelId,
+                    evidenceSummary(recent),
+                    lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`),
+                  ),
+                  agentMemoryInstruction(lessons),
+                ].filter(Boolean).join('\n\n'),
+              ),
+              30 * 60_000,
+            );
+            console.info(`[harness] mandatory selected-model review run=${runId} model=${task.modelId}`);
+            return;
+          }
+
           const durableSessionForMemory = await repository.getSession(claims.sessionId);
-          if (durableSessionForMemory && (task.harness.reflectionAttempts || 0) > 0) {
+          if (durableSessionForMemory && ((task.harness.reflectionAttempts || 0) > 0 || (task.harness.modelReviewAttempts || 0) > 0)) {
             const learned = await rememberVerifiedLesson({
               session: durableSessionForMemory,
               task,
@@ -908,6 +968,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const finalizingAt = new Date().toISOString();
+          task.harness = {
+            ...task.harness,
+            ...(task.harness.modelReviewAttempts ? { modelReviewCompletedAt: finalizingAt } : {}),
+          };
           task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
             mode: task.mode || 'build',
             permission: effectivePermission,

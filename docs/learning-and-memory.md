@@ -1,5 +1,15 @@
 # Orlynx learning and memory
 
+## Mandatory selected-model review
+
+For Build work, deterministic harness verification is necessary but no longer sufficient for finalization. Once acceptance evidence passes, Orlynx explicitly asks the model selected for that task to act as an independent quality/reasoning partner.
+
+The model must challenge unsupported claims, missed requirements, wrong-layer diagnoses, accidental regressions and unnecessary changes. It may use tools to inspect or correct the work and must re-verify anything it changes. Only after that selected-model review can the Build result finalize.
+
+The review is concise and evidence-grounded (for example, `Model → Orlynx: verified — tests and requested behavior are confirmed`); Orlynx does not expose private chain-of-thought. Switching the selected model for a new Build means that model becomes the review/reasoning partner for that Build.
+
+Verified reviews may contribute scoped repository/environment lessons. Those lessons remain user-isolated, relevance-ranked, and subordinate to fresh evidence.
+
 ## The important distinction
 
 Orlynx can learn from earlier successful work, but it does **not** retrain, fine-tune or permanently modify the weights of the connected language model.

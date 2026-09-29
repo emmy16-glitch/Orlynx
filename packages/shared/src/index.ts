@@ -102,6 +102,8 @@ export interface WorkspaceRecord {
   provider: WorkspaceProviderId;
   codespaceName?: string;
   runnerId?: string;
+  /** Stable runner-pool host identity. Omitted for legacy single-runner workspaces. */
+  runnerHostId?: string;
   repositoryId: number;
   branch: string;
   state: WorkspaceState;
@@ -179,6 +181,10 @@ export interface HarnessCheckpoint {
   stagnantReflections?: number;
   /** Persistent verified lessons supplied to this run. */
   lessonsApplied?: string[];
+  /** Mandatory evidence-grounded review performed by the selected model before Build finalization. */
+  modelReviewAttempts?: number;
+  modelReviewModelId?: string;
+  modelReviewCompletedAt?: string;
   /** Explicit user intent: wait behind all currently active work, not merely this execution lane. */
   queueAfterActive?: boolean;
   updatedAt: string;
