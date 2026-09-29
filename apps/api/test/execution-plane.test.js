@@ -101,6 +101,14 @@ test('plan and ask modes remain direct even when the wording asks for execution'
 });
 
 
+test('explicit after-current queue intent waits behind active work across execution lanes', () => {
+  const active = { id: 'active-build', state: 'running', plane: 'workspace', prompt: 'Build it', createdAt: '', updatedAt: '' };
+  const deferred = { id: 'deferred-chat', state: 'queued', plane: 'direct', prompt: 'Explain next', harness: { queueAfterActive: true }, createdAt: '', updatedAt: '' };
+  assert.equal(chooseNextQueuedTask([active, deferred]), undefined);
+  active.state = 'completed';
+  assert.equal(chooseNextQueuedTask([active, deferred])?.id, 'deferred-chat');
+});
+
 test('direct chat bypasses a blocked workspace task in the queue', () => {
   const first = { id: 'build-task', state: 'queued', plane: 'workspace', prompt: 'Run tests', createdAt: '', updatedAt: '' };
   const second = { id: 'chat-task', state: 'queued', plane: 'direct', prompt: 'hi', createdAt: '', updatedAt: '' };
