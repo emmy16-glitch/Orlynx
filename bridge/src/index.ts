@@ -1109,12 +1109,14 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     }
     case 'git.fetch': {
       if (payload.approved !== true) throw new Error('Fetch requires an approved command.');
+      // Managed runners receive an explicit short-lived GitHub token. GitHub
+      // Codespaces already provide a repository credential helper, so do not
+      // reject them merely because no token variable is present in the bridge.
       const authEnv = GITHUB_TOKEN ? {
         GIT_CONFIG_COUNT: '1',
         GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
         GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
       } : {};
-      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
       return { output: git(['fetch', '--prune', 'origin'], 120_000, authEnv) };
     }
     case 'git.sync': {
@@ -1123,13 +1125,13 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       if (!targetBranch || targetBranch.startsWith('-') || targetBranch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(targetBranch)) {
         throw new Error('Repository sync branch is invalid.');
       }
-      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
-
-      const authEnv = {
+      // Prefer the explicit token on managed runners; otherwise allow the
+      // native Codespaces Git credential helper to authenticate the fetch.
+      const authEnv = GITHUB_TOKEN ? {
         GIT_CONFIG_COUNT: '1',
         GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
         GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
-      };
+      } : {};
       const branch = git(['branch', '--show-current']).trim();
       const headBefore = git(['rev-parse', 'HEAD']).trim();
       const porcelainBefore = git(['status', '--porcelain=v1']);
