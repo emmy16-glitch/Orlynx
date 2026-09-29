@@ -58,7 +58,7 @@ export function toolFamiliesFor(input: {
   required?: string[];
   budgetStage?: BudgetStage;
 }): ToolFamily[] {
-  if (input.budgetStage === 'force-final' || input.phase === 'finalizing' || input.phase === 'completed' || input.phase === 'failed' || input.phase === 'cancelled') {
+  if (input.budgetStage === 'force-final' || input.phase === 'waiting_input' || input.phase === 'finalizing' || input.phase === 'completed' || input.phase === 'failed' || input.phase === 'cancelled') {
     return [];
   }
 
