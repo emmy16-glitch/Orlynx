@@ -155,12 +155,24 @@ async function cloneWorkspace(body) {
   }
   if (current && current.runnerId !== id) {
     const idle = Math.floor(Date.now() / 1000) - activityEpoch(current);
-    if (current.state !== 'stopped' || idle < RECLAIM_SECONDS) {
+
+    // A stopped workspace has no live bridge/process ownership and is safe to
+    // reassign immediately. The old behavior held this single-capacity Render
+    // runner hostage until the long reclaim timer expired.
+    if (current.state === 'stopped') {
+      console.log(`[direct-runner] reassigning stopped workspace ${current.runnerId} to ${id}`);
+      destroyWorkspace(current.runnerId);
+      current = null;
+    } else if (current.state === 'running' && idle >= IDLE_SECONDS) {
+      console.log(`[direct-runner] reclaiming idle workspace ${current.runnerId} for ${id} idleSeconds=${idle}`);
+      stopWorkspace(current.runnerId);
+      destroyWorkspace(current.runnerId);
+      current = null;
+    } else {
       const error = new Error('Orlynx direct runner capacity is full.');
       error.statusCode = 409;
       throw error;
     }
-    destroyWorkspace(current.runnerId);
   }
 
   const fullName = await resolveRepository(repositoryId, githubToken);
