@@ -623,8 +623,7 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (assistant) {
       const text = assistantText(assistant);
       if (text.startsWith(visible) && text.length > visible.length) {
-        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length), messagePartId: 'snapshot', offset: visible.length }, taskId, runId);
-        visible = text;
+        emitTextDelta('snapshot', text.slice(visible.length));
       }
       if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
     }
