@@ -10,7 +10,7 @@ export function defaultWorkspaceProviderId(): WorkspaceProviderId {
   const configured = String(process.env.ORLYNX_WORKSPACE_PROVIDER || 'auto').toLowerCase();
   if (configured === 'github-codespaces') return 'github-codespaces';
   if (configured === 'orlynx-runner') {
-    if (!orlynxRunnerConfigured()) throw new Error('ORLYNX_WORKSPACE_PROVIDER=orlynx-runner but ORLYNX_RUNNER_URL/ORLYNX_RUNNER_TOKEN are not configured.');
+    if (!orlynxRunnerConfigured()) throw new Error('ORLYNX_WORKSPACE_PROVIDER=orlynx-runner but no ORLYNX_RUNNER_HOSTS/ORLYNX_RUNNER_URL + ORLYNX_RUNNER_TOKEN configuration is available.');
     return 'orlynx-runner';
   }
   return orlynxRunnerConfigured() ? 'orlynx-runner' : 'github-codespaces';
