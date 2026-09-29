@@ -4774,6 +4774,9 @@ html[data-theme="light"] .composer-options-panel {
   box-shadow: var(--shadow-2);
   overflow: hidden;
 }
+.is-workspace.has-active-work .queue-tray {
+  bottom: 148px;
+}
 .queue-tray > summary {
   min-height: 40px;
   display: grid;
@@ -4877,6 +4880,9 @@ html[data-theme="light"] .composer-options-panel {
 @media (max-width: 899px) {
   .queue-tray {
     bottom: calc(132px + env(safe-area-inset-bottom));
+  }
+  .is-workspace.has-active-work .queue-tray {
+    bottom: calc(238px + env(safe-area-inset-bottom));
     width: calc(100vw - 24px);
   }
   .queue-tray > summary {
