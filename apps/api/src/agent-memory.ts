@@ -97,7 +97,10 @@ export async function rememberVerifiedLesson(input: {
   responseText: string;
   provider?: string;
 }): Promise<string[]> {
-  const attempts = input.harness.reflectionAttempts ?? input.harness.salvageAttempts ?? 0;
+  const attempts = Math.max(
+    input.harness.reflectionAttempts ?? input.harness.salvageAttempts ?? 0,
+    input.harness.modelReviewAttempts || 0,
+  );
   if (attempts <= 0 || input.harness.verification.status !== 'passed') return [];
 
   const target = input.harness.reflectionTarget?.length
@@ -108,6 +111,9 @@ export async function rememberVerifiedLesson(input: {
     ...contradictions,
     ...(input.harness.reflectionEvidence || []),
     `Verified acceptance: ${input.harness.verification.satisfied.join(', ') || 'requested outcome'}`,
+    input.harness.modelReviewModelId
+      ? `Selected-model review: ${input.harness.modelReviewModelId}`
+      : '',
   ].map((item) => clean(item, 520)).filter(Boolean).slice(-12);
   const resolution = clean(input.responseText, 1_200);
   if (!resolution) return [];
