@@ -1,31 +1,42 @@
 # Model switching
 
-## Discovery
+## Catalog
 
-Models are never hardcoded. `GET /v1/ai/models` normalizes the live OpenCode
-`/provider` catalog into `{ id: provider/model, providerId, providerName,
-displayName, family, connected, status }` using only metadata the engine
-actually returns. Providers that expose no model list surface a single
-`default` entry so they can be connected — no model names are invented.
+Orlynx presents models through the selected AI/agent integration.
+
+Direct chat can use the bundled/refreshed models.dev metadata used by the API transport layer, while workspace OpenCode exposes the models available through its provider/runtime path.
+
+The UI must not invent availability for a model the active path cannot actually use.
 
 ## Selection
 
-The composer exposes `MODEL ▾ MODE ▾ ACCESS ▾`. The model dropdown merges every
-available model across all connected providers (searchable in the Connect AI
-sheet), so users never pick provider-then-model.
+The composer keeps Agent and Model as separate controls.
 
-## Persistence
+A model selection is stored in durable session preferences.
 
-Priority: task override → session prefs → project defaults → global defaults
-(`ORLYNX_DEFAULT_MODEL/MODE/PERMISSION`).
+## Admission snapshot
 
-- Session: `PUT /v1/ai/session/:id` → `store.db.aiSessions` (server-side, so all
-  devices see the same selection).
-- Project: `PUT /v1/ai/project-defaults` → `store.db.aiProjectDefaults`.
+When a task is admitted, the relevant model/adapter/mode/access state is snapshotted on the task.
 
-Switching never creates a project, destroys conversation, or drops
-attachments/history — the next turn simply uses the new model. If a run is
-active, the change is saved and marked `appliesTo: 'next-turn'`; the active run
-is never silently interrupted. If the selected model becomes unavailable
-(disconnect/expire), status becomes `needs_attention` with “choose another
-model”, preserving draft and attachments.
+Changing the picker while work is active does not rewrite the active run underneath it.
+
+## Cross-device persistence
+
+Session AI preferences are server-side.
+
+Opening the same durable conversation on another authenticated device restores the session preference rather than relying on that device's localStorage.
+
+## Failure
+
+If a selected model becomes unavailable:
+
+- preserve the conversation;
+- preserve draft/attachments;
+- show the real availability/authentication problem;
+- do not silently switch to an unrelated model.
+
+Free/public model availability and account-authenticated model availability are distinct conditions.
+
+## Future adapters
+
+Future coding-agent adapters may expose different model catalogs/capabilities. The Orlynx session/task contract should stay stable even when adapter-specific discovery differs.
