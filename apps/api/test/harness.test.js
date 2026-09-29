@@ -298,7 +298,7 @@ test('public stream redacts secrets and reflection diagnostics are not duplicate
   assert.match(events, /export function redactSensitiveText/);
   assert.match(events, /generated\\s\+admin\\s\+token/);
   assert.match(events, /github_pat_/);
-  assert.match(events, /\\[redacted\\]/);
+  assert.match(events, /\[redacted\]/);
   assert.match(gateway, /redactSensitivePayload/);
   assert.match(gateway, /redactSensitiveText/);
   assert.match(bridge, /The diagnostic belongs to the investigation transcript, not the/);
