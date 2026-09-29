@@ -142,58 +142,90 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
   }
 
   const started = Date.now();
-  try {
-    const response = await fetch(`${host.url}/health`, {
-      headers: process.env.ORLYNX_RUNNER_TOKEN ? { Authorization: `Bearer ${process.env.ORLYNX_RUNNER_TOKEN}` } : {},
-      signal: AbortSignal.timeout(Math.max(500, Number(process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS || 2_500))),
-    });
-    const body = await response.json().catch(() => ({})) as {
-      ok?: boolean;
-      capacity?: number;
-      running?: number;
-      available?: number;
-      stopped?: number;
-      draining?: boolean;
-      workspace?: { state?: string } | null;
-      capabilities?: { browserE2e?: boolean };
-    };
-    const capacity = Math.max(1, Number(body.capacity || 1));
-    const running = Math.max(0, Number(body.running ?? (body.workspace?.state === 'running' ? 1 : 0)));
-    const available = Math.max(0, Number(body.available ?? (capacity - running)));
-    const result: RunnerHostHealth = {
-      id: host.id,
-      ok: response.ok && body.ok !== false,
-      capacity,
-      running,
-      available,
-      stopped: Math.max(0, Number(body.stopped || 0)),
-      draining: Boolean(body.draining),
-      latencyMs: Date.now() - started,
-      checkedAt: Date.now(),
-      detail: response.ok ? undefined : `HTTP ${response.status}`,
-      capabilities: body.capabilities,
-    };
-    healthCache.set(host.id, result);
-    if (result.ok) noteRunnerHostSuccess(host.id);
-    else noteRunnerHostFailure(host.id);
-    return result;
-  } catch (error) {
-    noteRunnerHostFailure(host.id);
-    const result: RunnerHostHealth = {
-      id: host.id,
-      ok: false,
-      capacity: 0,
-      running: 0,
-      available: 0,
-      stopped: 0,
-      draining: false,
-      latencyMs: Date.now() - started,
-      checkedAt: Date.now(),
-      detail: error instanceof Error ? error.message : 'health probe failed',
-    };
-    healthCache.set(host.id, result);
-    return result;
+  const normalTimeoutMs = Math.max(2_500, Number(process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS || 5_000));
+  const coldStartTimeoutMs = Math.max(
+    normalTimeoutMs,
+    Number(process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS || 45_000),
+  );
+  const attemptTimeouts = force ? [coldStartTimeoutMs] : [normalTimeoutMs, coldStartTimeoutMs];
+  let lastDetail = 'health probe failed';
+
+  for (let attempt = 0; attempt < attemptTimeouts.length; attempt += 1) {
+    try {
+      const response = await fetch(`${host.url}/health`, {
+        headers: process.env.ORLYNX_RUNNER_TOKEN ? { Authorization: `Bearer ${process.env.ORLYNX_RUNNER_TOKEN}` } : {},
+        signal: AbortSignal.timeout(attemptTimeouts[attempt]),
+      });
+      const body = await response.json().catch(() => ({})) as {
+        ok?: boolean;
+        capacity?: number;
+        running?: number;
+        available?: number;
+        stopped?: number;
+        draining?: boolean;
+        workspace?: { state?: string } | null;
+        capabilities?: { browserE2e?: boolean };
+      };
+      const capacity = Math.max(1, Number(body.capacity || 1));
+      const running = Math.max(0, Number(body.running ?? (body.workspace?.state === 'running' ? 1 : 0)));
+      const available = Math.max(0, Number(body.available ?? (capacity - running)));
+      const result: RunnerHostHealth = {
+        id: host.id,
+        ok: response.ok && body.ok !== false,
+        capacity,
+        running,
+        available,
+        stopped: Math.max(0, Number(body.stopped || 0)),
+        draining: Boolean(body.draining),
+        latencyMs: Date.now() - started,
+        checkedAt: Date.now(),
+        detail: response.ok ? undefined : `HTTP ${response.status}`,
+        capabilities: body.capabilities,
+      };
+
+      if (result.ok) {
+        healthCache.set(host.id, result);
+        noteRunnerHostSuccess(host.id);
+        return result;
+      }
+
+      lastDetail = result.detail || 'runner reported unhealthy';
+      const retryableStatus = response.status === 502 || response.status === 503 || response.status === 504;
+      if (attempt + 1 < attemptTimeouts.length && retryableStatus) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
+
+      healthCache.set(host.id, result);
+      noteRunnerHostFailure(host.id);
+      return result;
+    } catch (error) {
+      lastDetail = error instanceof Error ? error.message : 'health probe failed';
+      if (attempt + 1 < attemptTimeouts.length) {
+        // Render free services can be asleep when the first probe arrives.
+        // Give the same request path one bounded cold-start window before
+        // opening the circuit or falling back to Codespaces.
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
+    }
   }
+
+  noteRunnerHostFailure(host.id);
+  const result: RunnerHostHealth = {
+    id: host.id,
+    ok: false,
+    capacity: 0,
+    running: 0,
+    available: 0,
+    stopped: 0,
+    draining: false,
+    latencyMs: Date.now() - started,
+    checkedAt: Date.now(),
+    detail: lastDetail,
+  };
+  healthCache.set(host.id, result);
+  return result;
 }
 
 export async function runnerPoolSnapshot(force = false): Promise<Array<{ host: RunnerHostConfig; health: RunnerHostHealth }>> {
