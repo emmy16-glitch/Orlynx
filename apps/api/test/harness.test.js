@@ -44,6 +44,12 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
   assert.deepEqual(verificationRequirementsFor('check online for the latest official docs'), ['browser']);
 });
 
+test('preview verification treats provider forwarding as infrastructure before repository edits', () => {
+  const source = fs.readFileSync(new URL('../src/harness.ts', import.meta.url), 'utf8');
+  assert.match(source, /treat that as Orlynx\/workspace infrastructure first/);
+  assert.match(source, /Do not edit project files solely to accommodate a Codespaces\/runner Preview host/);
+});
+
 test('harness starts durable and progressively discloses tool families', () => {
   const cp = createHarnessCheckpoint({
     prompt: 'fix it and run tests',
