@@ -120,6 +120,7 @@ export type HarnessPhase =
   | 'executing'
   | 'verifying'
   | 'waiting_approval'
+  | 'waiting_input'
   | 'finalizing'
   | 'completed'
   | 'failed'
