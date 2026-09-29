@@ -373,7 +373,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       const prior = state.activities[event.activityId];
 
       if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model') {
-        const detail = event.detail && typeof event.detail === 'object' ? event.detail as Record<string, unknown> : {};
+        const detail = event.type === 'ACTIVITY_UPDATE' && event.detail && typeof event.detail === 'object'
+          ? event.detail as Record<string, unknown>
+          : {};
         const reflectionId = Math.max(1, Number(detail.reflectionId || 1) || 1);
         const side = event.sourceType.endsWith('.model') ? 'model' : 'orlynx';
         const rawText = String(detail.text || event.text || '');
