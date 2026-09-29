@@ -736,15 +736,34 @@ async function httpPreviewReady(port: number): Promise<boolean> {
 type CodespacePortMetadata = { browseUrl?: string; visibility?: string };
 let codespacePortsCache: { key: string; expiresAt: number; value: Map<number, CodespacePortMetadata> } | undefined;
 let codespacePortsPending: Promise<Map<number, CodespacePortMetadata>> | undefined;
+const codespaceForwarders = new Map<number, ReturnType<typeof spawn>>();
+let safeGhPortForwarding: boolean | undefined;
 
-async function codespacePortMetadata(): Promise<Map<number, CodespacePortMetadata>> {
+function ghSupportsLoopbackPortForwarding(): boolean {
+  if (safeGhPortForwarding !== undefined) return safeGhPortForwarding;
+  try {
+    const result = spawnSync('gh', ['--version'], { encoding: 'utf8', timeout: 3_000 });
+    const match = String(result.stdout || '').match(/gh version\s+(\d+)\.(\d+)\.(\d+)/i);
+    const major = Number(match?.[1] || 0);
+    const minor = Number(match?.[2] || 0);
+    // gh v2.98.0 fixed codespace port-forward listeners to bind loopback by
+    // default. Older versions could expose the helper listener on all
+    // interfaces, so Orlynx refuses to use them for automatic forwarding.
+    safeGhPortForwarding = major > 2 || (major === 2 && minor >= 98);
+  } catch {
+    safeGhPortForwarding = false;
+  }
+  return safeGhPortForwarding;
+}
+
+async function codespacePortMetadata(force = false): Promise<Map<number, CodespacePortMetadata>> {
   const codespace = String(process.env.CODESPACE_NAME || '');
   if (!codespace) return new Map();
   const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
   const cacheKey = `${codespace}:${authToken ? 'auth' : 'anon'}`;
   const now = Date.now();
-  if (codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
-  if (codespacePortsPending) return codespacePortsPending;
+  if (!force && codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
+  if (!force && codespacePortsPending) return codespacePortsPending;
 
   codespacePortsPending = new Promise((resolve) => {
     const child = spawn('gh', [
@@ -796,6 +815,50 @@ async function codespacePortMetadata(): Promise<Map<number, CodespacePortMetadat
   return codespacePortsPending;
 }
 
+async function ensureCodespaceForwardedPort(port: number): Promise<CodespacePortMetadata | undefined> {
+  const codespace = String(process.env.CODESPACE_NAME || '');
+  if (!codespace || !ghSupportsLoopbackPortForwarding()) return undefined;
+
+  const existing = (await codespacePortMetadata()).get(port);
+  if (existing?.browseUrl) return existing;
+
+  if (!codespaceForwarders.has(port)) {
+    const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
+    const child = spawn('gh', ['codespace', 'ports', 'forward', `${port}:0`, '-c', codespace], {
+      cwd: REPO_ROOT,
+      env: {
+        ...cleanEnvironment(),
+        ...(authToken ? { GH_TOKEN: authToken } : {}),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    codespaceForwarders.set(port, child);
+    child.once('exit', () => {
+      if (codespaceForwarders.get(port) === child) codespaceForwarders.delete(port);
+    });
+    child.once('error', () => {
+      if (codespaceForwarders.get(port) === child) codespaceForwarders.delete(port);
+    });
+  }
+
+  // The forwarder creates the GitHub Dev Tunnel port before it begins relaying
+  // traffic. Give GitHub a short non-blocking window to publish the browse URL.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const metadata = (await codespacePortMetadata(true)).get(port);
+    if (metadata?.browseUrl) return metadata;
+  }
+  return undefined;
+}
+
+function stopUnusedCodespaceForwarders(listening: Set<number>) {
+  for (const [port, child] of codespaceForwarders) {
+    if (listening.has(port)) continue;
+    try { child.kill('SIGTERM'); } catch {}
+    codespaceForwarders.delete(port);
+  }
+}
+
 async function ports() {
   const result = spawnSync('ss', ['-ltnH'], { encoding: 'utf8', timeout: 5_000 });
   const found = new Set<number>();
@@ -818,17 +881,21 @@ async function ports() {
     ready: await httpPreviewReady(port),
   })))).filter((item) => item.ready);
 
-  const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
-  const codespace = process.env.CODESPACE_NAME;
-  const forwarded = await codespacePortMetadata();
-  return ready.map(({ port }) => {
-    const metadata = forwarded.get(port);
+  stopUnusedCodespaceForwarders(found);
+  const codespace = String(process.env.CODESPACE_NAME || '');
+  const confirmed = await codespacePortMetadata();
+  const values = await Promise.all(ready.map(async ({ port }) => {
+    const metadata = confirmed.get(port) || (codespace ? await ensureCodespaceForwardedPort(port) : undefined);
     return {
       port,
-      visibility: metadata?.visibility || (codespace ? 'private' : 'private'),
-      url: metadata?.browseUrl || (domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined),
+      visibility: metadata?.visibility || 'private',
+      // For Codespaces, only a URL returned by GitHub's forwarded-port
+      // inventory is trustworthy. A locally listening port is not necessarily
+      // reachable at app.github.dev yet.
+      url: metadata?.browseUrl,
     };
-  });
+  }));
+  return values;
 }
 
 async function execute(command: Command, ws: WebSocket): Promise<Record<string, unknown>> {
