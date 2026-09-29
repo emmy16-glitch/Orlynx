@@ -361,6 +361,9 @@ test('active message admission continues the same task across direct and workspa
   assert.match(routes, /const requestedSteeringAction = steeringActionFor\(String\(text\)\)/);
   assert.match(routes, /filter\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\)\)/);
   assert.match(routes, /requestedSteeringAction === 'ignore' \? 'append' : requestedSteeringAction/);
+  assert.match(routes, /const closingPhase = unresolvedTask\?\.harness\?\.phase === 'verifying' \|\| unresolvedTask\?\.harness\?\.phase === 'finalizing'/);
+  assert.match(routes, /queueAfterActive = Boolean\(unresolvedTask && \(explicitQueue \|\| !activeTask\)\)/);
+  assert.match(routes, /if \(publishIntent && !queueAfterActive\)/);
   assert.match(routes, /msg\.runId = activeTask\.runId/);
   assert.match(routes, /resumeWaitingInputTask\(s\.id, waitingInputTask\.id, String\(text\)\)/);
   assert.match(routes, /applySteering\(activeTask, String\(text\), steeringAction, now\)/);
