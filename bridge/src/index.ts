@@ -734,35 +734,66 @@ async function httpPreviewReady(port: number): Promise<boolean> {
 }
 
 type CodespacePortMetadata = { browseUrl?: string; visibility?: string };
+let codespacePortsCache: { key: string; expiresAt: number; value: Map<number, CodespacePortMetadata> } | undefined;
+let codespacePortsPending: Promise<Map<number, CodespacePortMetadata>> | undefined;
 
-function codespacePortMetadata(): Map<number, CodespacePortMetadata> {
+async function codespacePortMetadata(): Promise<Map<number, CodespacePortMetadata>> {
   const codespace = String(process.env.CODESPACE_NAME || '');
   if (!codespace) return new Map();
   const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
-  try {
-    const result = spawnSync('gh', [
+  const cacheKey = `${codespace}:${authToken ? 'auth' : 'anon'}`;
+  const now = Date.now();
+  if (codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
+  if (codespacePortsPending) return codespacePortsPending;
+
+  codespacePortsPending = new Promise((resolve) => {
+    const child = spawn('gh', [
       'codespace', 'ports',
       '-c', codespace,
       '--json', 'sourcePort,browseUrl,visibility',
     ], {
-      encoding: 'utf8',
-      timeout: 5_000,
+      cwd: REPO_ROOT,
       env: {
         ...cleanEnvironment(),
         ...(authToken ? { GH_TOKEN: authToken } : {}),
       },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (result.status !== 0) return new Map();
-    const rows = JSON.parse(String(result.stdout || '[]')) as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
-    return new Map(rows.flatMap((row) => {
-      const port = Number(row.sourcePort);
-      return Number.isInteger(port) && port > 0
-        ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
-        : [];
-    }));
-  } catch {
-    return new Map();
-  }
+    let stdout = '';
+    let settled = false;
+    const finish = (value: Map<number, CodespacePortMetadata>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+      finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+    }, 3_000);
+    timer.unref?.();
+
+    child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-64_000); });
+    child.once('error', () => finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map()));
+    child.once('exit', (code) => {
+      if (code !== 0) return finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+      try {
+        const rows = JSON.parse(stdout || '[]') as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
+        const value = new Map(rows.flatMap((row) => {
+          const port = Number(row.sourcePort);
+          return Number.isInteger(port) && port > 0
+            ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
+            : [];
+        }));
+        codespacePortsCache = { key: cacheKey, expiresAt: Date.now() + 15_000, value };
+        finish(value);
+      } catch {
+        finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map());
+      }
+    });
+  }).finally(() => { codespacePortsPending = undefined; });
+
+  return codespacePortsPending;
 }
 
 async function ports() {
@@ -789,7 +820,7 @@ async function ports() {
 
   const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
   const codespace = process.env.CODESPACE_NAME;
-  const forwarded = codespacePortMetadata();
+  const forwarded = await codespacePortMetadata();
   return ready.map(({ port }) => {
     const metadata = forwarded.get(port);
     return {
