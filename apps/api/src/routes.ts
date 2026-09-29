@@ -573,15 +573,18 @@ router.post('/sessions/:id/messages', async (req, res) => {
       .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
     const closingPhase = unresolvedTask?.harness?.phase === 'verifying' || unresolvedTask?.harness?.phase === 'finalizing';
+    const explicitContinuation = requestedSteeringAction !== 'ignore';
     const activeTask = unresolvedTask && (
       unresolvedTask.state === 'waiting_input'
-      || (unresolvedTask.state === 'running' && !closingPhase)
+      || (unresolvedTask.state === 'running' && !closingPhase && explicitContinuation)
       || (unresolvedTask.state === 'waiting_approval' && requestedSteeringAction === 'stop')
     ) ? unresolvedTask : undefined;
+    // Unrelated new input is a new turn. If earlier work is still unresolved,
+    // queue that new turn behind it rather than attaching it to the old run.
     queueAfterActive = Boolean(unresolvedTask && (explicitQueue || !activeTask));
 
     if (activeTask && !explicitQueue) {
-      const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
+      const steeringAction = requestedSteeringAction;
       const now = new Date().toISOString();
       msg.runId = activeTask.runId;
       await repository.putMessage(msg);
