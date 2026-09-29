@@ -432,14 +432,18 @@ router.post('/sessions/:id/messages', async (req, res) => {
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
 
     const existingTasks = await repository.listTasks(s.id);
-    const steeringAction = steeringActionFor(String(text));
+    const requestedSteeringAction = steeringActionFor(String(text));
     const waitingInputTask = existingTasks.find(
       (item) => item.state === 'waiting_input' && (item.plane || 'workspace') === 'workspace',
     );
-    if (waitingInputTask && steeringAction !== 'stop') {
+    if (waitingInputTask && requestedSteeringAction !== 'stop') {
+      // This user message belongs to the run that asked for input. Persist the
+      // linkage so the conversation projection keeps one continuous turn.
+      msg.runId = waitingInputTask.runId;
+      await repository.putMessage(msg);
       try {
         const resumedRun = await resumeWaitingInputTask(s.id, waitingInputTask.id, String(text));
-        return res.json({ message: msg, run: resumedRun, plane: 'workspace', resumed: true, targetRunId: waitingInputTask.runId });
+        return res.json({ message: msg, run: resumedRun, plane: 'workspace', resumed: true, continued: true, targetRunId: waitingInputTask.runId });
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'The waiting task could not resume yet.';
         console.warn(`[harness] waiting-input resume failed session=${s.id} task=${waitingInputTask.id}: ${detail}`);
@@ -477,6 +481,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
             run: { id: steered.runId, sessionId: s.id, plane: 'workspace', state: 'queued' },
             plane: 'workspace',
             resumed: false,
+            continued: true,
             queued: true,
             targetRunId: steered.runId,
           });
@@ -484,27 +489,37 @@ router.post('/sessions/:id/messages', async (req, res) => {
 
         // Keep the reply attached to the existing waiting task even when the
         // provider/model is temporarily unavailable. Never create a second
-        // Build task from the same human answer.
+        // task from the same human answer.
         await repository.putTask(steered);
         return res.status(503).json({
           message: msg,
           error: detail,
           waitingForSameTask: true,
+          continued: true,
           targetRunId: steered.runId,
         });
       }
     }
 
-    if (steeringAction !== 'ignore') {
-      const activeTask = existingTasks
-        .find((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state) && (item.plane || 'workspace') === 'workspace');
+    // One project session is one conversation. While work is active, ordinary
+    // follow-ups continue that run by default; users do not need magic words
+    // such as "also" to prevent Orlynx from creating a parallel task.
+    const activeTask = existingTasks
+      .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
 
-      if (activeTask) {
-        const now = new Date().toISOString();
-        const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
+    if (activeTask) {
+      const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
+      const now = new Date().toISOString();
+      msg.runId = activeTask.runId;
+      await repository.putMessage(msg);
+      const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
 
-        if (steeringAction === 'stop') {
-          if (activeTask.state === 'running' || activeTask.state === 'waiting_input') {
+      if (steeringAction === 'stop') {
+        if (activeTask.state === 'running' || activeTask.state === 'waiting_input') {
+          if ((activeTask.plane || 'workspace') === 'direct') {
+            try { getAgentAdapter(activeTask.adapterId || 'opencode').cancelDirectRun?.(activeTask.runId || ''); } catch {}
+          } else {
             try {
               const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
               await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
@@ -516,73 +531,52 @@ router.post('/sessions/:id/messages', async (req, res) => {
               console.warn(`[harness] stop command failed session=${s.id} task=${activeTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
             }
           }
-
-          await repository.putTask(steeredTask);
-          const memoryRun = (store.db.runs[s.id] || []).find((item) => item.id === activeTask.runId);
-          if (memoryRun) {
-            memoryRun.state = 'cancelled';
-            memoryRun.finishedAt = now;
-            memoryRun.activity = 'Stopped';
-            store.save();
-          }
-          emit(s.id, 'run.failed', { taskId: activeTask.id, cancelled: true, steering: true }, activeTask.runId);
-          await promoteNextQueuedRun(s.id).catch(() => null);
-        } else {
-          await repository.putTask(steeredTask);
-          emit(s.id, 'state.delta', {
-            taskId: activeTask.id,
-            scope: 'harness',
-            steeringAction,
-            steeringRevision: steeredTask.harness?.steeringRevision,
-            message: steeringAction === 'replace' ? 'Updated the active Build request.' : 'Added context to the active Build request.',
-          }, activeTask.runId);
         }
 
-        const ackRunId = `run_${uuid().slice(0, 8)}`;
-        const ackTaskId = `task_${uuid()}`;
-        const reply = steeringAction === 'stop'
-          ? 'Stopped the current Build task.'
-          : steeringAction === 'replace'
-            ? 'Updated the current Build task with your new direction.'
-            : 'Added that to the current Build task.';
-        const assistant = { id: `msg_${ackRunId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId: ackRunId, createdAt: now };
-        const ackRun = {
-          id: ackRunId,
-          sessionId: s.id,
-          engine: selectedAdapterId,
-          plane: 'direct' as const,
-          model: selectedModel || undefined,
-          mode: effectiveMode,
-          permission: prefs.permission,
-          state: 'completed' as const,
-          activity: 'Ready',
-          startedAt: now,
-          finishedAt: now,
-        };
-        (store.db.messages[s.id] ||= []).push(assistant);
-        (store.db.runs[s.id] ||= []).push(ackRun as any);
-        store.save();
-        await repository.putMessage(assistant);
-        await repository.putTask({
-          id: ackTaskId,
-          sessionId: s.id,
-          workspaceId: 'direct',
-          plane: 'direct',
-          runId: ackRunId,
-          messageId: msg.id,
-          state: 'completed',
-          prompt: String(text),
-          modelId: selectedModel || undefined,
-          adapterId: selectedAdapterId,
-          mode: effectiveMode,
-          permission: prefs.permission,
-          createdAt: now,
-          updatedAt: now,
-        });
-        emit(s.id, 'message.end', { taskId: ackTaskId, instant: true, steering: steeringAction }, ackRunId);
-        emit(s.id, 'run.completed', { taskId: ackTaskId, summary: reply, instant: true, steering: steeringAction }, ackRunId);
-        return res.json({ message: msg, run: ackRun, plane: 'direct', instant: true, steering: steeringAction, targetRunId: activeTask.runId });
+        await repository.putTask(steeredTask);
+        const memoryRun = (store.db.runs[s.id] || []).find((item) => item.id === activeTask.runId);
+        if (memoryRun) {
+          memoryRun.state = 'cancelled';
+          memoryRun.finishedAt = now;
+          memoryRun.activity = 'Stopped';
+          store.save();
+        }
+        emit(s.id, 'run.failed', { taskId: activeTask.id, cancelled: true, steering: true }, activeTask.runId);
+        await promoteNextQueuedRun(s.id).catch(() => null);
+      } else {
+        await repository.putTask(steeredTask);
+        emit(s.id, 'state.delta', {
+          taskId: activeTask.id,
+          scope: 'harness',
+          steeringAction,
+          steeringRevision: steeredTask.harness?.steeringRevision,
+          message: steeringAction === 'replace'
+            ? 'Updated the current request with your new direction.'
+            : 'Added your follow-up to the current request.',
+        }, activeTask.runId);
       }
+
+      const continuedRun = {
+        id: activeTask.runId || activeTask.id,
+        sessionId: s.id,
+        engine: activeTask.adapterId || selectedAdapterId,
+        plane: activeTask.plane || 'workspace',
+        model: activeTask.modelId || selectedModel || undefined,
+        mode: activeTask.mode || effectiveMode,
+        permission: activeTask.permission || prefs.permission,
+        state: steeringAction === 'stop' ? 'cancelled' : activeTask.state,
+        activity: steeringAction === 'stop' ? 'Stopped' : 'Continuing',
+        startedAt: activeTask.createdAt,
+        ...(steeringAction === 'stop' ? { finishedAt: now } : {}),
+      };
+      return res.json({
+        message: msg,
+        run: continuedRun,
+        plane: activeTask.plane || 'workspace',
+        continued: true,
+        steering: steeringAction,
+        targetRunId: activeTask.runId,
+      });
     }
   }
 
