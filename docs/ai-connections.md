@@ -1,35 +1,85 @@
 # Orlynx AI connections
 
-Users experience one thing — **Orlynx AI**. Underneath, Orlynx separates three
-concepts that are never merged in code even though they merge in the UI:
+Users experience one product: Orlynx AI.
 
-- **Engine** — OpenCode server. Executes tasks, tools, file edits, shell.
-- **Provider connection** — OpenAI, Anthropic, Gemini, OpenRouter, … Authenticates
-  the engine and determines which models exist.
-- **Model** — a selectable resource (`provider/model`) used for the next turn.
+Internally, Orlynx separates three concepts:
 
-## Connecting
+- **Agent adapter** — the coding-agent runtime contract. OpenCode is Adapter #1.
+- **Provider connection** — credentials/access for a model provider or OpenCode account path.
+- **Model** — the specific model selected for a turn.
 
-In-project **Connect AI** sheet (`ProductionApp.tsx → ConnectAiSheet`) lists
-providers in three honest states from `GET /v1/ai/providers`:
+These concepts are deliberately independent.
 
-- `connected` — the engine reports the provider connected.
-- `key-stored` — Orlynx holds a key server-side but the engine does not report
-  the provider yet (needs attention, never shown as ready).
-- `not-connected`.
+## Direct chat versus workspace agent
 
-API-key connect (`POST /v1/ai/providers/connect-key`) validates the key shape,
-writes it to `data/ai-secrets.json` (mode `0600`), and re-reads engine state.
-Keys are never logged, never returned (only a masked `…last4`), never stored in
-localStorage, never bundled into the client.
+Ask/Plan requests that do not require mutable execution can use Orlynx direct chat through the control plane.
 
-Disconnect (`POST /v1/ai/providers/:id/disconnect`) deletes the server-side
-credential. Conversations, attachments and history are preserved. If the active
-model belonged to that provider, AI status becomes `needs_attention` and the UI
-asks the user to choose another model — it never silently switches.
+Build execution uses the selected agent adapter inside the workspace.
 
-## Health
+A direct-model failure does not mean the workspace is dead.
+An OpenCode adapter failure does not mean Git/files/terminal are dead.
 
-`GET /v1/ai/status` returns one unified state (`disconnected | ready |
-working | needs_attention | error`). Ready requires: engine reachable **and**
-at least one available model. Stored keys alone are never proof of health.
+## Provider credentials
+
+Hosted production stores provider connection records server-side and encrypts persisted credentials.
+
+Credentials are never returned to the browser in raw form.
+
+The workspace receives only the credentials needed for its selected runtime path.
+
+## Free/public OpenCode models
+
+For catalog-marked free/public OpenCode routes, Orlynx keeps public access separate from saved account authentication.
+
+A stale account key must not turn a free-model availability problem into a misleading “reconnect paid account” error.
+
+## Model selection
+
+Model selection is persisted per durable session.
+
+Changing the model during active work must not silently mutate an already-admitted task. The admitted task keeps its snapshot; the new selection applies to later work according to session/task rules.
+
+## Agent readiness
+
+Agent adapter status can be:
+
+- starting;
+- ready;
+- busy;
+- unavailable;
+- failed.
+
+Adapter readiness is separate from workspace readiness.
+
+## OpenCode runtime repair
+
+When the bridge cannot run the configured OpenCode binary, it now attempts automatic repair before surfacing binary_unavailable:
+
+1. configured binary;
+2. known runner path;
+3. known user/private runtime locations;
+4. already-installed native packages;
+5. pinned native package self-heal install;
+6. version probe;
+7. OpenCode server startup.
+
+A genuine package/network/runtime incompatibility can still leave the adapter unavailable, but the development workspace remains independently usable.
+
+## Errors
+
+Error copy should describe the failed capability accurately.
+
+Examples:
+
+- model unavailable;
+- provider authentication needs attention;
+- OpenCode runtime unavailable;
+- workspace connection interrupted.
+
+Do not collapse them all into one generic AI failure.
+
+## Security
+
+Provider credentials, OpenCode server passwords and bridge credentials are server/workspace secrets.
+
+They must not appear in browser payloads, event history, learned lessons or ordinary logs.
