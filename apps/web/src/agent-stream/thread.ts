@@ -156,6 +156,10 @@ export function buildThread(
   // Stable chronological order: anchor each turn to its user message time,
   // then first work sequence. Never re-sort on every delta (no jumping rows).
   const timeOf = (turn: ThreadTurn): number => {
+    if (turn.userMessages.length) {
+      const times = turn.userMessages.map((message) => Date.parse(message.createdAt)).filter(Number.isFinite);
+      if (times.length) return Math.min(...times);
+    }
     if (turn.userMessage) return Date.parse(turn.userMessage.createdAt) || 0;
     const first = turn.work[0];
     return first ? Date.parse(first.timestamp) || 0 : 0;
