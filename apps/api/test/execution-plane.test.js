@@ -237,18 +237,17 @@ test('Build admission proves repository freshness before model execution', () =>
   assert.match(bridge, /state: 'branch_mismatch'/);
 });
 
-test('Codespace bridge receives GitHub credentials and repairs missing preflight auth automatically', () => {
+test('Codespace repository sync uses native Git credentials without persisting the GitHub token', () => {
   const runtime = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
   const worker = fs.readFileSync(new URL('../../../runtime-worker/src/index.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
 
-  assert.match(runtime, /ORLYNX_GITHUB_TOKEN=\$\{githubUserToken\}/);
-  assert.match(runtime, /bootstrapScript\(workspace, values, bridgeUrl, openCodeApiKey, githubUserToken\)/);
-  assert.match(worker, /ORLYNX_GITHUB_TOKEN=\$\{body\.githubUserToken\}/);
-  assert.match(agents, /repositoryCredentialMissing/);
-  assert.match(agents, /GitHub credentials are unavailable in this workspace/);
-  assert.match(agents, /reason: repositoryCredentialMissing \? 'repository_credentials'/);
-  assert.match(agents, /Refreshing GitHub access for this workspace/);
+  assert.doesNotMatch(runtime, /ORLYNX_GITHUB_TOKEN/);
+  assert.doesNotMatch(worker, /ORLYNX_GITHUB_TOKEN/);
+  assert.doesNotMatch(bridge, /if \(!GITHUB_TOKEN\) throw new Error\('GitHub credentials are unavailable in this workspace\.'\)/);
+  assert.match(bridge, /const authEnv = GITHUB_TOKEN \? \{/);
+  assert.match(bridge, /native Codespaces Git credential helper/);
   assert.match(agents, /errorKind: 'repository'/);
 });
 
