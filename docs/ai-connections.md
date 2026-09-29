@@ -1,105 +1,85 @@
 # Orlynx AI connections
 
-Users experience **Orlynx AI**, but the architecture separates model providers, selected models, coding-agent adapters and workspace execution.
+Users experience one product: Orlynx AI.
 
-These concepts must not be collapsed into one “AI connected” boolean.
+Internally, Orlynx separates three concepts:
 
-## Concepts
+- **Agent adapter** — the coding-agent runtime contract. OpenCode is Adapter #1.
+- **Provider connection** — credentials/access for a model provider or OpenCode account path.
+- **Model** — the specific model selected for a turn.
 
-### Model provider
+These concepts are deliberately independent.
 
-A provider authenticates access to one or more language models.
+## Direct chat versus workspace agent
 
-Credentials remain server-side and are encrypted where persisted.
+Ask/Plan requests that do not require mutable execution can use Orlynx direct chat through the control plane.
 
-### Model
+Build execution uses the selected agent adapter inside the workspace.
 
-A model is the selected reasoning/generation resource for a turn.
+A direct-model failure does not mean the workspace is dead.
+An OpenCode adapter failure does not mean Git/files/terminal are dead.
 
-The selected model is persisted as session preference and snapshotted where required so already-admitted work cannot silently change when the picker changes.
+## Provider credentials
 
-### Coding-agent adapter
+Hosted production stores provider connection records server-side and encrypts persisted credentials.
 
-A coding-agent adapter performs workspace-oriented agent execution.
+Credentials are never returned to the browser in raw form.
 
-OpenCode is Adapter #1 today.
+The workspace receives only the credentials needed for its selected runtime path.
 
-The adapter is selected separately from the model because Orlynx owns the product contract around both.
+## Free/public OpenCode models
 
-### Workspace provider
+For catalog-marked free/public OpenCode routes, Orlynx keeps public access separate from saved account authentication.
 
-The workspace provider supplies mutable compute.
+A stale account key must not turn a free-model availability problem into a misleading “reconnect paid account” error.
 
-Current architecture:
+## Model selection
 
-- Orlynx Runner preferred when configured;
-- GitHub Codespaces fallback/recovery.
+Model selection is persisted per durable session.
 
-Workspace readiness and model/provider readiness are separate states.
+Changing the model during active work must not silently mutate an already-admitted task. The admitted task keeps its snapshot; the new selection applies to later work according to session/task rules.
 
-## Direct Ask / Plan
+## Agent readiness
 
-Direct Ask/Plan can call the selected model through the control plane without starting a mutable workspace.
+Agent adapter status can be:
 
-This path supports real streaming, cancellation and same-run continuation.
+- starting;
+- ready;
+- busy;
+- unavailable;
+- failed.
 
-It is intentionally lighter than the full coding-agent runtime.
+Adapter readiness is separate from workspace readiness.
 
-## Build
+## OpenCode runtime repair
 
-Build work uses the workspace execution plane and selected coding-agent adapter.
+When the bridge cannot run the configured OpenCode binary, it now attempts automatic repair before surfacing binary_unavailable:
 
-The agent runtime can use the selected model/provider according to the adapter's supported configuration.
+1. configured binary;
+2. known runner path;
+3. known user/private runtime locations;
+4. already-installed native packages;
+5. pinned native package self-heal install;
+6. version probe;
+7. OpenCode server startup.
 
-A failed agent adapter should not automatically mark filesystem/shell/Git workspace capability as failed.
+A genuine package/network/runtime incompatibility can still leave the adapter unavailable, but the development workspace remains independently usable.
 
-## Credential handling
+## Errors
 
-Provider credentials:
-
-- are never returned raw to the browser;
-- are not stored in localStorage;
-- should not appear in event payloads/logs;
-- are scoped to the authenticated user;
-- are encrypted at rest where persisted.
-
-Connection status can expose health, provider name, model availability and masked metadata without exposing the credential.
-
-## No silent model substitution
-
-If a selected model/provider becomes unavailable, Orlynx should report a needs-attention/error state.
-
-It should not silently switch to a different paid/free provider or model merely to make the request appear successful.
-
-## Catalog and availability
-
-The direct model path uses the Orlynx model catalog/provider transport layer documented in [direct-chat-architecture.md](direct-chat-architecture.md).
-
-Agent-runtime model availability may also depend on the selected adapter.
-
-The UI should merge these concepts carefully rather than inventing model names that the active execution path cannot actually use.
-
-## Health
-
-Useful health is capability-specific.
+Error copy should describe the failed capability accurately.
 
 Examples:
 
-- direct model ready;
-- workspace ready;
-- agent adapter ready;
-- provider credential needs attention.
+- model unavailable;
+- provider authentication needs attention;
+- OpenCode runtime unavailable;
+- workspace connection interrupted.
 
-“AI ready” should only be shown when the capability needed for the requested action is actually usable.
+Do not collapse them all into one generic AI failure.
 
-## Disconnect
+## Security
 
-Disconnecting one model provider should preserve:
+Provider credentials, OpenCode server passwords and bridge credentials are server/workspace secrets.
 
-- project conversation;
-- attachments;
-- task history;
-- learned lessons;
-- repository state.
-
-If the active selection depended on that provider, the session should move to an explicit needs-attention state until the user selects or reconnects a usable model.
+They must not appear in browser payloads, event history, learned lessons or ordinary logs.
