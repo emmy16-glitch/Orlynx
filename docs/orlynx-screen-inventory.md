@@ -1,196 +1,138 @@
 # Orlynx screen inventory
 
-This inventory describes the current product model, not the early prototype.
+This document describes the current product shell. Older prototype descriptions of a simulated native agent or fake cloud state are obsolete.
 
-## Entry and repository selection
+## Entry / GitHub
 
-| Screen / surface | Current role |
-| --- | --- |
-| Welcome / connect | Connect GitHub and restore existing authenticated project state |
-| Repository picker | Choose among GitHub repositories authorized to the Orlynx App installation |
-| Branch selection | Select the working branch before opening/importing the project |
-| Recent projects | Resume durable project sessions rather than opening disposable chat tabs |
+### Welcome
+
+Purpose: explain the product and connect GitHub.
+
+Current behavior:
+
+- real GitHub App/OAuth flow;
+- no PAT input;
+- returns to Orlynx after authorization;
+- fresh-device OAuth success immediately hydrates durable identity-owned conversations.
+
+### Repository picker
+
+Purpose: choose an authorized repository.
+
+Current behavior:
+
+- server-authorized GitHub repositories;
+- repository search;
+- branch selection/opening;
+- opening an existing user + repository + branch resumes the durable conversation.
+
+## Home / Projects
+
+Recent projects are hydrated from the server-owned session list after authentication, not solely localStorage.
+
+A project can be opened on a new device even when that browser has never seen the session before.
 
 ## Project workspace
 
-The primary workspace is conversation-first.
-
-### Chat
-
-Chat is the main orchestration surface.
-
-It contains:
-
-- durable user/assistant turns;
-- selected model;
-- selected mode: Ask / Plan / Build;
-- selected access profile;
-- selected coding-agent adapter;
-- streamed model output;
-- normalized execution evidence;
-- ordered Investigation blocks;
-- same-run follow-up messages;
-- explicit queue tray;
-- Stop/cancel controls;
-- attachment entry points.
-
-Natural follow-ups continue active work where possible.
-
-Explicit next-task intent creates visible queued work.
-
-### Files
-
-Files exposes repository/workspace file context without turning the product into a full IDE clone.
-
-The exact source may depend on workspace readiness and repository state.
-
-### Changes
-
-Changes is the review surface for modifications and publication preparation.
-
-It should make it possible to understand:
-
-- what files changed;
-- the relevant diff/evidence;
-- whether review/approval is required;
-- whether commit/publication succeeded;
-- the resulting receipt/branch target.
-
-### Preview
-
-Preview opens only a browser-usable forwarded surface.
-
-API-only ports are not treated as Preview.
-
-Codespaces and runner Preview use provider-specific forwarding under one Orlynx product contract.
-
-### Terminal
-
-Terminal is a real workspace PTY capability and is not the main chat transcript.
-
-Raw terminal output stays separate from user-facing work summaries.
-
-### More / contextual surfaces
-
-Depending on viewport and current implementation, More/contextual surfaces expose secondary project functions such as:
-
-- terminal;
-- workspace/provider state;
-- task/queue information;
-- settings;
-- integration details.
-
-Infrastructure should remain secondary to the project conversation.
-
-## Queue UI
-
-The queue tray represents explicit future work only.
-
-For each queued task the UI can surface:
-
-- position;
-- mode;
-- prompt summary;
-- Edit;
-- Cancel.
-
-Active work status is not duplicated inside the queued list.
-
-Queued tasks are sequential.
-
-## Investigation UI
-
-Reflection/diagnostic dialogue is grouped into ordered:
-
-- Investigation 1;
-- Investigation 2;
-- etc.
-
-Each Investigation can show:
-
-- Orlynx observation;
-- model hypothesis/next check;
-- evidence underneath.
-
-Long Investigation content is scroll-bounded.
-
-The UI does not expose private hidden chain-of-thought.
-
-## Streaming behavior
-
-The latest streamed output follows automatically while the user is reading at the bottom.
-
-If the user scrolls upward, follow mode stops.
-
-The user can return to current activity without losing their reading position.
-
-## Mobile
-
-Mobile remains a first-class control surface.
-
-The project navigation is intentionally compact, with the primary set centered on:
+Primary project navigation is:
 
 ~~~text
 Chat · Files · Changes · More
 ~~~
 
-Secondary tooling does not compete with the core project flow.
+Preview and Terminal are contextual surfaces under the project experience rather than permanent infrastructure-first top-level navigation.
 
-Queue, Investigation, composer and current-work status must remain usable on narrow screens.
+### Chat
 
-## Desktop
+Current behavior includes:
 
-Desktop can expose more repository/project context at once, but it should preserve the same mental model:
+- durable message history;
+- direct Ask/Plan streaming;
+- Build execution;
+- same-run follow-up continuation;
+- explicit durable queue;
+- queue edit/cancel controls;
+- typed tool/activity evidence;
+- ordered Investigation blocks;
+- Stop/Cancel behavior;
+- mobile reconnect/replay;
+- no forced autoscroll while reading old content.
 
-- conversation is primary;
-- files/changes are supporting surfaces;
-- infrastructure is contextual;
-- current work and queued work remain distinct.
+### Files
 
-## GitHub publication
+Reads repository/workspace files through the appropriate current source.
 
-Publication controls must communicate the actual branch target.
+The source may be GitHub when no mutable workspace is needed or the authenticated bridge when the workspace is ready.
 
-If the user explicitly names a branch, the UI/backend must not silently substitute another target.
+### Changes
 
-Publication is performed through controlled Orlynx/GitHub integration rather than exposing raw credentials to the agent shell.
+Shows durable/reviewable change state and publication actions.
 
-## Current integrations represented in the UI
+Git publication is controlled by Orlynx rather than raw model credentials.
 
-The deployed product architecture supports real state for:
+### More
 
-- GitHub App connection;
-- authorized repositories;
-- connected model/provider state;
-- Orlynx warm runner when configured;
-- GitHub Codespaces fallback/recovery;
-- authenticated bridge;
-- OpenCode adapter;
-- real workspace files/shell/Git;
-- real Preview forwarding;
-- durable queue state;
-- approvals/change sets;
-- controlled publication.
+Contextual surfaces include Preview, Terminal, workspace state and related project controls.
 
-## Explicitly future surfaces
+## AI controls
 
-The following should not be presented as current unless implementation and production verification are added:
+The composer exposes separate concepts for:
 
-- additional real coding-agent adapters beyond OpenCode;
-- team/shared project memory;
-- multi-agent parallel orchestration;
-- autonomous scheduled maintenance;
-- production observability feedback loops;
-- enterprise organization policy administration.
+- Agent;
+- Model;
+- Mode;
+- Access.
 
-## Historical note
+OpenCode is Agent Adapter #1.
 
-Older versions of this document described simulated native agents, local-only cloud state and unimplemented Codespaces behavior.
+The UI must not imply that an unavailable agent adapter means the entire workspace is unavailable.
 
-Those statements were prototype-era truth and are no longer current architecture.
+## Workspace states
 
-For current behavior, use:
+The UI can represent preparing, connecting, ready, reconnecting, failed/stopped and provider recovery.
 
-- [orlynx-overview.md](orlynx-overview.md)
-- [architecture-overview.md](architecture-overview.md)
-- [end-to-end-verification.md](end-to-end-verification.md)
+Workspace readiness and agent-adapter readiness are separate.
+
+Example:
+
+~~~text
+Workspace: ready
+OpenCode adapter: unavailable (repairing)
+~~~
+
+is a valid state.
+
+## Queue
+
+Explicit next work has a compact queue surface with position, mode, edit and cancel controls.
+
+Active work status is separate from queued work.
+
+## Investigation
+
+Reflection dialogue is grouped into ordered Investigation sections.
+
+Each section can show the useful Orlynx observation and model hypothesis/next check, with actual tool evidence elsewhere in the same turn.
+
+The product does not expose private hidden chain-of-thought.
+
+## Cross-device behavior
+
+Phone and laptop are clients of the same durable conversation.
+
+Expected behavior after same-GitHub login:
+
+- recent projects appear;
+- latest durable session can restore automatically;
+- opening the same repository/branch restores messages;
+- queued/running task state is recovered;
+- event replay catches up activity;
+- local browser cache is not required for history.
+
+## Responsive behavior
+
+Core workflows must work at narrow phone widths and wide desktop widths.
+
+Mobile remains a first-class control surface rather than a read-only companion.
+
+See orlynx-responsive-behavior.md and orlynx-ui-architecture.md.
