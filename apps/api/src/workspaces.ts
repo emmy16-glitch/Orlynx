@@ -7,7 +7,7 @@ import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 
-type PreparationContext = { allowFallback: boolean; promise: Promise<WorkspaceRecord> };
+type PreparationContext = { allowFallback: boolean; runnerRecoveryAttempted?: boolean; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
