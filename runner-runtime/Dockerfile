@@ -10,7 +10,10 @@ RUN npm run build && npm prune --omit=dev
 FROM node:24-bookworm-slim
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.32
+ARG PLAYWRIGHT_VERSION=1.63.0
 ENV OPENCODE_VERSION=${OPENCODE_VERSION}
+ENV PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git curl psmisc iproute2 ripgrep python3 python3-pip make g++ \
@@ -25,6 +28,15 @@ COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/dist /opt/orlynx/brid
 COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/node_modules /opt/orlynx/bridge/node_modules
 COPY --chown=orlynx:orlynx runner-runtime/start-bridge.sh /opt/orlynx/start-bridge.sh
 COPY --chown=orlynx:orlynx runner-runtime/preview-proxy.mjs /opt/orlynx/preview-proxy.mjs
+COPY --chown=orlynx:orlynx runner-runtime/browser-smoke.mjs /opt/orlynx/browser-smoke.mjs
+
+# Browser/E2E capability is part of the runtime image, not a per-task repair.
+# Playwright installs the exact Debian libraries Chromium needs plus a shared
+# browser cache that every workspace container can reuse.
+RUN npm install --prefix /opt/orlynx/playwright --no-save --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}" \
+    && /opt/orlynx/playwright/node_modules/.bin/playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/orlynx/playwright /ms-playwright
+
 RUN chmod +x /opt/orlynx/start-bridge.sh \
     && case "$TARGETARCH" in \
          amd64|"") pkg="opencode-linux-x64-baseline" ;; \
