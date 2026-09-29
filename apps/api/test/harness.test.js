@@ -324,6 +324,17 @@ test('real workspace reflection carries an id and emits Model to Orlynx activity
   assert.match(bridge, /Model\\s\*\[→>-\]\\s\*Orlynx:/);
 });
 
+test('direct and workspace runs never finalize with unapplied follow-up input', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  assert.match(agents, /const latestBeforeFinalize = await repository\.getTask\(task\.id\)/);
+  assert.match(agents, /unappliedBeforeFinalize/);
+  assert.match(agents, /Continuing with your latest message/);
+  assert.match(gateway, /const latestBeforeFinalize = await repository\.getTask\(task\.id\)/);
+  assert.match(gateway, /const lateSteering = latestBeforeFinalize\?\.harness\?\.inbox\.filter/);
+  assert.match(gateway, /a newer user follow-up arrived before finalization/i);
+});
+
 test('durable workspace gateway verifies evidence and either salvages or completes explicitly', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
   assert.match(gateway, /task\.harness = verifyHarness\(task\.harness, recent/);
