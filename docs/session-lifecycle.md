@@ -1,50 +1,86 @@
 # Session lifecycle
 
-An Orlynx session belongs to an authenticated GitHub identity and project, not to a browser tab or a single phone.
+An Orlynx project session belongs to the authenticated GitHub user identity and repository context, not to one browser tab, one phone, one laptop or localStorage.
 
-## Creation
+## Durable ownership
 
-Opening an authorized repository creates a session with:
+In hosted production, Postgres stores the authoritative session and its related messages, tasks, events, AI preferences, workspace state, approvals, changes and audit information.
 
-- user identity
-- project/repository identity
-- GitHub installation
-- branch
-- durable conversation
-- AI preferences
-- optional workspace
+The browser may remember a recent session ID as a convenience pointer, but losing browser storage must not erase the conversation.
 
-The server persists this state in Postgres in production.
+## Cross-device restore
 
-## Restore
+After the same GitHub user connects Orlynx on another device:
 
-The browser may keep the last session ID in localStorage only as a convenience pointer. It is not authoritative.
+1. Orlynx resolves the authenticated GitHub user identity.
+2. GET /v1/sessions returns that user's durable sessions ordered by recent activity.
+3. The client hydrates recent repositories from that server-owned list.
+4. If there is no valid local pointer, the newest durable session can be opened automatically.
+5. Opening the session restores messages, tasks, run snapshots, activity history, AI preferences and workspace metadata.
+6. SSE reconnects from the restored event cursor.
 
-On startup Orlynx:
+The OAuth-success path performs this hydration immediately. A fresh laptop should not require a second page reload before existing conversations appear.
 
-1. tries the local pointer when present;
-2. if it is missing or stale, requests the most recently updated session for the authenticated user;
-3. restores messages, task state, changes, attachments, AI preferences and workspace state from the server;
-4. reconnects the event stream from the last known sequence.
+## Reopening a repository
 
-This allows a session started on one phone/browser to be recovered on another authenticated device.
+Orlynx keeps one durable conversation for a user + repository + branch.
 
-## Tasks and interruption
+When the user reopens that repository/branch, Orlynx searches by stable GitHub user identity and project context instead of relying only on an old installation ID.
 
-Tasks use durable states such as queued, running, waiting, completed, failed and cancelled. The workspace can continue working while the browser is backgrounded. When the user returns, the UI refreshes the authoritative session snapshot and replays events after its cursor.
+If the GitHub App was reinstalled and the user still has valid access, the durable session can be rebound to the current installation without creating a blank duplicate conversation.
 
-No success state is inferred from a client-side timer.
+## Messages do not live only in the browser
 
-## AI preferences
+User and assistant messages are stored in the durable messages table.
 
-Model, mode and permission profile are persisted per session. A device switch therefore does not silently reset Build/Plan/Ask or access level.
+Local browser state is used only for convenience such as:
 
-## Disconnects
+- last-opened session pointer;
+- event sequence cursor;
+- unsent draft;
+- theme and small UI preferences.
 
-Disconnecting GitHub removes Orlynx's active GitHub connection but does not delete conversation history. Repository operations fail closed until the user reconnects.
+Deleting browser cache therefore must not be equivalent to deleting Orlynx chat history.
 
-Stopping a cloud workspace does not delete the Orlynx session.
+## Active task continuation
+
+An active task can receive durable follow-up messages.
+
+Natural follow-ups remain attached to the same run while steering is still possible. Before finalization, Orlynx re-reads task state so a message arriving during verification/final synthesis is not silently lost.
+
+Explicit next-task wording creates separate queued work.
+
+## Queue states
+
+Tasks can move through states such as:
+
+- queued;
+- running;
+- waiting_input;
+- waiting_approval;
+- paused/interrupted where supported;
+- completed;
+- failed;
+- cancelled.
+
+Queued work remains durable across browser disconnects and API restarts.
+
+## Workspace independence
+
+The session remains stable even when compute changes underneath it.
+
+Stopping, replacing or falling back between an Orlynx runner and GitHub Codespaces does not delete chat history.
+
+Agent-adapter health is also separate from session existence. An unavailable OpenCode runtime must not make the conversation disappear.
+
+## GitHub disconnect
+
+Disconnecting GitHub removes active repository authorization, but it does not intentionally delete the durable conversation.
+
+The user must reconnect before protected repository operations continue.
 
 ## Retention
 
-Operational dedupe receipts for GitHub webhooks are pruned after 30 days. Completed/failed bridge commands are pruned after 7 days. Conversation/session data, approvals and audit history remain durable until a product-level deletion/retention policy is explicitly applied; Orlynx must not silently discard user history.
+Operational dedupe/transport tables may be pruned according to their documented policies.
+
+Conversation/session history and audit data are not silently expired merely because a workspace stopped or the user changed devices. A future user-facing deletion/retention feature must make destructive retention explicit.
