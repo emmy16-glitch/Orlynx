@@ -684,13 +684,14 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
         failedRun.state = 'failed';
         failedRun.activity = 'Repository sync unavailable';
         failedRun.finishedAt = now;
-        failedRun.errorKind = 'engine';
+        failedRun.errorKind = 'repository';
       }
       store.save();
+      console.warn(`[repository] preflight failed session=${sessionId} workspace=${readyWorkspace.id} detail=${detail.replace(/\s+/g, ' ').slice(0, 500)}`);
       emit(sessionId, 'run.failed', {
         taskId: nextQueued.id,
         error: `Orlynx could not verify the workspace against GitHub before Build: ${detail}`,
-        errorKind: 'engine',
+        errorKind: 'repository',
         recoverable: true,
       }, nextQueued.runId);
       return promoteNextQueuedRunInner(sessionId);
