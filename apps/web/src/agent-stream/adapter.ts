@@ -257,8 +257,13 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ? [{ ...common, type: 'TOOL_START', toolCallId: id, name: 'subagent', semanticType: 'generic', title: str(payload.title) || 'Delegated subtask' }]
         : [{ ...common, type: 'TOOL_END', toolCallId: id, semanticType: 'generic', ok: payload.ok !== false, error: str(payload.error) || undefined }];
     }
-    case 'run.state':
-      return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: str(payload.state) || undefined, value: { ...payload, scope: 'run' } }];
+    case 'run.state': {
+      const state = str(payload.state) as RunState;
+      if (['queued','running','waiting_input','waiting_approval','paused','interrupted','completed','failed','cancelled'].includes(state)) {
+        return [{ ...common, type: 'RUN_STATE', state, message: str(payload.message) || undefined }];
+      }
+      return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: state || undefined, value: { ...payload, scope: 'run' } }];
+    }
     case 'workspace.state':
       return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: workspaceState(payload), message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
     case 'extension.event':
