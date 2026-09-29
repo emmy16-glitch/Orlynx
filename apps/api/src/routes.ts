@@ -320,6 +320,39 @@ router.post('/sessions', async (req, res) => {
   if (!await githubRepositoryAuthorized(String(project), installationId)) return res.status(403).json({ error: 'This repository is not available to your GitHub connection.' });
   if (!durableStorageConfigured() && !importedRepositoryRoot(String(project))) return res.status(409).json({ error: 'Import this repository through the connected GitHub App before opening a project.' });
   if (!durableStorageConfigured() && importedRepositoryBranch(String(project)) !== String(branch)) return res.status(409).json({ error: 'The selected branch is not checked out locally. Import the branch again.' });
+
+  // One durable conversation per user + repository + branch. Reopening a
+  // project resumes the existing Orlynx thread instead of silently creating
+  // another session that looks like a fresh chat.
+  if (durableStorageConfigured()) {
+    const repository = controlPlaneRepository();
+    const connection = await repository.getGitHubConnectionByInstallation(installationId);
+    const githubRepo = (await githubListRepos(installationId)).find((item) => item.full.toLowerCase() === String(project).toLowerCase());
+    if (!connection || !githubRepo) return res.status(409).json({ error: 'Reconnect GitHub before creating a durable project session.' });
+    const existing = (await repository.listSessionsByUser(connection.userId, 50))
+      .find((item) =>
+        item.installationId === installationId
+        && item.project.toLowerCase() === String(project).toLowerCase()
+        && item.branch === String(branch)
+      );
+    if (existing) {
+      store.db.sessions[existing.id] = existing;
+      store.save();
+      if (shouldPrewarmWorkspace()) {
+        await scheduleWorkspacePreparation({
+          sessionId: existing.id,
+          userId: existing.userId,
+          projectId: existing.projectId,
+          repositoryId: githubRepo.id,
+          branch: existing.branch,
+        }, { allowFallback: false, reason: 'reopen' }).catch((error) => {
+          console.warn(`[workspace] reopen prewarm scheduling failed session=${existing.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        });
+      }
+      return res.json(existing);
+    }
+  }
+
   const id = `ses_${uuid().slice(0, 8)}`;
   const now = new Date().toISOString();
   store.db.sessions[id] = { id, installationId, project, owner, branch, mode: 'repository', workspaceId: null, createdAt: now, updatedAt: now };
