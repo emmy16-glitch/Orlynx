@@ -49,6 +49,8 @@ A workspace is ready when the provider environment and authenticated bridge are 
 
 OpenCode may still be starting/repairing/unavailable.
 
+Heartbeat readiness is intentionally debounced: one transient OpenCode health-probe miss does not flip a previously ready adapter to unavailable. Consecutive failures are required before durable readiness changes, preventing normal short latency spikes from making Build appear to restart.
+
 This separation is intentional.
 
 ## OpenCode self-healing
