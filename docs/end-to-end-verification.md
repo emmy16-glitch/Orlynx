@@ -67,6 +67,19 @@ The test proves that localStorage is only a convenience pointer.
 8. confirm queued work does not run beside active or waiting work;
 9. confirm the next task starts automatically after terminal completion.
 
+## Repository freshness scenario
+
+1. prepare a workspace on the correct branch but several commits behind `origin` with a clean working tree;
+2. send a Build request;
+3. confirm Orlynx fetches the target branch and fast-forwards before the model or any repository tool runs;
+4. confirm the activity stream reports the repository update and the task continues against the new HEAD;
+5. repeat with uncommitted changes while the branch is behind;
+6. confirm Orlynx does not reset, stash, commit, or discard those changes automatically and does not run the model on stale code;
+7. repeat with a diverged branch and with a workspace checked out to the wrong branch;
+8. confirm both are blocked before execution with exact branch/ahead/behind context;
+9. switch Plan → Build and send immediately, before preference persistence finishes;
+10. confirm the message admission payload carries Build, not the previous Plan mode.
+
 ## Warm Build continuation scenario
 
 1. start or reuse a Build workspace and complete one model/tool turn;
