@@ -227,7 +227,9 @@ test('reflection detects contradictory preview evidence and tells the model to d
   cp = prepareReflection(cp, events);
   const instruction = reflectionInstruction(cp, ['Private Codespaces previews may require authenticated external navigation.']);
   assert.match(instruction, /Reflection cycle 1\/4/);
-  assert.match(instruction, /reasoning layer/i);
+  assert.match(instruction, /connected reasoning layer/i);
+  assert.match(instruction, /answer the specific Orlynx question/i);
+  assert.match(instruction, /If the evidence is insufficient, say which check would resolve the uncertainty/i);
   assert.match(instruction, /Do not repeat the same failed command/i);
   assert.match(instruction, /Verified lessons from earlier successful work/);
 });
@@ -282,6 +284,8 @@ test('hidden harness instruction carries phase budget criteria tools and steerin
   assert.match(text, /Acceptance criteria: changes, tests/);
   assert.match(text, /Active tool families:/);
   assert.match(text, /\[APPEND\] also check mobile reconnect/);
+  assert.match(text, /Orlynx must not invent an explanation/);
+  assert.match(text, /Treat the connected model as the reasoning partner/);
   assert.match(text, /Progress text is not a final answer/);
 });
 
@@ -349,6 +353,8 @@ test('durable workspace gateway verifies evidence and either salvages or complet
   assert.match(gateway, /shouldReflect\(task\.harness, responseText\)/);
   assert.match(gateway, /prepareReflection\(task\.harness, recent/);
   assert.match(gateway, /reflectionInstruction\(task\.harness/);
+  assert.match(gateway, /I cannot verify \$\{missing\}/);
+  assert.match(gateway, /What does the current evidence imply, and what is the next check that would resolve the uncertainty/);
   assert.match(gateway, /needsFinalSynthesis\(task\.harness, responseText\)/);
   assert.match(gateway, /controlledDefaultBranchPublish/);
   assert.match(gateway, /type: 'run\.completed'/);
