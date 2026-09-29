@@ -23,7 +23,7 @@ import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIn
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
-import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, steeringActionFor, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
 
 export const router = Router();
 
@@ -508,7 +508,8 @@ router.post('/sessions/:id/messages', async (req, res) => {
       .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
 
-    if (activeTask) {
+    const explicitQueue = queueIntentFor(String(text));
+    if (activeTask && !explicitQueue) {
       const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
       const now = new Date().toISOString();
       msg.runId = activeTask.runId;
@@ -1366,7 +1367,14 @@ router.get('/sessions/:id/tasks', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (!durableStorageConfigured()) return res.json([]);
   const tasks = await controlPlaneRepository().listTasks(session.id);
-  const queued = tasks.filter((task) => task.state === 'queued');
+  const queued = tasks
+    .filter((task) => task.state === 'queued')
+    .sort((a, b) => {
+      const planeOrder = (a.plane === 'direct' ? 0 : 1) - (b.plane === 'direct' ? 0 : 1);
+      if (planeOrder) return planeOrder;
+      const created = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+      return created || a.id.localeCompare(b.id);
+    });
   const positions = new Map(queued.map((task, index) => [task.id, index + 1]));
   res.json(tasks
     .filter((task) => ['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state))
@@ -1419,7 +1427,11 @@ router.patch('/sessions/:id/tasks/:taskId', async (req, res) => {
   if (task.messageId) {
     const original = (await repository.listMessages(session.id)).find((message) => message.id === task.messageId);
     if (original?.role === 'user') {
-      await repository.putMessage({ ...original, text: prompt, runId: task.runId || original.runId });
+      const updatedMessage = { ...original, text: prompt, runId: task.runId || original.runId };
+      await repository.putMessage(updatedMessage);
+      const memoryMessage = (store.db.messages[session.id] || []).find((message) => message.id === original.id);
+      if (memoryMessage) Object.assign(memoryMessage, updatedMessage);
+      store.save();
     }
   }
 
