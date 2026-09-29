@@ -117,7 +117,8 @@ test('waiting-input transport interruption is accepted and recovered instead of 
   assert.match(routes, /reason: 'waiting_input_resume'/);
   assert.match(routes, /res\.status\(202\)\.json/);
   assert.match(routes, /recoveringWorkspace: true/);
-  assert.match(routes, /transport failure\s+must never make Send look broken/i);
+  assert.match(routes, /recoveringWorkspace: true/);
+  assert.match(routes, /workspace connection dropped, so Orlynx is reconnecting/i);
 });
 
 test('active-turn steering classifies source-style APPEND REPLACE STOP behavior', () => {
