@@ -7,6 +7,7 @@ import { activityTranscriptLabel, buildConversationTimeline, chatActivities, par
 import { emptyAgentStreamState } from '../../web/src/agent-stream/protocol.ts';
 import { applyRawAgentEvents, reconcileAgentStream } from '../../web/src/agent-stream/store.ts';
 import { selectLiveReplies } from '../../web/src/agent-stream/view.ts';
+import { buildThread } from '../../web/src/agent-stream/thread.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
@@ -83,6 +84,31 @@ describe('conversation projection: adapter heartbeat suppression', () => {
       evt('state.delta', { scope: 'bridge', state: 'ready' }),
     ]);
     assert.equal(recovered.length, 0);
+  });
+});
+
+describe('conversation projection: continuing project turns', () => {
+  it('keeps active-run follow-ups inside one stable conversation turn', () => {
+    const stream = emptyAgentStreamState();
+    stream.runs['run-a'] = {
+      id: 'run-a',
+      state: 'running',
+      messageId: 'assistant:run-a',
+      userMessageId: 'u1',
+      mode: 'build',
+      startedAt: '2026-09-29T10:00:00.000Z',
+    };
+    const messages = [
+      { id: 'u1', role: 'user', text: 'Start localhost', createdAt: '2026-09-29T10:00:00.000Z' },
+      { id: 'u2', role: 'user', text: 'What have you done?', runId: 'run-a', createdAt: '2026-09-29T10:01:00.000Z' },
+      { id: 'u3', role: 'user', text: 'Also check Preview', runId: 'run-a', createdAt: '2026-09-29T10:02:00.000Z' },
+    ];
+    const thread = buildThread(messages, [], [], stream);
+    assert.equal(thread.length, 1);
+    assert.equal(thread[0].runId, 'run-a');
+    assert.deepEqual(thread[0].userMessages.map((message) => message.id), ['u1', 'u2', 'u3']);
+    assert.equal(thread[0].userMessage?.id, 'u3');
+    assert.equal(thread[0].userMessageId, 'u1');
   });
 });
 
