@@ -458,25 +458,6 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             plane: task.plane || 'workspace',
             now,
           });
-          if ((task.harness.reflectionAttempts || 0) > 0 && responseText) {
-            const report = responseText.replace(/\s+/g, ' ').trim().slice(0, 420);
-            if (report) {
-              await repository.appendEvent({
-                eventId: `evt_${uuid()}`,
-                sessionId: claims.sessionId,
-                taskId,
-                runId,
-                workspaceId: claims.workspaceId,
-                type: 'activity.progress',
-                timestamp: now,
-                payload: {
-                  sourceType: 'agent.dialogue.model',
-                  reflectionId: task.harness.reflectionAttempts,
-                  text: `Model → Orlynx: ${report}`,
-                },
-              });
-            }
-          }
           task.harness = advanceHarnessPhase(task.harness, 'verifying', {
             mode: task.mode || 'build',
             permission: effectivePermission,
@@ -728,7 +709,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 task.harness.verification.missing.includes('publish')
                   ? 'If publishing is still required, prepare and commit the workspace locally; Orlynx will perform the authenticated push.'
                   : '',
-                'For this reflection turn, first give one short user-visible diagnostic sentence stating your current hypothesis and next check. Do not expose hidden chain-of-thought. Then use the tools needed to test that hypothesis.',
+                'Follow the reflection instruction above: stream the one-line Model → Orlynx diagnostic first, then use tools to test it.',
               ].filter(Boolean).join('\n\n');
 
               await queueBridgeCommand(
