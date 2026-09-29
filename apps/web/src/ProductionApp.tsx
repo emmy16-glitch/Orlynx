@@ -1083,9 +1083,9 @@ export default function ProductionApp() {
   }
 
   const submittingRef = useRef(false);
-  // Retry after a completed/failed turn starts new work; history is never
-  // rewritten. Messages sent during active work are attached server-side to
-  // that same run, preserving one continuous conversation without mutation.
+  // Retry after a completed/failed turn starts new work; history is never rewritten by retry.
+  // Messages sent during active work are attached server-side to that same run,
+  // preserving one continuous conversation without spawning a parallel chat.
   async function sendMessage(overrideText?: string): Promise<boolean> {
     const text = (overrideText ?? composer).trim();
     if (!session || !text || submittingRef.current || sending || !online) return false;
