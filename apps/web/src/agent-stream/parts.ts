@@ -66,6 +66,13 @@ export function toThreadPart(item: ActivityItem): ThreadPart {
     };
   }
 
+  // A live Orlynx ↔ Model Investigation is already coalesced by the stream
+  // store into one ordered semantic object. Render it directly as status
+  // instead of letting it fall through to a generic activity row.
+  if (sourceType === 'agent.reflection') {
+    return { key: item.key, kind: 'status', item, title: item.title || 'Investigation', summary: item.summary, state: item.state, runId: item.runId };
+  }
+
   // Approvals are always first-class and interactive.
   if (item.category === 'approval' || /approval|permission/i.test(`${item.title} ${sourceType}`)) {
     return { key: item.key, kind: 'approval', item, title: item.state === 'waiting' ? 'Waiting for approval' : item.title, summary: item.summary, state: item.state, runId: item.runId };
