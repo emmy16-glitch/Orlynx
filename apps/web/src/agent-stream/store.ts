@@ -193,7 +193,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
             : event.errorKind === 'rate_limit' ? 'Model is busy'
               : event.errorKind === 'quota' ? 'AI quota reached'
                 : event.errorKind === 'engine' ? 'AI runtime unavailable'
-                  : 'Work needs attention';
+                  : event.errorKind === 'verification' ? 'Verification needs attention'
+                    : 'Work needs attention';
       putActivity(state, {
         id: `run-error:${event.runId}`,
         runId: event.runId,
