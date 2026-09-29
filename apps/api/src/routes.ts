@@ -1197,7 +1197,7 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
         emit(session.id, 'run.failed', {
           taskId: task.id,
           error: `Publish completed, but Orlynx still could not verify: ${task.harness.verification.missing.join(', ')}.`,
-          errorKind: 'engine',
+          errorKind: 'verification',
           recoverable: true,
         }, task.runId);
         await promoteNextQueuedRun(session.id).catch(() => null);
