@@ -4718,6 +4718,10 @@ html[data-theme="light"] .composer-options-panel {
 .ox-investigation {
   display: grid;
   gap: 8px;
+  max-height: min(42vh, 320px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 10px 12px 12px;
   border-left: 2px solid var(--border);
   background: var(--surface-muted);
