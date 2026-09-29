@@ -188,6 +188,25 @@ test('queued Build work tells the user what runtime state it is waiting on', () 
   assert.match(agents, /Starting OpenCode in the existing workspace/);
 });
 
+test('Build admission proves repository freshness before model execution', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(agents, /bridgeRequest\(readyWorkspace\.id, 'git\.sync'/);
+  assert.match(agents, /Checking .* against GitHub/);
+  assert.match(agents, /Workspace updated to latest/);
+  assert.match(agents, /stopped before executing stale or conflicting code/);
+  assert.match(bridge, /case 'git\.sync'/);
+  assert.match(bridge, /git\(\['merge', '--ff-only', remoteRef\]/);
+  assert.match(bridge, /state: 'blocked_dirty'/);
+  assert.match(bridge, /state: 'blocked_diverged'/);
+  assert.match(bridge, /state: 'branch_mismatch'/);
+});
+
+test('Build dependency hydration avoids accidental lockfile churn', () => {
+  assert.match(buildPresentationInstruction('build'), /prefer npm ci rather than npm install/i);
+  assert.match(buildPresentationInstruction('build'), /Do not leave package-lock\.json changed unless the task intentionally changes dependencies/i);
+});
+
 test('Build execution reserves prose for final results instead of narrating tool progress', () => {
   const instruction = buildPresentationInstruction('build');
   assert.match(instruction, /do not narrate routine progress/i);
