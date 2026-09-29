@@ -162,6 +162,27 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       return;
     }
 
+    case 'RUN_STATE': {
+      if (!event.runId) return;
+      const run = state.runs[event.runId];
+      updateRun(state, event, {
+        state: event.state,
+        messageId: run?.messageId || `assistant:${event.runId}`,
+        ...(event.state === 'completed' || event.state === 'failed' || event.state === 'cancelled'
+          ? { finishedAt: event.timestamp }
+          : { finishedAt: undefined }),
+      });
+      if (event.state === 'running' && run?.messageId && state.messages[run.messageId]) {
+        state.messages[run.messageId] = {
+          ...state.messages[run.messageId],
+          state: 'streaming',
+          endedAt: undefined,
+          lastSequence: Math.max(state.messages[run.messageId].lastSequence, event.sequence),
+        };
+      }
+      return;
+    }
+
     case 'RUN_FINISHED': {
       if (!event.runId) return;
       const run = state.runs[event.runId];
