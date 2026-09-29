@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   externalPreviewUrl, extractPortHint, isDevServerCommand, isPreviewablePort,
-  preferredPreviewPort, resolvePreviewInput, usablePreviews,
+  preferredPreviewPort, previewAuthorizationExpiresAt, previewDisplayPath,
+  refreshPreviewAuthorization, resolvePreviewInput, usablePreviews,
 } from '../../web/src/ui/preview.ts';
 import { codespacesPreviewUrl } from '../src/codespaces-preview.ts';
 
@@ -113,6 +114,26 @@ describe('preview URL safety (§§192, 198-200, 222)', () => {
     assert.deepEqual(resolvePreviewInput(BASE, 'javascript:alert(1)'), { kind: 'invalid' });
   });
 
+  it('warm-runner signed gateways keep their path, token and app route', () => {
+    const gateway = 'https://runner.example/preview/orlynx-ws-demo/5173/?t=2000000000.old';
+    const opened = resolvePreviewInput(gateway, '/login?next=home');
+    assert.equal(opened.kind, 'preview');
+    const openedUrl = new URL(opened.url);
+    assert.equal(openedUrl.pathname, '/preview/orlynx-ws-demo/5173/login');
+    assert.equal(openedUrl.searchParams.get('t'), '2000000000.old');
+    assert.equal(openedUrl.searchParams.get('next'), 'home');
+    assert.equal(previewDisplayPath(gateway, opened.url), '/login?next=home');
+
+    const fresh = 'https://runner.example/preview/orlynx-ws-demo/5173/?t=2000000600.new';
+    const renewed = refreshPreviewAuthorization(fresh, opened.url);
+    assert.ok(renewed);
+    const renewedUrl = new URL(renewed);
+    assert.equal(renewedUrl.pathname, '/preview/orlynx-ws-demo/5173/login');
+    assert.equal(renewedUrl.searchParams.get('t'), '2000000600.new');
+    assert.equal(renewedUrl.searchParams.get('next'), 'home');
+    assert.equal(previewAuthorizationExpiresAt(renewed), 2000000600 * 1000);
+  });
+
   it('TEST 12/13: external open preserves the current same-origin path', () => {
     assert.equal(externalPreviewUrl(BASE, 'https://preview.example.work/dashboard'), 'https://preview.example.work/dashboard');
     assert.equal(externalPreviewUrl(BASE, 'https://other.example/x'), BASE);
@@ -143,6 +164,8 @@ describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)
     assert.match(src, /setTab\('preview'\)/);
     assert.match(src, /setPreviewPortSel\(port\)/);
     assert.match(src, /setPreviewStatus\('loading'\)/);
+    assert.match(src, /previewAuthorizationExpiresAt\(currentPreviewUrl\)/);
+    assert.match(src, /refreshPreviewAuthorization\(freshBase, currentPreviewUrl\)/);
   });
 
   it('TEST 9/10/20: stopped and failed states never claim readiness', () => {
