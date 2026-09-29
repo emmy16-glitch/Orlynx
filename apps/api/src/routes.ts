@@ -536,13 +536,21 @@ router.post('/sessions/:id/messages', async (req, res) => {
       }
     }
 
-    // One project session is one conversation. While work is active, ordinary
-    // follow-ups continue that run by default; users do not need magic words
-    // such as "also" to prevent Orlynx from creating a parallel task.
-    const activeTask = existingTasks
+    // One project session is one conversation. While a run is genuinely
+    // executing, ordinary follow-ups steer that same run by default. Once the
+    // run has crossed into verification/finalization (or is waiting for an
+    // approval), new text becomes the next queued turn so it cannot be attached
+    // after the model has stopped consulting the live inbox.
+    const unresolvedTask = existingTasks
       .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
-    queueAfterActive = Boolean(activeTask && explicitQueue);
+    const closingPhase = unresolvedTask?.harness?.phase === 'verifying' || unresolvedTask?.harness?.phase === 'finalizing';
+    const activeTask = unresolvedTask && (
+      unresolvedTask.state === 'waiting_input'
+      || (unresolvedTask.state === 'running' && !closingPhase)
+      || (unresolvedTask.state === 'waiting_approval' && requestedSteeringAction === 'stop')
+    ) ? unresolvedTask : undefined;
+    queueAfterActive = Boolean(unresolvedTask && (explicitQueue || !activeTask));
 
     if (activeTask && !explicitQueue) {
       const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
@@ -616,7 +624,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     }
   }
 
-  if (publishIntent) {
+  if (publishIntent && !queueAfterActive) {
     const now = new Date().toISOString();
     const runId = `run_${uuid().slice(0, 8)}`;
     const taskId = `task_${uuid()}`;
