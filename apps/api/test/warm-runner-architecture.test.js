@@ -11,7 +11,7 @@ import {
 } from '../src/bridge-live.ts';
 import { defaultWorkspaceProviderId, shouldPrewarmWorkspace } from '../src/workspace-providers.ts';
 import { OrlynxRunnerProvider } from '../src/orlynx-runner.ts';
-import { rankedRunnerHosts, runnerGlobalMaxWorkspaces, runnerHosts } from '../src/runner-pool.ts';
+import { probeRunnerHost, rankedRunnerHosts, runnerGlobalMaxWorkspaces, runnerHosts } from '../src/runner-pool.ts';
 import { workspaceShouldAdoptPreferredRunner } from '../src/workspaces.ts';
 
 function withEnv(values, fn) {
@@ -95,6 +95,45 @@ test('distributed runner pool ranks healthy capacity and defaults to a global 50
     if (previousUrl == null) delete process.env.ORLYNX_RUNNER_URL; else process.env.ORLYNX_RUNNER_URL = previousUrl;
     if (previousToken == null) delete process.env.ORLYNX_RUNNER_TOKEN; else process.env.ORLYNX_RUNNER_TOKEN = previousToken;
     if (previousMax == null) delete process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES; else process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES = previousMax;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('runner health gives a cold Render service one bounded wake retry before fallback', async () => {
+  const previousToken = process.env.ORLYNX_RUNNER_TOKEN;
+  const previousTimeout = process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS;
+  const previousColdTimeout = process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS;
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    process.env.ORLYNX_RUNNER_TOKEN = 'cold-start-test-token';
+    process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = '2500';
+    process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = '2500';
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) throw new DOMException('runner is waking', 'TimeoutError');
+      return new Response(JSON.stringify({
+        ok: true,
+        capacity: 1,
+        running: 0,
+        available: 1,
+        stopped: 0,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+
+    const health = await probeRunnerHost({
+      id: 'cold-render-retry',
+      url: 'https://cold-render.example.com',
+      publicUrl: 'https://cold-render.example.com',
+      weight: 1,
+    });
+    assert.equal(calls, 2);
+    assert.equal(health.ok, true);
+    assert.equal(health.available, 1);
+  } finally {
+    if (previousToken == null) delete process.env.ORLYNX_RUNNER_TOKEN; else process.env.ORLYNX_RUNNER_TOKEN = previousToken;
+    if (previousTimeout == null) delete process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = previousTimeout;
+    if (previousColdTimeout == null) delete process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = previousColdTimeout;
     globalThis.fetch = previousFetch;
   }
 });
