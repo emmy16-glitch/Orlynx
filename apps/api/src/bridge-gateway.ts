@@ -88,6 +88,7 @@ function continuationPayload(
     engineSessionId,
     text,
     system,
+    ...(task.harness?.reflectionAttempts ? { reflectionId: task.harness.reflectionAttempts } : {}),
     ...(task.harness ? { tools: openCodeToolsFor(task.harness) } : {}),
   };
 }
