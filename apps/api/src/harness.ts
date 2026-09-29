@@ -446,7 +446,7 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     : '';
   const stagnant = (checkpoint.stagnantReflections || 0) > 0
     ? 'The unresolved evidence is substantially the same as the previous reflection. Do not repeat the same failed command or hypothesis without gathering new evidence; choose a different diagnostic path.'
-    : '';
+    : 'Do not repeat the same failed command or hypothesis without new evidence. Inspect first, then choose the next action.';
 
   return [
     `Reflection cycle ${attempts}/${MAX_REFLECTION_ATTEMPTS}. Orlynx still cannot verify: ${missing}.`,
