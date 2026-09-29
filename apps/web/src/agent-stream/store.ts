@@ -23,6 +23,7 @@ const compact = (value: string, max = 120) => {
 const humanActivity = (value: string) => {
   const clean = value.replace(/[.!…]+$/, '').trim();
   if (!clean) return 'Working';
+  if (/^(?:Orlynx → Model|Model → Orlynx|Orlynx learned)/i.test(clean)) return compact(clean, 180);
   if (/thinking|reasoning|reviewing|understanding/i.test(clean)) return 'Reviewing the request';
   if (/repository mapped|repository map/i.test(clean)) return 'Inspecting the repository';
   if (/reading files?/i.test(clean)) return 'Inspecting the repository';
