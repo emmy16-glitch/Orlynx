@@ -7,7 +7,7 @@ import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, c
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
-import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, startRun } from './agents.js';
+import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, resumeWaitingInputTask, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
@@ -432,17 +432,31 @@ router.post('/sessions/:id/messages', async (req, res) => {
     if (!durableSession) return res.status(404).json({ error: 'session not found' });
     await repository.putSession({ ...s, userId: durableSession.userId, projectId: durableSession.projectId });
 
+    const existingTasks = await repository.listTasks(s.id);
     const steeringAction = steeringActionFor(String(text));
+    const waitingInputTask = existingTasks.find(
+      (item) => item.state === 'waiting_input' && (item.plane || 'workspace') === 'workspace',
+    );
+    if (waitingInputTask && steeringAction !== 'stop') {
+      try {
+        const resumedRun = await resumeWaitingInputTask(s.id, waitingInputTask.id, String(text));
+        return res.json({ message: msg, run: resumedRun, plane: 'workspace', resumed: true, targetRunId: waitingInputTask.runId });
+      } catch (error) {
+        console.warn(`[harness] waiting-input resume failed session=${s.id} task=${waitingInputTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        // Fall through to normal admission so the user's message is not lost.
+      }
+    }
+
     if (steeringAction !== 'ignore') {
-      const activeTask = (await repository.listTasks(s.id))
-        .find((item) => ['running', 'waiting_approval'].includes(item.state) && (item.plane || 'workspace') === 'workspace');
+      const activeTask = existingTasks
+        .find((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state) && (item.plane || 'workspace') === 'workspace');
 
       if (activeTask) {
         const now = new Date().toISOString();
         const steeredTask = applySteering(activeTask, String(text), steeringAction, now);
 
         if (steeringAction === 'stop') {
-          if (activeTask.state === 'running') {
+          if (activeTask.state === 'running' || activeTask.state === 'waiting_input') {
             try {
               const adapter = getAgentAdapter(activeTask.adapterId || 'opencode');
               await bridgeRequest(activeTask.workspaceId, adapter.bridgeCancelCommand, {
@@ -1183,7 +1197,7 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
         emit(session.id, 'run.failed', {
           taskId: task.id,
           error: `Publish completed, but Orlynx still could not verify: ${task.harness.verification.missing.join(', ')}.`,
-          errorKind: 'engine',
+          errorKind: 'verification',
           recoverable: true,
         }, task.runId);
         await promoteNextQueuedRun(session.id).catch(() => null);
@@ -1710,7 +1724,7 @@ router.get('/ai/session/:id', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   const prefs = durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project);
   const activeRun = durableStorageConfigured()
-    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => ['running', 'waiting_input', 'waiting_approval'].includes(r.state))
     : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
   res.json({ prefs, activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
 });

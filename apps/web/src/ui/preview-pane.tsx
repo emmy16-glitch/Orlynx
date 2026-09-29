@@ -3,7 +3,7 @@
 // truth. History is Orlynx-tracked (we own every src change we make).
 import React from 'react';
 import { Icon } from './primitives';
-import { externalPreviewUrl, isDevServerCommand, preferredPreviewPort, usablePreviews, type PreviewPort } from './preview';
+import { externalPreviewUrl, isDevServerCommand, preferredPreviewPort, requiresExternalPreview, usablePreviews, type PreviewPort } from './preview';
 
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'unreachable' | 'blocked';
 
@@ -37,7 +37,13 @@ export function ServerPreviewAction({ command, output, isPreview = false, activi
       <span className="server-preview-text">
         {runActive || activityState === 'running' ? 'Development server started' : 'Development server is running'} · Port {match.port}
       </span>
-      <button type="button" className="server-preview-cta" onClick={() => onViewPreview(match.port)}>View preview</button>
+      <button
+        type="button"
+        className="server-preview-cta"
+        onClick={() => requiresExternalPreview(match) ? onOpenExternal(match.url!) : onViewPreview(match.port)}
+      >
+        {requiresExternalPreview(match) ? 'Open secure preview' : 'View preview'}
+      </button>
       <button type="button" className="server-preview-ext" onClick={() => onOpenExternal(match.url!)} aria-label={`Open port ${match.port} in browser`} title="Open in browser">
         <span aria-hidden>↗</span>
       </button>
@@ -86,6 +92,7 @@ export function PreviewPane(props: {
   const [draft, setDraft] = React.useState(props.displayPath);
   React.useEffect(() => { setDraft(props.displayPath); }, [props.displayPath]);
   const externalUrl = props.currentUrl && props.selected ? externalPreviewUrl(props.selected.url!, props.currentUrl) : props.selected?.url || null;
+  const externalOnly = requiresExternalPreview(props.selected);
 
   if (!props.workspaceReady) {
     return <PreviewShell title="Preview" subtitle="Start the development workspace first."><p className="preview-empty-note">Preview becomes available once the workspace is ready.</p></PreviewShell>;
@@ -127,7 +134,17 @@ export function PreviewPane(props: {
         {!props.online && (
           <div className="preview-state" role="status"><b>You’re offline.</b><p>Preview will reconnect when your connection returns.</p></div>
         )}
-        {props.online && props.status === 'loading' && (
+        {props.online && externalOnly && (
+          <div className="preview-state" role="status">
+            <b>GitHub keeps this Codespaces preview private.</b>
+            <p>Open the secure preview in your browser so GitHub can authenticate it. Orlynx will not expose the port publicly.</p>
+            <div className="preview-state-actions">
+              <button type="button" onClick={props.onOpenExternal}>Open secure preview</button>
+              <button type="button" onClick={props.onViewOutput}>View server output</button>
+            </div>
+          </div>
+        )}
+        {props.online && !externalOnly && props.status === 'loading' && (
           <div className="preview-state" role="status">
             <span className="ox-spinner" aria-hidden /><b>Loading preview…</b>
             {props.slow && <p>Still waiting for the development server…</p>}
@@ -140,7 +157,7 @@ export function PreviewPane(props: {
             )}
           </div>
         )}
-        {props.online && props.status === 'blocked' && (
+        {props.online && !externalOnly && props.status === 'blocked' && (
           <div className="preview-state" role="alert">
             <b>This preview can’t be embedded here.</b>
             <p>The application itself is fine — embedding is restricted.</p>
@@ -150,7 +167,7 @@ export function PreviewPane(props: {
             </div>
           </div>
         )}
-        {props.online && props.status === 'unreachable' && (
+        {props.online && !externalOnly && props.status === 'unreachable' && (
           <div className="preview-state" role="alert">
             <b>Preview couldn’t load.</b>
             <p>The server is running, but the application isn’t responding yet.</p>
@@ -161,7 +178,7 @@ export function PreviewPane(props: {
             </div>
           </div>
         )}
-        {props.online && props.currentUrl && props.status !== 'blocked' && (
+        {props.online && !externalOnly && props.currentUrl && props.status !== 'blocked' && (
           <iframe
             key={props.reloadKey}
             className="preview-frame"

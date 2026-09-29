@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   externalPreviewUrl, extractPortHint, isDevServerCommand, isPreviewablePort,
   preferredPreviewPort, previewAuthorizationExpiresAt, previewDisplayPath,
-  refreshPreviewAuthorization, resolvePreviewInput, usablePreviews,
+  refreshPreviewAuthorization, requiresExternalPreview, resolvePreviewInput, usablePreviews,
 } from '../../web/src/ui/preview.ts';
 import { codespacesPreviewUrl } from '../src/codespaces-preview.ts';
 
@@ -98,6 +98,8 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /async function httpPreviewReady\(port: number\)/);
     assert.match(bridge, /await httpPreviewReady\(port\)/);
     assert.match(bridge, /port === servicePort/);
+    assert.match(bridge, /gh', \[\s*'codespace', 'ports'/);
+    assert.match(bridge, /--json', 'sourcePort,browseUrl,visibility'/);
     assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
     assert.match(gateway, /type: 'preview\.ready'/);
     assert.match(gateway, /verified: true/);
@@ -149,6 +151,24 @@ describe('preview URL safety (§§192, 198-200, 222)', () => {
     assert.equal(previewAuthorizationExpiresAt(renewed), 2000000600 * 1000);
   });
 
+  it('private Codespaces previews use secure external open instead of a blank iframe', () => {
+    const privateCodespace = {
+      port: 5173,
+      visibility: 'private',
+      url: 'https://example-space-5173.app.github.dev/',
+    };
+    const publicCodespace = { ...privateCodespace, visibility: 'public' };
+    assert.equal(requiresExternalPreview(privateCodespace), true);
+    assert.equal(requiresExternalPreview(publicCodespace), false);
+    assert.equal(requiresExternalPreview({ port: 5173, visibility: 'private', url: 'https://runner.example/preview/x/5173/' }), false);
+
+    const src = pane();
+    assert.match(src, /GitHub keeps this Codespaces preview private/);
+    assert.match(src, /Open secure preview/);
+    assert.match(src, /!externalOnly && props\.currentUrl/);
+    assert.match(src, /requiresExternalPreview\(match\) \? onOpenExternal/);
+  });
+
   it('TEST 12/13: external open preserves the current same-origin path', () => {
     assert.equal(externalPreviewUrl(BASE, 'https://preview.example.work/dashboard'), 'https://preview.example.work/dashboard');
     assert.equal(externalPreviewUrl(BASE, 'https://other.example/x'), BASE);
@@ -159,7 +179,7 @@ describe('preview URL safety (§§192, 198-200, 222)', () => {
 
 describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)', () => {
   it('TEST 2/11: View preview exists only with a resolved URL', () => {
-    assert.match(pane(), /<button type="button" className="server-preview-cta" onClick=\{\(\) => onViewPreview\(match\.port\)\}>View preview<\/button>/);
+    assert.match(pane(), /className="server-preview-cta"[\s\S]*?requiresExternalPreview\(match\) \? onOpenExternal\(match\.url!\) : onViewPreview\(match\.port\)/);
     assert.match(pane(), /if \(!match\) \{[\s\S]*?return null/);
     assert.match(pane(), /activityState === 'failed'[\s\S]*?return null/);
   });

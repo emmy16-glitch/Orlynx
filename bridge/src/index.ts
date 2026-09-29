@@ -733,6 +733,38 @@ async function httpPreviewReady(port: number): Promise<boolean> {
   }
 }
 
+type CodespacePortMetadata = { browseUrl?: string; visibility?: string };
+
+function codespacePortMetadata(): Map<number, CodespacePortMetadata> {
+  const codespace = String(process.env.CODESPACE_NAME || '');
+  if (!codespace) return new Map();
+  const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
+  try {
+    const result = spawnSync('gh', [
+      'codespace', 'ports',
+      '-c', codespace,
+      '--json', 'sourcePort,browseUrl,visibility',
+    ], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      env: {
+        ...cleanEnvironment(),
+        ...(authToken ? { GH_TOKEN: authToken } : {}),
+      },
+    });
+    if (result.status !== 0) return new Map();
+    const rows = JSON.parse(String(result.stdout || '[]')) as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
+    return new Map(rows.flatMap((row) => {
+      const port = Number(row.sourcePort);
+      return Number.isInteger(port) && port > 0
+        ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
+        : [];
+    }));
+  } catch {
+    return new Map();
+  }
+}
+
 async function ports() {
   const result = spawnSync('ss', ['-ltnH'], { encoding: 'utf8', timeout: 5_000 });
   const found = new Set<number>();
@@ -757,11 +789,15 @@ async function ports() {
 
   const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
   const codespace = process.env.CODESPACE_NAME;
-  return ready.map(({ port }) => ({
-    port,
-    visibility: 'private',
-    url: domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined,
-  }));
+  const forwarded = codespacePortMetadata();
+  return ready.map(({ port }) => {
+    const metadata = forwarded.get(port);
+    return {
+      port,
+      visibility: metadata?.visibility || (codespace ? 'private' : 'private'),
+      url: metadata?.browseUrl || (domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined),
+    };
+  });
 }
 
 async function execute(command: Command, ws: WebSocket): Promise<Record<string, unknown>> {

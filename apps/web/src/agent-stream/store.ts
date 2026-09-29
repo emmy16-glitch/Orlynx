@@ -23,6 +23,7 @@ const compact = (value: string, max = 120) => {
 const humanActivity = (value: string) => {
   const clean = value.replace(/[.!…]+$/, '').trim();
   if (!clean) return 'Working';
+  if (/^(?:Orlynx → Model|Model → Orlynx|Orlynx learned)/i.test(clean)) return compact(clean, 180);
   if (/thinking|reasoning|reviewing|understanding/i.test(clean)) return 'Reviewing the request';
   if (/repository mapped|repository map/i.test(clean)) return 'Inspecting the repository';
   if (/reading files?/i.test(clean)) return 'Inspecting the repository';
@@ -161,6 +162,27 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       return;
     }
 
+    case 'RUN_STATE': {
+      if (!event.runId) return;
+      const run = state.runs[event.runId];
+      updateRun(state, event, {
+        state: event.state,
+        messageId: run?.messageId || `assistant:${event.runId}`,
+        ...(event.state === 'completed' || event.state === 'failed' || event.state === 'cancelled'
+          ? { finishedAt: event.timestamp }
+          : { finishedAt: undefined }),
+      });
+      if (event.state === 'running' && run?.messageId && state.messages[run.messageId]) {
+        state.messages[run.messageId] = {
+          ...state.messages[run.messageId],
+          state: 'streaming',
+          endedAt: undefined,
+          lastSequence: Math.max(state.messages[run.messageId].lastSequence, event.sequence),
+        };
+      }
+      return;
+    }
+
     case 'RUN_FINISHED': {
       if (!event.runId) return;
       const run = state.runs[event.runId];
@@ -193,7 +215,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
             : event.errorKind === 'rate_limit' ? 'Model is busy'
               : event.errorKind === 'quota' ? 'AI quota reached'
                 : event.errorKind === 'engine' ? 'AI runtime unavailable'
-                  : 'Work needs attention';
+                  : event.errorKind === 'verification' ? 'Verification needs attention'
+                    : 'Work needs attention';
       putActivity(state, {
         id: `run-error:${event.runId}`,
         runId: event.runId,

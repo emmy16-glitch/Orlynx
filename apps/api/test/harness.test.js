@@ -8,10 +8,15 @@ import {
   createHarnessCheckpoint,
   harnessBudgetStatus,
   harnessSystemInstruction,
+  detectEvidenceContradictions,
   openCodeToolsFor,
+  prepareReflection,
+  reflectionInstruction,
+  shouldReflect,
   shouldSalvage,
   steeringActionFor,
   toolFamiliesFor,
+  userInputRequest,
   verificationRequirementsFor,
   verifyHarness,
 } from '../src/harness.ts';
@@ -175,7 +180,7 @@ test('browser research verification requires real web tool evidence', () => {
   assert.deepEqual(cp.verification.satisfied, ['browser']);
 });
 
-test('result verifier requests one salvage pass for missing evidence or progress-only text', () => {
+test('result verifier supports bounded model reflection instead of one-shot salvage', () => {
   let cp = createHarnessCheckpoint({
     prompt: 'fix it and run tests',
     mode: 'build',
@@ -187,8 +192,47 @@ test('result verifier requests one salvage pass for missing evidence or progress
   assert.deepEqual(cp.verification.missing, ['tests']);
   assert.equal(shouldSalvage(cp, 'I am still working on it'), true);
 
-  cp.salvageAttempts = 1;
-  assert.equal(shouldSalvage(cp, 'I am still working on it'), false);
+  cp = prepareReflection(cp, [evt(2, 'tool.output', { command: 'npm test', out: 'still investigating' })]);
+  assert.equal(cp.reflectionAttempts, 1);
+  assert.equal(shouldReflect(cp, 'I am still working on it'), true);
+  cp.reflectionAttempts = 4;
+  cp.salvageAttempts = 4;
+  assert.equal(shouldReflect(cp, 'I am still working on it'), false);
+});
+
+test('reflection detects contradictory preview evidence and tells the model to diagnose the right layer', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'start localhost preview',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const events = [
+    evt(1, 'tool.output', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+    evt(2, 'tool.output', { command: 'ss -ltn', out: 'LISTEN 0 511 0.0.0.0:5173' }),
+  ];
+  cp = verifyHarness(cp, events);
+  const contradictions = detectEvidenceContradictions(events, cp.verification.missing);
+  assert.equal(contradictions.length, 1);
+  assert.match(contradictions[0], /local web server appears healthy/i);
+  cp = prepareReflection(cp, events);
+  const instruction = reflectionInstruction(cp, ['Private Codespaces previews may require authenticated external navigation.']);
+  assert.match(instruction, /Reflection cycle 1\/4/);
+  assert.match(instruction, /reasoning layer/i);
+  assert.match(instruction, /Do not repeat the same failed command/i);
+  assert.match(instruction, /Verified lessons from earlier successful work/);
+});
+
+test('waiting-for-user is a real paused harness state with no active tools', () => {
+  const cp = createHarnessCheckpoint({ prompt: 'deploy it', mode: 'build', permission: 'full', plane: 'workspace' });
+  const waiting = advanceHarnessPhase(cp, 'waiting_input', { mode: 'build', permission: 'full' });
+  assert.deepEqual(waiting.toolFamilies, []);
+});
+
+test('human-only input can be requested after the streamed model diagnostic', () => {
+  const value = userInputRequest('Model → Orlynx: the repository cannot reveal this secret.\n\n[NEEDS_USER_INPUT] Please provide the deployment token.');
+  assert.equal(value, 'Please provide the deployment token.');
+  assert.equal(userInputRequest('Model → Orlynx: I can inspect this myself.'), undefined);
 });
 
 test('hidden harness instruction carries phase budget criteria tools and steering without becoming user text', () => {
@@ -220,10 +264,24 @@ test('Postgres task storage persists harness checkpoints as JSONB', () => {
   assert.match(storage, /harness_state=EXCLUDED\.harness_state/);
 });
 
+test('verified learning memory is durable Postgres state, not temporary JSON', () => {
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
+  assert.match(storage, /CREATE TABLE IF NOT EXISTS agent_lessons/);
+  assert.match(storage, /putAgentLesson/);
+  assert.match(storage, /listAgentLessons/);
+  assert.match(memory, /rememberVerifiedLesson/);
+  assert.match(memory, /verification\.status !== 'passed'/);
+  assert.match(memory, /Verified Orlynx experience from earlier successful work/);
+  assert.match(memory, /scope: 'environment'/);
+});
+
 test('durable workspace gateway verifies evidence and either salvages or completes explicitly', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
   assert.match(gateway, /task\.harness = verifyHarness\(task\.harness, recent/);
-  assert.match(gateway, /shouldSalvage\(task\.harness, responseText\)/);
+  assert.match(gateway, /shouldReflect\(task\.harness, responseText\)/);
+  assert.match(gateway, /prepareReflection\(task\.harness, recent/);
+  assert.match(gateway, /reflectionInstruction\(task\.harness/);
   assert.match(gateway, /needsFinalSynthesis\(task\.harness, responseText\)/);
   assert.match(gateway, /controlledDefaultBranchPublish/);
   assert.match(gateway, /type: 'run\.completed'/);
@@ -242,7 +300,8 @@ test('OpenCode tool work emits canonical step boundaries for harness budgeting',
 test('active message admission steers the running workspace task rather than creating another Build task', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   assert.match(routes, /const steeringAction = steeringActionFor\(String\(text\)\)/);
-  assert.match(routes, /find\(\(item\) => \['running', 'waiting_approval'\]\.includes\(item\.state\) && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
+  assert.match(routes, /find\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\) && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
+  assert.match(routes, /resumeWaitingInputTask\(s\.id, waitingInputTask\.id, String\(text\)\)/);
   assert.match(routes, /applySteering\(activeTask, String\(text\), steeringAction, now\)/);
   assert.match(routes, /Added that to the current Build task\./);
   assert.match(routes, /bridgeCancelCommand/);

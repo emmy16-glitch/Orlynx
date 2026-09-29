@@ -1089,7 +1089,7 @@ export default function ProductionApp() {
   async function stopRun() {
     if (stopping) return;
     const runningRuns = Object.values(agentStream.runs)
-      .filter((run) => run.state === 'running' || run.state === 'waiting_approval')
+      .filter((run) => run.state === 'running' || run.state === 'waiting_input' || run.state === 'waiting_approval')
       .sort((a, b) => Date.parse(a.startedAt || '') - Date.parse(b.startedAt || ''));
     const running = runningRuns[runningRuns.length - 1]?.id || lastRun?.id;
     if (!session || !running) return;

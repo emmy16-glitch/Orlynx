@@ -1,4 +1,4 @@
-import type { AgentPartKind, OrlynxEvent } from '@orlynx/shared';
+import type { AgentPartKind, OrlynxEvent, RunState } from '@orlynx/shared';
 import type { StreamProjectionEvent } from './protocol';
 
 type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
@@ -76,13 +76,17 @@ function toolCallId(event: RawEvent): string {
 
 function phaseId(event: RawEvent): string {
   const raw = str(event.payload?.sourceType).toLowerCase();
-  // Providers are free to emit many low-level status names. Collapse them into
-  // a few stable semantic phases so progress updates evolve one row instead of
-  // creating a telemetry transcript.
+  const reflectionId = str(event.payload?.reflectionId) || String(event.sequence || 0);
+  // Providers are free to emit many low-level status names. Collapse routine
+  // status into stable semantic phases, but preserve each explicit Orlynx ↔
+  // model reflection exchange and durable-memory update as its own visible row.
   const source = raw === 'repository.map' ? 'repository'
     : raw === 'opencode.retry' ? 'provider-retry'
       : raw === 'pty.output' ? 'pty-output'
-        : 'agent';
+        : raw === 'agent.dialogue.orlynx' ? `reflection-${reflectionId}-orlynx`
+          : raw === 'agent.dialogue.model' ? `reflection-${reflectionId}-model`
+            : raw === 'agent.memory' ? `memory-${event.sequence || reflectionId}`
+              : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
 
@@ -253,8 +257,13 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         ? [{ ...common, type: 'TOOL_START', toolCallId: id, name: 'subagent', semanticType: 'generic', title: str(payload.title) || 'Delegated subtask' }]
         : [{ ...common, type: 'TOOL_END', toolCallId: id, semanticType: 'generic', ok: payload.ok !== false, error: str(payload.error) || undefined }];
     }
-    case 'run.state':
-      return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: str(payload.state) || undefined, value: { ...payload, scope: 'run' } }];
+    case 'run.state': {
+      const state = str(payload.state) as RunState;
+      if (['queued','running','waiting_input','waiting_approval','paused','interrupted','completed','failed','cancelled'].includes(state)) {
+        return [{ ...common, type: 'RUN_STATE', state, message: str(payload.message) || undefined }];
+      }
+      return [{ ...common, type: 'STATE_DELTA', scope: 'run', state: state || undefined, value: { ...payload, scope: 'run' } }];
+    }
     case 'workspace.state':
       return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: workspaceState(payload), message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
     case 'extension.event':

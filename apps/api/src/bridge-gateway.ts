@@ -12,7 +12,8 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, shouldSalvage, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
+import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 
 async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
   const repository = controlPlaneRepository();
@@ -583,13 +584,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           if (
             task.harness.verification.status === 'passed'
             && needsFinalSynthesis(task.harness, responseText)
-            && task.harness.salvageAttempts < 1
+            && (task.harness.finalSynthesisAttempts || 0) < 1
             && engineSessionId
           ) {
             const synthesisNow = new Date().toISOString();
             task.harness = {
               ...task.harness,
-              salvageAttempts: task.harness.salvageAttempts + 1,
+              finalSynthesisAttempts: (task.harness.finalSynthesisAttempts || 0) + 1,
             };
             task.harness = advanceHarnessPhase(task.harness, 'finalizing', {
               mode: task.mode || 'build',
@@ -615,30 +616,101 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           if (task.harness.verification.status !== 'passed') {
-            if (shouldSalvage(task.harness, responseText) && engineSessionId) {
-              const salvageNow = new Date().toISOString();
-              task.harness = {
-                ...task.harness,
-                salvageAttempts: task.harness.salvageAttempts + 1,
-              };
+            const requiredUserInput = userInputRequest(responseText);
+            if (requiredUserInput && engineSessionId) {
+              const waitingAt = new Date().toISOString();
+              task.state = 'waiting_input';
+              task.partialText = requiredUserInput;
+              task.harness = advanceHarnessPhase(task.harness, 'waiting_input', {
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                now: waitingAt,
+              });
+              task.updatedAt = waitingAt;
+              await repository.putTask(task);
+              if (memoryRun) {
+                memoryRun.state = 'waiting_input';
+                memoryRun.activity = 'Waiting for you';
+                memoryRun.finishedAt = undefined;
+                store.save();
+              }
+              await repository.putMessage({
+                id: `msg_${runId || uuid()}:input`,
+                sessionId: claims.sessionId,
+                role: 'assistant',
+                text: requiredUserInput,
+                runId: runId || undefined,
+                createdAt: waitingAt,
+              });
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'run.state',
+                timestamp: waitingAt,
+                payload: { state: 'waiting_input', message: requiredUserInput },
+              });
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'message.end',
+                timestamp: waitingAt,
+                payload: { waitingInput: true },
+              });
+              return;
+            }
+
+            if (shouldReflect(task.harness, responseText) && engineSessionId) {
+              const reflectionNow = new Date().toISOString();
+              task.harness = prepareReflection(task.harness, recent, reflectionNow);
               task.harness = advanceHarnessPhase(task.harness, 'executing', {
                 mode: task.mode || 'build',
                 permission: effectivePermission,
-                now: salvageNow,
+                now: reflectionNow,
               });
-              task.updatedAt = salvageNow;
+
+              const durableSession = await repository.getSession(claims.sessionId);
+              const lessons = durableSession
+                ? await relevantAgentLessons(durableSession, task.prompt, memoryRun?.provider).catch(() => [])
+                : [];
+              task.harness = {
+                ...task.harness,
+                lessonsApplied: lessons.map((lesson) => lesson.id),
+              };
+              task.updatedAt = reflectionNow;
               await repository.putTask(task);
 
               const missing = task.harness.verification.missing.join(', ');
+              const contradiction = task.harness.contradictions?.[0] || '';
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'activity.progress',
+                timestamp: reflectionNow,
+                payload: {
+                  sourceType: 'agent.dialogue.orlynx',
+                  reflectionId: task.harness.reflectionAttempts,
+                  text: `Orlynx → Model: still unverified: ${missing}.${contradiction ? ` ${contradiction}` : ' Re-check the evidence and choose the next diagnostic step.'}`,
+                },
+              });
+
               const continuation = [
-                'Continue the same task. Orlynx verification found missing acceptance evidence:',
-                missing,
+                reflectionInstruction(task.harness, lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`)),
+                agentMemoryInstruction(lessons),
                 publishError ? `Controlled publish note: ${publishError}` : '',
-                'Do only the remaining work. Verify it with concrete tool evidence, then give a concise final result.',
                 task.harness.verification.missing.includes('publish')
                   ? 'If publishing is still required, prepare and commit the workspace locally; Orlynx will perform the authenticated push.'
                   : '',
-              ].filter(Boolean).join('\n');
+                'Follow the reflection instruction above: stream the one-line Model → Orlynx diagnostic first, then use tools to test it.',
+              ].filter(Boolean).join('\n\n');
 
               await queueBridgeCommand(
                 claims.workspaceId,
@@ -646,7 +718,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 continuationPayload(command.payload, task, engineSessionId, continuation),
                 30 * 60_000,
               );
-              console.info(`[harness] salvage run=${runId} missing=${missing}`);
+              console.info(`[harness] reflection run=${runId} attempt=${task.harness.reflectionAttempts} missing=${missing}`);
               return;
             }
 
@@ -684,7 +756,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               memoryRun.state = 'failed';
               memoryRun.activity = 'Verification needs attention';
               memoryRun.finishedAt = failedAt;
-              memoryRun.errorKind = 'engine';
+              memoryRun.errorKind = 'verification';
               store.save();
             }
 
@@ -699,13 +771,40 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               timestamp: failedAt,
               payload: {
                 error: verificationText,
-                errorKind: 'engine',
+                errorKind: 'verification',
                 recoverable: true,
                 missing,
               },
             });
             await promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
+          }
+
+          const durableSessionForMemory = await repository.getSession(claims.sessionId);
+          if (durableSessionForMemory && (task.harness.reflectionAttempts || 0) > 0) {
+            const learned = await rememberVerifiedLesson({
+              session: durableSessionForMemory,
+              task,
+              harness: task.harness,
+              responseText,
+              provider: memoryRun?.provider,
+            }).catch(() => []);
+            if (learned.length) {
+              await repository.appendEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'activity.progress',
+                timestamp: new Date().toISOString(),
+                payload: {
+                  sourceType: 'agent.memory',
+                  text: `Orlynx learned from this verified recovery · saved ${learned.length} reusable lesson${learned.length === 1 ? '' : 's'}.`,
+                  lessonIds: learned,
+                },
+              });
+            }
           }
 
           const finalizingAt = new Date().toISOString();

@@ -14,6 +14,7 @@ import type { ExecutionPlane } from './direct-chat.js';
 import { workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
+import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
 import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 
 export type Engine = AgentAdapterId;
@@ -203,6 +204,26 @@ async function executeDirectTask(
     });
     await repository.putTask(task);
 
+    const directProvider = adapter.parseModel(modelId).providerID;
+    const directLessons = await relevantAgentLessons(session, task.prompt, directProvider).catch(() => []);
+    task.harness = {
+      ...task.harness,
+      lessonsApplied: directLessons.map((lesson) => lesson.id),
+    };
+    await repository.putTask(task);
+    const directHarnessSystem = [
+      harnessSystemInstruction(task.harness),
+      agentMemoryInstruction(directLessons),
+    ].filter(Boolean).join('\n\n');
+    if (directLessons.length) {
+      emit(session.id, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.memory',
+        text: `Orlynx memory → Model: using ${directLessons.length} verified lesson${directLessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        lessonIds: directLessons.map((lesson) => lesson.id),
+      }, run.id);
+    }
+
     const responseText = await adapter.streamDirectChat({
       runId: run.id,
       messageId: task.messageId,
@@ -211,7 +232,7 @@ async function executeDirectTask(
       session,
       modelId,
       mode: task.mode || run.mode || 'build',
-      harnessSystem: harnessSystemInstruction(task.harness),
+      harnessSystem: directHarnessSystem,
       onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
       onActivity: (type, payload) => emit(session.id, type, { taskId: task.id, ...payload }, run.id),
       onDelta: (delta) => {
@@ -258,12 +279,12 @@ async function executeDirectTask(
       run.state = 'failed';
       run.activity = 'Needs development environment';
       run.finishedAt = now;
-      run.errorKind = 'engine';
+      run.errorKind = 'verification';
       store.save();
       emit(session.id, 'run.failed', {
         taskId: task.id,
         error: `This request needs workspace evidence Orlynx could not verify in direct chat: ${task.harness.verification.missing.join(', ')}.`,
-        errorKind: 'engine',
+        errorKind: 'verification',
         recoverable: true,
       }, run.id);
       return;
@@ -561,10 +582,25 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     task.harness = advanceHarnessPhase(task.harness, 'executing', { mode, permission });
     await repository.putTask(task);
 
+    const lessons = await relevantAgentLessons(session, task.prompt, provider).catch(() => []);
+    task.harness = {
+      ...task.harness,
+      lessonsApplied: lessons.map((lesson) => lesson.id),
+    };
+    await repository.putTask(task);
+    if (lessons.length) {
+      emit(sessionId, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.memory',
+        text: `Orlynx memory → Model: using ${lessons.length} verified lesson${lessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        lessonIds: lessons.map((lesson) => lesson.id),
+      }, run.id);
+    }
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
       harnessSystemInstruction(task.harness),
+      agentMemoryInstruction(lessons),
     ].filter(Boolean).join('\n\n');
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
@@ -600,6 +636,105 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     emit(sessionId, 'run.failed', { taskId: task.id, error: detail, errorKind, recoverable: errorKind === 'engine' || errorKind === 'rate_limit' }, task.runId);
     return promoteNextQueuedRunInner(sessionId);
   }
+}
+
+export async function resumeWaitingInputTask(sessionId: string, taskId: string, userText: string): Promise<AgentRun> {
+  const repository = controlPlaneRepository();
+  const session = await repository.getSession(sessionId);
+  const task = await repository.getTask(taskId);
+  if (!session || !task || task.sessionId !== sessionId || task.state !== 'waiting_input') {
+    throw new Error('The task waiting for input is no longer available.');
+  }
+  if ((task.plane || 'workspace') !== 'workspace') throw new Error('Only workspace tasks can resume from human input.');
+
+  const workspace = await repository.getWorkspace(task.workspaceId);
+  if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
+    throw new Error('The development environment must reconnect before this task can resume.');
+  }
+
+  await hydrateSessionPrefs(sessionId, session.project);
+  const prefs = getSessionPrefs(sessionId, session.project);
+  const mode = task.mode || prefs.mode;
+  const permission = task.tempPermission || task.permission || prefs.permission;
+  const modelId = task.modelId || prefs.modelId;
+  if (!modelId) throw new Error('Choose a model before continuing this task.');
+
+  const adapter = getAgentAdapter(task.adapterId || prefs.adapterId || 'opencode');
+  const connection = await adapter.readiness(session.project, sessionId);
+  if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} is unavailable for this workspace.`);
+  const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
+  if (!engineSessionId) throw new Error('The connected model session is no longer available to resume.');
+
+  const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId, adapter.status);
+  const provider = adapter.parseModel(modelId).providerID;
+  const lessons = await relevantAgentLessons(session, `${task.prompt} ${userText}`, provider).catch(() => []);
+  const now = new Date().toISOString();
+  task.state = 'running';
+  task.partialText = undefined;
+  task.harness ||= createHarnessCheckpoint({ prompt: task.prompt, mode, permission, plane: 'workspace', now });
+  task.harness = {
+    ...advanceHarnessPhase(task.harness, 'executing', { mode, permission, now }),
+    lessonsApplied: lessons.map((lesson) => lesson.id),
+  };
+  task.updatedAt = now;
+  await repository.putTask(task);
+
+  let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+  if (!run) {
+    run = {
+      id: task.runId || `run_${uuid().slice(0,8)}`,
+      sessionId,
+      engine: adapter.id,
+      plane: 'workspace',
+      provider,
+      model: modelId,
+      mode,
+      permission,
+      state: 'running',
+      activity: 'Resuming with your input',
+      startedAt: task.createdAt,
+    };
+    (store.db.runs[sessionId] ||= []).push(run);
+  } else {
+    run.state = 'running';
+    run.activity = 'Resuming with your input';
+    run.finishedAt = undefined;
+    run.errorKind = undefined;
+  }
+  store.save();
+
+  const system = [
+    instructionForModeAccess(mode, permission),
+    buildPresentationInstruction(mode),
+    harnessSystemInstruction(task.harness),
+    agentMemoryInstruction(lessons),
+  ].filter(Boolean).join('\n\n');
+
+  const payload = adapter.workspacePayload({
+    modelId,
+    taskId: task.id,
+    runId: run.id,
+    sessionId,
+    engineSessionId,
+    text: [
+      'The user supplied the human-only information you requested:',
+      userText,
+      'Continue the same task from the current workspace state. Re-check the evidence; do not restart completed work unnecessarily.',
+    ].join('\n\n'),
+    system,
+    tools: openCodeToolsFor(task.harness),
+    agent: resolvedAgent.agent,
+  });
+
+  emit(sessionId, 'run.state', { taskId: task.id, state: 'running', resumedFrom: 'waiting_input' }, run.id);
+  emit(sessionId, 'activity.progress', {
+    taskId: task.id,
+    sourceType: 'agent.dialogue.orlynx',
+    reflectionId: (task.harness.reflectionAttempts || 0) + 1,
+    text: 'Orlynx → Model: Joseph supplied the requested input. Continue the same task and verify the outcome.',
+  }, run.id);
+  await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
+  return run;
 }
 
 export async function recoverInterruptedDirectRuns(sessionId: string): Promise<void> {

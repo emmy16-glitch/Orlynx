@@ -29,6 +29,15 @@ export function usablePreviews(ports: PreviewPort[]): PreviewPort[] {
   return out;
 }
 
+export function requiresExternalPreview(item: PreviewPort | null | undefined): boolean {
+  if (!item?.url || String(item.visibility || '').toLowerCase() !== 'private') return false;
+  try {
+    return /(?:^|\.)app\.github\.dev$/i.test(new URL(item.url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** Preferred frontend ports for the default selection (detection, not assumption). */
 const FRONTEND_PORT_RANK = [5173, 3000, 3001, 8080, 4173, 8000, 5000, 3002, 4200, 9000, 8081];
 
