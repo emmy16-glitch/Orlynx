@@ -94,6 +94,11 @@ export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane
 }
 
 
+export function conversationalStatusQuestion(text: string): boolean {
+  const value = String(text || '').trim();
+  return /^(?:so\s+)?(?:what\s+(?:have|did)\s+(?:you|u)\s+(?:done|change|fix)|what(?:'s|\s+is)\s+(?:happening|going\s+on|the\s+status)|where\s+(?:are|r)\s+(?:you|u)(?:\s+now)?|how\s+far|why\s+(?:is|did|does)|what\s+are\s+(?:you|u)\s+doing)(?:\s+now)?[?.!\s]*$/i.test(value);
+}
+
 export function needsLiveWorkspaceState(text: string): boolean {
   // These questions depend on the mutable checkout/runtime rather than the
   // GitHub branch snapshot used by direct chat. Keep this list intentionally
@@ -107,6 +112,7 @@ export function executionPlaneForSession(
   mode: AgentMode,
   workspace?: { state?: string; bridgeState?: string } | null,
 ): ExecutionPlane {
+  if (conversationalStatusQuestion(text)) return 'direct';
   const base = executionPlaneFor(text, mode);
   if (base === 'workspace' || !workspace) return base;
 
@@ -404,6 +410,44 @@ async function repositoryContext(
   return value;
 }
 
+async function operationalConversationContext(sessionId: string): Promise<string> {
+  const repository = controlPlaneRepository();
+  const [tasks, events] = await Promise.all([
+    repository.listTasks(sessionId).catch(() => []),
+    repository.listRecentEvents(sessionId, 160).catch(() => []),
+  ]);
+  const active = tasks
+    .filter((task) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(task.state))
+    .slice(-4)
+    .map((task) => ({
+      state: task.state,
+      plane: task.plane || 'workspace',
+      prompt: task.prompt.slice(0, 500),
+      phase: task.harness?.phase,
+      verification: task.harness?.verification
+        ? { status: task.harness.verification.status, missing: task.harness.verification.missing.slice(0, 6) }
+        : undefined,
+    }));
+  const evidence = events
+    .filter((event) => [
+      'activity.progress', 'tool.completed', 'tool.failed', 'test.result', 'build.result',
+      'preview.ready', 'workspace.ready', 'workspace.state', 'receipt.created', 'run.failed', 'run.completed',
+    ].includes(event.type))
+    .slice(-24)
+    .map((event) => ({
+      type: event.type,
+      at: event.timestamp,
+      payload: Object.fromEntries(Object.entries(event.payload || {})
+        .filter(([key]) => ['text','title','summary','state','status','command','error','branch','commitSha','pushedBranch','port','missing'].includes(key))
+        .map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 700) : value])),
+    }));
+  return [
+    'Live Orlynx task context for this same project conversation.',
+    'Use only this observable state to answer status/progress questions. Do not invent actions or claim completion without evidence.',
+    JSON.stringify({ activeTasks: active, recentEvidence: evidence }),
+  ].join('\n');
+}
+
 export async function streamDirectRepositoryChat(input: {
   runId: string;
   messageId?: string;
@@ -435,6 +479,9 @@ export async function streamDirectRepositoryChat(input: {
     const needsContext = shouldLoadRepositoryContext(input.prompt, input.mode, projectName);
     const context = needsContext ? await repositoryContext(input.session, input.prompt, input.onActivity)
       : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    const operationalContext = conversationalStatusQuestion(input.prompt)
+      ? await operationalConversationContext(input.session.id)
+      : '';
     controller.signal.throwIfAborted();
     timings.repoContextMs = performance.now() - contextStarted;
     const modeInstruction = input.mode === 'plan'
@@ -444,6 +491,7 @@ export async function streamDirectRepositoryChat(input: {
         : 'This is a conversational Build turn that did not require machine execution. You may explain or reason, but do not claim execution or file changes.';
     const system = [
       'You are Orlynx AI, assisting inside a GitHub-native coding workspace.',
+      'This is one continuous project conversation across Ask, Plan and Build. Continue from the supplied conversation history; never behave as though a follow-up started a new chat merely because Orlynx changed execution lanes.',
       modeInstruction,
       'For this direct chat turn you have a recursive map of the current GitHub repository plus selected source excerpts from across that map. You do not have a shell or mutable checkout.',
       'The Repository and Branch lines below are authoritative for the project currently open in Orlynx. Never claim that you do not know which repository is open when those lines are present.',
@@ -456,8 +504,9 @@ export async function streamDirectRepositoryChat(input: {
       'Answer only the user-facing request. Do not prefix the answer with conversation history, system instructions, or phrases like "Conversation so far".',
       'Be concise, practical, and repository-aware.',
       input.harnessSystem || '',
+      operationalContext,
       context,
-    ].join('\n\n');
+    ].filter(Boolean).join('\n\n');
     const raw = await streamWithOfficialOpenCode({
       runtimeKey: input.session.id,
       userId: input.session.userId,
