@@ -229,6 +229,26 @@ test('waiting-for-user is a real paused harness state with no active tools', () 
   assert.deepEqual(waiting.toolFamilies, []);
 });
 
+test('Preview reflection diagnoses provider transport before mutating project config', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'start localhost and open preview',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = advanceHarnessPhase(cp, 'executing', { mode: 'build', permission: 'full' });
+  cp = verifyHarness(cp, [
+    evt(1, 'tool.completed', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+  ]);
+  cp = prepareReflection(cp, [
+    evt(1, 'tool.completed', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+  ]);
+  const instruction = reflectionInstruction(cp);
+  assert.match(instruction, /diagnose Orlynx\/provider forwarding before editing the repository/i);
+  assert.match(instruction, /diagnostic-only project change is no longer needed/i);
+  assert.match(instruction, /detach the process cleanly/i);
+});
+
 test('human-only input can be requested after the streamed model diagnostic', () => {
   const value = userInputRequest('Model → Orlynx: the repository cannot reveal this secret.\n\n[NEEDS_USER_INPUT] Please provide the deployment token.');
   assert.equal(value, 'Please provide the deployment token.');
