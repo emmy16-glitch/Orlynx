@@ -167,6 +167,7 @@ export interface HarnessCheckpoint {
   salvageAttempts: number;
   /** Model-guided reason/act/observe cycles after an unexpected result. */
   reflectionAttempts?: number;
+  finalSynthesisAttempts?: number;
   /** Acceptance evidence that first triggered reflection. */
   reflectionTarget?: string[];
   /** Evidence conflicts detected by the deterministic control plane. */
