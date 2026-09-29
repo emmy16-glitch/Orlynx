@@ -76,13 +76,17 @@ function toolCallId(event: RawEvent): string {
 
 function phaseId(event: RawEvent): string {
   const raw = str(event.payload?.sourceType).toLowerCase();
-  // Providers are free to emit many low-level status names. Collapse them into
-  // a few stable semantic phases so progress updates evolve one row instead of
-  // creating a telemetry transcript.
+  const reflectionId = str(event.payload?.reflectionId) || String(event.sequence || 0);
+  // Providers are free to emit many low-level status names. Collapse routine
+  // status into stable semantic phases, but preserve each explicit Orlynx ↔
+  // model reflection exchange and durable-memory update as its own visible row.
   const source = raw === 'repository.map' ? 'repository'
     : raw === 'opencode.retry' ? 'provider-retry'
       : raw === 'pty.output' ? 'pty-output'
-        : 'agent';
+        : raw === 'agent.dialogue.orlynx' ? `reflection-${reflectionId}-orlynx`
+          : raw === 'agent.dialogue.model' ? `reflection-${reflectionId}-model`
+            : raw === 'agent.memory' ? `memory-${event.sequence || reflectionId}`
+              : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
 
