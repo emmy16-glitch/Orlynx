@@ -53,6 +53,22 @@ Heartbeat readiness is intentionally debounced: one transient OpenCode health-pr
 
 This separation is intentional.
 
+## Repository freshness before Build
+
+A ready runtime is not enough. Before a queued Build task is promoted to model/tool execution, Orlynx asks the bridge to reconcile the workspace branch with GitHub.
+
+The preflight contract is:
+
+- verify the workspace is on the conversation branch;
+- fetch the latest target branch from `origin`;
+- if the checkout is clean and only behind, fast-forward it automatically with `--ff-only`;
+- if it is already current, continue immediately;
+- if it is dirty while behind, diverged, or on the wrong branch, stop before model execution and preserve the local working tree exactly as-is.
+
+This prevents a healthy-but-stale Codespace or runner from executing against old source code. Repository freshness is a Build admission requirement, not merely a publish-time check.
+
+Dependency hydration should also avoid creating fake dirtiness: when `package-lock.json` already exists and dependencies are not intentionally changing, Build guidance prefers `npm ci` and does not leave lockfile churn behind.
+
 ## OpenCode self-healing
 
 The bridge resolves the OpenCode executable through multiple known locations.

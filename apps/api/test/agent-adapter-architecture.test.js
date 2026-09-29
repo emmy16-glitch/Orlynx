@@ -76,7 +76,8 @@ test('visible agent controls and task admission use the selected adapter explici
   assert.match(web, /displayName: 'OpenAI', detail: 'Coming soon', enabled: false/);
   assert.match(web, /displayName: 'Claude', detail: 'Coming soon', enabled: false/);
   assert.match(web, /displayName: 'Other', detail: 'Coming soon', enabled: false/);
-  assert.match(web, /adapterId: ai\.adapterId \|\| 'opencode'/);
+  assert.match(web, /adapterId: activeAi\.adapterId \|\| 'opencode'/);
+  assert.match(web, /mode: activeAi\.mode/);
   assert.match(routes, /selectedAdapterId/);
   assert.match(routes, /startRun\(s\.id, s\.project, text, selectedAdapterId/);
 });
