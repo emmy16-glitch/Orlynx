@@ -15,6 +15,7 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted } from './events.js';
+import { providerForWorkspace } from './workspace-providers.js';
 import type { EventType } from '@orlynx/shared';
 
 async function persistLiveEvent(event: {
@@ -431,12 +432,34 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             });
           }
 
-          const verifiedPreviewPorts = Array.isArray(message.result?.previewPorts)
+          const localPreviewPorts = Array.isArray(message.result?.previewPorts)
             ? (message.result.previewPorts as Array<Record<string, unknown>>)
               .map((item) => ({ port: Number(item.port), url: typeof item.url === 'string' ? item.url : undefined }))
               .filter((item) => Number.isInteger(item.port) && item.port > 1024 && item.port < 65536)
             : [];
-          for (const preview of verifiedPreviewPorts) {
+          const previewWorkspace = await repository.getWorkspace(claims.workspaceId).catch(() => null);
+          const previewProvider = previewWorkspace ? providerForWorkspace(previewWorkspace) : null;
+          for (const preview of localPreviewPorts) {
+            const url = preview.url || (previewWorkspace ? previewProvider?.previewUrl?.(previewWorkspace, preview.port) : undefined);
+            if (!url) {
+              await persistLiveEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'preview.state',
+                timestamp: now,
+                payload: {
+                  port: preview.port,
+                  state: 'preparing',
+                  localReady: true,
+                  verified: false,
+                  message: 'Local server is healthy; waiting for the workspace provider to expose a browser preview.',
+                },
+              });
+              continue;
+            }
             await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
@@ -445,7 +468,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               workspaceId: claims.workspaceId,
               type: 'preview.ready',
               timestamp: now,
-              payload: { port: preview.port, ...(preview.url ? { url: preview.url } : {}), verified: true },
+              payload: { port: preview.port, url, verified: true },
             });
           }
 
