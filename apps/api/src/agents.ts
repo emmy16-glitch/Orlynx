@@ -215,6 +215,14 @@ async function executeDirectTask(
       harnessSystemInstruction(task.harness),
       agentMemoryInstruction(directLessons),
     ].filter(Boolean).join('\n\n');
+    if (directLessons.length) {
+      emit(session.id, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.memory',
+        text: `Orlynx memory → Model: using ${directLessons.length} verified lesson${directLessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        lessonIds: directLessons.map((lesson) => lesson.id),
+      }, run.id);
+    }
 
     const responseText = await adapter.streamDirectChat({
       runId: run.id,
@@ -580,6 +588,14 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       lessonsApplied: lessons.map((lesson) => lesson.id),
     };
     await repository.putTask(task);
+    if (lessons.length) {
+      emit(sessionId, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.memory',
+        text: `Orlynx memory → Model: using ${lessons.length} verified lesson${lessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        lessonIds: lessons.map((lesson) => lesson.id),
+      }, run.id);
+    }
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
