@@ -9,7 +9,7 @@ export interface PreviewPort {
 }
 
 /** Infrastructure ports that are never user previews (ssh/db/cache/debug). */
-const NON_PREVIEW_PORTS = new Set([22, 23, 25, 3306, 5432, 6379, 6380, 27017, 27018, 9229, 9333, 5601]);
+const NON_PREVIEW_PORTS = new Set([22, 23, 25, 2222, 3306, 5432, 6379, 6380, 27017, 27018, 9229, 9333, 5601]);
 
 export function isPreviewablePort(port: number): boolean {
   return Number.isInteger(port) && port > 0 && port < 65536 && !NON_PREVIEW_PORTS.has(port);
