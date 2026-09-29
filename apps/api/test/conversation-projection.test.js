@@ -268,6 +268,10 @@ describe('conversation projection: results and failures', () => {
     fresh();
     const model = toActivities([evt('run.failed', { errorKind: 'model', error: 'unknown model' }, 'run-b')]);
     assert.equal(model[0].title, 'Model unavailable');
+
+    fresh();
+    const verification = toActivities([evt('run.failed', { errorKind: 'verification', error: 'Orlynx could not verify: preview.' }, 'run-c')]);
+    assert.equal(verification[0].title, 'Verification needs attention');
     for (const rows of [auth, model]) {
       assert.equal(rows.at(-1)?.state, 'failed');
       assert.equal(chatActivities(rows).length, rows.length);
