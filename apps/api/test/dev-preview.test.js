@@ -131,6 +131,22 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(gateway, /if \(!url\)/);
   });
 
+  it('Codespace bootstrap supplies a pinned loopback-safe GitHub CLI helper', () => {
+    const worker = fs.readFileSync(path.join(root, 'runtime-worker/src/index.ts'), 'utf8');
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+
+    assert.match(worker, /gh version 2\.101\.0/);
+    assert.match(worker, /9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8/);
+    assert.match(worker, /b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f/);
+    assert.match(worker, /sha256sum -c/);
+    assert.match(worker, /ORLYNX_GH_BIN=%s/);
+    assert.match(worker, /test "\$gh_minor" -ge 98/);
+
+    assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
+    assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
+    assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
+  });
+
   it('prefers likely frontends but never invents a URL', () => {
     assert.equal(preferredPreviewPort([])?.port ?? null, null);
     assert.equal(preferredPreviewPort([{ port: 8000, url: 'u8000' }, { port: 5173, url: 'u5173' }])?.port, 5173);
