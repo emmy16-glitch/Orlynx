@@ -24,6 +24,7 @@ function sandboxCredentials() {
 }
 function bootstrapScript(workspace: WorkspaceRecord, values: Values, bridgeUrl: string, openCodeApiKey = ''): string {
   const bridge = fs.readFileSync(bridgeBundle, 'utf8');
+  const runtimeRevision = bridgeRuntimeRevision();
   const envValues = [`ORLYNX_CONTROL=${bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${values.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${workspace.id}`, `ORLYNX_SESSION_ID=${workspace.sessionId}`, `ORLYNX_USER_ID=${workspace.userId}`, `ORLYNX_CONNECTION_ID=${values.connectionId}`, `OPENCODE_SERVER_PASSWORD=${values.openCodePassword}`];
   if (openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${openCodeApiKey}`);
   const env = envValues.map((line) => encoded(line)).join(' ');
@@ -115,9 +116,17 @@ if test "$gh_safe" -ne 1; then
 fi
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
-# Reuse the password of an OpenCode server left running in this Codespace.
+# Reuse the OpenCode password across reconnects. If the Orlynx runtime
+# revision changed, restart OpenCode once so provider-launched commands inherit
+# the new global workspace environment.
 existing_password=""
-if test -f "$runtime/workspace.env"; then existing_password="$(sed -n 's/^OPENCODE_SERVER_PASSWORD=//p' "$runtime/workspace.env" | tail -n1)"; fi
+existing_revision=""
+if test -f "$runtime/workspace.env"; then
+  existing_password="$(sed -n 's/^OPENCODE_SERVER_PASSWORD=//p' "$runtime/workspace.env" | tail -n1)"
+  existing_revision="$(sed -n 's/^ORLYNX_BRIDGE_REVISION=//p' "$runtime/workspace.env" | tail -n1)"
+fi
+force_opencode_restart=0
+if test "$existing_revision" != "${runtimeRevision}"; then force_opencode_restart=1; fi
 : > "$runtime/workspace.env" && chmod 600 "$runtime/workspace.env"
 for item in ${env}; do printf '%s\\n' "$item" | base64 -d >> "$runtime/workspace.env"; printf '\\n' >> "$runtime/workspace.env"; done
 if test -n "$existing_password"; then
@@ -127,6 +136,8 @@ fi
 printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
 printf 'ORLYNX_GH_BIN=%s\\n' "$gh_bin" >> "$runtime/workspace.env"
+printf 'ORLYNX_BRIDGE_REVISION=${runtimeRevision}\\n' >> "$runtime/workspace.env"
+printf 'ORLYNX_FORCE_OPENCODE_RESTART=%s\\n' "$force_opencode_restart" >> "$runtime/workspace.env"
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a; . "$runtime/workspace.env"; set +a
 nohup node "$runtime/index.js" >"$runtime/bridge.log" 2>&1 </dev/null &
