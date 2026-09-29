@@ -30,12 +30,9 @@ components are Orlynx-owned; external sources are inspiration only (see
 
 ## Screen patterns
 
-The current application uses reusable Orlynx tokens and shell patterns in
-`apps/web/src/App.tsx`: `ProjectWorkspaceShell`, `GitHubRepositoryPicker`,
-`ProjectCodeViewer`, `CloudWorkspacePanel`, and `SettingsGroups`. These are screen
-compositions and should be extracted into `ui/` if another route begins to reuse
-their interaction logic. Do not copy markup into a parallel workflow before
-checking `REGISTRY`.
+The current production application uses reusable Orlynx tokens and shell patterns primarily in
+`apps/web/src/ProductionApp.tsx`: `ProjectWorkspaceShell`, `GitHubRepositoryPicker`,
+`ProjectCodeViewer`, `CloudWorkspacePanel`, and `SettingsGroups`. Screen compositions should be extracted into `ui/` when interaction logic becomes reusable. Do not copy markup into a parallel workflow before checking `REGISTRY`.
 
 Registry categories cover forms, navigation, agent, activity, approval, repository,
 cloud, errors, changes, preview, settings, and empty states. Entries record target
@@ -54,3 +51,8 @@ responsive document.
    vendored code.
 5. Add a registry entry and test its path/unique ID in `ui-intelligence.test.js`.
 6. Run web/API types, tests, production build, and verify 360px + wide desktop.
+
+
+## Current conversation components
+
+Queue rows, same-run continuation rendering, typed tool parts and Investigation blocks belong to the canonical conversation architecture. New UI work should extend those surfaces rather than reintroducing a separate generic activity timeline.
