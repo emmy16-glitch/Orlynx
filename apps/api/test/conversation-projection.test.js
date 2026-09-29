@@ -111,7 +111,7 @@ describe('cross-device durable conversation restore', () => {
 });
 
 describe('conversation projection: continuing project turns', () => {
-  it('keeps active-run follow-ups inside one stable conversation turn', () => {
+  it('keeps same-run follow-ups as chronological visual turns without losing run identity', () => {
     const stream = emptyAgentStreamState();
     stream.runs['run-a'] = {
       id: 'run-a',
@@ -126,12 +126,20 @@ describe('conversation projection: continuing project turns', () => {
       { id: 'u2', role: 'user', text: 'What have you done?', runId: 'run-a', createdAt: '2026-09-29T10:01:00.000Z' },
       { id: 'u3', role: 'user', text: 'Also check Preview', runId: 'run-a', createdAt: '2026-09-29T10:02:00.000Z' },
     ];
-    const thread = buildThread(messages, [], [], stream);
-    assert.equal(thread.length, 1);
-    assert.equal(thread[0].runId, 'run-a');
-    assert.deepEqual(thread[0].userMessages.map((message) => message.id), ['u1', 'u2', 'u3']);
-    assert.equal(thread[0].userMessage?.id, 'u3');
-    assert.equal(thread[0].userMessageId, 'u1');
+    const activities = [
+      { key: 'before', id: 'before', runId: 'run-a', sequence: 1, timestamp: '2026-09-29T10:00:30.000Z', category: 'search', state: 'success', title: 'Reading package.json' },
+      { key: 'middle', id: 'middle', runId: 'run-a', sequence: 2, timestamp: '2026-09-29T10:01:30.000Z', category: 'command', state: 'success', title: 'Checking server' },
+      { key: 'after', id: 'after', runId: 'run-a', sequence: 3, timestamp: '2026-09-29T10:02:30.000Z', category: 'preview', state: 'running', title: 'Checking Preview' },
+    ];
+    const thread = buildThread(messages, activities, [], stream);
+    assert.equal(thread.length, 3);
+    assert.deepEqual(thread.map((turn) => turn.userMessage?.id), ['u1', 'u2', 'u3']);
+    assert.deepEqual(thread.map((turn) => turn.runId), ['run-a', 'run-a', 'run-a']);
+    assert.deepEqual(thread.map((turn) => turn.userMessages.map((message) => message.id)), [['u1'], ['u2'], ['u3']]);
+    assert.deepEqual(thread.map((turn) => turn.work.map((item) => item.id)), [['before'], ['middle'], ['after']]);
+    assert.equal(thread[0].state, 'completed');
+    assert.equal(thread[1].state, 'completed');
+    assert.equal(thread[2].state, 'streaming');
   });
 });
 
