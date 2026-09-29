@@ -1,119 +1,85 @@
 # GitHub App integration
 
-Orlynx connects to GitHub through the Orlynx GitHub App.
+Orlynx connects repositories through the platform GitHub App and establishes the signed-in user identity through GitHub OAuth.
 
-Normal users do not paste classic or fine-grained PATs into Orlynx.
-
-Repository authorization and user-scoped GitHub authorization are handled through GitHub's App/OAuth flows, with credentials stored server-side.
+There is no normal user PAT-entry flow.
 
 ## User experience
 
-The current connection flow supports the combination required by Orlynx:
+1. User chooses Continue with GitHub.
+2. Orlynx sends the user through the official GitHub authorization/installation flow as required.
+3. The user authorizes the Orlynx GitHub App for all or selected repositories.
+4. GitHub returns to the Orlynx setup callback.
+5. Orlynx verifies the OAuth user and available installations.
+6. Durable production storage records the GitHub user ID and installation relationship.
+7. The session cookie represents the active installation connection.
+8. Orlynx immediately hydrates durable conversations owned by that GitHub user.
+9. Repository picker shows only repositories currently authorized to the installation.
 
-1. user chooses **Connect GitHub**;
-2. Orlynx creates signed, expiring state;
-3. GitHub OAuth establishes the user's GitHub identity/authorization;
-4. Orlynx verifies the GitHub App installation(s) accessible to that user;
-5. if the App still needs to be installed, the user is sent through GitHub's installation flow;
-6. repository access is verified live;
-7. Orlynx stores the durable connection state;
-8. the user returns to Orlynx and sees only authorized repositories.
+## Stable identity and cross-device conversations
 
-Repository-selection updates can return through the configured setup URL and are revalidated against GitHub.
+The stable ownership key for durable conversations is the authenticated GitHub user ID.
 
-## Why Orlynx needs both installation and user authorization
+A browser cookie/localStorage value is not the ownership key.
 
-The GitHub App installation controls repository access.
+This allows the same GitHub user to connect from a laptop after working on a phone and recover server-owned sessions.
 
-Some user-scoped GitHub capabilities, including Codespaces operations, require user authorization as well.
+When a repository/branch is reopened and the current installation still authorizes it, an existing durable user-owned session can be rebound to the current installation instead of creating a blank duplicate.
 
-Orlynx therefore keeps these concepts separate:
+## Repository authorization
 
-- **installation authorization** — which repositories the App may access;
-- **user authorization** — which user-scoped GitHub operations may be performed for the authenticated user.
+Stable user identity does not bypass repository authorization.
 
-The browser never receives the raw authorization credentials.
+Repository operations still use the current GitHub App installation/user authorization and must fail closed when the repository is no longer available.
 
-## GitHub App configuration
+Conversation history can remain visible even when repository access is later removed.
 
-The production App should use the canonical ORLYNX_PUBLIC_URL for homepage, OAuth/setup callback, setup URL and webhook URL.
+## OAuth user authorization
 
-The current manifest requests the repository/user capabilities used by Orlynx:
+The GitHub OAuth flow stores user-scoped authorization server-side when durable storage is configured.
 
-- Contents: write;
-- Metadata: read;
-- Pull requests: write;
-- Codespaces: write;
-- Codespaces lifecycle admin: write.
+This authorization is used for user-scoped capabilities such as Codespaces.
 
-Do not add broader permissions merely because they might be useful later.
+Tokens are encrypted at rest and refreshed when supported/required.
 
-## Server configuration
+Do not replace this flow with a PAT paste box.
 
-The current GitHub gateway expects the relevant set of:
+## Installation authorization
 
-- ORLYNX_PUBLIC_URL
-- GITHUB_APP_ID
-- GITHUB_APP_SLUG
-- GITHUB_CLIENT_ID
-- GITHUB_APP_CLIENT_SECRET
-- GITHUB_APP_PRIVATE_KEY
-- GITHUB_WEBHOOK_SECRET
+Installation tokens are minted server-side and remain short-lived.
 
-GITHUB_PRIVATE_KEY is accepted by the code as a legacy alias, but GITHUB_APP_PRIVATE_KEY is the canonical name.
+They are never returned to the browser.
 
-## Authorization model
+Repository lists and branches are revalidated against GitHub rather than trusting client filtering.
 
-Repository operations revalidate authorization rather than trusting a frontend list.
+## Multiple installations
 
-Important rules:
+A user may have access through personal and organization installations.
 
-- installation tokens are minted on demand and are not browser credentials;
-- suspended installations are excluded from active capability;
-- repository selection changes invalidate cached repository listings;
-- removing repository access preserves the Orlynx conversation but blocks unauthorized repository operations;
-- multiple accessible installations may be aggregated;
-- installation tokens remain installation-scoped;
-- user authorization remains user-scoped and encrypted/durable where required.
+The selected/current installation determines the repositories available for a repository action, while durable session ownership remains tied to the stable GitHub user identity.
 
 ## Webhooks
 
 The webhook endpoint verifies X-Hub-Signature-256.
 
-Delivery IDs are persisted for idempotency in production so a GitHub redelivery is not processed as a new authorization event after restart/redeploy.
+X-GitHub-Delivery IDs are recorded durably for idempotency.
 
-Relevant installation/repository events update durable connection state and invalidate caches.
+Repository-selection changes invalidate cached repository authorization state.
 
-## Disconnect behavior
+Installation deletion/suspension updates connection availability without silently deleting conversation history.
 
-An Orlynx-side disconnect stops using the stored GitHub connection and cached access.
+## Security
 
-It does not silently delete project conversation history.
+- no normal-user PAT flow;
+- App/user tokens remain server-side;
+- credentials are encrypted where persisted;
+- authorization is revalidated;
+- same-origin API protections apply;
+- callback state is signed/expiring;
+- session ownership and repository authorization are separate checks.
 
-Uninstalling the GitHub App on github.com is a separate user-controlled action.
+## Production
 
-## Publication
+All production URLs use the canonical Render ORLYNX_PUBLIC_URL.
 
-The coding-agent shell does not receive unrestricted GitHub credentials.
-
-Explicit publish operations are handled through Orlynx-controlled publication.
-
-If the user names a branch, Orlynx preserves that target instead of guessing another branch.
-
-The publication path must enforce current authorization and server-side policy.
-
-## Codespaces
-
-Codespaces is a supported workspace provider/fallback and uses the user's GitHub authorization when required.
-
-Codespaces is not the only Orlynx execution architecture: the warm runner is preferred when configured.
-
-See [workspace-runtime.md](workspace-runtime.md) and [warm-runner-architecture.md](warm-runner-architecture.md).
-
-## Verification
-
-Automated tests should cover signed state handling, OAuth/install return, setup/update return, invalid state, webhook signature enforcement, webhook delivery dedupe, installation suspend/delete/update, unauthorized repository rejection and connection-status secrecy.
-
-Live verification still requires a real configured GitHub App and user account.
-
-No test fixture should be described as proof of live GitHub availability.
+See github-app-manifest.md for owner bootstrap and render-production.md for deployment configuration.
