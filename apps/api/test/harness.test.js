@@ -11,6 +11,7 @@ import {
   detectEvidenceContradictions,
   openCodeToolsFor,
   prepareReflection,
+  queueIntentFor,
   reflectionInstruction,
   shouldReflect,
   shouldSalvage,
@@ -357,6 +358,25 @@ test('active message admission continues the same task across direct and workspa
   assert.match(routes, /bridgeCancelCommand/);
   assert.doesNotMatch(routes, /const ackRunId =/);
   assert.doesNotMatch(routes, /Added that to the current Build task\./);
+});
+
+test('only explicit next-work language creates a separate queued task', () => {
+  assert.equal(queueIntentFor('also check the mobile view'), false);
+  assert.equal(queueIntentFor('what have you done so far?'), false);
+  assert.equal(queueIntentFor('queue this: run the accessibility audit'), true);
+  assert.equal(queueIntentFor('after this is finished, run the full test suite'), true);
+  assert.equal(queueIntentFor('do this next: inspect the API'), true);
+});
+
+test('durable queue exposes edit and cancel controls against the scheduler ledger', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(routes, /router\.get\('\/sessions\/:id\/tasks'/);
+  assert.match(routes, /router\.patch\('\/sessions\/:id\/tasks\/:taskId'/);
+  assert.match(routes, /router\.delete\('\/sessions\/:id\/tasks\/:taskId'/);
+  assert.match(routes, /Only queued tasks can be edited/);
+  assert.match(routes, /Only queued tasks can be cancelled here/);
+  assert.match(routes, /const explicitQueue = queueIntentFor\(String\(text\)\)/);
+  assert.match(routes, /a\.plane === 'direct' \? 0 : 1/);
 });
 
 test('direct Ask and Plan continue the same task inbox before finalizing', () => {
