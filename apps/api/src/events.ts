@@ -6,7 +6,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 const durableQueues = new Map<string, Promise<void>>();
 const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
 
-function redactEventString(value: string): string {
+export function redactEventString(value: string): string {
   return String(value || '')
     .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
     .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[redacted-api-key]')
