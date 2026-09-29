@@ -126,10 +126,20 @@ function CommandBlock({ command }: { command: string }) {
 }
 
 function RawOutput({ output }: { output?: string }) {
+  const [open, setOpen] = React.useState(false);
   if (!output) return null;
+  const lineCount = output.split(/\r?\n/).length;
   return (
-    <div className="ox-raw ox-raw-visible">
-      <pre aria-label="Raw command output">{output.slice(-50_000)}</pre>
+    <div className="ox-raw">
+      <button
+        type="button"
+        className="ox-raw-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? 'Hide output' : `Show output${lineCount > 1 ? ` · ${lineCount} lines` : ''}`}
+      </button>
+      {open && <pre className="ox-raw-visible" aria-label="Raw command output">{output.slice(-50_000)}</pre>}
     </div>
   );
 }
@@ -318,7 +328,33 @@ export const partRenderers: Record<ThreadPart['kind'], (part: ThreadPart, onReso
   generic: (part, onResolveApproval) => <Shell part={part} label={KIND_LABEL.generic} onResolveApproval={onResolveApproval} />,
 };
 
+function DialogueRow({ part }: { part: ThreadPart }) {
+  const evidence = asRecord(part.item.evidence);
+  const sourceType = str(evidence.sourceType);
+  const reflectionId = Number(evidence.reflectionId || 0);
+  const memory = sourceType === 'agent.memory';
+  const role = sourceType === 'agent.dialogue.orlynx'
+    ? 'Controller'
+    : sourceType === 'agent.dialogue.model'
+      ? 'Model'
+      : 'Learning';
+  return (
+    <div className="ox-dialogue" data-role={role.toLowerCase()}>
+      <div className="ox-dialogue-head">
+        <span className="ox-dialogue-badge">{memory ? 'Verified learning' : reflectionId ? `Reflection ${reflectionId}` : 'Reflection'}</span>
+        <span className="ox-dialogue-role">{part.title}</span>
+        <span className="ox-dialogue-source">{role}</span>
+      </div>
+      {part.summary && <div className="ox-dialogue-text">{part.summary}</div>}
+    </div>
+  );
+}
+
 export function PartRow({ part, onResolveApproval }: { part: ThreadPart; onResolveApproval?: ResolveApproval }) {
+  const sourceType = str(asRecord(part.item.evidence).sourceType);
+  if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model' || sourceType === 'agent.memory') {
+    return <DialogueRow part={part} />;
+  }
   const render = partRenderers[part.kind] || partRenderers.generic;
   return <>{render(part, onResolveApproval)}</>;
 }
