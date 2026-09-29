@@ -1,105 +1,60 @@
 # GitHub App manifest bootstrap
 
-This is an **owner-only, one-time setup path** for creating the Orlynx GitHub App through GitHub's official App Manifest flow.
+This is an owner/operator setup flow. Normal Orlynx users do not see it.
 
-Normal users never use this page. They use **Connect GitHub**.
+The active production control plane is Render.
 
-## Current manifest behavior
+## Purpose
 
-The manifest is built from the canonical ORLYNX_PUBLIC_URL and requests the capabilities Orlynx currently uses:
+The manifest flow can create/configure the platform GitHub App without exposing generated private credentials to normal users.
 
-- contents: write;
-- metadata: read;
-- pull requests: write;
-- codespaces: write;
-- codespaces lifecycle admin: write.
+## Manifest permissions
 
-The manifest also configures:
+Request only permissions required by real product features.
 
-- homepage;
-- webhook URL;
-- manifest conversion redirect;
-- normal GitHub setup/OAuth callback;
-- setup-on-update / Redirect on update behavior.
+Current areas may include:
 
-Do not expand permissions without a real implemented feature that requires them.
+- repository metadata;
+- contents read/write for controlled Git operations;
+- pull requests when Orlynx publication uses PRs;
+- Codespaces permissions when Codespaces fallback is enabled.
 
-## Setup flow
+Do not add broad administration, Actions, secrets or organization permissions without a concrete implemented feature that requires them.
 
-1. The owner enables the protected setup path with ORLYNX_SETUP_TOKEN.
-2. Orlynx builds the manifest using the canonical production URL.
-3. GitHub shows the official App-creation confirmation.
-4. The owner approves creation.
-5. GitHub redirects to Orlynx with a short-lived manifest conversion code.
-6. Orlynx validates signed setup state.
-7. Orlynx exchanges the code with GitHub.
-8. The returned App credentials must be stored in the production secret environment.
-9. The production service is redeployed/restarted with those credentials.
-10. Once the App is configured, the owner setup route locks.
+## URLs
 
-Private keys, client secrets and webhook secrets must never be rendered into a normal browser page or printed into logs.
+Manifest-created application URLs must use the canonical ORLYNX_PUBLIC_URL.
 
-## Render is production
+For production this is the Render origin.
 
-The active Orlynx production control plane is Render.
+Typical endpoints include:
 
-The canonical production URL, callback URLs and webhook URLs must therefore use the Render origin.
+- homepage: ORLYNX_PUBLIC_URL;
+- setup/callback: ORLYNX_PUBLIC_URL/v1/github/setup;
+- webhook: ORLYNX_PUBLIC_URL/v1/github/webhook.
 
-Do not point the production GitHub App at Vercel.
+Preview/temporary deployments must not silently replace production callback URLs.
 
-## Legacy Vercel bootstrap helper in code
+## Credential handling
 
-The current source still contains a legacy function named persistCredentialsToVercel in apps/api/src/manifest.ts.
+Generated private key/client secret/webhook material must remain server-side.
 
-That helper belongs to the earlier deployment architecture.
+The bootstrap flow must never print those values into chat or a browser page as a workaround.
 
-It is **not** the current production deployment standard and must not be used as justification to configure Orlynx production on Vercel.
-
-Until that legacy helper is removed or replaced with a Render-safe owner setup workflow, generated credentials should be installed through the secure Render secret-management path used by the operator.
-
-The application must never expose generated secrets as a copy/paste workaround in a normal user flow.
-
-## Canonical GitHub environment keys
-
-The GitHub gateway's canonical configuration names are:
-
-- ORLYNX_PUBLIC_URL
-- GITHUB_APP_ID
-- GITHUB_APP_SLUG
-- GITHUB_CLIENT_ID
-- GITHUB_APP_CLIENT_SECRET
-- GITHUB_APP_PRIVATE_KEY
-- GITHUB_WEBHOOK_SECRET
-
-The runtime accepts GITHUB_PRIVATE_KEY only as a legacy alias. New configuration should use GITHUB_APP_PRIVATE_KEY.
-
-## State security
-
-Manifest setup state is:
-
-- signed;
-- expiring;
-- single-use;
-- owner-protected.
-
-A missing/invalid setup token or already-configured App locks the owner bootstrap.
+If automatic secure environment persistence is unavailable, stop and give the operator a secure explicit action instead of exposing the values.
 
 ## Webhooks
 
-The manifest points GitHub at the Orlynx webhook endpoint.
+The webhook endpoint verifies X-Hub-Signature-256.
 
-Webhook payloads are verified using X-Hub-Signature-256.
+X-GitHub-Delivery is recorded durably so redelivery cannot become a second authorization change after API restart or multi-instance routing.
 
-Delivery IDs are persisted durably in production so GitHub redelivery is idempotent across service restarts.
+## Existing installations
 
-## Permission changes
+Permission changes can require an installation owner to approve the new permission set on GitHub.
 
-Changing App permissions for an already-installed App may require installation owners to accept the new permissions on GitHub.
+Orlynx should report this as a connection-needs-attention state rather than pretending the new capability succeeded.
 
-Orlynx must report this as a connection-needs-attention state rather than pretending the new capability already works.
+## Deployment note
 
-## Future cleanup
-
-The legacy Vercel credential-persistence helper should eventually be removed or replaced by a production-provider-neutral bootstrap abstraction.
-
-That cleanup is code work, not documentation work, and should receive tests before the old helper is deleted.
+Historical versions of this flow referenced writing environment values to Vercel. Vercel is not the current Orlynx production topology. Current deployment configuration must target the active Render environment/operator process.
