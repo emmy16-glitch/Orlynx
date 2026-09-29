@@ -489,6 +489,43 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
   ].filter(Boolean).join('\n\n');
 }
 
+export function needsSelectedModelReview(
+  checkpoint: HarnessCheckpoint,
+  mode: AgentMode,
+  modelId?: string,
+): boolean {
+  if (mode !== 'build') return false;
+  if (checkpoint.verification.status !== 'passed') return false;
+  if (!modelId) return false;
+  return (checkpoint.modelReviewAttempts || 0) < 1 || checkpoint.modelReviewModelId !== modelId;
+}
+
+export function selectedModelReviewInstruction(
+  checkpoint: HarnessCheckpoint,
+  modelId: string,
+  evidence: string[] = [],
+  lessons: string[] = [],
+): string {
+  const required = checkpoint.verification.required.join(', ') || 'the requested outcome';
+  const evidenceText = evidence.length
+    ? evidence.slice(-10).join(' | ')
+    : 'No additional evidence summary was available; inspect the durable task evidence already in this model session.';
+  const lessonText = lessons.length
+    ? `Relevant verified lessons: ${lessons.join(' | ')}`
+    : '';
+
+  return [
+    `Mandatory Orlynx review using the selected model ${modelId}.`,
+    `The deterministic harness currently reports verification passed for: ${required}.`,
+    `Evidence summary: ${evidenceText}`,
+    lessonText,
+    'Act as Orlynx\'s independent reasoning/quality partner before finalization. Check the completed work and evidence for unsupported claims, missed requirements, accidental regressions, wrong-layer diagnoses, unsafe shortcuts, or unnecessary changes.',
+    'If anything is questionable, use the available tools to inspect or correct it, then re-run the relevant verification. Do not merely agree with Orlynx.',
+    'If the work is sound, begin with one concise public line: "Model → Orlynx: verified — <what evidence makes the result safe to finalize>." Then give the final user-facing result. Do not expose private chain-of-thought.',
+    'Do not claim success that the evidence does not support. Fresh repository/tool evidence overrides memory and earlier assumptions.',
+  ].filter(Boolean).join('\n\n');
+}
+
 export function userInputRequest(finalText: string): string | undefined {
   const text = String(finalText || '').trim();
   const marker = /\[NEEDS_USER_INPUT\]\s*([\s\S]*)/i.exec(text);
