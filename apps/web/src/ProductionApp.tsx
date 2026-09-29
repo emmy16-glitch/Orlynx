@@ -638,6 +638,30 @@ export default function ProductionApp() {
                   sessionStorage.removeItem(PENDING_CLOUD_RETRY);
                 }
               }
+
+              // A new browser has no local session pointer. Immediately hydrate
+              // the durable GitHub-identity conversation list after OAuth so
+              // phone/laptop switching never looks like chat history vanished.
+              if (!pendingRepo && !pendingCloud) {
+                const historyResponse = await fetch('/v1/sessions?limit=50');
+                if (historyResponse.ok) {
+                  const durableSessions = await historyResponse.json() as any[];
+                  const durableNames = durableSessions
+                    .map((item) => String(item.project || ''))
+                    .filter((name) => name.includes('/'));
+                  if (durableNames.length) {
+                    setRecentProjects((previous) => {
+                      const next = [...durableNames, ...previous]
+                        .filter((name, index, all) => all.indexOf(name) === index)
+                        .slice(0, 8);
+                      try { localStorage.setItem(RECENTS, JSON.stringify(next)); } catch {}
+                      return next;
+                    });
+                  }
+                  const latest = durableSessions[0];
+                  if (latest?.owner && latest.owner !== 'local') await openSession(latest);
+                }
+              }
             } else {
               setGithubNotice({ tone: 'ok', text: 'GitHub connected. Choose a repository to open.' });
             }
