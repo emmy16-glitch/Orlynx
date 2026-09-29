@@ -25,6 +25,8 @@ export interface ThreadTurn {
   runId?: string;
   userMessageId?: string;
   userMessage?: PersistedChatMessage;
+  /** Extra user updates steered into this same run instead of becoming fake chats. */
+  followUpMessages?: PersistedChatMessage[];
   assistantMessage?: PersistedChatMessage;
   liveReply?: LiveReplyView;
   /** Work owned by this run, in lifecycle-start order. */
@@ -68,11 +70,16 @@ export function buildThread(
   const userTurnKey = new Map<string, string>();
   for (const message of messages) {
     if (message.role !== 'user') continue;
-    const runId = Object.values(stream.runs).find((run) => run.userMessageId === message.id)?.id;
+    const streamRunId = Object.values(stream.runs).find((run) => run.userMessageId === message.id)?.id;
+    const runId = message.runId || streamRunId;
     const key = runId ? `run:${runId}` : `user:${message.id}`;
     const turn = ensureTurn(key, runId);
-    turn.userMessage = message;
-    turn.userMessageId = message.id;
+    if (!turn.userMessage) {
+      turn.userMessage = message;
+      turn.userMessageId = message.id;
+    } else if (turn.userMessage.id !== message.id) {
+      (turn.followUpMessages ||= []).push(message);
+    }
     userTurnKey.set(message.id, key);
   }
 
