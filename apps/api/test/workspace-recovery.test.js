@@ -78,6 +78,9 @@ test('Codespace bootstrap provides a private authenticated safe GitHub CLI for P
     assert.match(source, /downloaded=0/);
   }
 
+  const apiWorker = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(apiWorker, /bootstrapScript\(workspace, values, bridgeUrl, openCodeApiKey, githubUserToken\)/);
+
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
   assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
