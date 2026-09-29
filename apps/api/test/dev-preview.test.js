@@ -179,7 +179,7 @@ describe('preview URL safety (§§192, 198-200, 222)', () => {
 
 describe('chat ↔ preview connection (§§190-191, 194, 202, 209-210, 216, 238)', () => {
   it('TEST 2/11: View preview exists only with a resolved URL', () => {
-    assert.match(pane(), /<button type="button" className="server-preview-cta" onClick=\{\(\) => onViewPreview\(match\.port\)\}>View preview<\/button>/);
+    assert.match(pane(), /className="server-preview-cta"[\s\S]*?requiresExternalPreview\(match\) \? onOpenExternal\(match\.url!\) : onViewPreview\(match\.port\)/);
     assert.match(pane(), /if \(!match\) \{[\s\S]*?return null/);
     assert.match(pane(), /activityState === 'failed'[\s\S]*?return null/);
   });
