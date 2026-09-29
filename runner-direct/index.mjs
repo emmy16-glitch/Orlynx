@@ -359,10 +359,19 @@ async function route(req, res) {
   const url = new URL(req.url || '/', 'http://runner.local');
   if (req.method === 'GET' && url.pathname === '/health') {
     const state = loadState();
-    return json(res, TOKEN && fs.existsSync(BRIDGE_PATH) && fs.existsSync(OPENCODE_BIN) ? 200 : 503, {
-      ok: Boolean(TOKEN && fs.existsSync(BRIDGE_PATH) && fs.existsSync(OPENCODE_BIN)),
+    const healthy = Boolean(TOKEN && fs.existsSync(BRIDGE_PATH) && fs.existsSync(OPENCODE_BIN));
+    const running = state?.state === 'running' ? 1 : 0;
+    const stopped = state && state.state !== 'running' ? 1 : 0;
+    return json(res, healthy ? 200 : 503, {
+      ok: healthy,
       service: 'orlynx-direct-runner',
+      hostId: String(process.env.ORLYNX_RUNNER_HOST_ID || 'direct-default'),
+      region: String(process.env.ORLYNX_RUNNER_REGION || '') || undefined,
       capacity: 1,
+      running,
+      stopped,
+      available: running ? 0 : 1,
+      draining: process.env.ORLYNX_RUNNER_DRAINING === '1',
       workspace: state ? { runnerId: state.runnerId, state: state.state } : null,
     });
   }
