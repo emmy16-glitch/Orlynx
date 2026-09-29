@@ -102,6 +102,8 @@ export interface WorkspaceRecord {
   provider: WorkspaceProviderId;
   codespaceName?: string;
   runnerId?: string;
+  /** Stable runner-pool host identity. Omitted for legacy single-runner workspaces. */
+  runnerHostId?: string;
   repositoryId: number;
   branch: string;
   state: WorkspaceState;
