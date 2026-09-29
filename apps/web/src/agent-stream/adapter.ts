@@ -1,4 +1,4 @@
-import type { AgentPartKind, OrlynxEvent } from '@orlynx/shared';
+import type { AgentPartKind, OrlynxEvent, RunState } from '@orlynx/shared';
 import type { StreamProjectionEvent } from './protocol';
 
 type RawEvent = Omit<Partial<OrlynxEvent>, 'type'> & {
