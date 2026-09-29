@@ -99,6 +99,7 @@ export function createHarnessCheckpoint(input: HarnessInitInput): HarnessCheckpo
     verification,
     salvageAttempts: 0,
     reflectionAttempts: 0,
+    finalSynthesisAttempts: 0,
     contradictions: [],
     reflectionEvidence: [],
     stagnantReflections: 0,
