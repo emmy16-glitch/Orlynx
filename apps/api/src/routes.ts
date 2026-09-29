@@ -1359,6 +1359,116 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
   res.json(await cancelRun(String(sessionId), req.params.runId) || { error: 'not found' });
 });
 
+// Durable task queue — the UI edits/cancels the same records the scheduler
+// consumes, so queue controls cannot drift from execution truth.
+router.get('/sessions/:id/tasks', async (req, res) => {
+  const session = ownedSession(req, req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.json([]);
+  const tasks = await controlPlaneRepository().listTasks(session.id);
+  const queued = tasks.filter((task) => task.state === 'queued');
+  const positions = new Map(queued.map((task, index) => [task.id, index + 1]));
+  res.json(tasks
+    .filter((task) => ['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state))
+    .map((task) => ({
+      id: task.id,
+      runId: task.runId,
+      messageId: task.messageId,
+      state: task.state,
+      prompt: task.prompt,
+      plane: task.plane || 'workspace',
+      mode: task.mode || 'build',
+      modelId: task.modelId,
+      position: task.state === 'queued' ? positions.get(task.id) : undefined,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+    })));
+});
+
+router.patch('/sessions/:id/tasks/:taskId', async (req, res) => {
+  const session = ownedSession(req, req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.status(503).json({ error: 'Durable task storage is not configured.' });
+
+  const repository = controlPlaneRepository();
+  const task = await repository.getTask(req.params.taskId);
+  if (!task || task.sessionId !== session.id) return res.status(404).json({ error: 'task not found' });
+  if (task.state !== 'queued') return res.status(409).json({ error: 'Only queued tasks can be edited.' });
+
+  const prompt = String(req.body?.text || '').trim();
+  if (!prompt) return res.status(400).json({ error: 'Task text cannot be empty.' });
+  if (prompt.length > 24_000) return res.status(413).json({ error: 'Task text is too long.' });
+
+  const now = new Date().toISOString();
+  const permission = task.tempPermission || task.permission || 'full';
+  let harness = createHarnessCheckpoint({
+    prompt,
+    mode: task.mode || 'build',
+    permission,
+    plane: task.plane || 'workspace',
+    now,
+  });
+  if (task.harness?.phase === 'routing') {
+    harness = advanceHarnessPhase(harness, 'routing', { mode: task.mode || 'build', permission, now });
+  }
+  task.prompt = prompt;
+  task.harness = harness;
+  task.updatedAt = now;
+  await repository.putTask(task);
+
+  if (task.messageId) {
+    const original = (await repository.listMessages(session.id)).find((message) => message.id === task.messageId);
+    if (original?.role === 'user') {
+      await repository.putMessage({ ...original, text: prompt, runId: task.runId || original.runId });
+    }
+  }
+
+  emit(session.id, 'state.delta', {
+    scope: 'task-queue',
+    taskId: task.id,
+    state: 'queued',
+    action: 'edited',
+    prompt,
+  }, task.runId);
+  return res.json({ id: task.id, runId: task.runId, state: task.state, prompt: task.prompt, plane: task.plane || 'workspace', mode: task.mode || 'build', updatedAt: task.updatedAt });
+});
+
+router.delete('/sessions/:id/tasks/:taskId', async (req, res) => {
+  const session = ownedSession(req, req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.status(503).json({ error: 'Durable task storage is not configured.' });
+
+  const repository = controlPlaneRepository();
+  const task = await repository.getTask(req.params.taskId);
+  if (!task || task.sessionId !== session.id) return res.status(404).json({ error: 'task not found' });
+  if (task.state !== 'queued') return res.status(409).json({ error: 'Only queued tasks can be cancelled here. Use Stop for active work.' });
+
+  const now = new Date().toISOString();
+  task.state = 'cancelled';
+  task.updatedAt = now;
+  if (task.harness) {
+    task.harness = advanceHarnessPhase(task.harness, 'cancelled', {
+      mode: task.mode || 'build',
+      permission: task.tempPermission || task.permission || 'full',
+      now,
+    });
+  }
+  await repository.putTask(task);
+
+  const memoryRun = (store.db.runs[session.id] || []).find((item) => item.id === task.runId);
+  if (memoryRun) {
+    memoryRun.state = 'cancelled';
+    memoryRun.finishedAt = now;
+    memoryRun.activity = 'Cancelled in queue';
+    store.save();
+  }
+
+  emit(session.id, 'run.failed', { taskId: task.id, cancelled: true, queued: true }, task.runId);
+  emit(session.id, 'state.delta', { scope: 'task-queue', taskId: task.id, state: 'cancelled', action: 'cancelled' }, task.runId);
+  await promoteNextQueuedRun(session.id).catch(() => null);
+  return res.json({ id: task.id, runId: task.runId, state: task.state, updatedAt: task.updatedAt });
+});
+
 // runs — snapshot for session restore ("agent still working" / receipts)
 router.get('/sessions/:id/runs', async (req, res) => {
   if (!ownedSession(req, req.params.id)) return res.status(404).json({ error: 'session not found' });
