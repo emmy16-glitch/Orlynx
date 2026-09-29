@@ -24,6 +24,8 @@ Supported fallback/recovery provider.
 
 Codespaces bootstrap a private Orlynx runtime and install/smoke-test the CPU-compatible native OpenCode package.
 
+When the deployment prefers the warm runner, a legacy Codespace may remain in use while its workspace and OpenCode adapter are healthy. If the bridge is healthy but the legacy Codespace adapter becomes unavailable/failed, the next Build admission migrates that session to the preferred warm runner instead of repeatedly paying adapter reconnect churn.
+
 ## Bridge
 
 The bridge connects outbound to the Orlynx control plane with a short-lived scoped credential.
