@@ -7,7 +7,7 @@ import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 
-type PreparationContext = { allowFallback: boolean; promise: Promise<WorkspaceRecord> };
+type PreparationContext = { allowFallback: boolean; runnerRecoveryAttempted?: boolean; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
@@ -137,7 +137,11 @@ export async function prepareWorkspace(
     if (options.allowFallback !== false) running.allowFallback = true;
     return running.promise;
   }
-  const context = { allowFallback: options.allowFallback !== false, promise: Promise.resolve(null as unknown as WorkspaceRecord) };
+  const context = {
+    allowFallback: options.allowFallback !== false,
+    runnerRecoveryAttempted: false,
+    promise: Promise.resolve(null as unknown as WorkspaceRecord),
+  };
   context.promise = prepareWorkspaceOnce(input, 0, context).finally(() => activePreparations.delete(input.sessionId));
   activePreparations.set(input.sessionId, context);
   return context.promise;
@@ -146,7 +150,7 @@ export async function prepareWorkspace(
 async function prepareWorkspaceOnce(
   input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
   replacementDepth = 0,
-  context: { allowFallback: boolean } = { allowFallback: true },
+  context: { allowFallback: boolean; runnerRecoveryAttempted?: boolean } = { allowFallback: true, runnerRecoveryAttempted: false },
 ): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   let workspace = await ensureWorkspaceRecord(input);
@@ -381,6 +385,47 @@ async function prepareWorkspaceOnce(
           return prepareWorkspaceOnce(input, replacementDepth, context);
         } catch (replacementError) {
           console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
+        }
+      }
+
+      if (
+        workspace.provider === 'github-codespaces'
+        && !refreshFallback
+        && workspace.codespaceName
+        && workspaceNeedsCodespaceReplacement(detail)
+        && defaultWorkspaceProviderId() === 'orlynx-runner'
+        && !context.runnerRecoveryAttempted
+      ) {
+        context.runnerRecoveryAttempted = true;
+        try {
+          const now = new Date().toISOString();
+          const runnerWorkspace: WorkspaceRecord = {
+            ...workspace,
+            provider: 'orlynx-runner',
+            runnerId: undefined,
+            codespaceName: undefined,
+            state: 'creating',
+            bridgeState: 'disconnected',
+            connectionId: undefined,
+            failureCode: undefined,
+            updatedAt: now,
+          };
+          await repository.putWorkspace(runnerWorkspace);
+          await repository.putWorkspaceAgentAdapter({
+            workspaceId: runnerWorkspace.id,
+            adapterId: 'opencode',
+            state: 'not_installed',
+            updatedAt: now,
+          });
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'workspace.failover',
+            provider: 'orlynx-runner',
+            message: 'Codespace recovery is slow — switching to the warm Orlynx runner…',
+          });
+          console.warn(`[workspace] failing over broken Codespace to warm runner session=${input.sessionId} detail=${detail}`);
+          return prepareWorkspaceOnce(input, replacementDepth, context);
+        } catch (runnerRecoveryError) {
+          console.warn(`[workspace] warm-runner failover setup failed session=${input.sessionId}: ${runnerRecoveryError instanceof Error ? runnerRecoveryError.message : 'unknown error'}`);
         }
       }
 

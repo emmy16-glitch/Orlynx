@@ -170,8 +170,11 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         messageId: run?.messageId || `assistant:${event.runId}`,
         ...(event.state === 'completed' || event.state === 'failed' || event.state === 'cancelled'
           ? { finishedAt: event.timestamp }
-          : { finishedAt: undefined }),
+          : { finishedAt: undefined, error: undefined, errorKind: undefined }),
       });
+      if ((event.state === 'queued' || event.state === 'running') && state.activities[`run-error:${event.runId}`]) {
+        delete state.activities[`run-error:${event.runId}`];
+      }
       if (event.state === 'running' && run?.messageId && state.messages[run.messageId]) {
         state.messages[run.messageId] = {
           ...state.messages[run.messageId],
