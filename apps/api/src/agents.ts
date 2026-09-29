@@ -29,6 +29,7 @@ export interface TaskOptions {
   messageId?: string;
   plane?: ExecutionPlane;
   workspaceId?: string;
+  queueAfterActive?: boolean;
 }
 
 const staleTaskGraceMs = 15_000;
@@ -37,7 +38,11 @@ const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS ||
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
   const queued = tasks.filter((item) => item.state === 'queued');
-  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+  const hasActive = tasks.some((item) => ['running', 'waiting_input', 'waiting_approval'].includes(item.state));
+  const eligible = hasActive
+    ? queued.filter((item) => item.harness?.queueAfterActive !== true)
+    : queued;
+  return eligible.find((item) => (item.plane || 'workspace') === 'direct') || eligible[0];
 }
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
@@ -869,9 +874,11 @@ export async function startRun(sessionId: string, project: string, userText: str
     if (plane === 'workspace' && !options.workspaceId) throw new Error('The development environment could not be initialized.');
     const durableTasks = await reconcileDurableTasks(sessionId);
     const queuedTotal = durableTasks.filter((item) => item.state === 'queued').length;
-    const queuedAhead = durableTasks.filter((item) =>
-      item.state === 'queued' && (item.plane || 'workspace') === plane
-    ).length;
+    const queuedAhead = options.queueAfterActive
+      ? durableTasks.filter((item) => item.state === 'queued').length
+      : durableTasks.filter((item) =>
+          item.state === 'queued' && (item.plane || 'workspace') === plane
+        ).length;
     if (queuedTotal >= maxQueuedTasks) {
       const error = new Error(`Orlynx already has ${queuedTotal} queued tasks for this conversation. Wait for one to start or cancel a queued task.`);
       (error as { errorKind?: string }).errorKind = 'queue_full';
@@ -906,13 +913,16 @@ export async function startRun(sessionId: string, project: string, userText: str
       mode,
       permission: prefs.permission,
       tempPermission: options.tempPermission,
-      harness: createHarnessCheckpoint({
-        prompt: userText,
-        mode,
-        permission,
-        plane,
-        now: admittedAt,
-      }),
+      harness: {
+        ...createHarnessCheckpoint({
+          prompt: userText,
+          mode,
+          permission,
+          plane,
+          now: admittedAt,
+        }),
+        ...(options.queueAfterActive ? { queueAfterActive: true } : {}),
+      },
       createdAt: admittedAt,
       updatedAt: admittedAt,
     };
