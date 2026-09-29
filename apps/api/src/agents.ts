@@ -224,10 +224,10 @@ async function executeDirectTask(
       }, run.id);
     }
 
-    const responseText = await adapter.streamDirectChat({
+    const streamDirectTurn = async (prompt: string, messageId?: string) => adapter.streamDirectChat!({
       runId: run.id,
-      messageId: task.messageId,
-      prompt: task.prompt,
+      messageId,
+      prompt,
       acceptedAt: task.createdAt,
       session,
       modelId,
@@ -244,6 +244,59 @@ async function executeDirectTask(
         else scheduleFlush();
       },
     });
+
+    let responseText = await streamDirectTurn(task.prompt, task.messageId);
+
+    // Direct Ask/Plan follows the same continuation contract as workspace
+    // Build. Messages received while the provider is answering are stored in
+    // the task inbox; before finalizing, feed them back to the connected model
+    // in the same Orlynx run instead of creating a parallel chat/run.
+    for (let continuationRound = 0; continuationRound < 4; continuationRound += 1) {
+      const freshTask = await repository.getTask(task.id);
+      if (!freshTask || freshTask.state === 'cancelled') return;
+      const pendingSteering = freshTask.harness?.inbox.filter((item) => !item.appliedAt) || [];
+      if (!pendingSteering.length) {
+        Object.assign(task, freshTask);
+        break;
+      }
+
+      const appliedAt = new Date().toISOString();
+      if (freshTask.harness) {
+        freshTask.harness = {
+          ...freshTask.harness,
+          inbox: freshTask.harness.inbox.map((item) => item.appliedAt ? item : { ...item, appliedAt }),
+        };
+      }
+      freshTask.state = 'running';
+      freshTask.updatedAt = appliedAt;
+      await repository.putTask(freshTask);
+      Object.assign(task, freshTask);
+
+      const updateText = [
+        'Continue the same Orlynx conversation. The user sent these updates while you were answering:',
+        ...pendingSteering.map((item) => `[${item.action.toUpperCase()}] ${item.text}`),
+        visible ? `Your response already streamed so far:\n${visible.slice(-8_000)}` : '',
+        'Respond to the newest user intent and correct or extend the existing answer as needed. Do not restart the conversation or repeat completed explanation.',
+      ].filter(Boolean).join('\n\n');
+
+      emit(session.id, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: task.harness?.steeringRevision || continuationRound + 1,
+        text: `Orlynx → Model: the user added context while this response was running. Continue the same conversation and incorporate the update before finalizing.`,
+      }, run.id);
+
+      if (visible && !visible.endsWith('\n\n')) {
+        visible += '\n\n';
+        pendingDelta += '\n\n';
+        flushDelta();
+      }
+      const history = await repository.listMessages(session.id);
+      const latestContinuation = [...history].reverse().find((message) => message.role === 'user' && message.runId === run.id);
+      await streamDirectTurn(updateText, latestContinuation?.id);
+      responseText = visible;
+    }
+    if (visible) responseText = visible;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
     flushDelta();
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
