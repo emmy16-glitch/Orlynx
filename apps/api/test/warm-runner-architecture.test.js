@@ -227,5 +227,15 @@ test('Render direct runner provides a single isolated workspace without nested D
   assert.match(source, /OPENCODE_BIN/);
   assert.match(source, /validPreviewToken/);
   assert.match(source, /server\.on\('upgrade'/);
+  assert.match(source, /function touchActivity\(force = false\)/);
+  assert.match(source, /function proxyPreview\(req, res, context\) \{\s*touchActivity\(\)/);
+  assert.match(source, /socket\.on\('data', \(\) => touchActivity\(\)\)/);
+  assert.match(source, /upstreamSocket\.on\('data', \(\) => touchActivity\(\)\)/);
   assert.doesNotMatch(source, /spawn\('docker'/);
+});
+
+test('bridge lease heartbeat covers long commands as well as agents and terminals', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /inFlight\.size > 0 \|\| activeAgents\.size > 0 \|\| terminals\.size > 0/);
+  assert.match(bridge, /if \(inFlight\.size > 0 \|\| activeAgents\.size > 0 \|\| terminals\.size > 0\) touchActivity\(\)/);
 });
