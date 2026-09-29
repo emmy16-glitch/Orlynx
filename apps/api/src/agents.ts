@@ -39,10 +39,8 @@ const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS ||
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
   const queued = tasks.filter((item) => item.state === 'queued');
   const hasActive = tasks.some((item) => ['running', 'waiting_input', 'waiting_approval'].includes(item.state));
-  const eligible = hasActive
-    ? queued.filter((item) => item.harness?.queueAfterActive !== true)
-    : queued;
-  return eligible.find((item) => (item.plane || 'workspace') === 'direct') || eligible[0];
+  if (hasActive) return undefined;
+  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
 }
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
