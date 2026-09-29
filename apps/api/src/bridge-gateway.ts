@@ -410,6 +410,24 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             });
           }
 
+          const verifiedPreviewPorts = Array.isArray(message.result?.previewPorts)
+            ? (message.result.previewPorts as Array<Record<string, unknown>>)
+              .map((item) => ({ port: Number(item.port), url: typeof item.url === 'string' ? item.url : undefined }))
+              .filter((item) => Number.isInteger(item.port) && item.port > 1024 && item.port < 65536)
+            : [];
+          for (const preview of verifiedPreviewPorts) {
+            await repository.appendEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'preview.ready',
+              timestamp: now,
+              payload: { port: preview.port, ...(preview.url ? { url: preview.url } : {}), verified: true },
+            });
+          }
+
           if (!task) {
             if (responseText) await repository.putMessage({
               id: `msg_${runId || uuid()}`,

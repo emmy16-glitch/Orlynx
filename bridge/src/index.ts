@@ -656,7 +656,8 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     const responseText = assistantText(assistant);
     const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }) as { body?: Array<Record<string, unknown>> };
     const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
-    return { engineSessionId, responseText, diff: diff.body || [], head: status.head };
+    const previewPorts = await ports();
+    return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
   } finally {
     streamAbort.abort();
     try { await iterator?.return?.(); } catch {}
@@ -714,11 +715,53 @@ function listFiles(relative: string) {
   const target = safePath(relative);
   return fs.readdirSync(target, { withFileTypes: true }).filter((entry) => entry.name !== '.git').map((entry) => ({ name: entry.name, path: path.relative(REPO_ROOT, path.join(target, entry.name)), dir: entry.isDirectory(), size: entry.isFile() ? fs.statSync(path.join(target, entry.name)).size : undefined }));
 }
-function ports() {
-  const result = spawnSync('ss', ['-ltnH'], { encoding: 'utf8', timeout: 5_000 }); const found = new Set<number>();
-  for (const line of String(result.stdout || '').split('\n')) { const match = line.match(/:(\d+)\s/); if (match) { const port = Number(match[1]); if (port > 1024 && port !== OPENCODE_PORT) found.add(port); } }
-  const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN; const codespace = process.env.CODESPACE_NAME;
-  return [...found].map((port) => ({ port, visibility: 'private', url: domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined }));
+const NON_PREVIEW_PORTS = new Set([22, 23, 25, 2222, 3306, 5432, 5601, 6379, 6380, 9229, 9333, 27017, 27018]);
+
+async function httpPreviewReady(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(1_500),
+      headers: { Accept: 'text/html,*/*;q=0.8', 'User-Agent': 'Orlynx-Preview-Probe/1.0' },
+    });
+    // Any valid HTTP response proves this is a web endpoint. 4xx/5xx still
+    // count as HTTP; the Preview surface can show the application's response.
+    return response.status >= 100 && response.status <= 599;
+  } catch {
+    return false;
+  }
+}
+
+async function ports() {
+  const result = spawnSync('ss', ['-ltnH'], { encoding: 'utf8', timeout: 5_000 });
+  const found = new Set<number>();
+  const servicePort = Number(process.env.PORT || 0);
+  for (const line of String(result.stdout || '').split('\n')) {
+    const match = line.match(/:(\d+)\s/);
+    if (!match) continue;
+    const port = Number(match[1]);
+    if (
+      port <= 1024
+      || port === OPENCODE_PORT
+      || port === servicePort
+      || NON_PREVIEW_PORTS.has(port)
+    ) continue;
+    found.add(port);
+  }
+
+  const ready = (await Promise.all([...found].map(async (port) => ({
+    port,
+    ready: await httpPreviewReady(port),
+  })))).filter((item) => item.ready);
+
+  const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
+  const codespace = process.env.CODESPACE_NAME;
+  return ready.map(({ port }) => ({
+    port,
+    visibility: 'private',
+    url: domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined,
+  }));
 }
 
 async function execute(command: Command, ws: WebSocket): Promise<Record<string, unknown>> {
@@ -785,7 +828,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch, head: git(['rev-parse', 'HEAD']).trim() };
     }
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
-    case 'ports.list': return { ports: ports() };
+    case 'ports.list': return { ports: await ports() };
     case 'opencode.request': return opencodeRequest(payload);
     case 'agent.run': return bridgeAgentAdapter(payload).run(payload, ws);
     case 'agent.cancel': return bridgeAgentAdapter(payload).cancel(payload);

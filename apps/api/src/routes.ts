@@ -1467,10 +1467,14 @@ router.get('/sessions/:id/ports', async (req, res) => {
   try {
     const result = await bridgeRequest<{ ports?: Array<{ port: number; visibility?: string; url?: string }> }>(workspace.id, 'ports.list');
     const provider = providerForWorkspace(workspace);
+    const blockedPreviewPorts = new Set([22, 23, 25, 2222, 3306, 5432, 5601, 6379, 6380, 9229, 9333, 27017, 27018]);
     const ports = (result.ports || []).map((item) => ({
       ...item,
       url: item.url || provider.previewUrl?.(workspace, Number(item.port)),
-    })).filter((item) => item.url);
+    })).filter((item) => {
+      const port = Number(item.port);
+      return item.url && Number.isInteger(port) && port > 1024 && port < 65536 && !blockedPreviewPorts.has(port);
+    });
     res.json({ ports });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Preview ports are unavailable.' }); }
 });
