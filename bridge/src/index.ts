@@ -16,6 +16,7 @@ const OPENCODE_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD || '';
 const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || '';
 const GITHUB_TOKEN = process.env.ORLYNX_GITHUB_TOKEN || '';
 const OPENCODE_BIN = process.env.OPENCODE_BIN || 'opencode';
+const GH_BIN = process.env.ORLYNX_GH_BIN || 'gh';
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const MAX_OUTPUT = 512_000;
 const COMMAND_JOURNAL = path.join(os.homedir(), '.orlynx', 'runtime', 'command-results.json');
@@ -784,7 +785,7 @@ let safeGhPortForwarding: boolean | undefined;
 function ghSupportsLoopbackPortForwarding(): boolean {
   if (safeGhPortForwarding !== undefined) return safeGhPortForwarding;
   try {
-    const result = spawnSync('gh', ['--version'], { encoding: 'utf8', timeout: 3_000 });
+    const result = spawnSync(GH_BIN, ['--version'], { encoding: 'utf8', timeout: 3_000 });
     const match = String(result.stdout || '').match(/gh version\s+(\d+)\.(\d+)\.(\d+)/i);
     const major = Number(match?.[1] || 0);
     const minor = Number(match?.[2] || 0);
@@ -808,7 +809,7 @@ async function codespacePortMetadata(force = false): Promise<Map<number, Codespa
   if (codespacePortsPending) return codespacePortsPending;
 
   const pending = new Promise<Map<number, CodespacePortMetadata>>((resolve) => {
-    const child = spawn('gh', [
+    const child = spawn(GH_BIN, [
       'codespace', 'ports',
       '-c', codespace,
       '--json', 'sourcePort,browseUrl,visibility',
@@ -869,7 +870,7 @@ async function ensureCodespaceForwardedPort(port: number): Promise<CodespacePort
 
   if (!codespaceForwarders.has(port)) {
     const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
-    const child = spawn('gh', ['codespace', 'ports', 'forward', `${port}:0`, '-c', codespace], {
+    const child = spawn(GH_BIN, ['codespace', 'ports', 'forward', `${port}:0`, '-c', codespace], {
       cwd: REPO_ROOT,
       env: {
         ...cleanEnvironment(),
