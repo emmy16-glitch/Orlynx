@@ -14,7 +14,7 @@ import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-p
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
-import { emitPersisted } from './events.js';
+import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import type { EventType } from '@orlynx/shared';
 
@@ -540,7 +540,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          let recent = (await repository.listRecentEvents(claims.sessionId, 1000)).filter((event) => event.runId === runId);
+          let recent = (await repository.listRecentEvents(claims.sessionId, 1000))
+            .filter((event) => event.runId === runId)
+            .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
           await repository.putTask(task);
 
