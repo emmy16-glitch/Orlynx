@@ -451,7 +451,7 @@ test('production keeps the main API lightweight and prewarms the external OpenCo
   assert.match(buildScript, /^npm ci --include=dev$/m);
   assert.doesNotMatch(buildScript, /Installing local OpenCode sidecar|apps\/api\/\.opencode-runtime/);
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
-  assert.match(providerSource, /ORLYNX_OPENCODE_RUNTIME_USERNAME \\|\\| 'opencode'/);
+  assert.match(providerSource, /ORLYNX_OPENCODE_RUNTIME_USERNAME \|\| 'opencode'/);
   assert.match(providerSource, /export function warmOpenCodeRuntime/);
   assert.match(routesSource, /router\.get\('\/ai\/catalog'[\s\S]*void warmOpenCodeRuntime\(\)/);
   assert.match(routesSource, /router\.get\('\/ai\/overview'[\s\S]*void warmOpenCodeRuntime\(\)/);
