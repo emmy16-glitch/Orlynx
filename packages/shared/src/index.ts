@@ -89,7 +89,7 @@ export interface AgentRun {
   activity?: string;
   startedAt: string;
   finishedAt?: string;
-  errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'unknown';
+  errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'verification' | 'unknown';
 }
 
 export type WorkspaceProviderId = 'github-codespaces' | 'orlynx-runner';
