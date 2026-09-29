@@ -301,6 +301,31 @@ async function executeDirectTask(
     flushDelta();
     if (task.state === 'cancelled' || run.state === 'cancelled') return;
 
+    // Close the race where a follow-up lands just after the last continuation
+    // round. Keep the same task/run identity and let the durable promoter resume
+    // it again; never finalize while unapplied human input is still in the inbox.
+    const latestBeforeFinalize = await repository.getTask(task.id);
+    const unappliedBeforeFinalize = latestBeforeFinalize?.harness?.inbox.some((item) => !item.appliedAt) || false;
+    if (latestBeforeFinalize && unappliedBeforeFinalize) {
+      const queuedAt = new Date().toISOString();
+      latestBeforeFinalize.state = 'queued';
+      latestBeforeFinalize.updatedAt = queuedAt;
+      await repository.putTask(latestBeforeFinalize);
+      Object.assign(task, latestBeforeFinalize);
+      run.state = 'queued';
+      run.activity = 'Continuing with your latest message';
+      run.finishedAt = undefined;
+      run.errorKind = undefined;
+      store.save();
+      emit(session.id, 'run.state', {
+        taskId: task.id,
+        state: 'queued',
+        continued: true,
+        message: 'A newer follow-up arrived. Continuing the same conversation before finalizing.',
+      }, run.id);
+      return;
+    }
+
     const now = new Date().toISOString();
     task.harness ||= createHarnessCheckpoint({
       prompt: task.prompt,
