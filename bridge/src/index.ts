@@ -326,6 +326,7 @@ function assistantText(message: { parts?: Array<Record<string, any>> } | undefin
 }
 async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
+  const reflectionId = Number(payload.reflectionId || 0);
   let engineSessionId = String(payload.engineSessionId || '');
   if (typeof payload.openCodePublicAccess === 'boolean') {
     const restarted = await ensureOpenCodeAuthMode(payload.openCodePublicAccess);
@@ -399,6 +400,8 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const toolParts = new Map<string, Record<string, any>>();
   const toolStates = new Map<string, string>();
   const toolOutputs = new Map<string, string>();
+  const toolFailureTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let reflectionDiagnosticEmitted = false;
 
   const emitRetry = (status: Record<string, any>) => {
     const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
@@ -429,9 +432,27 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
   const emitTextDelta = (partID: string, delta: string) => {
     if (!delta) return;
     const before = textParts.get(partID) || '';
+    const combined = before + delta;
     bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
-    textParts.set(partID, before + delta);
+    textParts.set(partID, combined);
     visible += delta;
+
+    if (reflectionId > 0 && !reflectionDiagnosticEmitted) {
+      const lineEnd = combined.indexOf('\n');
+      const firstLine = (lineEnd >= 0 ? combined.slice(0, lineEnd) : combined).trim();
+      if (/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine) && (lineEnd >= 0 || firstLine.length >= 80)) {
+        reflectionDiagnosticEmitted = true;
+        bridgeEvent(ws, 'activity.progress', {
+          sourceType: 'agent.dialogue.model',
+          reflectionId,
+          text: firstLine.slice(0, 420),
+        }, taskId, runId);
+      } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
+        // Do not hold or reinterpret normal assistant text when the model does
+        // not follow the diagnostic-line convention.
+        reflectionDiagnosticEmitted = true;
+      }
+    }
   };
 
   const flushTextPart = (partID: string) => {
@@ -479,11 +500,15 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
     const code = typeof codeCandidate === 'string' ? codeCandidate : '';
     const semanticType = toolSemanticType(toolName, command, filePath);
+    const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata as Record<string, any> : {};
+    const exitCodeCandidate = metadata.exitCode ?? metadata.exit_code ?? metadata.code;
+    const exitCode = Number.isFinite(Number(exitCodeCandidate)) ? Number(exitCodeCandidate) : undefined;
     const common = {
       tool: toolName,
       callId: id,
       semanticType,
       title,
+      ...(exitCode !== undefined ? { exitCode } : {}),
       ...(command ? { command: command.slice(0, 4_000) } : {}),
       ...(filePath ? { path: filePath.slice(0, 1_200) } : {}),
       ...(code ? { code: code.slice(0, 24_000) } : {}),
@@ -518,17 +543,32 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     }
 
     if (status === 'completed' && previousStatus !== 'completed') {
+      const pendingFailure = toolFailureTimers.get(id);
+      if (pendingFailure) clearTimeout(pendingFailure);
+      toolFailureTimers.delete(id);
       bridgeEvent(ws, 'tool.completed', {
         ...common,
         ...(typeof state.time?.end === 'number' ? { endedAt: state.time.end } : {}),
       }, taskId, runId);
       bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'success' }, taskId, runId);
     } else if (status === 'error' && previousStatus !== 'error') {
-      bridgeEvent(ws, 'tool.failed', {
-        ...common,
-        error: String(state.error || 'Tool failed.').slice(0, 8_000),
-      }, taskId, runId);
-      bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
+      const priorTimer = toolFailureTimers.get(id);
+      if (priorTimer) clearTimeout(priorTimer);
+      const timer = setTimeout(() => {
+        toolFailureTimers.delete(id);
+        if (toolStates.get(id) !== 'error') return;
+        // Some OpenCode bash/tool events briefly report error before the final
+        // completed part arrives. Delay the visible failure slightly so an
+        // error→completed transition with exitCode 0 does not flash a false
+        // red health-check row.
+        bridgeEvent(ws, 'tool.failed', {
+          ...common,
+          error: String(state.error || 'Tool failed.').slice(0, 8_000),
+        }, taskId, runId);
+        bridgeEvent(ws, 'step.finished', { stepId: id, tool: toolName, semanticType, state: 'failed' }, taskId, runId);
+      }, 250);
+      timer.unref?.();
+      toolFailureTimers.set(id, timer);
     }
   };
 
@@ -660,6 +700,8 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
   } finally {
     streamAbort.abort();
+    for (const timer of toolFailureTimers.values()) clearTimeout(timer);
+    toolFailureTimers.clear();
     try { await iterator?.return?.(); } catch {}
     activeAgents.delete(taskId);
   }
@@ -734,34 +776,131 @@ async function httpPreviewReady(port: number): Promise<boolean> {
 }
 
 type CodespacePortMetadata = { browseUrl?: string; visibility?: string };
+let codespacePortsCache: { key: string; expiresAt: number; value: Map<number, CodespacePortMetadata> } | undefined;
+let codespacePortsPending: Promise<Map<number, CodespacePortMetadata>> | undefined;
+const codespaceForwarders = new Map<number, ReturnType<typeof spawn>>();
+let safeGhPortForwarding: boolean | undefined;
 
-function codespacePortMetadata(): Map<number, CodespacePortMetadata> {
+function ghSupportsLoopbackPortForwarding(): boolean {
+  if (safeGhPortForwarding !== undefined) return safeGhPortForwarding;
+  try {
+    const result = spawnSync('gh', ['--version'], { encoding: 'utf8', timeout: 3_000 });
+    const match = String(result.stdout || '').match(/gh version\s+(\d+)\.(\d+)\.(\d+)/i);
+    const major = Number(match?.[1] || 0);
+    const minor = Number(match?.[2] || 0);
+    // gh v2.98.0 fixed codespace port-forward listeners to bind loopback by
+    // default. Older versions could expose the helper listener on all
+    // interfaces, so Orlynx refuses to use them for automatic forwarding.
+    safeGhPortForwarding = major > 2 || (major === 2 && minor >= 98);
+  } catch {
+    safeGhPortForwarding = false;
+  }
+  return safeGhPortForwarding;
+}
+
+async function codespacePortMetadata(force = false): Promise<Map<number, CodespacePortMetadata>> {
   const codespace = String(process.env.CODESPACE_NAME || '');
   if (!codespace) return new Map();
   const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
-  try {
-    const result = spawnSync('gh', [
+  const cacheKey = `${codespace}:${authToken ? 'auth' : 'anon'}`;
+  const now = Date.now();
+  if (!force && codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
+  if (codespacePortsPending) return codespacePortsPending;
+
+  const pending = new Promise<Map<number, CodespacePortMetadata>>((resolve) => {
+    const child = spawn('gh', [
       'codespace', 'ports',
       '-c', codespace,
       '--json', 'sourcePort,browseUrl,visibility',
     ], {
-      encoding: 'utf8',
-      timeout: 5_000,
+      cwd: REPO_ROOT,
       env: {
         ...cleanEnvironment(),
         ...(authToken ? { GH_TOKEN: authToken } : {}),
       },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (result.status !== 0) return new Map();
-    const rows = JSON.parse(String(result.stdout || '[]')) as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
-    return new Map(rows.flatMap((row) => {
-      const port = Number(row.sourcePort);
-      return Number.isInteger(port) && port > 0
-        ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
-        : [];
-    }));
-  } catch {
-    return new Map();
+    let stdout = '';
+    let settled = false;
+    const finish = (value: Map<number, CodespacePortMetadata>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+      finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
+    }, 3_000);
+    timer.unref?.();
+
+    child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-64_000); });
+    child.once('error', () => finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>()));
+    child.once('exit', (code) => {
+      if (code !== 0) return finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
+      try {
+        const rows = JSON.parse(stdout || '[]') as Array<{ sourcePort?: number; browseUrl?: string; visibility?: string }>;
+        const value = new Map<number, CodespacePortMetadata>(rows.flatMap((row) => {
+          const port = Number(row.sourcePort);
+          return Number.isInteger(port) && port > 0
+            ? [[port, { browseUrl: String(row.browseUrl || '') || undefined, visibility: String(row.visibility || '') || undefined }] as const]
+            : [];
+        }));
+        codespacePortsCache = { key: cacheKey, expiresAt: Date.now() + 15_000, value };
+        finish(value);
+      } catch {
+        finish(codespacePortsCache?.key === cacheKey ? codespacePortsCache.value : new Map<number, CodespacePortMetadata>());
+      }
+    });
+  }).finally(() => {
+    if (codespacePortsPending === pending) codespacePortsPending = undefined;
+  });
+
+  codespacePortsPending = pending;
+  return pending;
+}
+
+async function ensureCodespaceForwardedPort(port: number): Promise<CodespacePortMetadata | undefined> {
+  const codespace = String(process.env.CODESPACE_NAME || '');
+  if (!codespace || !ghSupportsLoopbackPortForwarding()) return undefined;
+
+  const existing = (await codespacePortMetadata()).get(port);
+  if (existing?.browseUrl) return existing;
+
+  if (!codespaceForwarders.has(port)) {
+    const authToken = String(process.env.GITHUB_TOKEN || GITHUB_TOKEN || '');
+    const child = spawn('gh', ['codespace', 'ports', 'forward', `${port}:0`, '-c', codespace], {
+      cwd: REPO_ROOT,
+      env: {
+        ...cleanEnvironment(),
+        ...(authToken ? { GH_TOKEN: authToken } : {}),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    codespaceForwarders.set(port, child);
+    child.once('exit', () => {
+      if (codespaceForwarders.get(port) === child) codespaceForwarders.delete(port);
+    });
+    child.once('error', () => {
+      if (codespaceForwarders.get(port) === child) codespaceForwarders.delete(port);
+    });
+  }
+
+  // The forwarder creates the GitHub Dev Tunnel port before it begins relaying
+  // traffic. Give GitHub a short non-blocking window to publish the browse URL.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const metadata = (await codespacePortMetadata(true)).get(port);
+    if (metadata?.browseUrl) return metadata;
+  }
+  return undefined;
+}
+
+function stopUnusedCodespaceForwarders(listening: Set<number>) {
+  for (const [port, child] of codespaceForwarders) {
+    if (listening.has(port)) continue;
+    try { child.kill('SIGTERM'); } catch {}
+    codespaceForwarders.delete(port);
   }
 }
 
@@ -773,11 +912,13 @@ async function ports() {
     const match = line.match(/:(\d+)\s/);
     if (!match) continue;
     const port = Number(match[1]);
+    const loopbackOnly = /(?:^|\s)(?:127(?:\.\d+){3}|\[?::1\]?):\d+\s/.test(line);
     if (
       port <= 1024
       || port === OPENCODE_PORT
       || port === servicePort
       || NON_PREVIEW_PORTS.has(port)
+      || loopbackOnly
     ) continue;
     found.add(port);
   }
@@ -787,17 +928,21 @@ async function ports() {
     ready: await httpPreviewReady(port),
   })))).filter((item) => item.ready);
 
-  const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
-  const codespace = process.env.CODESPACE_NAME;
-  const forwarded = codespacePortMetadata();
-  return ready.map(({ port }) => {
-    const metadata = forwarded.get(port);
+  stopUnusedCodespaceForwarders(found);
+  const codespace = String(process.env.CODESPACE_NAME || '');
+  const confirmed = await codespacePortMetadata();
+  const values = await Promise.all(ready.map(async ({ port }) => {
+    const metadata = confirmed.get(port) || (codespace ? await ensureCodespaceForwardedPort(port) : undefined);
     return {
       port,
-      visibility: metadata?.visibility || (codespace ? 'private' : 'private'),
-      url: metadata?.browseUrl || (domain && codespace ? `https://${codespace}-${port}.${domain}` : undefined),
+      visibility: metadata?.visibility || 'private',
+      // For Codespaces, only a URL returned by GitHub's forwarded-port
+      // inventory is trustworthy. A locally listening port is not necessarily
+      // reachable at app.github.dev yet.
+      url: metadata?.browseUrl,
     };
-  });
+  }));
+  return values;
 }
 
 async function execute(command: Command, ws: WebSocket): Promise<Record<string, unknown>> {

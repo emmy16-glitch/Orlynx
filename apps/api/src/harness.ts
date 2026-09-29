@@ -514,6 +514,9 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
     `Active tool families: ${checkpoint.toolFamilies.length ? checkpoint.toolFamilies.join(', ') : 'none'}.`,
     budget.instruction || '',
     steeringText,
+    checkpoint.verification.required.includes('preview')
+      ? 'For a cloud-workspace development server, bind the app to 0.0.0.0 (for example Vite --host 0.0.0.0) unless the framework has a verified equivalent. Do not treat a loopback-only 127.0.0.1 listener as remotely previewable. Let Orlynx verify provider forwarding separately.'
+      : '',
     'When an observation is unexpected or conflicts with another signal, do not guess. Inspect the evidence and let the connected reasoning model form the next hypothesis.',
     'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools can determine. Escalate only for genuinely human-only input or permission.',
     'Do not claim completion until Orlynx verification criteria are satisfied. Progress text is not a final answer.',

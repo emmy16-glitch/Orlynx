@@ -466,7 +466,7 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
   const { engine, models, providers } = snapshot || await listProviderConnections(project, userId, sessionId);
   const running = sessionId
     ? durableStorageConfigured()
-      ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => r.state === 'running' || r.state === 'queued')
+      ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(r.state))
       : (store.db.runs[sessionId] || []).some((r) => r.state === 'running')
     : false;
   const available = models.filter((m)=>m.status === 'available');

@@ -92,6 +92,7 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
   assert.doesNotMatch(source, /setTimeout\(resolve, 1_500\)/);
   assert.match(source, /reusableForProject/);
   assert.match(source, /sessionHasActiveWork/);
+  assert.match(source, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]\.includes\(task\.state\)/);
 });
 
 
@@ -150,4 +151,14 @@ test('queued Build work durably schedules recoverable workspace repair', () => {
   assert.match(source, /readyWorkspace\.provider === 'orlynx-runner'/);
   assert.match(source, /scheduleWorkspacePreparation\(\{/);
   assert.match(source, /reason: 'queue_repair'/);
+});
+
+
+test('waiting-for-user replies stay attached to the same task across workspace reconnect', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(routes, /waitingInputTask/);
+  assert.match(routes, /applySteering\(waitingInputTask, String\(text\), 'append'/);
+  assert.match(routes, /reason: 'waiting_input_resume'/);
+  assert.match(routes, /waitingForSameTask: true/);
+  assert.match(routes, /task\.state === 'waiting_input'/);
 });

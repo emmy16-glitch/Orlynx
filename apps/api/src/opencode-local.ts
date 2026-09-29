@@ -550,9 +550,9 @@ export async function streamWithOfficialOpenCode(input: {
   const resolved = resolveModel(openCodeCatalog(), input.modelId);
 
   // OpenCode's free tier must be invoked from an actual OpenCode process.
-  // Plan/Ask uses the dedicated OpenCode runtime service; catalog/overview
-  // requests prewarm it so normal chat does not carry OpenCode in the main API
-  // process or require a Codespace.
+  // Plan/Ask uses the dedicated OpenCode runtime service. Status/catalog
+  // reads never wake that service; the real turn owns readiness and cold-start
+  // recovery so workspace health cannot be confused with direct-runtime health.
   if (resolved.free) {
     const result = await streamFreeModelThroughOpenCodeRuntime({
       runtimeKey: input.runtimeKey,

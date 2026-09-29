@@ -98,11 +98,37 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /async function httpPreviewReady\(port: number\)/);
     assert.match(bridge, /await httpPreviewReady\(port\)/);
     assert.match(bridge, /port === servicePort/);
+    assert.match(bridge, /loopbackOnly/);
+    assert.match(bridge, /\|\| loopbackOnly/);
     assert.match(bridge, /gh', \[\s*'codespace', 'ports'/);
     assert.match(bridge, /--json', 'sourcePort,browseUrl,visibility'/);
     assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
     assert.match(gateway, /type: 'preview\.ready'/);
     assert.match(gateway, /verified: true/);
+  });
+
+  it('Codespaces Preview uses only confirmed GitHub forwarding metadata', () => {
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+    const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');
+    const gateway = fs.readFileSync(path.join(root, 'apps/api/src/bridge-gateway.ts'), 'utf8');
+
+    assert.match(bridge, /ghSupportsLoopbackPortForwarding/);
+    assert.match(bridge, /major === 2 && minor >= 98/);
+    assert.match(bridge, /'codespace', 'ports', 'forward'/);
+    assert.match(bridge, /\`\$\{port\}:0\`/);
+    assert.doesNotMatch(bridge, /--all-interfaces/);
+    assert.match(bridge, /url: metadata\?\.browseUrl/);
+    assert.match(bridge, /loopbackOnly/);
+    assert.match(bridge, /codespacePortsPending\) return codespacePortsPending/);
+
+    assert.doesNotMatch(provider, /codespacesPreviewUrl/);
+    assert.match(provider, /never fabricate one from the Codespace name/);
+    assert.match(provider, /return undefined/);
+
+    assert.match(gateway, /type: 'preview\.state'/);
+    assert.match(gateway, /localReady: true/);
+    assert.match(gateway, /waiting for the workspace provider to expose a browser preview/);
+    assert.match(gateway, /if \(!url\)/);
   });
 
   it('prefers likely frontends but never invents a URL', () => {

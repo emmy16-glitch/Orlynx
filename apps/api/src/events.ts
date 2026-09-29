@@ -23,6 +23,56 @@ function boundedPayload(payload: Record<string, unknown>): Record<string, unknow
   };
 }
 
+export async function emitPersisted(
+  sessionId: string,
+  type: EventType,
+  payload: Record<string, unknown> = {},
+  runId?: string,
+  context: { taskId?: string; workspaceId?: string; eventId?: string; timestamp?: string } = {},
+): Promise<OrlynxEvent> {
+  payload = boundedPayload(payload);
+  if (durableStorageConfigured()) {
+    const pending: Omit<OrlynxEvent, 'sequence'> = {
+      eventId: context.eventId || `evt_${uuid()}`,
+      sessionId,
+      ...(context.taskId ? { taskId: context.taskId } : {}),
+      ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+      ...(runId ? { runId } : {}),
+      type,
+      timestamp: context.timestamp || new Date().toISOString(),
+      payload,
+    };
+    let persisted: OrlynxEvent | undefined;
+    const queued = (durableQueues.get(sessionId) || Promise.resolve()).then(async () => {
+      persisted = await controlPlaneRepository().appendEvent(pending);
+      subscribers.get(sessionId)?.forEach((res) => res.write(`id: ${persisted!.sequence}\ndata: ${JSON.stringify(persisted)}\n\n`));
+      eventSubscribers.get(sessionId)?.forEach((listener) => listener(persisted!));
+    });
+    durableQueues.set(sessionId, queued.catch(() => {}));
+    await queued;
+    return persisted!;
+  }
+
+  const sequence = store.nextSeq(sessionId);
+  const evt: OrlynxEvent = {
+    eventId: context.eventId || `evt_${uuid().slice(0, 8)}`,
+    sessionId,
+    ...(context.taskId ? { taskId: context.taskId } : {}),
+    ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+    ...(runId ? { runId } : {}),
+    sequence,
+    type,
+    timestamp: context.timestamp || new Date().toISOString(),
+    payload,
+  };
+  (store.db.events[sessionId] ||= []).push(evt);
+  if (store.db.events[sessionId].length > 2000) store.db.events[sessionId] = store.db.events[sessionId].slice(-2000);
+  store.save();
+  subscribers.get(sessionId)?.forEach((res) => res.write(`id: ${evt.sequence}\ndata: ${JSON.stringify(evt)}\n\n`));
+  eventSubscribers.get(sessionId)?.forEach((listener) => listener(evt));
+  return evt;
+}
+
 export function emit(sessionId: string, type: EventType, payload: Record<string, unknown> = {}, runId?: string): OrlynxEvent {
   payload = boundedPayload(payload);
   if (durableStorageConfigured()) {

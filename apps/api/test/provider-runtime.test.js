@@ -440,7 +440,7 @@ test('Hello streams without repository/workspace requests and reload does not ca
 
 
 
-test('production keeps the main API lightweight and prewarms the external OpenCode runtime', () => {
+test('production keeps the main API lightweight and status reads do not wake the external OpenCode runtime', () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const buildScript = fs.readFileSync(new URL('../../../scripts/render-build.sh', import.meta.url), 'utf8');
   const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
@@ -453,8 +453,9 @@ test('production keeps the main API lightweight and prewarms the external OpenCo
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
   assert.match(providerSource, /ORLYNX_OPENCODE_RUNTIME_USERNAME \|\| 'opencode'/);
   assert.match(providerSource, /export function warmOpenCodeRuntime/);
-  assert.match(routesSource, /router\.get\('\/ai\/catalog'[\s\S]*void warmOpenCodeRuntime\(\)/);
-  assert.match(routesSource, /router\.get\('\/ai\/overview'[\s\S]*void warmOpenCodeRuntime\(\)/);
+  assert.doesNotMatch(routesSource, /router\.get\('\/ai\/catalog'[\s\S]{0,120}warmOpenCodeRuntime\(\)/);
+  assert.doesNotMatch(routesSource, /router\.get\('\/ai\/overview'[\s\S]{0,120}warmOpenCodeRuntime\(\)/);
+  assert.match(providerSource, /await waitForRuntimeReady\(input\.signal/);
 });
 
 test('runtime prewarm hits health once and is throttled', async (t) => {

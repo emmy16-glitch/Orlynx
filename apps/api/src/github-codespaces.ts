@@ -1,6 +1,5 @@
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider } from './workspace-provider.js';
-import { codespacesPreviewUrl } from './codespaces-preview.js';
 import { bootstrapWorkspace } from './runtime-worker.js';
 import { githubUserAccessToken } from './github.js';
 import { controlPlaneRepository } from './storage.js';
@@ -91,7 +90,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   private async sessionHasActiveWork(sessionId: string): Promise<boolean> {
     try {
       const tasks = await controlPlaneRepository().listTasks(sessionId);
-      return tasks.some((task) => task.state === 'running' || task.state === 'queued');
+      return tasks.some((task) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(task.state));
     } catch {
       return true;
     }
@@ -335,7 +334,10 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     await bootstrapWorkspace(workspace, values);
   }
 
-  previewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
-    return codespacesPreviewUrl(workspace, port);
+  previewUrl(_workspace: WorkspaceRecord, _port: number): string | undefined {
+    // A Codespaces browse URL is usable only after GitHub has actually created
+    // the forwarded Dev Tunnel port. The bridge returns that confirmed URL
+    // from `gh codespace ports`; never fabricate one from the Codespace name.
+    return undefined;
   }
 }

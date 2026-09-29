@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
-import { durableHistory, emit, recentHistory, subscribe, subscribeEvents } from './events.js';
+import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscribeEvents } from './events.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -21,7 +21,6 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
-import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, steeringActionFor, verifyHarness } from './harness.js';
@@ -442,8 +441,57 @@ router.post('/sessions/:id/messages', async (req, res) => {
         const resumedRun = await resumeWaitingInputTask(s.id, waitingInputTask.id, String(text));
         return res.json({ message: msg, run: resumedRun, plane: 'workspace', resumed: true, targetRunId: waitingInputTask.runId });
       } catch (error) {
-        console.warn(`[harness] waiting-input resume failed session=${s.id} task=${waitingInputTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
-        // Fall through to normal admission so the user's message is not lost.
+        const detail = error instanceof Error ? error.message : 'The waiting task could not resume yet.';
+        console.warn(`[harness] waiting-input resume failed session=${s.id} task=${waitingInputTask.id}: ${detail}`);
+        const now = new Date().toISOString();
+        const steered = applySteering(waitingInputTask, String(text), 'append', now);
+        const waitingWorkspace = await repository.getWorkspace(waitingInputTask.workspaceId).catch(() => null);
+
+        if (waitingWorkspace && (waitingWorkspace.state !== 'ready' || waitingWorkspace.bridgeState !== 'ready')) {
+          steered.state = 'queued';
+          if (steered.harness) {
+            steered.harness = advanceHarnessPhase(steered.harness, 'routing', {
+              mode: steered.mode || 'build',
+              permission: steered.tempPermission || steered.permission || 'full',
+              now,
+            });
+          }
+          steered.updatedAt = now;
+          await repository.putTask(steered);
+          emit(s.id, 'run.state', {
+            taskId: steered.id,
+            state: 'queued',
+            message: 'Your reply was saved. Reconnecting the development environment before continuing the same task.',
+          }, steered.runId);
+          void scheduleWorkspacePreparation({
+            sessionId: waitingWorkspace.sessionId,
+            userId: waitingWorkspace.userId,
+            projectId: waitingWorkspace.projectId,
+            repositoryId: waitingWorkspace.repositoryId,
+            branch: waitingWorkspace.branch,
+          }, { allowFallback: true, reason: 'waiting_input_resume' }).catch((repairError) => {
+            console.warn(`[harness] waiting-input workspace repair failed session=${s.id}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+          });
+          return res.status(202).json({
+            message: msg,
+            run: { id: steered.runId, sessionId: s.id, plane: 'workspace', state: 'queued' },
+            plane: 'workspace',
+            resumed: false,
+            queued: true,
+            targetRunId: steered.runId,
+          });
+        }
+
+        // Keep the reply attached to the existing waiting task even when the
+        // provider/model is temporarily unavailable. Never create a second
+        // Build task from the same human answer.
+        await repository.putTask(steered);
+        return res.status(503).json({
+          message: msg,
+          error: detail,
+          waitingForSameTask: true,
+          targetRunId: steered.runId,
+        });
       }
     }
 
@@ -1154,26 +1202,19 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
 
       const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
       await repository.putApproval(approvedRecord);
-      await repository.appendEvent({
-        eventId: `evt_${uuid()}`,
-        sessionId: session.id,
-        taskId: task.id,
-        runId: task.runId,
-        workspaceId: workspace.id,
-        type: 'approval.resolved',
-        timestamp: now,
-        payload: { approvalId: approval.id, action: approval.action, decision: 'allow_once', detail: 'Approved once.' },
-      });
-      await repository.appendEvent({
-        eventId: `evt_${uuid()}`,
-        sessionId: session.id,
-        taskId: task.id,
-        runId: task.runId,
-        workspaceId: workspace.id,
-        type: 'receipt.created',
-        timestamp: now,
-        payload: { command: 'git push', publish: true, pushedBranch: branch, commitSha: publishedHead, alreadyPublished },
-      });
+      await emitPersisted(session.id, 'approval.resolved', {
+        approvalId: approval.id,
+        action: approval.action,
+        decision: 'allow_once',
+        detail: 'Approved once.',
+      }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
+      await emitPersisted(session.id, 'receipt.created', {
+        command: 'git push',
+        publish: true,
+        pushedBranch: branch,
+        commitSha: publishedHead,
+        alreadyPublished,
+      }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
 
       const permission = task.tempPermission || task.permission || 'ask-first';
       task.harness ||= createHarnessCheckpoint({
@@ -1300,7 +1341,7 @@ router.post('/agent-runs/:runId/cancel', async (req, res) => {
         catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : 'The running task could not be stopped.' }); }
       }
     }
-    if (task.state === 'running' || task.state === 'queued' || task.state === 'waiting_approval') {
+    if (task.state === 'running' || task.state === 'queued' || task.state === 'waiting_approval' || task.state === 'waiting_input') {
       task.state = 'cancelled';
       task.updatedAt = new Date().toISOString();
       if (task.harness) {
@@ -1360,7 +1401,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
         ? (task.plane === 'direct' ? 'Streaming response' : 'Working')
         : task.state === 'queued'
           ? (task.plane === 'direct' ? 'Waiting to respond' : 'Waiting for development environment')
-          : task.state === 'completed' ? 'Ready' : task.state,
+          : task.state === 'waiting_input' ? 'Waiting for you' : task.state === 'waiting_approval' ? 'Waiting for approval' : task.state === 'completed' ? 'Ready' : task.state,
       startedAt: task.createdAt,
       finishedAt: ['completed','failed','cancelled'].includes(task.state) ? task.updatedAt : undefined,
     })));
@@ -1608,7 +1649,6 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
 // unified AI layer (engine underneath, one experience on top)
 router.get('/ai/catalog', async (_req, res) => {
-  void warmOpenCodeRuntime();
   try {
     const { models } = await listProviderConnections('', undefined, undefined);
     const catalogModels = models.filter((model) => model.providerId === 'opencode');
@@ -1624,7 +1664,6 @@ router.get('/ai/catalog', async (_req, res) => {
 });
 
 router.get('/ai/overview', async (req, res) => {
-  void warmOpenCodeRuntime();
   const sessionId = String(req.query.sessionId || '');
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
