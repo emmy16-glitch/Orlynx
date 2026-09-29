@@ -115,6 +115,14 @@ test('direct chat bypasses a blocked workspace task in the queue', () => {
   assert.equal(chooseNextQueuedTask([first, second])?.id, 'chat-task');
 });
 
+test('queued work never starts concurrently with unresolved active work', () => {
+  const queued = { id: 'queued', state: 'queued', plane: 'direct', prompt: 'next', createdAt: '', updatedAt: '' };
+  for (const state of ['running', 'waiting_input', 'waiting_approval']) {
+    const active = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+    assert.equal(chooseNextQueuedTask([active, queued]), undefined, state);
+  }
+});
+
 
 test('Build work waits while a workspace is failed or still starting', () => {
   assert.equal(workspaceCanAcceptTask({ state: 'failed', bridgeState: 'disconnected' }), false);
