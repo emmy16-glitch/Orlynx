@@ -115,6 +115,36 @@ if test "$gh_safe" -ne 1; then
 fi
 repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 test -n "$repo_root"
+
+# Browser/E2E preparation belongs to workspace bootstrap, not the first test.
+# Only Playwright repositories pay this cost, and each Playwright version is
+# prepared once per persistent Codespace.
+if test "${ORLYNX_PREWARM_BROWSER_RUNTIME:-1}" != "0" && grep -Eq '"(playwright|@playwright/test|@axe-core/playwright)"' "$repo_root/package.json" "$repo_root/package-lock.json" 2>/dev/null; then
+  playwright_version="$(cd "$repo_root" && node -e 'try { const p=require("./package-lock.json"); process.stdout.write(p.packages?.["node_modules/playwright"]?.version || p.packages?.["node_modules/playwright-core"]?.version || "") } catch {}' 2>/dev/null || true)"
+  test -n "$playwright_version" || playwright_version="1.63.0"
+  playwright_marker="$runtime/playwright-$playwright_version.ready"
+  if ! test -f "$playwright_marker"; then
+    echo "Preparing Playwright Chromium runtime $playwright_version…" >&2
+    if test -x "$repo_root/node_modules/.bin/playwright"; then
+      playwright_cli="$repo_root/node_modules/.bin/playwright"
+    else
+      playwright_cli="npx --yes playwright@$playwright_version"
+    fi
+
+    # install-deps is idempotent. Codespaces provide sudo; skip the apt work
+    # when the critical Chromium GTK/ATK dependency is already present.
+    if ! (ldconfig -p 2>/dev/null || true) | grep -q 'libatk-1.0.so.0'; then
+      (cd "$repo_root" && $playwright_cli install-deps chromium)
+    fi
+    (cd "$repo_root" && $playwright_cli install chromium)
+
+    # Prove the exact browser/runtime combination can start before exposing the
+    # workspace as ready. This catches missing shared libraries such as libatk.
+    (cd "$repo_root" && node -e 'const { chromium }=require("playwright"); (async()=>{const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e);process.exit(1)})')
+    touch "$playwright_marker"
+  fi
+fi
+
 # Reuse the password of an OpenCode server left running in this Codespace.
 existing_password=""
 if test -f "$runtime/workspace.env"; then existing_password="$(sed -n 's/^OPENCODE_SERVER_PASSWORD=//p' "$runtime/workspace.env" | tail -n1)"; fi
@@ -155,10 +185,10 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
 
 async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
   const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
-  const totalTimeoutMs = Math.max(90_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 2 * 60_000));
+  const totalTimeoutMs = Math.max(120_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 5 * 60_000));
   const attemptTimeoutMs = Math.min(
-    60_000,
-    Math.max(20_000, Number(process.env.ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS || 45_000)),
+    180_000,
+    Math.max(30_000, Number(process.env.ORLYNX_BOOTSTRAP_ATTEMPT_TIMEOUT_MS || 150_000)),
   );
   const deadline = Date.now() + totalTimeoutMs;
   let attempt = 0;
@@ -259,6 +289,6 @@ export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Val
   if (!base && process.env.ORLYNX_BOOTSTRAP_MODE === 'local') return bootstrapWithLocalGh(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey);
   if (!base && (process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox')) return bootstrapWithSandbox(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey);
   if (!base.startsWith('https://') || !workerToken) throw new Error('Runtime bootstrap infrastructure is not configured.');
-  const response = await fetch(`${base}/bootstrap`, { method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ codespaceName: workspace.codespaceName, githubUserToken, bridgeUrl, bridgeToken: values.bridgeToken, workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId: values.connectionId, openCodePassword: values.openCodePassword }), signal: AbortSignal.timeout(120_000) });
+  const response = await fetch(`${base}/bootstrap`, { method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ codespaceName: workspace.codespaceName, githubUserToken, bridgeUrl, bridgeToken: values.bridgeToken, workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId: values.connectionId, openCodePassword: values.openCodePassword }), signal: AbortSignal.timeout(Math.max(120_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 5 * 60_000))) });
   if (!response.ok) throw new Error(`Runtime worker could not bootstrap the Codespace (HTTP ${response.status}).`);
 }
