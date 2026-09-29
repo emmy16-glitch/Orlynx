@@ -40,6 +40,8 @@ try {
   if (savedMode === 'public' || savedMode === 'account') openCodeAuthMode = savedMode;
 } catch {}
 let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
+let openCodeTransientHealthFailures = 0;
+const OPENCODE_HEALTH_FAILURE_THRESHOLD = 2;
 
 function rememberOpenCodeAuthMode(mode: OpenCodeAuthMode | undefined): void {
   openCodeAuthMode = mode;
@@ -833,11 +835,26 @@ const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
     health: async () => {
       const health = await openCodeHealth();
       if (health === 'ready') {
+        openCodeTransientHealthFailures = 0;
         openCodeLifecycle = { state: 'ready' };
         return openCodeLifecycle;
       }
       if (openCodeLifecycle.state === 'failed') return openCodeLifecycle;
       if (openCodeLifecycle.state === 'starting') return openCodeLifecycle;
+
+      // A single slow /global/health response must not flap a working adapter
+      // to unavailable. The heartbeat runs every 15 seconds and OpenCode can
+      // briefly miss the 2-second probe while handling provider/session work.
+      // Require consecutive misses before changing durable readiness.
+      if (health === 'unavailable' && openCodeLifecycle.state === 'ready') {
+        openCodeTransientHealthFailures += 1;
+        if (openCodeTransientHealthFailures < OPENCODE_HEALTH_FAILURE_THRESHOLD) {
+          console.warn(`[bridge] transient OpenCode health miss ${openCodeTransientHealthFailures}/${OPENCODE_HEALTH_FAILURE_THRESHOLD}; keeping adapter ready`);
+          return openCodeLifecycle;
+        }
+      }
+
+      openCodeTransientHealthFailures = OPENCODE_HEALTH_FAILURE_THRESHOLD;
       openCodeLifecycle = { state: 'unavailable', ...(health === 'unauthorized' ? { reason: 'auth_mismatch' } : {}) };
       return openCodeLifecycle;
     },
@@ -1154,6 +1171,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
 
 function connect(delay = 0): void {
   setTimeout(async () => {
+    openCodeTransientHealthFailures = 0;
     openCodeLifecycle = { state: 'starting' };
     const openCodeStartup = startOpenCode()
       .then((result) => { openCodeLifecycle = result; return result; })
