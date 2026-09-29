@@ -25,6 +25,17 @@ const evt = (type, payload = {}, runId = 'run-a', eventId) => {
 const fresh = () => { seq = 0; };
 const adapterReady = (runId = 'run-a') => evt('state.delta', { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }, runId);
 
+describe('mode selection admission', () => {
+  it('uses an immediate mode switch for the very next outgoing message', () => {
+    const app = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+    assert.match(app, /const aiRef = useRef<any>\(ai\)/);
+    assert.match(app, /aiRef\.current = next/);
+    assert.match(app, /const activeAi = aiRef\.current \|\| ai/);
+    assert.match(app, /mode: activeAi\.mode/);
+    assert.match(app, /activeAi\.mode === 'build' && tempFullAccess/);
+  });
+});
+
 describe('conversation projection: adapter heartbeat suppression', () => {
   it('TEST 1: 100 repeated ready heartbeats produce zero visible rows', () => {
     fresh();
