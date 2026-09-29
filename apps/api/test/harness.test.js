@@ -16,6 +16,7 @@ import {
   shouldSalvage,
   steeringActionFor,
   toolFamiliesFor,
+  userInputRequest,
   verificationRequirementsFor,
   verifyHarness,
 } from '../src/harness.ts';
@@ -226,6 +227,12 @@ test('waiting-for-user is a real paused harness state with no active tools', () 
   const cp = createHarnessCheckpoint({ prompt: 'deploy it', mode: 'build', permission: 'full', plane: 'workspace' });
   const waiting = advanceHarnessPhase(cp, 'waiting_input', { mode: 'build', permission: 'full' });
   assert.deepEqual(waiting.toolFamilies, []);
+});
+
+test('human-only input can be requested after the streamed model diagnostic', () => {
+  const value = userInputRequest('Model → Orlynx: the repository cannot reveal this secret.\n\n[NEEDS_USER_INPUT] Please provide the deployment token.');
+  assert.equal(value, 'Please provide the deployment token.');
+  assert.equal(userInputRequest('Model → Orlynx: I can inspect this myself.'), undefined);
 });
 
 test('hidden harness instruction carries phase budget criteria tools and steering without becoming user text', () => {
