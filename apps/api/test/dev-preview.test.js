@@ -100,7 +100,7 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /port === servicePort/);
     assert.match(bridge, /loopbackOnly/);
     assert.match(bridge, /\|\| loopbackOnly/);
-    assert.match(bridge, /gh', \[\s*'codespace', 'ports'/);
+    assert.match(bridge, /spawn\(GH_BIN, \[\s*'codespace', 'ports'/);
     assert.match(bridge, /--json', 'sourcePort,browseUrl,visibility'/);
     assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
     assert.match(gateway, /type: 'preview\.ready'/);
@@ -132,15 +132,22 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
   });
 
   it('Codespace bootstrap supplies a pinned loopback-safe GitHub CLI helper', () => {
-    const worker = fs.readFileSync(path.join(root, 'runtime-worker/src/index.ts'), 'utf8');
+    const workers = [
+      fs.readFileSync(path.join(root, 'runtime-worker/src/index.ts'), 'utf8'),
+      fs.readFileSync(path.join(root, 'apps/api/src/runtime-worker.ts'), 'utf8'),
+    ];
     const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
 
-    assert.match(worker, /gh version 2\.101\.0/);
-    assert.match(worker, /9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8/);
-    assert.match(worker, /b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f/);
-    assert.match(worker, /sha256sum -c/);
-    assert.match(worker, /ORLYNX_GH_BIN=%s/);
-    assert.match(worker, /test "\$gh_minor" -ge 98/);
+    for (const worker of workers) {
+      assert.match(worker, /gh version 2\.101\.0/);
+      assert.match(worker, /9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8/);
+      assert.match(worker, /b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f/);
+      assert.match(worker, /sha256sum -c/);
+      assert.match(worker, /ORLYNX_GH_BIN=%s/);
+      assert.match(worker, /test "\$gh_minor" -ge 98/);
+      assert.equal((worker.match(/GitHub CLI versions before 2\.98/g) || []).length, 1);
+      assert.equal((worker.match(/ORLYNX_GH_BIN=%s/g) || []).length, 1);
+    }
 
     assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
     assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
