@@ -77,33 +77,130 @@ export type PathResolution =
   | { kind: 'external'; url: string }
   | { kind: 'invalid' };
 
+type PreviewGateway = { prefix: string; token: string };
+
+function previewGateway(url: URL): PreviewGateway | null {
+  const match = url.pathname.match(/^(\/preview\/[^/]+\/\d+)(?:\/(.*))?$/);
+  const token = url.searchParams.get('t') || '';
+  if (!match || !token) return null;
+  return { prefix: `${match[1]}/`, token };
+}
+
+function appLocation(base: URL, target: URL): { pathname: string; search: string; hash: string } | null {
+  if (target.origin !== base.origin) return null;
+  const gateway = previewGateway(base);
+  let pathname = target.pathname || '/';
+  if (gateway && pathname.startsWith(gateway.prefix)) {
+    pathname = `/${pathname.slice(gateway.prefix.length)}`;
+  }
+  const params = new URLSearchParams(target.search);
+  params.delete('t');
+  return { pathname: pathname || '/', search: params.toString() ? `?${params.toString()}` : '', hash: target.hash };
+}
+
+function gatewayPreviewUrl(base: URL, location: { pathname: string; search?: string; hash?: string }): string {
+  const gateway = previewGateway(base);
+  if (!gateway) return new URL(`${location.pathname}${location.search || ''}${location.hash || ''}`, base.origin).toString();
+  const target = new URL(base.toString());
+  target.pathname = `${gateway.prefix}${String(location.pathname || '/').replace(/^\/+/, '')}`;
+  const params = new URLSearchParams(base.search);
+  params.set('t', gateway.token);
+  const appParams = new URLSearchParams(location.search || '');
+  for (const [key, value] of appParams) params.append(key, value);
+  target.search = params.toString() ? `?${params.toString()}` : '';
+  target.hash = location.hash || '';
+  return target.toString();
+}
+
 /**
- * Resolve address-bar input against the selected preview origin.
- * Relative paths stay in-preview; same-origin absolute URLs are allowed;
- * anything else is offered externally, never silently loaded.
+ * Resolve address-bar input against the selected preview.
+ *
+ * Codespaces use a dedicated forwarded origin. Warm Render runners use a
+ * signed path gateway (/preview/<runner>/<port>/). Preserve that gateway path
+ * until it has set the preview cookie; stripping it navigates to the runner
+ * service itself rather than the user's app.
  */
 export function resolvePreviewInput(baseUrl: string, input: string): PathResolution {
   const raw = (input || '').trim();
   if (!raw) return { kind: 'invalid' };
   let base: URL;
   try { base = new URL(baseUrl); } catch { return { kind: 'invalid' }; }
+
   if (/^https?:\/\//i.test(raw)) {
     let target: URL;
     try { target = new URL(raw); } catch { return { kind: 'invalid' }; }
     if (target.origin !== base.origin) return { kind: 'external', url: target.toString() };
-    return { kind: 'preview', url: target.toString() };
+    if (!previewGateway(base)) return { kind: 'preview', url: target.toString() };
+    const location = appLocation(base, target);
+    return location ? { kind: 'preview', url: gatewayPreviewUrl(base, location) } : { kind: 'invalid' };
   }
+
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return { kind: 'invalid' };
-  const path = raw.startsWith('/') ? raw : `/${raw}`;
-  return { kind: 'preview', url: `${base.origin}${path}` };
+  let target: URL;
+  try { target = new URL(raw.startsWith('/') ? raw : `/${raw}`, 'https://preview.local'); }
+  catch { return { kind: 'invalid' }; }
+
+  if (previewGateway(base)) {
+    return {
+      kind: 'preview',
+      url: gatewayPreviewUrl(base, { pathname: target.pathname, search: target.search, hash: target.hash }),
+    };
+  }
+  return { kind: 'preview', url: new URL(`${target.pathname}${target.search}${target.hash}`, base.origin).toString() };
 }
 
-/** Append the current preview path when opening externally (same origin only). */
+/** Expiry of a signed warm-runner preview URL, in epoch milliseconds. */
+export function previewAuthorizationExpiresAt(url: string): number | undefined {
+  try {
+    const parsed = new URL(url);
+    if (!previewGateway(parsed)) return undefined;
+    const raw = String(parsed.searchParams.get('t') || '').split('.')[0];
+    const seconds = Number(raw);
+    return Number.isSafeInteger(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Re-sign the current app location with the newest warm-runner gateway URL.
+ * Dedicated-origin previews are already stable and are returned unchanged.
+ */
+export function refreshPreviewAuthorization(baseUrl: string, currentUrl: string): string | undefined {
+  try {
+    const base = new URL(baseUrl);
+    const current = new URL(currentUrl);
+    if (current.origin !== base.origin) return undefined;
+    if (!previewGateway(base)) return current.toString();
+    const location = appLocation(base, current);
+    return location ? gatewayPreviewUrl(base, location) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Human-facing app path; hides the warm-runner gateway prefix and auth token. */
+export function previewDisplayPath(baseUrl: string | undefined, currentUrl: string | null): string {
+  if (!currentUrl) return '/';
+  try {
+    const current = new URL(currentUrl);
+    if (!baseUrl) return `${current.pathname}${current.search}` || '/';
+    const base = new URL(baseUrl);
+    const location = appLocation(base, current);
+    return location ? `${location.pathname}${location.search}` || '/' : '/';
+  } catch {
+    return '/';
+  }
+}
+
+/** Open the current app route externally, renewing signed gateway auth when needed. */
 export function externalPreviewUrl(baseUrl: string, currentUrl: string): string {
   try {
     const base = new URL(baseUrl);
     const current = new URL(currentUrl);
-    if (current.origin === base.origin) return current.toString();
-  } catch { /* fall through to base */ }
-  return baseUrl;
+    if (current.origin !== base.origin) return baseUrl;
+    return refreshPreviewAuthorization(baseUrl, currentUrl) || baseUrl;
+  } catch {
+    return baseUrl;
+  }
 }

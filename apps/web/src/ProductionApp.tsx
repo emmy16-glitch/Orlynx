@@ -8,7 +8,7 @@ import { chatActivities, selectActivities, selectLiveReplies } from './ui/mappin
 import { buildThread } from './agent-stream/thread';
 import { toThreadParts } from './agent-stream/parts';
 import { distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior } from './ui/scroll';
-import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, resolvePreviewInput, usablePreviews } from './ui/preview';
+import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPreviewPort, previewAuthorizationExpiresAt, previewDisplayPath as displayPreviewPath, refreshPreviewAuthorization, resolvePreviewInput, usablePreviews } from './ui/preview';
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
 import { emptyAgentStreamState } from './agent-stream/protocol';
 import { applyRawAgentEvents, rebuildAgentStream, reconcileAgentStream } from './agent-stream/store';
@@ -1258,12 +1258,7 @@ export default function ProductionApp() {
     ? usablePorts.find((p) => p.port === previewPortSel) || null
     : preferredPreviewPort(previewPorts, devHintPort);
   const currentPreviewUrl = selectedPreview && previewIdx >= 0 && previewIdx < previewStack.length ? previewStack[previewIdx] : null;
-  const previewDisplayPath = (() => {
-    try {
-      const parsed = new URL(currentPreviewUrl || '');
-      return `${parsed.pathname}${parsed.search}` || '/';
-    } catch { return '/'; }
-  })();
+  const previewDisplayPath = displayPreviewPath(selectedPreview?.url, currentPreviewUrl);
 
   const openPreview = useCallback((port: number, path = '/') => {
     if (port === previewPortSel && previewStack.length) { setTab('preview'); return; } // preserve context.
@@ -1276,6 +1271,25 @@ export default function ProductionApp() {
     setPreviewStatus('loading'); setPreviewSlow(false); setExternalSuggest(null);
     setTab('preview');
   }, [previewPorts, previewPortSel, previewStack.length]);
+
+  // Warm-runner previews use a short-lived signed gateway URL. /ports keeps
+  // returning a fresh signature, but do not churn the iframe on every poll.
+  // Renew only when the currently loaded authorization is within two minutes
+  // of expiry (or already expired), preserving the current app route.
+  useEffect(() => {
+    const freshBase = selectedPreview?.url;
+    if (!freshBase || !currentPreviewUrl || previewIdx < 0) return;
+    const currentExpiry = previewAuthorizationExpiresAt(currentPreviewUrl);
+    const freshExpiry = previewAuthorizationExpiresAt(freshBase);
+    if (!currentExpiry || !freshExpiry || freshExpiry <= currentExpiry) return;
+    if (currentExpiry - Date.now() > 120_000) return;
+    const renewed = refreshPreviewAuthorization(freshBase, currentPreviewUrl);
+    if (!renewed || renewed === currentPreviewUrl) return;
+    setPreviewStack((stack) => stack.map((url, index) => index === previewIdx ? renewed : url));
+    setPreviewStatus('loading');
+    setPreviewSlow(false);
+    setPreviewReloadKey((key) => key + 1);
+  }, [selectedPreview?.url, currentPreviewUrl, previewIdx]);
 
   // A selected port can disappear or be replaced after a restart. Never let
   // the toolbar silently describe one server while the iframe still points at

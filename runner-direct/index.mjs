@@ -20,6 +20,21 @@ const CLEANUP_SECONDS = Math.max(30, Number(process.env.ORLYNX_RUNNER_CLEANUP_SE
 const PREVIEW_COOKIE = 'orlynx_preview';
 
 let bridgeChild = null;
+let lastActivityTouchMs = 0;
+
+function touchActivity(force = false) {
+  const now = Date.now();
+  // Preview assets and HMR can be very chatty. One filesystem timestamp write
+  // every 15 seconds is enough to prove the workspace is actively being used.
+  if (!force && now - lastActivityTouchMs < 15_000) return;
+  try {
+    fs.mkdirSync(path.dirname(ACTIVITY_FILE), { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(ACTIVITY_FILE)) fs.writeFileSync(ACTIVITY_FILE, '', { mode: 0o600 });
+    const stamp = new Date(now);
+    fs.utimesSync(ACTIVITY_FILE, stamp, stamp);
+    lastActivityTouchMs = now;
+  } catch {}
+}
 
 function nowIso() { return new Date().toISOString(); }
 function safeId(value) {
@@ -317,6 +332,7 @@ function proxyHeaders(headers, port) {
   return next;
 }
 function proxyPreview(req, res, context) {
+  touchActivity();
   const upstream = http.request({
     hostname: '127.0.0.1',
     port: context.port,
@@ -402,6 +418,8 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '/', 'http://runner.local');
   const preview = previewContext(req, url);
   if (!preview || preview.denied) { socket.destroy(); return; }
+  touchActivity();
+  socket.on('data', () => touchActivity());
   const upstream = http.request({
     hostname: '127.0.0.1',
     port: preview.port,
@@ -419,6 +437,7 @@ server.on('upgrade', (req, socket, head) => {
     socket.write(status);
     if (upstreamHead.length) socket.write(upstreamHead);
     if (head.length) upstreamSocket.write(head);
+    upstreamSocket.on('data', () => touchActivity());
     socket.pipe(upstreamSocket).pipe(socket);
   });
   upstream.on('response', (response) => {

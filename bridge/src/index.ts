@@ -849,7 +849,7 @@ function connect(delay = 0): void {
           });
           heartbeat ||= setInterval(async () => {
             if (ws.readyState !== WebSocket.OPEN) return;
-            if (activeAgents.size > 0 || terminals.size > 0) touchActivity();
+            if (inFlight.size > 0 || activeAgents.size > 0 || terminals.size > 0) touchActivity();
             const currentAdapters = await bridgeAdapterHealth();
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
