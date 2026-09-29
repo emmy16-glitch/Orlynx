@@ -2,6 +2,14 @@ import crypto from 'node:crypto';
 import type { WorkspaceRecord, WorkspaceState } from '@orlynx/shared';
 import { decryptCredential } from './credentials.js';
 import { githubUserAccessToken } from './github.js';
+import {
+  noteRunnerHostFailure,
+  noteRunnerHostSuccess,
+  rankedRunnerHosts,
+  runnerHostById,
+  runnerPoolConfigured,
+  type RunnerHostConfig,
+} from './runner-pool.js';
 import { controlPlaneRepository } from './storage.js';
 import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider } from './workspace-provider.js';
 
@@ -12,8 +20,14 @@ type RunnerWorkspace = {
   detail?: string;
 };
 
-function runnerBaseUrl(): string {
-  return (process.env.ORLYNX_RUNNER_URL || '').replace(/\/$/, '');
+class RunnerRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly hostId: string,
+  ) {
+    super(message);
+  }
 }
 
 function runnerToken(): string {
@@ -21,16 +35,13 @@ function runnerToken(): string {
 }
 
 export function orlynxRunnerConfigured(): boolean {
-  return runnerBaseUrl().startsWith('https://') && Boolean(runnerToken());
-}
-
-function runnerPublicUrl(): string {
-  return (process.env.ORLYNX_RUNNER_PUBLIC_URL || runnerBaseUrl()).replace(/\/$/, '');
+  return runnerPoolConfigured();
 }
 
 function signedPreviewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
   if (!workspace.runnerId || !Number.isInteger(port) || port <= 1024 || port > 65535) return undefined;
-  const base = runnerPublicUrl();
+  const host = runnerHostById(workspace.runnerHostId);
+  const base = host?.publicUrl || '';
   const secret = runnerToken();
   if (!base.startsWith('https://') || !secret) return undefined;
   const expires = Math.floor(Date.now() / 1000) + Math.max(60, Number(process.env.ORLYNX_PREVIEW_TOKEN_TTL_SECONDS || 600));
@@ -63,59 +74,97 @@ function mapState(value?: string): WorkspaceState {
 export class OrlynxRunnerProvider implements WorkspaceProvider {
   readonly id = 'orlynx-runner' as const;
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const base = runnerBaseUrl();
+  private async request<T>(host: RunnerHostConfig, path: string, init: RequestInit = {}): Promise<T> {
     const token = runnerToken();
-    if (!base.startsWith('https://') || !token) throw new Error('Orlynx runner infrastructure is not configured.');
-    const response = await fetch(`${base}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        ...(init.headers as Record<string, string> || {}),
-      },
-      signal: init.signal || AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({})) as { error?: string; detail?: string };
-      const detail = body.detail || body.error || `HTTP ${response.status}`;
-      throw new Error(`Orlynx runner request failed: ${detail}`);
+    if (!host.url.startsWith('https://') || !token) throw new Error('Orlynx runner infrastructure is not configured.');
+    try {
+      const response = await fetch(`${host.url}${path}`, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(init.headers as Record<string, string> || {}),
+        },
+        signal: init.signal || AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string; detail?: string };
+        const detail = body.detail || body.error || `HTTP ${response.status}`;
+        noteRunnerHostFailure(host.id);
+        throw new RunnerRequestError(`Orlynx runner request failed on ${host.id}: ${detail}`, response.status, host.id);
+      }
+      noteRunnerHostSuccess(host.id);
+      return response.status === 204 ? undefined as T : await response.json() as T;
+    } catch (error) {
+      if (!(error instanceof RunnerRequestError)) noteRunnerHostFailure(host.id);
+      throw error;
     }
-    return response.status === 204 ? undefined as T : await response.json() as T;
+  }
+
+  private hostFor(workspace: WorkspaceRecord): RunnerHostConfig {
+    const host = runnerHostById(workspace.runnerHostId);
+    if (!host) throw new Error('No Orlynx runner host is configured.');
+    return host;
   }
 
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const githubToken = await githubUserAccessToken(input.userId);
-    const result = await this.request<RunnerWorkspace>('/v1/workspaces', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        userId: input.userId,
-        repositoryId: input.repositoryId,
-        branch: input.branch,
-        githubToken,
-      }),
-      signal: AbortSignal.timeout(Math.max(30_000, Number(process.env.ORLYNX_RUNNER_CREATE_TIMEOUT_MS || 60_000))),
-    });
-    if (!result.runnerId) throw new Error('Orlynx runner did not return a runner identity.');
-    const now = new Date().toISOString();
-    return {
-      id: input.workspaceId,
-      sessionId: input.sessionId,
-      userId: input.userId,
-      projectId: input.projectId,
-      provider: this.id,
-      runnerId: result.runnerId,
-      repositoryId: input.repositoryId,
-      branch: input.branch,
-      state: mapState(result.state),
-      bridgeState: 'disconnected',
-      repoRoot: result.repoRoot,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const excluded = new Set<string>();
+    let lastError: unknown;
+
+    for (;;) {
+      const candidates = await rankedRunnerHosts(excluded);
+      if (!candidates.length) break;
+
+      for (const host of candidates) {
+        excluded.add(host.id);
+        try {
+          const result = await this.request<RunnerWorkspace>(host, '/v1/workspaces', {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: input.workspaceId,
+              sessionId: input.sessionId,
+              userId: input.userId,
+              repositoryId: input.repositoryId,
+              branch: input.branch,
+              githubToken,
+            }),
+            signal: AbortSignal.timeout(Math.max(30_000, Number(process.env.ORLYNX_RUNNER_CREATE_TIMEOUT_MS || 60_000))),
+          });
+          if (!result.runnerId) throw new Error('Orlynx runner did not return a runner identity.');
+          const now = new Date().toISOString();
+          return {
+            id: input.workspaceId,
+            sessionId: input.sessionId,
+            userId: input.userId,
+            projectId: input.projectId,
+            provider: this.id,
+            runnerId: result.runnerId,
+            runnerHostId: host.id,
+            repositoryId: input.repositoryId,
+            branch: input.branch,
+            state: mapState(result.state),
+            bridgeState: 'disconnected',
+            repoRoot: result.repoRoot,
+            createdAt: now,
+            updatedAt: now,
+          };
+        } catch (error) {
+          lastError = error;
+          // Capacity, temporary host failure, or a host-local runner problem can
+          // be satisfied by another healthy host. Authentication/repository
+          // failures will repeat elsewhere, but trying another host is still
+          // bounded by the configured pool size.
+          continue;
+        }
+      }
+      break;
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('No healthy Orlynx runner host has available capacity.');
   }
 
   async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
@@ -128,8 +177,9 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
       ? decryptCredential(openCodeConnection.credential)
       : '';
     const githubToken = await githubUserAccessToken(workspace.userId);
+    const host = this.hostFor(workspace);
 
-    await this.request<void>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/connect`, {
+    await this.request<void>(host, `/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/connect`, {
       method: 'POST',
       body: JSON.stringify({
         workspaceId: workspace.id,
@@ -148,9 +198,11 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
 
   async get(workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
     if (!workspace.runnerId) return workspace;
-    const result = await this.request<RunnerWorkspace>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}`);
+    const host = this.hostFor(workspace);
+    const result = await this.request<RunnerWorkspace>(host, `/v1/workspaces/${encodeURIComponent(workspace.runnerId)}`);
     return {
       ...workspace,
+      runnerHostId: host.id,
       state: workspace.state === 'ready' && mapState(result.state) === 'connecting' ? 'ready' : mapState(result.state),
       repoRoot: result.repoRoot || workspace.repoRoot,
       failureCode: String(result.state || '').toLowerCase() === 'failed'
@@ -166,23 +218,28 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
 
   async start(workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
     if (!workspace.runnerId) throw new Error('Workspace has no Orlynx runner identity.');
-    const result = await this.request<RunnerWorkspace>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/start`, { method: 'POST', body: '{}' });
-    return { ...workspace, state: mapState(result.state), updatedAt: new Date().toISOString() };
+    const host = this.hostFor(workspace);
+    const result = await this.request<RunnerWorkspace>(host, `/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/start`, { method: 'POST', body: '{}' });
+    return { ...workspace, runnerHostId: host.id, state: mapState(result.state), updatedAt: new Date().toISOString() };
   }
 
   async stop(workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
     if (!workspace.runnerId) throw new Error('Workspace has no Orlynx runner identity.');
-    await this.request<void>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/stop`, { method: 'POST', body: '{}' });
-    return { ...workspace, state: 'stopped', bridgeState: 'disconnected', connectionId: undefined, updatedAt: new Date().toISOString() };
+    const host = this.hostFor(workspace);
+    await this.request<void>(host, `/v1/workspaces/${encodeURIComponent(workspace.runnerId)}/stop`, { method: 'POST', body: '{}' });
+    return { ...workspace, runnerHostId: host.id, state: 'stopped', bridgeState: 'disconnected', connectionId: undefined, updatedAt: new Date().toISOString() };
   }
 
   async destroy(workspace: WorkspaceRecord): Promise<void> {
     if (!workspace.runnerId) return;
-    await this.request<void>(`/v1/workspaces/${encodeURIComponent(workspace.runnerId)}`, { method: 'DELETE' });
+    const host = this.hostFor(workspace);
+    await this.request<void>(host, `/v1/workspaces/${encodeURIComponent(workspace.runnerId)}`, { method: 'DELETE' });
   }
 
   async replace(input: CreateWorkspaceInput, workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
+    const failedHost = workspace.runnerHostId;
     await this.destroy(workspace).catch(() => {});
+    if (failedHost) noteRunnerHostFailure(failedHost);
     return this.create(input);
   }
 
