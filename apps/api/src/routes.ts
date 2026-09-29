@@ -15,7 +15,7 @@ import { publicSiteUrl } from './site.js';
 import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
 import type { Request } from 'express';
 import crypto from 'node:crypto';
-import { safeName } from '@orlynx/shared';
+import { safeName, type ChatMessage } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
@@ -415,7 +415,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
   if (!selectedModel && !instantReply && !publishIntent) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
-  const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
+  const msg: ChatMessage = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user', text: String(text), createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
   store.save();
@@ -433,10 +433,11 @@ router.post('/sessions/:id/messages', async (req, res) => {
 
     const existingTasks = await repository.listTasks(s.id);
     const requestedSteeringAction = steeringActionFor(String(text));
+    const explicitQueue = queueIntentFor(String(text));
     const waitingInputTask = existingTasks.find(
       (item) => item.state === 'waiting_input' && (item.plane || 'workspace') === 'workspace',
     );
-    if (waitingInputTask && requestedSteeringAction !== 'stop') {
+    if (waitingInputTask && requestedSteeringAction !== 'stop' && !explicitQueue) {
       // This user message belongs to the run that asked for input. Persist the
       // linkage so the conversation projection keeps one continuous turn.
       msg.runId = waitingInputTask.runId;
@@ -508,7 +509,6 @@ router.post('/sessions/:id/messages', async (req, res) => {
       .filter((item) => ['running', 'waiting_approval', 'waiting_input'].includes(item.state))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
 
-    const explicitQueue = queueIntentFor(String(text));
     if (activeTask && !explicitQueue) {
       const steeringAction = requestedSteeringAction === 'ignore' ? 'append' : requestedSteeringAction;
       const now = new Date().toISOString();
