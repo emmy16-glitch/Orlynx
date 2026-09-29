@@ -1217,9 +1217,9 @@ export default function ProductionApp() {
   const currentActivity = transcriptActivities.find((item: any) => item.id === currentActivityId);
   // Genuine user-requested work only: semantic activities + run state. Adapter
   // heartbeats project no rows, so they can never drive this indicator.
-  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_approval'].includes(candidate.state))
-    || ['running', 'queued', 'waiting_approval'].includes(String(lastRun?.state || ''));
-  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_approval'].includes(candidate.state) && candidate.harness);
+  const runActive = runs.some((candidate: any) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(candidate.state))
+    || ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(String(lastRun?.state || ''));
+  const activeHarnessRun = [...runs].reverse().find((candidate: any) => ['running', 'waiting_input', 'waiting_approval'].includes(candidate.state) && candidate.harness);
   const activeHarness = activeHarnessRun?.harness;
   const harnessRemaining = activeHarness ? Math.max(0, Number(activeHarness.stepBudget || 0) - Number(activeHarness.step || 0)) : null;
   const harnessMissing = Array.isArray(activeHarness?.verification?.missing) ? activeHarness.verification.missing : [];
@@ -1227,14 +1227,17 @@ export default function ProductionApp() {
     ? `Verifying${harnessMissing.length ? ` ${harnessMissing.slice(0, 2).join(' + ')}` : ' result'}`
     : activeHarness?.phase === 'finalizing'
       ? 'Finishing result'
-      : activeHarnessRun?.state === 'waiting_approval'
-        ? 'Waiting for approval'
-        : harnessRemaining !== null && harnessRemaining <= 3
+      : activeHarnessRun?.state === 'waiting_input'
+        ? 'Waiting for you'
+        : activeHarnessRun?.state === 'waiting_approval'
+          ? 'Waiting for approval'
+          : harnessRemaining !== null && harnessRemaining <= 3
           ? `${harnessRemaining} step${harnessRemaining === 1 ? '' : 's'} left`
           : '';
-  const waitingForUser = currentActivity?.state === 'waiting' && currentActivity?.category === 'approval';
+  const waitingForUser = activeHarnessRun?.state === 'waiting_input'
+    || (currentActivity?.state === 'waiting' && currentActivity?.category === 'approval');
   const showWorkBar = tab === 'chat' && newActivity && Boolean(currentActivity || runActive);
-  const workBarLabel = waitingForUser && currentActivity?.category === 'approval'
+  const workBarLabel = waitingForUser
     ? 'Waiting for you'
     : currentActivity?.title || harnessStatusLabel || 'Orlynx is working';
   // Single recovery location: the latest response that failed. No duplicate
