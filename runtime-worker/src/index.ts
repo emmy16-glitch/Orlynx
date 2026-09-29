@@ -129,6 +129,7 @@ if test -n "$existing_password"; then
 fi
 printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
+printf 'OPENCODE_VERSION=%s\\n' '${OPENCODE_VERSION}' >> "$runtime/workspace.env"
 printf 'ORLYNX_GH_BIN=%s\\n' "$gh_bin" >> "$runtime/workspace.env"
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a
