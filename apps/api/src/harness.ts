@@ -11,6 +11,8 @@ import type {
 
 export type BudgetStage = 'normal' | 'warn' | 'finalize' | 'force-final';
 
+export const MAX_REFLECTION_ATTEMPTS = Math.max(2, Number(process.env.ORLYNX_MAX_REFLECTION_ATTEMPTS || 4));
+
 export interface HarnessBudgetStatus {
   step: number;
   budget: number;
@@ -96,6 +98,11 @@ export function createHarnessCheckpoint(input: HarnessInitInput): HarnessCheckpo
     toolFamilies: [],
     verification,
     salvageAttempts: 0,
+    reflectionAttempts: 0,
+    contradictions: [],
+    reflectionEvidence: [],
+    stagnantReflections: 0,
+    lessonsApplied: [],
     lastCheckpointAt: now,
     updatedAt: now,
   };
@@ -316,14 +323,147 @@ export function verifyHarness(checkpoint: HarnessCheckpoint, events: OrlynxEvent
   };
 }
 
-export function shouldSalvage(checkpoint: HarnessCheckpoint, finalText: string): boolean {
+function eventText(event: OrlynxEvent): string {
+  const payload = event.payload || {};
+  return [
+    event.type,
+    payload.command,
+    payload.cmd,
+    payload.out,
+    payload.stderr,
+    payload.outDelta,
+    payload.delta,
+    payload.summary,
+    payload.error,
+    payload.message,
+    payload.state,
+    payload.status,
+  ].filter(Boolean).join(' ').slice(0, 2_000);
+}
+
+export function evidenceSummary(events: OrlynxEvent[]): string[] {
+  return events.slice(-80).flatMap((event) => {
+    if (![
+      'tool.completed','tool.failed','tool.output','terminal.exited',
+      'test.result','build.result','preview.ready','workspace.ready',
+      'workspace.state','receipt.created',
+    ].includes(event.type)) return [];
+    const text = eventText(event).replace(/\s+/g, ' ').trim();
+    return text ? [text.slice(0, 420)] : [];
+  }).slice(-10);
+}
+
+export function detectEvidenceContradictions(events: OrlynxEvent[], missing: string[] = []): string[] {
+  const contradictions: string[] = [];
+  const text = events.map(eventText).join('\n').toLowerCase();
+
+  if (
+    missing.includes('preview')
+    && /(?:http\/1\.[01]\s+200|code=200|http[_ -]?code[^\d]*200|\b200\s+ok\b)/.test(text)
+    && /(?:localhost|127\.0\.0\.1|\blisten(?:ing)?\b|vite)/.test(text)
+  ) {
+    contradictions.push('The local web server appears healthy, but the externally usable Preview is still unverified. Diagnose preview forwarding/authentication/embedding instead of assuming the app server failed.');
+  }
+  if (
+    missing.includes('build')
+    && /(?:✓\s*built|build\s+(?:passed|successful|succeeded)|compiled successfully)/.test(text)
+  ) {
+    contradictions.push('Build output looks successful, but canonical build verification is missing. Reconcile the evidence/event mapping before rebuilding blindly.');
+  }
+  if (
+    missing.includes('tests')
+    && /(?:tests?\s+passed|\b\d+\s+passed\b|0\s+failed)/.test(text)
+  ) {
+    contradictions.push('Test output looks successful, but canonical test verification is missing. Reconcile the evidence/event mapping before rerunning the same tests.');
+  }
+  if (/adapter status[^\n]*ready|opencode=ready/.test(text) && /ai runtime unavailable/.test(text)) {
+    contradictions.push('The adapter reports ready while another signal says the AI runtime is unavailable. Treat this as conflicting subsystem evidence and inspect the failing layer before concluding the provider is down.');
+  }
+
+  return [...new Set(contradictions)];
+}
+
+export function shouldReflect(checkpoint: HarnessCheckpoint, finalText: string): boolean {
   const text = String(finalText || '').trim();
-  if (checkpoint.salvageAttempts >= 1) return false;
+  const attempts = checkpoint.reflectionAttempts ?? checkpoint.salvageAttempts ?? 0;
+  if (attempts >= MAX_REFLECTION_ATTEMPTS) return false;
   if (harnessBudgetStatus(checkpoint).stage === 'force-final') return false;
   if (checkpoint.verification.status === 'needs_more_work') return true;
   if (!text) return true;
   if (text.length < 180 && /\b(?:working on|starting|checking|looking into|next i(?:'ll| will)|still working|in progress)\b/i.test(text)) return true;
   return false;
+}
+
+/** Backward-compatible name for existing callers/tests. */
+export const shouldSalvage = shouldReflect;
+
+export function prepareReflection(
+  checkpoint: HarnessCheckpoint,
+  events: OrlynxEvent[],
+  now = new Date().toISOString(),
+): HarnessCheckpoint {
+  const attempts = (checkpoint.reflectionAttempts ?? checkpoint.salvageAttempts ?? 0) + 1;
+  const contradictions = detectEvidenceContradictions(events, checkpoint.verification.missing);
+  const evidence = evidenceSummary(events);
+  const signature = JSON.stringify({
+    missing: checkpoint.verification.missing.slice().sort(),
+    contradictions,
+    evidence: evidence.slice(-4),
+  });
+  const stagnant = checkpoint.lastReflectionSignature === signature
+    ? (checkpoint.stagnantReflections || 0) + 1
+    : 0;
+
+  return {
+    ...checkpoint,
+    salvageAttempts: attempts,
+    reflectionAttempts: attempts,
+    reflectionTarget: checkpoint.reflectionTarget?.length
+      ? checkpoint.reflectionTarget
+      : [...checkpoint.verification.missing],
+    contradictions,
+    reflectionEvidence: evidence,
+    lastReflectionSignature: signature,
+    stagnantReflections: stagnant,
+    phase: 'executing',
+    lastCheckpointAt: now,
+    updatedAt: now,
+  };
+}
+
+export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: string[] = []): string {
+  const attempts = checkpoint.reflectionAttempts ?? checkpoint.salvageAttempts ?? 1;
+  const missing = checkpoint.verification.missing.join(', ') || 'the requested outcome';
+  const contradictionText = checkpoint.contradictions?.length
+    ? `Observed contradictions: ${checkpoint.contradictions.join(' | ')}`
+    : 'No explicit contradiction was detected; inspect the newest evidence before choosing the next action.';
+  const evidenceText = checkpoint.reflectionEvidence?.length
+    ? `Observable evidence: ${checkpoint.reflectionEvidence.join(' | ')}`
+    : 'Observable evidence is sparse; inspect the environment before concluding.';
+  const lessonText = lessons.length
+    ? `Verified lessons from earlier successful work: ${lessons.join(' | ')}`
+    : '';
+  const stagnant = (checkpoint.stagnantReflections || 0) > 0
+    ? 'The unresolved evidence is substantially the same as the previous reflection. Do not repeat the same failed command or hypothesis without gathering new evidence; choose a different diagnostic path.'
+    : '';
+
+  return [
+    `Reflection cycle ${attempts}/${MAX_REFLECTION_ATTEMPTS}. Orlynx still cannot verify: ${missing}.`,
+    contradictionText,
+    evidenceText,
+    lessonText,
+    stagnant,
+    'You are the reasoning layer. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
+    'Use tools to test the next hypothesis. Prefer inspection and reversible actions. Do not tell the user a subsystem is broken unless the evidence supports that exact conclusion.',
+    'If information or authorization can be obtained with available tools, obtain it yourself. Ask the user only when a required secret, choice, physical action, or permission genuinely cannot be derived or performed.',
+    'If user input is genuinely unavoidable, begin the final response with [NEEDS_USER_INPUT] and ask one precise question. Otherwise continue autonomously until verification passes or the reflection budget is exhausted.',
+  ].filter(Boolean).join('\n\n');
+}
+
+export function userInputRequest(finalText: string): string | undefined {
+  const text = String(finalText || '').trim();
+  if (!/^\[NEEDS_USER_INPUT\]/i.test(text)) return undefined;
+  return text.replace(/^\[NEEDS_USER_INPUT\]\s*/i, '').trim() || 'Orlynx needs information only you can provide before it can continue.';
 }
 
 export function openCodeToolsFor(checkpoint: HarnessCheckpoint): Record<string, boolean> {
@@ -370,6 +510,8 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
     `Active tool families: ${checkpoint.toolFamilies.length ? checkpoint.toolFamilies.join(', ') : 'none'}.`,
     budget.instruction || '',
     steeringText,
+    'When an observation is unexpected or conflicts with another signal, do not guess. Inspect the evidence and let the connected reasoning model form the next hypothesis.',
+    'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools can determine. Escalate only for genuinely human-only input or permission.',
     'Do not claim completion until Orlynx verification criteria are satisfied. Progress text is not a final answer.',
   ].filter(Boolean).join(' ');
 }
