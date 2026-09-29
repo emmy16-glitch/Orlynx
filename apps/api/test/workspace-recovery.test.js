@@ -209,6 +209,22 @@ test('SSH replacement recovery is automatic but bounded to one replacement per p
 });
 
 
+test('stale failed workspace adapter requeues Build and repairs instead of emitting AI runtime failure', () => {
+  const source = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const failedBlockStart = source.indexOf("if (adapterState.state === 'failed')");
+  const failedBlockEnd = source.indexOf('// Build must never silently execute against a stale checkout.', failedBlockStart);
+  assert.ok(failedBlockStart >= 0 && failedBlockEnd > failedBlockStart);
+  const block = source.slice(failedBlockStart, failedBlockEnd);
+
+  assert.match(block, /nextQueued\.state = 'queued'/);
+  assert.match(block, /putWorkspaceAgentAdapter\([\s\S]*state: 'starting'/);
+  assert.match(block, /markWorkspaceConnectionLost\(readyWorkspace\.id\)/);
+  assert.match(block, /reason: 'adapter_failed_recovery'/);
+  assert.match(block, /Repairing this workspace AI runtime/);
+  assert.doesNotMatch(block, /run\.failed/);
+  assert.doesNotMatch(block, /nextQueued\.state = 'failed'/);
+});
+
 test('queued Build work durably schedules recoverable workspace repair', () => {
   const source = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
   assert.match(source, /workspaceNeedsCodespaceReplacement\(readyWorkspace\.failureCode\)/);
