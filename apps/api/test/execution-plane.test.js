@@ -181,6 +181,13 @@ test('free-model provider rejection never tells the user to reconnect an optiona
 
 
 
+test('queued Build work tells the user what runtime state it is waiting on', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /sourceType: 'agent\.runtime\.wait'/);
+  assert.match(agents, /OpenCode disconnected · recovering the existing workspace runtime/);
+  assert.match(agents, /Starting OpenCode in the existing workspace/);
+});
+
 test('Build execution reserves prose for final results instead of narrating tool progress', () => {
   const instruction = buildPresentationInstruction('build');
   assert.match(instruction, /do not narrate routine progress/i);
