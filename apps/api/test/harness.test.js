@@ -344,12 +344,27 @@ test('OpenCode tool work emits canonical step boundaries for harness budgeting',
   assert.match(protocol, /'step\.finished': 'step\.finished'/);
 });
 
-test('active message admission steers the running workspace task rather than creating another Build task', () => {
+test('active message admission continues the same task across direct and workspace planes', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  assert.match(routes, /const steeringAction = steeringActionFor\(String\(text\)\)/);
-  assert.match(routes, /find\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\) && \(item\.plane \|\| 'workspace'\) === 'workspace'\)/);
+  assert.match(routes, /const requestedSteeringAction = steeringActionFor\(String\(text\)\)/);
+  assert.match(routes, /filter\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\)\)/);
+  assert.match(routes, /requestedSteeringAction === 'ignore' \? 'append' : requestedSteeringAction/);
+  assert.match(routes, /msg\.runId = activeTask\.runId/);
   assert.match(routes, /resumeWaitingInputTask\(s\.id, waitingInputTask\.id, String\(text\)\)/);
   assert.match(routes, /applySteering\(activeTask, String\(text\), steeringAction, now\)/);
-  assert.match(routes, /Added that to the current Build task\./);
+  assert.match(routes, /continued: true/);
+  assert.match(routes, /cancelDirectRun/);
   assert.match(routes, /bridgeCancelCommand/);
+  assert.doesNotMatch(routes, /const ackRunId =/);
+  assert.doesNotMatch(routes, /Added that to the current Build task\./);
+});
+
+test('direct Ask and Plan continue the same task inbox before finalizing', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /for \(let continuationRound = 0; continuationRound < 4; continuationRound \+= 1\)/);
+  assert.match(agents, /freshTask\.harness\?\.inbox\.filter\(\(item\) => !item\.appliedAt\)/);
+  assert.match(agents, /Continue the same Orlynx conversation/);
+  assert.match(agents, /latestContinuation/);
+  assert.match(agents, /runId: run\.id/);
+  assert.match(agents, /agent\.dialogue\.orlynx/);
 });
