@@ -90,7 +90,7 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
       emit(sessionId, 'run.failed', {
         taskId: task.id,
         error: 'This delayed Build task expired before the development environment was ready. Send it again if you still want it to run.',
-        errorKind: 'engine',
+        errorKind: 'repository',
         recoverable: true,
         cancelled: true,
       }, task.runId);
@@ -516,7 +516,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
         failedRun.state = 'failed';
         failedRun.activity = 'Development environment unavailable';
         failedRun.finishedAt = now;
-        failedRun.errorKind = 'engine';
+        failedRun.errorKind = 'repository';
       }
       store.save();
       emit(sessionId, 'run.failed', {
@@ -623,8 +623,9 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       const now = new Date().toISOString();
       const detail = error instanceof Error ? error.message : 'Repository freshness check failed.';
       const transportInterrupted = /workspace (?:connection )?interrupted|workspace did not respond|bridge|socket|connection (?:closed|lost|interrupted)|transport|timed out|timeout/i.test(detail);
+      const repositoryCredentialMissing = /GitHub credentials are unavailable in this workspace/i.test(detail);
 
-      if (transportInterrupted) {
+      if (transportInterrupted || repositoryCredentialMissing) {
         const lost = await markWorkspaceConnectionLost(readyWorkspace.id).catch(() => null);
         nextQueued.state = 'queued';
         nextQueued.updatedAt = now;
@@ -649,13 +650,17 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
         emit(sessionId, 'run.state', {
           taskId: nextQueued.id,
           state: 'queued',
-          message: 'Repository check paused because the workspace connection dropped. Reconnecting and retrying automatically.',
+          message: repositoryCredentialMissing
+            ? 'Repository check needs refreshed GitHub access. Refreshing the workspace connection and retrying automatically.'
+            : 'Repository check paused because the workspace connection dropped. Reconnecting and retrying automatically.',
         }, nextQueued.runId);
         emit(sessionId, 'activity.progress', {
           taskId: nextQueued.id,
           sourceType: 'repository.sync',
           state: 'recovering',
-          text: 'GitHub check paused · reconnecting workspace…',
+          text: repositoryCredentialMissing
+            ? 'Refreshing GitHub access for this workspace…'
+            : 'GitHub check paused · reconnecting workspace…',
         }, nextQueued.runId);
 
         const repair = lost || readyWorkspace;
@@ -665,7 +670,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
           projectId: repair.projectId,
           repositoryId: repair.repositoryId,
           branch: repair.branch,
-        }, { allowFallback: true, reason: 'repository_preflight_recovery' }).catch((repairError) => {
+        }, { allowFallback: true, reason: repositoryCredentialMissing ? 'repository_credentials' : 'repository_preflight_recovery' }).catch((repairError) => {
           console.warn(`[repository] preflight workspace recovery failed session=${sessionId}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
         });
         return null;
