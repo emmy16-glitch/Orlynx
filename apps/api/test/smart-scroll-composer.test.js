@@ -76,11 +76,22 @@ describe('only visible content moves the viewport (§103)', () => {
 });
 
 describe('wired follow behavior in ProductionApp (§§83-88, 94-96, 100)', () => {
-  it('scroll listener tracks intent; growth never writes follow state', () => {
+  it('scroll listener exits live-follow on the first upward movement', () => {
     const src = app();
+    assert.match(src, /const movingUp = currentTop \+ 2 < lastScrollTopRef\.current/);
+    assert.match(src, /if \(movingUp\) \{\s*nearBottomRef\.current = false;\s*return;/);
     assert.match(src, /followAfterUserScroll\(distance\)/);
-    assert.match(src, /distanceFromBottom\(document\.documentElement\.scrollHeight/);
+    assert.match(src, /distanceFromBottom\(document\.documentElement\.scrollHeight, currentTop/);
     assert.match(src, /import \{ distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior \} from '\.\/ui\/scroll'/);
+  });
+
+  it('sending a new message explicitly resumes live-follow', () => {
+    const src = app();
+    const start = src.indexOf('async function sendMessage(overrideText');
+    const block = src.slice(start, src.indexOf('const [retrying', start));
+    assert.match(block, /nearBottomRef\.current = true/);
+    assert.match(block, /lastScrollTopRef\.current = window\.scrollY/);
+    assert.match(block, /setNewActivity\(false\)/);
   });
 
   it('New activity raises only for visible batches', () => {

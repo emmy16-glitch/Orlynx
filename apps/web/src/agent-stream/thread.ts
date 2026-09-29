@@ -46,6 +46,8 @@ export function buildThread(
 ): ThreadTurn[] {
   const turns: ThreadTurn[] = [];
   const byKey = new Map<string, ThreadTurn>();
+  const turnsByRun = new Map<string, ThreadTurn[]>();
+  const turnByUserMessage = new Map<string, ThreadTurn>();
 
   const ensureTurn = (key: string, runId?: string): ThreadTurn => {
     let turn = byKey.get(key);
@@ -57,117 +59,154 @@ export function buildThread(
     return turn;
   };
 
-  // 1. Durable messages own turns. New rows carry explicit runId. The
-  // msg_<runId> convention remains only as a legacy-history fallback.
-  const assistantByRun = new Map<string, PersistedChatMessage>();
+  const messageTime = (message?: PersistedChatMessage): number => {
+    const value = message ? Date.parse(message.createdAt) : Number.NaN;
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  const registerRunTurn = (runId: string, turn: ThreadTurn) => {
+    const list = turnsByRun.get(runId) || [];
+    if (!list.some((item) => item.key === turn.key)) {
+      list.push(turn);
+      list.sort((a, b) => messageTime(a.userMessage) - messageTime(b.userMessage) || a.key.localeCompare(b.key));
+      turnsByRun.set(runId, list);
+    }
+  };
+
+  const turnForRunAt = (runId: string, timestamp?: string): ThreadTurn => {
+    const existing = turnsByRun.get(runId) || [];
+    if (!existing.length) {
+      const fallback = ensureTurn(`run:${runId}`, runId);
+      registerRunTurn(runId, fallback);
+      return fallback;
+    }
+
+    const ordered = [...existing].sort((a, b) => messageTime(a.userMessage) - messageTime(b.userMessage) || a.key.localeCompare(b.key));
+    const eventTime = timestamp ? Date.parse(timestamp) : Number.NaN;
+    if (!Number.isFinite(eventTime)) return ordered[ordered.length - 1];
+
+    // Keep work below the user message that was current when that work
+    // happened. This prevents a later same-run follow-up from jumping above
+    // already-rendered tool output while the run is still streaming.
+    let candidate = ordered[0];
+    for (const turn of ordered) {
+      if (messageTime(turn.userMessage) <= eventTime) candidate = turn;
+      else break;
+    }
+    return candidate;
+  };
+
+  const runByInitialMessage = new Map<string, string>();
+  for (const run of Object.values(stream.runs)) {
+    if (run.userMessageId) runByInitialMessage.set(run.userMessageId, run.id);
+  }
+
+  // Every human message is its own visual turn, even when several messages
+  // intentionally steer the same execution run. Execution identity and visual
+  // chronology are related but not the same thing.
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const runId = message.runId || runByInitialMessage.get(message.id);
+    const turn = ensureTurn(`user:${message.id}`, runId);
+    turn.userMessage = message;
+    turn.userMessageId = message.id;
+    turn.userMessages = [message];
+    turnByUserMessage.set(message.id, turn);
+    if (runId) registerRunTurn(runId, turn);
+  }
+
+  // Durable assistant messages finish the latest visual segment of their run.
+  // The msg_<runId> convention remains only as a legacy-history fallback.
   for (const message of messages) {
     if (message.role !== 'assistant') continue;
     const runId = message.runId || (message.id.startsWith('msg_') ? message.id.slice(4) : '');
-    if (runId) assistantByRun.set(runId, message);
-  }
-  // User messages: each starts (or joins) a turn. Run linkage comes from the
-  // stream's run.userMessageId when available.
-  const userTurnKey = new Map<string, string>();
-  for (const message of messages) {
-    if (message.role !== 'user') continue;
-    const runId = message.runId || Object.values(stream.runs).find((run) => run.userMessageId === message.id)?.id;
-    const key = runId ? `run:${runId}` : `user:${message.id}`;
-    const turn = ensureTurn(key, runId);
-    if (!turn.userMessages.some((item) => item.id === message.id)) turn.userMessages.push(message);
-    // Keep the newest user message as the convenient prompt pointer while
-    // preserving every follow-up in userMessages for rendering.
-    turn.userMessage = message;
-    turn.userMessageId ||= message.id;
-    userTurnKey.set(message.id, key);
-  }
-
-  // 2. Attach durable assistant messages to their run turn.
-  for (const [runId, message] of assistantByRun) {
-    const turn = ensureTurn(`run:${runId}`, runId);
+    if (!runId) {
+      ensureTurn(`assistant:${message.id}`).assistantMessage = message;
+      continue;
+    }
+    const turn = turnForRunAt(runId, message.createdAt);
     turn.assistantMessage = message;
-    if (!turn.userMessage) {
-      const run = stream.runs[runId];
-      if (run?.userMessageId) {
-        const user = messages.find((m) => m.id === run.userMessageId);
-        if (user) {
-          turn.userMessage = user;
-          if (!turn.userMessages.some((item) => item.id === user.id)) turn.userMessages.push(user);
-          turn.userMessageId ||= user.id;
-        }
-      }
-    }
   }
 
-  // 3. Attach live (streaming) replies to their run turn.
+  // Live text belongs to the newest human message in the same run. As a user
+  // steers an active task, the response continues beneath that new message
+  // instead of remaining attached to the first prompt and later reshuffling.
   for (const reply of liveReplies) {
-    const turn = ensureTurn(`run:${reply.runId}`, reply.runId);
-    // Newest live text wins per run; runs never concatenate into one bubble.
-    if (!turn.liveReply || reply.messageId === turn.liveReply.messageId) {
-      turn.liveReply = reply;
-    } else {
-      // A second live message for the same run (should be rare) — keep the
-      // longest stream to avoid flicker, they share one run lifecycle.
-      turn.liveReply = reply.text.length >= turn.liveReply.text.length ? reply : turn.liveReply;
+    const exact = reply.userMessageId ? turnByUserMessage.get(reply.userMessageId) : undefined;
+    const hasRunTurns = (turnsByRun.get(reply.runId) || []).length > 0;
+    const turn = hasRunTurns ? turnForRunAt(reply.runId) : exact || turnForRunAt(reply.runId);
+    if (!hasRunTurns && exact) {
+      exact.runId = reply.runId;
+      registerRunTurn(reply.runId, exact);
     }
+    turn.liveReply = reply;
     if (!turn.userMessage && reply.userMessageId) {
-      const user = messages.find((m) => m.id === reply.userMessageId);
+      const user = messages.find((message) => message.id === reply.userMessageId && message.role === 'user');
       if (user) {
         turn.userMessage = user;
-        if (!turn.userMessages.some((item) => item.id === user.id)) turn.userMessages.push(user);
-        turn.userMessageId ||= user.id;
+        turn.userMessageId = user.id;
+        turn.userMessages = [user];
       }
     }
   }
 
-  // 4. Attach work items to the run that owns them.
+  // Tool/activity work is placed according to when it occurred, not simply
+  // under the first prompt that owns the execution run.
   const orphaned: ActivityItem[] = [];
   for (const item of activities) {
     const runId = runOfActivity(item);
-    if (runId) {
-      ensureTurn(`run:${runId}`, runId).work.push(item);
-    } else {
-      orphaned.push(item);
+    if (runId) turnForRunAt(runId, item.timestamp).work.push(item);
+    else orphaned.push(item);
+  }
+
+  // Legacy work without run identity goes under the nearest preceding human
+  // message. It must never float above later conversation content.
+  for (const item of orphaned) {
+    const eventTime = Date.parse(item.timestamp);
+    const candidates = turns
+      .filter((turn) => turn.userMessage && (!Number.isFinite(eventTime) || messageTime(turn.userMessage) <= eventTime))
+      .sort((a, b) => messageTime(a.userMessage) - messageTime(b.userMessage));
+    const target = candidates[candidates.length - 1] || turns[turns.length - 1] || ensureTurn('legacy:orphaned');
+    target.work.push(item);
+  }
+
+  // Only the newest visual segment of a shared execution run is live. Earlier
+  // segments remain stable while the backend continues the same task.
+  for (const [runId, group] of turnsByRun) {
+    const ordered = [...group].sort((a, b) => messageTime(a.userMessage) - messageTime(b.userMessage) || a.key.localeCompare(b.key));
+    const latest = ordered[ordered.length - 1];
+    const run = stream.runs[runId];
+    for (const turn of ordered) {
+      if (turn !== latest) {
+        turn.state = 'completed';
+        continue;
+      }
+      if (run) {
+        turn.state = run.state === 'running' ? 'streaming' : run.state === 'queued' ? 'queued' : run.state;
+      } else if (turn.liveReply) {
+        turn.state = turn.liveReply.state === 'streaming' ? 'streaming' : turn.liveReply.state;
+      } else if (turn.assistantMessage) {
+        turn.state = 'completed';
+      }
     }
   }
 
-  // 5. Run state per turn (server-authoritative run record first, stream second).
   for (const turn of turns) {
-    if (!turn.runId) {
-      turn.state = turn.assistantMessage ? 'completed' : 'idle';
-      continue;
-    }
-    const run = stream.runs[turn.runId];
-    if (run) {
-      turn.state = run.state === 'running' ? 'streaming' : run.state === 'queued' ? 'queued' : run.state;
-    } else if (turn.liveReply) {
-      turn.state = turn.liveReply.state === 'streaming' ? 'streaming' : turn.liveReply.state;
-    } else if (turn.assistantMessage) {
-      turn.state = 'completed';
-    }
+    if (turn.runId) continue;
+    turn.state = turn.assistantMessage ? 'completed' : 'idle';
   }
 
-  // Orphaned work (no run linkage — legacy history) attaches after the
-  // nearest preceding user turn so it never floats above the conversation.
-  if (orphaned.length) {
-    const fallback = turns.length ? turns[turns.length - 1] : ensureTurn('legacy:orphaned');
-    fallback.work.push(...orphaned);
-  }
-
-  // Stable chronological order: anchor each turn to its user message time,
-  // then first work sequence. Never re-sort on every delta (no jumping rows).
   const timeOf = (turn: ThreadTurn): number => {
-    if (turn.userMessages.length) {
-      const times = turn.userMessages.map((message) => Date.parse(message.createdAt)).filter(Number.isFinite);
-      if (times.length) return Math.min(...times);
-    }
-    if (turn.userMessage) return Date.parse(turn.userMessage.createdAt) || 0;
+    if (turn.userMessage) return messageTime(turn.userMessage);
+    if (turn.assistantMessage) return messageTime(turn.assistantMessage);
     const first = turn.work[0];
     return first ? Date.parse(first.timestamp) || 0 : 0;
   };
+
+  // Keys and original message timestamps are stable, so streaming deltas mutate
+  // existing rows rather than causing the transcript to reorganize at finish.
   turns.sort((a, b) => timeOf(a) - timeOf(b) || a.key.localeCompare(b.key));
   for (const turn of turns) {
-    turn.userMessages.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
-    if (turn.userMessages.length) turn.userMessage = turn.userMessages[turn.userMessages.length - 1];
     turn.work.sort((a, b) => (a.sequence || 0) - (b.sequence || 0) || a.key.localeCompare(b.key));
   }
   return turns;

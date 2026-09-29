@@ -41,6 +41,9 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
     ['changes', 'tests', 'build', 'commit', 'publish'],
   );
   assert.deepEqual(verificationRequirementsFor('explain how this file works'), []);
+  assert.deepEqual(verificationRequirementsFor('Any update on main repo?'), []);
+  assert.deepEqual(verificationRequirementsFor("What's the update on the branch?"), []);
+  assert.deepEqual(verificationRequirementsFor('update the README and tests'), ['changes', 'tests']);
   assert.deepEqual(verificationRequirementsFor('start localhost and verify preview'), ['preview']);
   assert.deepEqual(verificationRequirementsFor('check online for the latest official docs'), ['browser']);
 });
@@ -110,6 +113,11 @@ test('step budget warns, forces finalization, and disables salvage at the hard b
 test('active-turn steering classifies source-style APPEND REPLACE STOP behavior', () => {
   assert.equal(steeringActionFor('also check mobile reconnect'), 'append');
   assert.equal(steeringActionFor('make sure WAV still works'), 'append');
+  assert.equal(steeringActionFor('Any update on main repo?'), 'append');
+  assert.equal(steeringActionFor('what have you done so far?'), 'append');
+  assert.equal(steeringActionFor('finish it'), 'append');
+  assert.equal(steeringActionFor('???'), 'append');
+  assert.equal(steeringActionFor('Start localhost'), 'ignore');
   assert.equal(steeringActionFor('forget recording, only check reconnect'), 'replace');
   assert.equal(steeringActionFor('instead only fix MP3'), 'replace');
   assert.equal(steeringActionFor('stop'), 'stop');
@@ -360,7 +368,9 @@ test('active message admission continues the same task across direct and workspa
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   assert.match(routes, /const requestedSteeringAction = steeringActionFor\(String\(text\)\)/);
   assert.match(routes, /filter\(\(item\) => \['running', 'waiting_approval', 'waiting_input'\]\.includes\(item\.state\)\)/);
-  assert.match(routes, /requestedSteeringAction === 'ignore' \? 'append' : requestedSteeringAction/);
+  assert.match(routes, /const explicitContinuation = requestedSteeringAction !== 'ignore'/);
+  assert.match(routes, /unresolvedTask\.state === 'running' && !closingPhase && explicitContinuation/);
+  assert.doesNotMatch(routes, /requestedSteeringAction === 'ignore' \? 'append' : requestedSteeringAction/);
   assert.match(routes, /const closingPhase = unresolvedTask\?\.harness\?\.phase === 'verifying' \|\| unresolvedTask\?\.harness\?\.phase === 'finalizing'/);
   assert.match(routes, /queueAfterActive = Boolean\(unresolvedTask && \(explicitQueue \|\| !activeTask\)\)/);
   assert.match(routes, /if \(publishIntent && !queueAfterActive\)/);

@@ -367,6 +367,7 @@ export default function ProductionApp() {
   const sessionRefreshesRef = useRef(new Map<string, Promise<void>>());
   const ptyRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(typeof window === 'undefined' ? 0 : window.scrollY);
   const repoLoadAttempt = useRef(false);
 
   const refreshIntegrations = useCallback(async () => {
@@ -556,6 +557,11 @@ export default function ProductionApp() {
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
+    // Opening a conversation means start at its live edge. A scroll-away state
+    // from the previously viewed project must never leak into this session.
+    nearBottomRef.current = true;
+    lastScrollTopRef.current = window.scrollY;
+    setNewActivity(false);
     setSession(record); currentSessionRef.current = record;
     try {
       localStorage.setItem(LAST_SESSION, JSON.stringify({ id: record.id, project: record.project }));
@@ -805,10 +811,18 @@ export default function ProductionApp() {
   }, [theme]);
 
   useEffect(() => {
-    // READING_HISTORY vs FOLLOWING_LIVE is user intent: this handler runs only
-    // on real scroll input. Content growth never touches follow state (§91).
+    // The first upward movement means "I am reading history" immediately.
+    // Waiting until the user is >140px from the bottom lets the next streaming
+    // token snap a mobile viewport back down and makes scrolling feel stuck.
     const onScroll = () => {
-      const distance = distanceFromBottom(document.documentElement.scrollHeight, window.scrollY, window.innerHeight);
+      const currentTop = window.scrollY;
+      const movingUp = currentTop + 2 < lastScrollTopRef.current;
+      lastScrollTopRef.current = currentTop;
+      if (movingUp) {
+        nearBottomRef.current = false;
+        return;
+      }
+      const distance = distanceFromBottom(document.documentElement.scrollHeight, currentTop, window.innerHeight);
       const following = followAfterUserScroll(distance);
       nearBottomRef.current = following;
       if (following) setNewActivity(false);
@@ -1115,6 +1129,12 @@ export default function ProductionApp() {
     if (!session || !text || submittingRef.current || sending || !online) return false;
     if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return false; }
     submittingRef.current = true;
+    // Sending a message is explicit intent to return to the live edge. Without
+    // this reset, a user who had scrolled up can submit successfully while the
+    // new turn renders outside the viewport.
+    nearBottomRef.current = true;
+    lastScrollTopRef.current = window.scrollY;
+    setNewActivity(false);
     setSending(true); setError('');
     const clientId = uid();
     try {

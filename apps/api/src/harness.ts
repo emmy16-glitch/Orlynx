@@ -38,8 +38,17 @@ const DEFAULT_BUDGETS: Record<'direct' | 'workspace', number> = {
 export function verificationRequirementsFor(prompt: string): string[] {
   const value = String(prompt || '').toLowerCase();
   const required = new Set<string>();
+  // "Any update on main?" is a status question, not a request to edit files.
+  // Treat update as a mutation only when the prompt is not clearly asking for
+  // progress/status. Strong mutation verbs remain authoritative.
+  const statusUpdateQuery = /^(?:what(?:'s| is)?|any|give me|show me|tell me|check)\s+(?:the\s+)?(?:latest\s+|current\s+)?(?:update|updates|status|progress)\b/.test(value)
+    || /^(?:update|updates)\s+(?:on|about|from|for)\b/.test(value)
+    || /^(?:update|updates)\s*[?!.]*$/.test(value)
+    || /\b(?:what(?:'s| is)|any)\s+(?:new\s+)?updates?\s+(?:on|in|from|for|about)\b/.test(value);
+  const explicitMutation = /\b(fix|implement|edit|change|refactor|rewrite|add|remove|rename)\b/.test(value)
+    || (/\bupdate\b/.test(value) && !statusUpdateQuery);
 
-  if (/\b(fix|implement|edit|change|update|refactor|rewrite|add|remove|rename)\b/.test(value)) required.add('changes');
+  if (explicitMutation) required.add('changes');
   if (/\b(test|tests|testing|pytest|npm test|unit test|e2e|playwright)\b/.test(value)) required.add('tests');
   if (/\b(build|compile|typecheck|lint)\b/.test(value)) required.add('build');
   if (/\bcommit\b/.test(value)) required.add('commit');
@@ -196,6 +205,12 @@ export function steeringActionFor(text: string): SteeringAction {
   if (/^(?:please\s+)?(?:stop|cancel|abort|halt|never\s*mind|nevermind)(?:\s+(?:it|this|that|the\s+task|current\s+task|the\s+current\s+task|current\s+job|the\s+current\s+job|job))?[.!?\s]*$/.test(value)) return 'stop';
   if (/\b(?:forget|ignore)\s+(?:that|the\s+(?:previous|original)|what\s+i\s+said)|\binstead\b|\bchange\s+(?:the\s+)?request\b|\bonly\s+(?:do|check|fix|work)\b/.test(value)) return 'replace';
   if (/^(?:also|and\s+also|additionally|plus)\b|\bmake\s+sure\b|\bdon't\s+forget\b|\bwhile\s+you(?:'re|\s+are)\b/.test(value)) return 'append';
+  // Referential status/follow-up language continues the active task. An
+  // unrelated new imperative (for example "start localhost" while a status
+  // check is still running) remains "ignore" so admission creates the next
+  // distinct turn instead of silently merging two requests.
+  if (/^(?:what(?:'s| is)\s+(?:the\s+)?(?:update|status|progress|happening|going\s+on)|any\s+(?:new\s+)?updates?|what\s+have\s+you\s+(?:done|found)|have\s+you\s+(?:done|fixed|finished)|how\s+far|finish(?:\s+it|\s+up)?|continue|carry\s+on|keep\s+going|check\s+again|still\s+check|try\s+again|retry)\b/.test(value)) return 'append';
+  if (/^[?!.]{2,}$/.test(value)) return 'append';
 
   return 'ignore';
 }

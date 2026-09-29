@@ -6,9 +6,11 @@ Orlynx treats scroll position as user intent.
 
 When the reader is near the newest content, streamed assistant output and meaningful work can keep the page pinned to the latest point.
 
-If the user scrolls upward, follow mode stops immediately.
+If the user scrolls upward, follow mode stops on the first upward movement, even if the viewport is still technically near the bottom. This prevents the next streaming token from pulling a mobile reader back down.
 
 Incoming output continues below and a New activity affordance returns the reader to the newest content.
+
+Sending a new message is explicit intent to return to live conversation, so Send clears reading-history mode and resumes follow at the newest turn. Opening a different durable conversation also starts at that conversation's live edge.
 
 Orlynx must never repeatedly yank the viewport downward while the user is reading older history.
 

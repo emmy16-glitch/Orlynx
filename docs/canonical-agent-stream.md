@@ -174,9 +174,9 @@ Preview/runtime truth stays outside the chat event protocol entirely.
 
 The current protocol projection also preserves same-run user continuation.
 
-Multiple durable user messages can carry the same runId and project into one stable ThreadTurn. The first message remains the turn anchor; later follow-ups remain individually preserved and render in order.
+Multiple durable user messages can carry the same runId when they genuinely steer one active task, but each human message projects as its own chronological visual turn. Work is attached beneath the human message that was current when the work happened, and the live/final response stays beneath the newest message in that run. This keeps the transcript stable while streaming instead of collapsing later messages upward and reorganizing after completion.
 
-Explicit next-task intent is represented by a separate durable queued task rather than another message inside the active run.
+Referential continuation such as “any update?”, “finish it”, “check again” and “also…” stays on the active run. An unrelated new request is a distinct turn; if earlier work is still unresolved, the scheduler queues it behind that work rather than silently merging the two requests. Explicit queue language still forces next-task intent.
 
 ### Investigation grouping
 

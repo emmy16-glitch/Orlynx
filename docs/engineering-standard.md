@@ -42,11 +42,13 @@ A model statement is not evidence.
 
 ## 3. Same-goal continuation
 
-Natural follow-ups should continue the active goal.
+Natural, referential follow-ups should continue the active goal.
 
-Do not create a new run just because a new chat message arrived.
+Do not create a new run just because a new chat message arrived, but do not merge an unrelated new request merely because an older run is still technically active.
 
-Only explicit next-task intent should create separate queued work.
+If a new request is unrelated and earlier work is unresolved, preserve it as a distinct turn and queue it sequentially. Explicit queue language must always remain distinct next-task intent.
+
+Same-run follow-ups still render as separate chronological human turns so streaming never moves a later message above already-visible work.
 
 This rule must be tested around finalization races.
 
