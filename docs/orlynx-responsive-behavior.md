@@ -28,8 +28,7 @@ commands from introducing horizontal page overflow.
 ## Mobile and keyboard
 
 - The global rail is replaced by Home/Projects/Agents/Cloud/Settings bottom nav on
-  global screens. A project uses Chat/Files/Changes/Preview/More tabs; Terminal is
-  inside More so the conversation tabs stay easy to reach.
+  global screens. A project keeps the primary mobile navigation centered on Chat/Files/Changes/More; Preview and Terminal remain contextual surfaces so the conversation flow stays easy to reach.
 - Tabs and bottom navigation reserve the device safe-area inset. The composer is
   pinned above project navigation; its text field shrinks before actions do.
 - Context moves into dedicated Cloud/Changes/Preview views instead of squeezing a
@@ -54,3 +53,12 @@ The production build covers all CSS/TS. Automated registry tests protect compone
 presence; no browser automation/emulator is configured. A visual device pass should
 check 360, 390, 412, 768, 1024, 1280, and 1440px, keyboard open/close, rotation,
 scroll follow, long paths, and external preview frame sizing before release.
+
+
+## Queue and Investigation on narrow screens
+
+The durable queue tray must stay above the composer/navigation without covering active work. Queue items expose compact position, prompt, Edit and Cancel controls.
+
+Investigation blocks are scroll-bounded internally when long so they do not expand the entire phone page indefinitely.
+
+Streaming follows the newest output only while the reader remains near the bottom. Scrolling upward disables follow mode.
