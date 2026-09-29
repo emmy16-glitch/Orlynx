@@ -1724,7 +1724,7 @@ router.get('/ai/session/:id', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   const prefs = durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project);
   const activeRun = durableStorageConfigured()
-    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
+    ? (await controlPlaneRepository().listTasks(s.id)).some((r) => ['running', 'waiting_input', 'waiting_approval'].includes(r.state))
     : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
   res.json({ prefs, activeRun, appliesTo: activeRun ? 'next-turn' : 'next-task' });
 });
