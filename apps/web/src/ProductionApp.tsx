@@ -63,6 +63,10 @@ function visibleChatText(role: string, text: string, prompt = ''): string {
   let cleaned = (index >= 0 ? text.slice(index + marker.length) : text)
     .replace(/^\s*Conversation so far:[\s\S]*?Assistant:\s*/i, '')
     .trim();
+  // Reflection diagnostics have their own ordered Investigation surface.
+  // Strip only the leading public diagnostic line from the normal assistant
+  // bubble so the same Model → Orlynx sentence is not rendered twice.
+  cleaned = cleaned.replace(/^Model\s*[→>-]\s*Orlynx:[^\n]*(?:\n+|$)/i, '').trimStart();
   const request = prompt.trim();
 
   // Older workspace runs sent private Orlynx guardrails and the user prompt as
