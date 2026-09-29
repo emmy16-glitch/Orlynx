@@ -21,7 +21,6 @@ import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
-import { warmOpenCodeRuntime } from './opencode-local.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, steeringActionFor, verifyHarness } from './harness.js';
@@ -1650,7 +1649,6 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
 // unified AI layer (engine underneath, one experience on top)
 router.get('/ai/catalog', async (_req, res) => {
-  void warmOpenCodeRuntime();
   try {
     const { models } = await listProviderConnections('', undefined, undefined);
     const catalogModels = models.filter((model) => model.providerId === 'opencode');
@@ -1666,7 +1664,6 @@ router.get('/ai/catalog', async (_req, res) => {
 });
 
 router.get('/ai/overview', async (req, res) => {
-  void warmOpenCodeRuntime();
   const sessionId = String(req.query.sessionId || '');
   const s = sessionId ? ownedSession(req, sessionId) : undefined;
   if (sessionId && !s) return res.status(404).json({ error: 'session not found' });
