@@ -69,7 +69,7 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
 test('Codespace bootstrap provides a private authenticated safe GitHub CLI for Preview forwarding', () => {
   for (const relative of ['../src/runtime-worker.ts', '../../../runtime-worker/src/index.ts']) {
     const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
-    assert.match(source, /ORLYNX_GITHUB_TOKEN/);
+    assert.doesNotMatch(source, /ORLYNX_GITHUB_TOKEN/);
     assert.match(source, /gh version 2\.101\.0/);
     assert.match(source, /9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8/);
     assert.match(source, /b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f/);
