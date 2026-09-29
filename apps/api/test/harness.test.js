@@ -110,6 +110,17 @@ test('step budget warns, forces finalization, and disables salvage at the hard b
   assert.deepEqual(cp.toolFamilies, []);
 });
 
+test('waiting-input transport interruption is accepted and recovered instead of surfacing as a failed send', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(routes, /const transportInterrupted = \/workspace connection interrupted/);
+  assert.match(routes, /markWorkspaceConnectionLost\(waitingWorkspace\.id\)/);
+  assert.match(routes, /reason: 'waiting_input_resume'/);
+  assert.match(routes, /res\.status\(202\)\.json/);
+  assert.match(routes, /recoveringWorkspace: true/);
+  assert.match(routes, /recoveringWorkspace: true/);
+  assert.match(routes, /workspace connection dropped, so Orlynx is reconnecting/i);
+});
+
 test('active-turn steering classifies source-style APPEND REPLACE STOP behavior', () => {
   assert.equal(steeringActionFor('also check mobile reconnect'), 'append');
   assert.equal(steeringActionFor('make sure WAV still works'), 'append');

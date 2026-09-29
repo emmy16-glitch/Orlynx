@@ -514,7 +514,16 @@ router.post('/sessions/:id/messages', async (req, res) => {
         const steered = applySteering(waitingInputTask, String(text), 'append', now);
         const waitingWorkspace = await repository.getWorkspace(waitingInputTask.workspaceId).catch(() => null);
 
-        if (waitingWorkspace && (waitingWorkspace.state !== 'ready' || waitingWorkspace.bridgeState !== 'ready')) {
+        const transportInterrupted = /workspace connection interrupted|workspace did not respond|bridge|socket|connection (?:closed|lost|interrupted)|transport/i.test(detail);
+        if (waitingWorkspace && (
+          waitingWorkspace.state !== 'ready'
+          || waitingWorkspace.bridgeState !== 'ready'
+          || transportInterrupted
+        )) {
+          const repairWorkspace = transportInterrupted
+            ? (await markWorkspaceConnectionLost(waitingWorkspace.id).catch(() => null)) || waitingWorkspace
+            : waitingWorkspace;
+
           steered.state = 'queued';
           if (steered.harness) {
             steered.harness = advanceHarnessPhase(steered.harness, 'routing', {
@@ -528,14 +537,16 @@ router.post('/sessions/:id/messages', async (req, res) => {
           emit(s.id, 'run.state', {
             taskId: steered.id,
             state: 'queued',
-            message: 'Your reply was saved. Reconnecting the development environment before continuing the same task.',
+            message: transportInterrupted
+              ? 'Your message was saved. The workspace connection dropped, so Orlynx is reconnecting before continuing.'
+              : 'Your reply was saved. Reconnecting the development environment before continuing the same task.',
           }, steered.runId);
           void scheduleWorkspacePreparation({
-            sessionId: waitingWorkspace.sessionId,
-            userId: waitingWorkspace.userId,
-            projectId: waitingWorkspace.projectId,
-            repositoryId: waitingWorkspace.repositoryId,
-            branch: waitingWorkspace.branch,
+            sessionId: repairWorkspace.sessionId,
+            userId: repairWorkspace.userId,
+            projectId: repairWorkspace.projectId,
+            repositoryId: repairWorkspace.repositoryId,
+            branch: repairWorkspace.branch,
           }, { allowFallback: true, reason: 'waiting_input_resume' }).catch((repairError) => {
             console.warn(`[harness] waiting-input workspace repair failed session=${s.id}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
           });
@@ -546,13 +557,15 @@ router.post('/sessions/:id/messages', async (req, res) => {
             resumed: false,
             continued: true,
             queued: true,
+            recoveringWorkspace: true,
             targetRunId: steered.runId,
           });
         }
 
-        // Keep the reply attached to the existing waiting task even when the
-        // provider/model is temporarily unavailable. Never create a second
-        // task from the same human answer.
+        // If the model/provider is temporarily unavailable while the workspace
+        // transport itself is healthy, preserve the same waiting task. This is
+        // the only case that should reject immediate resume; transport failure
+        // must never make Send look broken.
         await repository.putTask(steered);
         return res.status(503).json({
           message: msg,
