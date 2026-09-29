@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   externalPreviewUrl, extractPortHint, isDevServerCommand, isPreviewablePort,
   preferredPreviewPort, previewAuthorizationExpiresAt, previewDisplayPath,
-  refreshPreviewAuthorization, resolvePreviewInput, usablePreviews,
+  refreshPreviewAuthorization, requiresExternalPreview, resolvePreviewInput, usablePreviews,
 } from '../../web/src/ui/preview.ts';
 import { codespacesPreviewUrl } from '../src/codespaces-preview.ts';
 
@@ -98,6 +98,8 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /async function httpPreviewReady\(port: number\)/);
     assert.match(bridge, /await httpPreviewReady\(port\)/);
     assert.match(bridge, /port === servicePort/);
+    assert.match(bridge, /gh', \[\s*'codespace', 'ports'/);
+    assert.match(bridge, /--json', 'sourcePort,browseUrl,visibility'/);
     assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
     assert.match(gateway, /type: 'preview\.ready'/);
     assert.match(gateway, /verified: true/);
@@ -147,6 +149,24 @@ describe('preview URL safety (§§192, 198-200, 222)', () => {
     assert.equal(renewedUrl.searchParams.get('t'), '2000000600.new');
     assert.equal(renewedUrl.searchParams.get('next'), 'home');
     assert.equal(previewAuthorizationExpiresAt(renewed), 2000000600 * 1000);
+  });
+
+  it('private Codespaces previews use secure external open instead of a blank iframe', () => {
+    const privateCodespace = {
+      port: 5173,
+      visibility: 'private',
+      url: 'https://example-space-5173.app.github.dev/',
+    };
+    const publicCodespace = { ...privateCodespace, visibility: 'public' };
+    assert.equal(requiresExternalPreview(privateCodespace), true);
+    assert.equal(requiresExternalPreview(publicCodespace), false);
+    assert.equal(requiresExternalPreview({ port: 5173, visibility: 'private', url: 'https://runner.example/preview/x/5173/' }), false);
+
+    const src = pane();
+    assert.match(src, /GitHub keeps this Codespaces preview private/);
+    assert.match(src, /Open secure preview/);
+    assert.match(src, /!externalOnly && props\.currentUrl/);
+    assert.match(src, /requiresExternalPreview\(match\) \? onOpenExternal/);
   });
 
   it('TEST 12/13: external open preserves the current same-origin path', () => {
