@@ -35,8 +35,8 @@
   --git-added: #2F7D66;
   --git-modified: #3F6FA8;
   --git-deleted: #C95555;
-  --font-display: "Manrope", "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Source Sans 3", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Manrope", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Manrope", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --text-display: 40px;
   --text-h1: 28px;
