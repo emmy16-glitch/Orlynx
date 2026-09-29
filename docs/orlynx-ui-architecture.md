@@ -2,96 +2,85 @@
 
 ## Product model
 
-Orlynx is not an infrastructure dashboard. The primary user journey is:
+Orlynx is a conversation-first software-development workspace, not an infrastructure dashboard.
 
-```text
+The primary journey is:
+
+~~~text
 Connect GitHub
-→ choose repository
-→ enter project conversation
+→ restore/open repository conversation
 → ask Orlynx to work
-→ watch useful activity
-→ review files/changes
-→ approve publication
-```
+→ watch useful verified activity
+→ review files/changes/Preview
+→ publish through controlled GitHub flow
+~~~
 
-Implementation concepts such as OpenCode, Codespaces, bridge processes and GitHub
-App credentials remain behind the product experience.
+## Cross-device first run
 
-## First run
+GitHub authentication establishes the user identity used to load durable server-owned sessions.
 
-A disconnected user sees a simple GitHub connection path. The full workspace
-navigation is not useful until a repository is available.
-
-GitHub consent happens on GitHub. Orlynx uses the resulting installation to list
-only authorized repositories.
+A fresh browser does not need an existing localStorage pointer. After OAuth, Orlynx hydrates recent conversations from the server and can open the latest durable project.
 
 ## Project shell
 
-The project is chat-first. Mobile primary navigation is:
+Mobile primary project navigation is:
 
 - Chat
 - Files
 - Changes
 - More
 
-The project header keeps repository and branch context visible. Preview, Terminal,
-workspace controls and Settings are contextual or live under More instead of
-competing with Chat as top-level destinations.
+Preview and Terminal remain contextual project surfaces under More/contextual controls.
 
-On larger screens Orlynx may expose more context simultaneously, but it should not
-turn the product into a dashboard of infrastructure modules.
+On desktop, Orlynx may expose more context simultaneously without turning the product into a provider dashboard.
 
-## State and API boundaries
+## Conversation UI
 
-| UI flow | Real integration | Source of truth |
-| --- | --- | --- |
-| Restore/open project | `GET /v1/sessions`, `GET/POST /v1/sessions` | Postgres session/user state in production |
-| Chat + activity | message routes + SSE | durable messages/tasks/events |
-| AI model/mode/access | `/v1/ai/*` | durable session preferences + real OpenCode/provider state |
-| Files/code | session file routes | GitHub when no workspace, workspace bridge when ready |
-| Changes/review | change-set routes | durable change sets + real workspace Git |
-| Publish | `POST /v1/changes/:id/push` | real GitHub push/PR result |
-| GitHub picker | GitHub App routes | live authorized installation repositories |
-| Attachments | multipart session route | durable metadata + workspace transfer |
-| Cloud | session cloud routes | GitHub Codespaces + durable workspace state |
-| Preview | session ports | real workspace bridge port discovery |
-| Terminal | session terminal routes | real PTY in workspace bridge |
+Each logical user goal owns a stable turn/run.
 
-## Session continuity
+Natural follow-ups attach to the active run while steerable.
+Explicit next-task intent appears in the Queue.
+Investigation blocks group safe diagnostic dialogue.
+Typed tool parts expose evidence progressively.
 
-localStorage may remember drafts, theme and a recent session pointer, but it is not
-server truth. Orlynx refreshes recent sessions from the authenticated user's
-durable account state and can recover the latest project on another device.
+The conversation does not render private chain-of-thought.
 
-AI model/mode/access preferences are also stored server-side per session.
+## State/API boundaries
 
-## Streaming
+| UI flow | Source of truth |
+| --- | --- |
+| User identity | GitHub OAuth/App connection |
+| Project restore | durable sessions by GitHub user ID |
+| Messages | Postgres durable messages |
+| Tasks/queue | Postgres durable tasks/harness |
+| Live activity | canonical durable events + SSE |
+| Model/mode/access/agent | durable session prefs + admitted task snapshot |
+| Files | GitHub or ready workspace bridge |
+| Changes | durable change sets + workspace Git |
+| Workspace | WorkspaceProvider + durable workspace row |
+| Preview | verified provider/port forwarding state |
+| Publication | controlled Orlynx GitHub path + receipt/audit |
 
-The browser consumes ordered SSE events with replay by sequence. If the user
-scrolls away from the bottom, Orlynx does not force the viewport down; new activity
-continues below and a New activity affordance returns to the latest point.
+## Infrastructure visibility
 
-On online, focus and foreground transitions the client reconnects and refreshes the
-authoritative session snapshot.
+Normal product copy should say what capability is happening:
 
-## Errors and recovery
+- Preparing workspace
+- Reconnecting development environment
+- AI runtime repairing
+- Preview unavailable
+- Waiting for approval
 
-Normal users see capability-oriented recovery:
+Provider internals are shown only when diagnostic detail helps.
 
-- Connect/Reconnect GitHub
-- Connect AI
-- Start/Retry workspace
-- Review changes
-- Retry publication
+## Error isolation
 
-Operator concepts such as environment variables, app private keys, bridge tokens
-or OpenCode server URLs do not belong in normal product copy.
+An adapter error must not be rendered as total workspace failure.
 
-Production failures remain fail-closed; simplifying the UI must never mean
-pretending a provider succeeded.
+A workspace can remain available for files/Git/shell while OpenCode repairs or is unavailable.
 
-## Accessibility and performance
+## Accessibility / mobile
 
-Controls use touch-sized targets, visible focus, semantic labels and text alongside
-status color. Activity updates are batched; history/raw-output views are bounded;
-screen readers should receive milestone announcements rather than token/log spam.
+Core actions retain touch-sized controls, focus-visible states, textual status, bounded raw output and reduced-motion support.
+
+Streaming must not steal scroll position when the user reads older history.
