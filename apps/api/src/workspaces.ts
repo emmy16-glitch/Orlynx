@@ -62,7 +62,7 @@ export function workspaceShouldAdoptPreferredRunner(
   // persistently non-ready adapter should migrate instead of making each Build
   // turn wait through another OpenCode reconnect cycle.
   if (workspaceFullyReady(workspace)) {
-    return Boolean(adapterState && !['ready', 'busy'].includes(adapterState));
+    return adapterState === 'unavailable' || adapterState === 'failed';
   }
 
   // Once the deployment prefers the warm runner, any legacy Codespace that is
