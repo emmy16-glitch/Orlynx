@@ -118,6 +118,20 @@ describe('canonical agent activity presentation', () => {
     assert.equal(workspace[0].summary, 'stage 649');
   });
 
+  it('labels repository preflight failures as repository issues rather than AI runtime failures', () => {
+    const [row] = toActivities([
+      event(1, 'run.started', { plane: 'workspace', mode: 'build', messageId: 'u-repo' }, 'run-repo'),
+      event(2, 'run.failed', {
+        error: 'Orlynx could not verify the workspace against GitHub before Build: GitHub credentials are unavailable in this workspace.',
+        errorKind: 'repository',
+        recoverable: true,
+      }, 'run-repo'),
+    ]);
+    assert.equal(row.title, 'Repository access needs attention');
+    assert.equal(row.summary, 'Repository access needs attention.');
+    assert.notEqual(row.title, 'AI runtime unavailable');
+  });
+
   it('keeps failures in chat while normal completion remains implicit', () => {
     const rows = toActivities([
       event(1, 'run.started', { plane: 'workspace', messageId: 'u1' }),
