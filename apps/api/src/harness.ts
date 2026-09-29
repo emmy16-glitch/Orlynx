@@ -455,6 +455,7 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     lessonText,
     stagnant,
     'You are the reasoning layer. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
+    'Before calling the next tool, stream exactly one concise public diagnostic line beginning with "Model → Orlynx:". State only the current hypothesis and next check; do not expose private chain-of-thought.',
     'Use tools to test the next hypothesis. Prefer inspection and reversible actions. Do not tell the user a subsystem is broken unless the evidence supports that exact conclusion.',
     'If information or authorization can be obtained with available tools, obtain it yourself. Ask the user only when a required secret, choice, physical action, or permission genuinely cannot be derived or performed.',
     'If user input is genuinely unavoidable, begin the final response with [NEEDS_USER_INPUT] and ask one precise question. Otherwise continue autonomously until verification passes or the reflection budget is exhausted.',
