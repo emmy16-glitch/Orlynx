@@ -14,7 +14,7 @@ test('an existing Codespace never changes the mode/request execution decision', 
   assert.equal(executionPlaneFor('Run git status -sb', 'build'), 'workspace');
 });
 
-test('a ready workspace is reused only for questions that require live mutable state', () => {
+test('a ready workspace preserves Build continuity while Ask and Plan stay lightweight', () => {
   const ready = { state: 'ready', bridgeState: 'ready' };
   const connecting = { state: 'connecting', bridgeState: 'disconnected' };
 
@@ -24,16 +24,21 @@ test('a ready workspace is reused only for questions that require live mutable s
   assert.equal(executionPlaneForSession('Is the dev server running?', 'ask', ready), 'workspace');
   assert.equal(executionPlaneForSession('Show me the current git diff', 'plan', ready), 'workspace');
 
-  // General explanation and planning stay on the fast direct lane even after
-  // a workspace exists. Merely having a Codespace/runner is not a routing rule.
+  // Once Build already has a warm workspace, conversational follow-ups stay
+  // with the same OpenCode/workspace session instead of cold-starting the
+  // separate direct runtime.
+  assert.equal(executionPlaneForSession('Explain the authentication flow', 'build', ready), 'workspace');
+  assert.equal(executionPlaneForSession('Review this architecture and suggest improvements', 'build', ready), 'workspace');
+  assert.equal(executionPlaneForSession('How can we improve everything significantly?', 'build', ready), 'workspace');
+
+  // Ask and Plan retain the fast direct lane unless they explicitly need live
+  // mutable state.
   assert.equal(executionPlaneForSession('Explain this file', 'ask', ready), 'direct');
   assert.equal(executionPlaneForSession('Plan the next fix', 'plan', ready), 'direct');
-  assert.equal(executionPlaneForSession('Explain the authentication flow', 'build', ready), 'direct');
-  assert.equal(executionPlaneForSession('Review this architecture and suggest improvements', 'build', ready), 'direct');
 
-  // A non-ready workspace cannot be trusted for live-state questions; the
-  // direct classifier remains authoritative until the runtime is actually ready.
-  assert.equal(executionPlaneForSession('Explain this file', 'ask', connecting), 'direct');
+  // A non-ready workspace cannot be trusted just to preserve Build continuity;
+  // the direct classifier remains authoritative until it is actually ready.
+  assert.equal(executionPlaneForSession('Explain this file', 'build', connecting), 'direct');
   assert.equal(executionPlaneForSession('Explain this file', 'ask', null), 'direct');
 });
 
