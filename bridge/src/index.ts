@@ -798,9 +798,13 @@ async function httpPreviewReady(port: number): Promise<boolean> {
       signal: AbortSignal.timeout(1_500),
       headers: { Accept: 'text/html,*/*;q=0.8', 'User-Agent': 'Orlynx-Preview-Probe/1.0' },
     });
-    // Any valid HTTP response proves this is a web endpoint. 4xx/5xx still
-    // count as HTTP; the Preview surface can show the application's response.
-    return response.status >= 100 && response.status <= 599;
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    // Preview means a browser surface, not merely "some TCP service speaks
+    // HTTP". Accept successful/redirect responses, and HTML error/login pages,
+    // but reject JSON/text API 4xx roots such as server-dashboard :3001 before
+    // its frontend build exists.
+    return (response.status >= 200 && response.status < 400)
+      || (response.status >= 400 && response.status < 500 && contentType.includes('text/html'));
   } catch {
     return false;
   }
