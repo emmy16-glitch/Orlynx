@@ -178,13 +178,15 @@ Multiple durable user messages can carry the same runId when they genuinely stee
 
 Referential continuation such as “any update?”, “finish it”, “check again” and “also…” stays on the active run. An unrelated new request is a distinct turn; if earlier work is still unresolved, the scheduler queues it behind that work rather than silently merging the two requests. Explicit queue language still forces next-task intent.
 
-### Investigation grouping
+### Investigation streaming
 
 Safe reflection dialogue uses source types agent.dialogue.orlynx and agent.dialogue.model with a reflectionId.
 
-The browser groups matching dialogue into one ordered Investigation N status part.
+The browser adapter maps every Orlynx ↔ Model dialogue event for the same run into one stable Investigation activity identity. The stream store appends each Orlynx or Model line to an ordered dialogue ledger by event sequence, so the UI updates one object in place while the conversation is happening. It must not briefly render separate dialogue rows and reorganize them after completion.
 
-This surface carries useful observation/hypothesis summaries without exposing private hidden chain-of-thought.
+The Investigation surface shows the numbered exchange in chronological order and uses normal page scrolling. It must never create a nested touch-scroll trap inside the conversation.
+
+This surface carries concise evidence questions and model hypotheses/next checks without exposing private hidden chain-of-thought. When Orlynx cannot explain evidence, it asks the selected model directly rather than inventing a diagnosis, then verifies the model's hypothesis with tools.
 
 ### Secret sanitization
 
