@@ -805,7 +805,7 @@ async function codespacePortMetadata(force = false): Promise<Map<number, Codespa
   const cacheKey = `${codespace}:${authToken ? 'auth' : 'anon'}`;
   const now = Date.now();
   if (!force && codespacePortsCache?.key === cacheKey && codespacePortsCache.expiresAt > now) return codespacePortsCache.value;
-  if (!force && codespacePortsPending) return codespacePortsPending;
+  if (codespacePortsPending) return codespacePortsPending;
 
   codespacePortsPending = new Promise((resolve) => {
     const child = spawn('gh', [
@@ -909,11 +909,13 @@ async function ports() {
     const match = line.match(/:(\d+)\s/);
     if (!match) continue;
     const port = Number(match[1]);
+    const loopbackOnly = /(?:^|\s)(?:127(?:\.\d+){3}|\[?::1\]?):\d+\s/.test(line);
     if (
       port <= 1024
       || port === OPENCODE_PORT
       || port === servicePort
       || NON_PREVIEW_PORTS.has(port)
+      || loopbackOnly
     ) continue;
     found.add(port);
   }
