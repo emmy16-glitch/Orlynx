@@ -149,6 +149,17 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
 });
 
 
+test('Codespace bootstrap prewarms Playwright browser dependencies once per version', () => {
+  const source = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  assert.match(source, /ORLYNX_PREWARM_BROWSER_RUNTIME/);
+  assert.match(source, /playwright-cli-\$playwright_version/);
+  assert.match(source, /install-deps chromium/);
+  assert.match(source, /install chromium/);
+  assert.match(source, /libatk-1\.0\.so\.0/);
+  assert.match(source, /playwright-\$playwright_version\.ready/);
+  assert.match(source, /chromium\.launch/);
+});
+
 test('Codespace SSH bootstrap retries transient readiness races instead of one-shot timing out', () => {
   const source = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
   assert.match(source, /ORLYNX_BOOTSTRAP_TIMEOUT_MS \|\| 2 \* 60_000/);
