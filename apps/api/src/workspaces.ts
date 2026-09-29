@@ -75,6 +75,50 @@ export async function getWorkspace(sessionId: string): Promise<WorkspaceRecord |
   return controlPlaneRepository().getWorkspaceBySession(sessionId);
 }
 
+export async function migrateRunnerWorkspaceToCodespacesForCapability(
+  workspace: WorkspaceRecord,
+  capability: string,
+): Promise<WorkspaceRecord> {
+  if (workspace.provider !== 'orlynx-runner') return workspace;
+  const repository = controlPlaneRepository();
+  const runnerProvider = providerForWorkspace(workspace);
+  await runnerProvider.destroy?.(workspace).catch((error) => {
+    console.warn(`[workspace] browser-capability runner cleanup deferred workspace=${workspace.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+  });
+
+  const now = new Date().toISOString();
+  const migrated: WorkspaceRecord = {
+    ...workspace,
+    provider: 'github-codespaces',
+    runnerId: undefined,
+    runnerHostId: undefined,
+    codespaceName: undefined,
+    state: 'creating',
+    bridgeState: 'disconnected',
+    connectionId: undefined,
+    failureCode: undefined,
+    updatedAt: now,
+  };
+  await repository.putWorkspace(migrated);
+  await repository.putWorkspaceAgentAdapter({
+    workspaceId: migrated.id,
+    adapterId: 'opencode',
+    state: 'not_installed',
+    reason: `capability_required:${capability}`,
+    updatedAt: now,
+  });
+  emit(workspace.sessionId, 'workspace.preparing', {
+    stage: 'workspace.capability',
+    provider: 'github-codespaces',
+    capability,
+    message: capability === 'browserE2e'
+      ? 'This task needs a browser-ready runtime · switching environments automatically…'
+      : `Switching environments for required capability: ${capability}…`,
+  });
+  console.warn(`[workspace] migrating runner workspace to Codespaces for capability session=${workspace.sessionId} workspace=${workspace.id} capability=${capability}`);
+  return migrated;
+}
+
 export async function ensureWorkspaceRecord(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   const existing = await repository.getWorkspaceBySession(input.sessionId);
