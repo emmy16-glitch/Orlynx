@@ -58,6 +58,8 @@ test('plain conversation does not start a development environment', () => {
 test('explicit publish language is typo-tolerant and bypasses AI ambiguity', () => {
   assert.equal(publishIntentFor('push to main', 'main'), 'direct');
   assert.equal(publishIntentFor('puhs to main', 'main'), 'direct');
+  assert.equal(publishIntentFor('push to main', 'feature/demo'), null);
+  assert.equal(publishIntentFor('push to master', 'main'), null);
   assert.equal(publishIntentFor('publish it', 'main'), 'direct');
   assert.equal(publishIntentFor('create a PR', 'main'), 'pull-request');
   assert.equal(publishIntentFor('explain how git push works', 'main'), null);
