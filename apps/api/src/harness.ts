@@ -183,6 +183,12 @@ export function consumeHarnessStep(
   return next;
 }
 
+export function queueIntentFor(text: string): boolean {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return /^(?:please\s+)?(?:queue|enqueue)\b|\b(?:queue|enqueue)\s+(?:this|that|it|the\s+(?:task|request))\b|\b(?:after|once)\s+(?:this|that|the\s+current\s+(?:task|work))\s+(?:is\s+)?(?:done|finished|complete)|\bwhen\s+(?:you(?:'re|\s+are)|this\s+is)\s+(?:done|finished)\b|^(?:next\s+task|do\s+this\s+next)\b/i.test(value);
+}
+
 export function steeringActionFor(text: string): SteeringAction {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return 'ignore';
