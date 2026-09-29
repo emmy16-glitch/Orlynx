@@ -39,6 +39,7 @@ try {
   if (savedMode === 'public' || savedMode === 'account') openCodeAuthMode = savedMode;
 } catch {}
 let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
+let forceOpenCodeRestart = process.env.ORLYNX_FORCE_OPENCODE_RESTART === '1';
 
 function rememberOpenCodeAuthMode(mode: OpenCodeAuthMode | undefined): void {
   openCodeAuthMode = mode;
@@ -93,10 +94,32 @@ function safePath(relative = '.'): string {
 }
 
 function output(value: string | Buffer | null | undefined): string { return String(value || '').slice(0, MAX_OUTPUT); }
+
+function codespacesPreviewEnvironment(): NodeJS.ProcessEnv {
+  if (String(process.env.CODESPACES || '').toLowerCase() !== 'true' || !process.env.CODESPACE_NAME) return {};
+  const hosts = new Set(
+    String(process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  // GitHub Codespaces injects trusted development-host suffixes for framework
+  // integrations. Reuse those exact GitHub-owned domains for Vite rather than
+  // editing every repository or setting the unsafe allowedHosts=true.
+  for (const candidate of String(process.env.RAILS_DEVELOPMENT_HOSTS || '').split(',')) {
+    const host = candidate.trim();
+    if (/^\.?[a-z0-9.-]*(?:app\.github\.dev|githubpreview\.dev)$/i.test(host)) hosts.add(host.startsWith('.') ? host : `.${host}`);
+  }
+  const forwardingDomain = String(process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || '').trim().replace(/^\./, '');
+  if (forwardingDomain && /^[a-z0-9.-]+$/i.test(forwardingDomain)) hosts.add(`.${forwardingDomain}`);
+  if (!hosts.size) hosts.add('.app.github.dev');
+  return { __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: [...hosts].join(',') };
+}
+
 function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) if (!/(ORLYNX_WORKSPACE_TOKEN|OPENCODE_SERVER_PASSWORD|TOKEN|SECRET|PRIVATE.?KEY|API.?KEY|CREDENTIAL)/i.test(name)) env[name] = value;
-  return { ...env, ...extra };
+  return { ...env, ...codespacesPreviewEnvironment(), ...extra };
 }
 function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
   const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment(extraEnv) });
@@ -434,26 +457,44 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (!delta) return;
     const before = textParts.get(partID) || '';
     const combined = before + delta;
-    bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
     textParts.set(partID, combined);
     visible += delta;
 
     if (reflectionId > 0 && !reflectionDiagnosticEmitted) {
       const lineEnd = combined.indexOf('\n');
       const firstLine = (lineEnd >= 0 ? combined.slice(0, lineEnd) : combined).trim();
-      if (/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine) && (lineEnd >= 0 || firstLine.length >= 80)) {
+      const diagnostic = /^Model\s*[→>-]\s*Orlynx:/i.test(firstLine);
+      if (diagnostic && (lineEnd >= 0 || firstLine.length >= 80)) {
         reflectionDiagnosticEmitted = true;
         bridgeEvent(ws, 'activity.progress', {
           sourceType: 'agent.dialogue.model',
           reflectionId,
           text: firstLine.slice(0, 420),
         }, taskId, runId);
-      } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
-        // Do not hold or reinterpret normal assistant text when the model does
-        // not follow the diagnostic-line convention.
+        // The diagnostic belongs to the investigation transcript, not the
+        // assistant answer. If the same part already contains post-diagnostic
+        // text, stream only that remainder.
+        if (lineEnd >= 0) {
+          const remainder = combined.slice(lineEnd + 1);
+          if (remainder) bridgeEvent(ws, 'message.delta', { delta: remainder, messagePartId: partID, offset: 0 }, taskId, runId);
+        }
+        return;
+      }
+      if (lineEnd < 0 && /^Model(?:\s*[→>-]\s*(?:Orlynx:?)?)?$/i.test(firstLine)) return;
+      if (lineEnd >= 0 && firstLine && !diagnostic) {
         reflectionDiagnosticEmitted = true;
+        bridgeEvent(ws, 'message.delta', { delta: combined, messagePartId: partID, offset: 0 }, taskId, runId);
+        return;
+      }
+      if (lineEnd < 0 && combined.length < 40) return;
+      if (lineEnd < 0 && !diagnostic) {
+        reflectionDiagnosticEmitted = true;
+        bridgeEvent(ws, 'message.delta', { delta: combined, messagePartId: partID, offset: 0 }, taskId, runId);
+        return;
       }
     }
+
+    bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
   };
 
   const flushTextPart = (partID: string) => {
@@ -694,7 +735,10 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (!assistant) throw new Error('OpenCode finished without an assistant response.');
     if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
 
-    const responseText = assistantText(assistant);
+    const fullResponseText = assistantText(assistant);
+    const responseText = reflectionId > 0
+      ? fullResponseText.replace(/^\s*Model\s*[→>-]\s*Orlynx:[^\n]*(?:\n+|$)/i, '').trimStart()
+      : fullResponseText;
     const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }) as { body?: Array<Record<string, unknown>> };
     const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
     const previewPorts = await ports();
@@ -1047,7 +1091,9 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
 function connect(delay = 0): void {
   setTimeout(async () => {
     openCodeLifecycle = { state: 'starting' };
-    const openCodeStartup = startOpenCode()
+    const restartForRuntimeRefresh = forceOpenCodeRestart;
+    forceOpenCodeRestart = false;
+    const openCodeStartup = startOpenCode(Boolean(OPENCODE_API_KEY), restartForRuntimeRefresh)
       .then((result) => { openCodeLifecycle = result; return result; })
       .catch((error) => {
         openCodeLifecycle = { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 160) : 'startup_failed' };
@@ -1058,7 +1104,7 @@ function connect(delay = 0): void {
       let message: { kind: string; token?: string; commandId?: string; type?: string; payload?: Record<string, unknown> }; try { message = JSON.parse(String(raw)); } catch { return; }
       // The server attaches its message listener after verifying durable
       // workspace state. Wait for its request so HELLO cannot be lost.
-      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.1.0', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', ...[...bridgeAgentAdapters.keys()].map((id) => `agent:${id}`)] })); return; }
+      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.2.0', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', ...[...bridgeAgentAdapters.keys()].map((id) => `agent:${id}`)] })); return; }
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
         if (message.kind === 'AUTHENTICATED') {
