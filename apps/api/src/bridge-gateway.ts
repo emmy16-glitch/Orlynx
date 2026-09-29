@@ -14,6 +14,26 @@ import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-p
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
+import { emitPersisted } from './events.js';
+import type { EventType } from '@orlynx/shared';
+
+async function persistLiveEvent(event: {
+  eventId: string;
+  sessionId: string;
+  workspaceId?: string;
+  taskId?: string;
+  runId?: string;
+  type: EventType;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}) {
+  return emitPersisted(event.sessionId, event.type, event.payload, event.runId, {
+    eventId: event.eventId,
+    taskId: event.taskId,
+    workspaceId: event.workspaceId,
+    timestamp: event.timestamp,
+  });
+}
 
 async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
   const repository = controlPlaneRepository();
@@ -88,7 +108,7 @@ async function persistAdapterState(claims: BridgeClaims, adapterId: string, adap
     : 'unavailable';
   const now = new Date().toISOString();
   await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, updatedAt: now });
-  await repository.appendEvent({
+  await persistLiveEvent({
     eventId: `evt_${uuid()}`,
     sessionId: claims.sessionId,
     workspaceId: claims.workspaceId,
@@ -131,7 +151,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
       ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
       : 'unavailable';
     await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state: adapterState, reason: adapter.reason, updatedAt: now });
-    await repository.appendEvent({
+    await persistLiveEvent({
       eventId: `evt_${uuid()}`,
       sessionId: claims.sessionId,
       workspaceId: claims.workspaceId,
@@ -142,7 +162,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
   }
 
   if (workspaceReady) {
-    await repository.appendEvent({
+    await persistLiveEvent({
       eventId: `evt_${uuid()}`,
       sessionId: claims.sessionId,
       workspaceId: claims.workspaceId,
@@ -341,7 +361,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               store.save();
             }
 
-            await repository.appendEvent({
+            await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
               taskId,
@@ -399,7 +419,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
             });
 
-            await repository.appendEvent({
+            await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
               taskId,
@@ -417,7 +437,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               .filter((item) => Number.isInteger(item.port) && item.port > 1024 && item.port < 65536)
             : [];
           for (const preview of verifiedPreviewPorts) {
-            await repository.appendEvent({
+            await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
               taskId,
@@ -444,8 +464,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               memoryRun.finishedAt = now;
               store.save();
             }
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed.' } });
+            await persistLiveEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: now, payload: {} });
+            await persistLiveEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'run.completed', timestamp: now, payload: { summary: 'Work completed.' } });
             await promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
           }
@@ -536,7 +556,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               memoryRun.finishedAt = undefined;
               store.save();
             }
-            await repository.appendEvent({
+            await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
               taskId,
@@ -557,7 +577,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             try {
               const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId);
               const publishedAt = new Date().toISOString();
-              await repository.appendEvent({
+              await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
                 taskId,
@@ -642,7 +662,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 runId: runId || undefined,
                 createdAt: waitingAt,
               });
-              await repository.appendEvent({
+              await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
                 taskId,
@@ -652,7 +672,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 timestamp: waitingAt,
                 payload: { state: 'waiting_input', message: requiredUserInput },
               });
-              await repository.appendEvent({
+              await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
                 taskId,
@@ -687,7 +707,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
               const missing = task.harness.verification.missing.join(', ');
               const contradiction = task.harness.contradictions?.[0] || '';
-              await repository.appendEvent({
+              await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
                 taskId,
@@ -760,8 +780,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               store.save();
             }
 
-            await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: failedAt, payload: {} });
-            await repository.appendEvent({
+            await persistLiveEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: failedAt, payload: {} });
+            await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
               taskId,
@@ -790,7 +810,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               provider: memoryRun?.provider,
             }).catch(() => []);
             if (learned.length) {
-              await repository.appendEvent({
+              await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
                 taskId,
@@ -842,8 +862,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             store.save();
           }
 
-          await repository.appendEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: completedAt, payload: {} });
-          await repository.appendEvent({
+          await persistLiveEvent({ eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId, workspaceId: claims.workspaceId, type: 'message.end', timestamp: completedAt, payload: {} });
+          await persistLiveEvent({
             eventId: `evt_${uuid()}`,
             sessionId: claims.sessionId,
             taskId,
@@ -960,7 +980,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           payload,
           message.event.eventId,
         );
-        await repository.appendEvent({
+        await persistLiveEvent({
           eventId,
           sessionId: claims.sessionId,
           workspaceId: claims.workspaceId,
