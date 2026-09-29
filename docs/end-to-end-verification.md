@@ -67,6 +67,17 @@ The test proves that localStorage is only a convenience pointer.
 8. confirm queued work does not run beside active or waiting work;
 9. confirm the next task starts automatically after terminal completion.
 
+## Warm Build continuation scenario
+
+1. start or reuse a Build workspace and complete one model/tool turn;
+2. immediately send an explanatory Build follow-up such as “how can we improve this architecture?”;
+3. confirm the follow-up remains on the same workspace execution plane and same durable conversation;
+4. confirm Orlynx does not cold-start the separate direct OpenCode runtime;
+5. if the workspace adapter is recovering, confirm one live status explains whether OpenCode is starting, reconnecting or busy;
+6. for a legacy Codespace with an unavailable/failed adapter and warm-runner preference enabled, confirm the next Build admission migrates to the runner.
+
+For the direct lane, simulate transient runtime 502/503/504 responses and confirm the status updates through checking/waking/retrying/recovery rather than remaining frozen on one startup label. Confirm the bounded wake timeout fails cleanly if the runtime never recovers.
+
 ## Workspace and adapter scenario
 
 ### Warm runner

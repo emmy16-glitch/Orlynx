@@ -40,6 +40,8 @@ Account-authenticated models use the saved connection appropriate to that provid
 
 Provider deltas are streamed into the existing durable Orlynx run.
 
+If the dedicated direct runtime is cold or temporarily unavailable, runtime readiness is itself streamed as one updating status with concrete stages such as checking, waking, retrying and recovery. The default wake budget is bounded; the UI must not sit on one vague "Starting runtime" message for several minutes.
+
 The API does not buffer a complete response and then fake token animation.
 
 Partial text is checkpointed for recovery.
@@ -74,6 +76,8 @@ Operational timing can record durations/identifiers but not prompts or secret va
 ## Relationship to Build
 
 When the request requires mutable execution, Orlynx routes it to the workspace lane.
+
+When Build already owns a ready workspace, later Build messages remain on that same workspace even when the newest message is explanatory. This preserves the active OpenCode/workspace conversation and avoids switching an ongoing Build conversation onto a separate direct-runtime cold start. Ask and Plan keep the lightweight direct lane unless they explicitly require live mutable workspace state.
 
 Direct and workspace lanes share:
 

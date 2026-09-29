@@ -50,19 +50,24 @@ export function shouldRecoverTransientBridgeClose(authenticated: boolean, code: 
 export function workspaceShouldAdoptPreferredRunner(
   workspace: Pick<WorkspaceRecord, 'provider' | 'state' | 'bridgeState' | 'codespaceName' | 'failureCode'>,
   preferredProvider: 'orlynx-runner' | 'github-codespaces' = defaultWorkspaceProviderId(),
+  adapterState?: 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed',
 ): boolean {
   if (preferredProvider !== 'orlynx-runner' || workspace.provider !== 'github-codespaces') return false;
 
-  // Never steal a healthy Codespace or interrupt one that is actively coming
-  // online. The preferred runner is an upgrade path for legacy *idle/broken*
-  // sessions, not a reason to churn a working environment mid-task.
-  if (workspaceFullyReady(workspace)) return false;
+  // Never interrupt a Codespace that is actively coming online.
   if (workspace.state === 'stopping' || workspaceStartupPending(workspace)) return false;
+
+  // A workspace/bridge can look healthy while the coding adapter repeatedly
+  // drops. When production prefers the warm runner, a legacy Codespace with a
+  // persistently non-ready adapter should migrate instead of making each Build
+  // turn wait through another OpenCode reconnect cycle.
+  if (workspaceFullyReady(workspace)) {
+    return adapterState === 'unavailable' || adapterState === 'failed';
+  }
 
   // Once the deployment prefers the warm runner, any legacy Codespace that is
   // stopped, failed, missing its provider handle, or claims "ready" without a
-  // live bridge should adopt the runner on the next Build request. This avoids
-  // old saved sessions permanently bypassing the new architecture.
+  // live bridge should adopt the runner on the next Build request.
   return true;
 }
 
@@ -74,7 +79,8 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
   const repository = controlPlaneRepository();
   const existing = await repository.getWorkspaceBySession(input.sessionId);
   if (existing) {
-    if (!workspaceShouldAdoptPreferredRunner(existing)) return existing;
+    const adapterState = await repository.getWorkspaceAgentAdapter(existing.id, 'opencode');
+    if (!workspaceShouldAdoptPreferredRunner(existing, defaultWorkspaceProviderId(), adapterState?.state)) return existing;
 
     const now = new Date().toISOString();
     const migrated: WorkspaceRecord = {

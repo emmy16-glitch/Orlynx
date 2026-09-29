@@ -811,7 +811,10 @@ router.post('/sessions/:id/messages', async (req, res) => {
       // runner BEFORE runtime-refresh/reconnect logic mutates the old row into
       // "connecting"; otherwise a stopped legacy Codespace can accidentally
       // keep bypassing the fast architecture forever.
-      if (!workspace || workspaceShouldAdoptPreferredRunner(workspace)) {
+      const workspaceAdapter = workspace
+        ? await repository.getWorkspaceAgentAdapter(workspace.id, selectedAdapterId || 'opencode')
+        : null;
+      if (!workspace || workspaceShouldAdoptPreferredRunner(workspace, undefined, workspaceAdapter?.state)) {
         let repositoryId = workspace?.repositoryId;
         if (!repositoryId) {
           const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());

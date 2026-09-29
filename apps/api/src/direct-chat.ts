@@ -98,15 +98,19 @@ export function executionPlaneForSession(
   const base = executionPlaneFor(text, mode);
   if (base === 'workspace' || !workspace) return base;
 
-  // A ready workspace is used only when the answer depends on mutable runtime
-  // truth. Normal explanation/planning/repository questions stay on the direct
-  // AI lane even after a workspace exists, which preserves the instant-chat
-  // architecture instead of routing every follow-up through OpenCode.
-  if (workspace.state === 'ready'
-    && workspace.bridgeState === 'ready'
-    && needsLiveWorkspaceState(text)) {
-    return 'workspace';
-  }
+  const readyWorkspace = workspace.state === 'ready' && workspace.bridgeState === 'ready';
+  if (!readyWorkspace) return base;
+
+  // Build is a stateful coding conversation. Once its development environment
+  // is already warm, keep subsequent Build turns on that same workspace even
+  // when the newest message is explanatory. Switching a live Build
+  // conversation onto the separate direct runtime loses engine-session
+  // continuity and can make the very next reply pay an unrelated cold start.
+  if (mode === 'build') return 'workspace';
+
+  // Ask/Plan remain lightweight unless the answer explicitly depends on
+  // mutable workspace truth.
+  if (needsLiveWorkspaceState(text)) return 'workspace';
 
   return base;
 }

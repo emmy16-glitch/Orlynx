@@ -214,7 +214,8 @@ test('sleeping free runtime is awaited before the chat session is created', asyn
 
   assert.equal(await streamWithOfficialOpenCode({ ...input(), onStatus: (value) => statuses.push(value) }), 'Awake');
   assert.equal(healthCalls, 2);
-  assert.ok(statuses.includes('Starting AI runtime…'));
+  assert.equal(statuses[0], 'Checking AI runtime…');
+  assert.ok(statuses.some((value) => /AI runtime is waking|AI runtime ready/.test(value)));
 });
 
 test('lost cached OpenCode session is recreated with durable conversation context', async (t) => {
@@ -494,6 +495,15 @@ test('runtime prewarm waits through a transient Render 502 and becomes ready', a
   assert.equal(await warmOpenCodeRuntime(), true);
   assert.equal(await warmOpenCodeRuntime(), true);
   assert.equal(healthCalls, 2);
+});
+
+test('direct runtime recovery has a bounded default wait and progressive status copy', () => {
+  const source = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
+  assert.match(source, /DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 75_000/);
+  assert.match(source, /Checking AI runtime…/);
+  assert.match(source, /AI runtime is waking · retrying connection/);
+  assert.match(source, /AI runtime is taking longer than expected · recovery continues/);
+  assert.match(source, /AI runtime could not recover in time/);
 });
 
 test('runtime default username matches the OpenCode server default', async (t) => {
