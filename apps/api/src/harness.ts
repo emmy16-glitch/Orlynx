@@ -41,7 +41,10 @@ export function verificationRequirementsFor(prompt: string): string[] {
   // "Any update on main?" is a status question, not a request to edit files.
   // Treat update as a mutation only when the prompt is not clearly asking for
   // progress/status. Strong mutation verbs remain authoritative.
-  const statusUpdateQuery = /^(?:what(?:'s| is)?|any|give me|show me|tell me|check)?\s*(?:the\s+)?(?:latest\s+|current\s+)?(?:update|updates|status|progress)\b|\b(?:what(?:'s| is)|any)\s+(?:new\s+)?updates?\s+(?:on|in|from|for|about)\b/.test(value);
+  const statusUpdateQuery = /^(?:what(?:'s| is)?|any|give me|show me|tell me|check)\s+(?:the\s+)?(?:latest\s+|current\s+)?(?:update|updates|status|progress)\b/.test(value)
+    || /^(?:update|updates)\s+(?:on|about|from|for)\b/.test(value)
+    || /^(?:update|updates)\s*[?!.]*$/.test(value)
+    || /\b(?:what(?:'s| is)|any)\s+(?:new\s+)?updates?\s+(?:on|in|from|for|about)\b/.test(value);
   const explicitMutation = /\b(fix|implement|edit|change|refactor|rewrite|add|remove|rename)\b/.test(value)
     || (/\bupdate\b/.test(value) && !statusUpdateQuery);
 
