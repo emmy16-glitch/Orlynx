@@ -17,10 +17,6 @@ export function instantReplyFor(input: {
   const text = input.text.trim();
   const lower = text.toLowerCase();
 
-  if (/^(hi|hello|hey|yo|wass?up|what'?s up|good\s+(morning|afternoon|evening))[!.?\s]*$/i.test(text)) {
-    return `Hi — you're in **${input.project}** on **${input.branch}**. What do you want to work on?`;
-  }
-
   if (/\b(what|which)\s+(repo|repository|project)\b[\s\S]{0,35}\b(connected|open|using|working|currently)\b|\bwhat\s+(repo|repository|project)\s+(are|r)\s+(you|u)\b/i.test(text)) {
     return `Currently connected to **${input.project}** on **${input.branch}**.`;
   }
@@ -65,6 +61,11 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
   }
 
   const target = branch.toLowerCase();
+  const explicitDefaultTarget = /\b(?:origin\/)?(main|master)\b/.exec(normalized)?.[1];
+  // Never translate an explicit branch target into "whatever branch this
+  // conversation currently uses". If the target differs, let the model/workspace
+  // lane reason about switching branches or ask for clarification.
+  if (explicitDefaultTarget && explicitDefaultTarget !== target) return null;
   const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+(?:origin\/)?(?:main|master|current\s+branch|branch))?[.!?\s]*$/.test(normalized);
   if (!direct) return null;
 
