@@ -84,8 +84,8 @@ gh_bin="$(command -v gh 2>/dev/null || true)"
 gh_safe=0
 if test -n "$gh_bin"; then
   gh_line="$("$gh_bin" --version 2>/dev/null | head -n1 || true)"
-  gh_major="$(printf '%s' "$gh_line" | sed -nE 's/^gh version ([0-9]+)\..*/\1/p')"
-  gh_minor="$(printf '%s' "$gh_line" | sed -nE 's/^gh version [0-9]+\.([0-9]+)\..*/\1/p')"
+  gh_major="$(printf '%s' "$gh_line" | sed -nE 's/^gh version ([0-9]+)\\..*/\\1/p')"
+  gh_minor="$(printf '%s' "$gh_line" | sed -nE 's/^gh version [0-9]+\\.([0-9]+)\\..*/\\1/p')"
   if test -n "$gh_major" && test -n "$gh_minor" && { test "$gh_major" -gt 2 || { test "$gh_major" -eq 2 && test "$gh_minor" -ge 98; }; }; then gh_safe=1; fi
 fi
 if test "$gh_safe" -ne 1; then
