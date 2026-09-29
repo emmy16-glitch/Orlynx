@@ -59,6 +59,31 @@ they are absent, Orlynx behaves exactly as before and uses GitHub Codespaces.
 
 The runner endpoint must be HTTPS. Do not expose it without authentication.
 
+## Distributed runner pool
+
+Production Orlynx can treat several runner-manager hosts as one logical execution pool.
+
+```text
+Orlynx control plane
+  -> health-aware pool scheduler
+      -> runner-eu-1 (10 active)
+      -> runner-eu-2 (10 active)
+      -> runner-eu-3 (10 active)
+      -> runner-eu-4 (10 active)
+      -> runner-eu-5 (10 active)
+  -> GitHub Codespaces only after runner-pool recovery/fallback is exhausted
+```
+
+`ORLYNX_RUNNER_HOSTS` supplies stable host identities and HTTPS origins. Each workspace persists its selected `runnerHostId`, so later start/stop/connect/preview calls return to the host that owns that container. The scheduler probes host health, ranks by current load and latency, refuses draining/full hosts, and opens a short circuit after repeated host failures.
+
+`ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES` defaults to 50. Capacity is therefore a pool policy rather than one giant machine. A recommended starting topology is five Docker-capable hosts with `ORLYNX_RUNNER_MAX_WORKSPACES=10` each.
+
+Runner managers expose `capacity`, `running`, `stopped`, `available`, `draining`, host identity and region from `/health`. A host can be drained without killing existing work by setting `ORLYNX_RUNNER_DRAINING=1`; the scheduler simply stops assigning new work there.
+
+Each Docker host also maintains a credential-free bare Git object cache under `ORLYNX_RUNNER_GIT_CACHE_ROOT`. Authentication is used only while refreshing the cache. New isolated workspace containers clone from the local bare cache when possible, then point `origin` back at GitHub. This avoids repeatedly downloading the same repository objects for every new runner.
+
+This pool is horizontally extensible: increasing 50 to 100 or 500 should be a capacity/configuration change, not a new workspace architecture.
+
 ## Runner hosts
 
 Orlynx has two runner-host implementations behind the same provider contract.
