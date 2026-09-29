@@ -10,6 +10,7 @@ RUN npm run build && npm prune --omit=dev
 FROM node:24-bookworm-slim
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.32
+ENV OPENCODE_VERSION=${OPENCODE_VERSION}
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git curl psmisc iproute2 ripgrep python3 python3-pip make g++ \
