@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && corepack enable
 
 RUN useradd --create-home --uid 10001 --shell /bin/bash orlynx \
-    && mkdir -p /workspace /opt/orlynx/bridge /opt/orlynx/opencode /opt/orlynx/bin \
-    && chown -R orlynx:orlynx /workspace /opt/orlynx
+    && mkdir -p /workspace /opt/orlynx/bridge /opt/orlynx/opencode /opt/orlynx/playwright /opt/orlynx/bin /ms-playwright \
+    && chown -R orlynx:orlynx /workspace /opt/orlynx /ms-playwright
 
 COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/dist /opt/orlynx/bridge
 COPY --from=bridge-build --chown=orlynx:orlynx /src/bridge/node_modules /opt/orlynx/bridge/node_modules
