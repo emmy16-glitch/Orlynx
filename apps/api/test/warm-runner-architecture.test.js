@@ -220,7 +220,7 @@ test('Render direct runner provides a single isolated workspace without nested D
   assert.match(source, /current\.state === 'stopped'/);
   assert.match(source, /reassigning stopped workspace/);
   assert.match(source, /current\.state === 'running' && idle >= IDLE_SECONDS/);
-  assert.doesNotMatch(source, /current\.state !== 'stopped' \\|\\| idle < RECLAIM_SECONDS/);
+  assert.doesNotMatch(source, /current\.state !== 'stopped' \|\| idle < RECLAIM_SECONDS/);
   assert.match(source, /git', \['clone', '--filter=blob:none'/);
   assert.match(source, /GIT_CONFIG_KEY_0: 'http\.https:\/\/github\.com\/\.extraheader'/);
   assert.match(source, /spawn\(process\.execPath, \[BRIDGE_PATH\]/);
