@@ -91,8 +91,8 @@ if test "$gh_safe" -ne 1; then
   if test -x "$private_gh" && "$private_gh" --version 2>/dev/null | head -n1 | grep -q "gh version 2.101.0"; then
     gh_bin="$private_gh"
   else
-    archive="$runtime/gh_2.101.0_linux_${gh_arch}.tar.gz"
-    url="https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_${gh_arch}.tar.gz"
+    archive="$runtime/gh_2.101.0_linux_\${gh_arch}.tar.gz"
+    url="https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_\${gh_arch}.tar.gz"
     rm -f "$archive"
     downloaded=0
     if command -v curl >/dev/null 2>&1; then
@@ -104,7 +104,7 @@ if test "$gh_safe" -ne 1; then
       gh_tmp="$runtime/gh-install"
       rm -rf "$gh_tmp"
       mkdir -p "$gh_tmp"
-      if tar -xzf "$archive" -C "$gh_tmp" >/dev/null 2>&1 && cp "$gh_tmp/gh_2.101.0_linux_${gh_arch}/bin/gh" "$private_gh"; then
+      if tar -xzf "$archive" -C "$gh_tmp" >/dev/null 2>&1 && cp "$gh_tmp/gh_2.101.0_linux_\${gh_arch}/bin/gh" "$private_gh"; then
         chmod 700 "$private_gh"
         gh_bin="$private_gh"
       fi
