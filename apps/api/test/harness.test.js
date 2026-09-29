@@ -285,6 +285,21 @@ test('agent memory is user-scoped, relevance-gated, and cannot overwrite another
   assert.match(storage, /WHERE agent_lessons\.user_id=EXCLUDED\.user_id/);
 });
 
+test('public stream redacts secrets and reflection diagnostics are not duplicated into assistant text', () => {
+  const events = fs.readFileSync(new URL('../src/events.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(events, /export function redactSensitiveText/);
+  assert.match(events, /generated\\s\+admin\\s\+token/);
+  assert.match(events, /github_pat_/);
+  assert.match(events, /\\[redacted\\]/);
+  assert.match(gateway, /redactSensitivePayload/);
+  assert.match(gateway, /redactSensitiveText/);
+  assert.match(bridge, /The diagnostic belongs to the investigation transcript, not the/);
+  assert.match(bridge, /fullResponseText\.replace/);
+  assert.match(bridge, /bridgeVersion: '2\.2\.0'/);
+});
+
 test('bridge lifecycle events use the awaited durable live broadcaster', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
   const events = fs.readFileSync(new URL('../src/events.ts', import.meta.url), 'utf8');
