@@ -45,9 +45,13 @@ function allowWebhookRequest(req: Request): boolean {
 
 async function requestUserId(req: Request): Promise<string | null> {
   if (!durableStorageConfigured()) return null;
+  const cached = (req as Request & { orlynxUserId?: string }).orlynxUserId;
+  if (cached) return cached;
   const installationId = requestInstallationId(req);
   if (!installationId) return null;
-  return (await controlPlaneRepository().getGitHubConnectionByInstallation(installationId))?.userId || null;
+  const connection = await controlPlaneRepository().getGitHubConnectionByInstallation(installationId);
+  if (connection?.userId) (req as Request & { orlynxUserId?: string }).orlynxUserId = connection.userId;
+  return connection?.userId || null;
 }
 
 async function recordAudit(req: Request, sessionId: string | undefined, action: string, outcome: string, detail: Record<string, unknown> = {}): Promise<void> {
@@ -96,8 +100,15 @@ router.use(async (req, res, next) => {
     }
   }
   if (req.path === '/integrations/status' && req.query.sessionId && installationId && durableStorageConfigured()) {
-    const session = await controlPlaneRepository().getSession(String(req.query.sessionId));
-    if (session?.installationId === installationId) store.db.sessions[session.id] = session;
+    const repository = controlPlaneRepository();
+    const [session, connection] = await Promise.all([
+      repository.getSession(String(req.query.sessionId)),
+      repository.getGitHubConnectionByInstallation(installationId),
+    ]);
+    if (session && connection?.userId === session.userId) {
+      store.db.sessions[session.id] = session;
+      (req as Request & { orlynxUserId?: string }).orlynxUserId = connection.userId;
+    }
   }
   if (publicEndpoint(req)) return next();
   if ((process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1') && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
@@ -105,12 +116,16 @@ router.use(async (req, res, next) => {
   }
   return requireSession(req, res, async () => {
     if (durableStorageConfigured()) {
+      const repository = controlPlaneRepository();
+      const connection = await repository.getGitHubConnectionByInstallation(requestInstallationId(req));
+      if (connection?.userId) (req as Request & { orlynxUserId?: string }).orlynxUserId = connection.userId;
+
       const pathMatch = req.path.match(/^\/sessions\/([^/]+)/) || req.path.match(/^\/ai\/session\/([^/]+)/);
       const querySessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
       const sessionId = pathMatch?.[1] || querySessionId;
-      if (sessionId && !store.db.sessions[sessionId]) {
-        const session = await controlPlaneRepository().getSession(sessionId);
-        if (session?.installationId === requestInstallationId(req)) store.db.sessions[session.id] = session;
+      if (sessionId && connection?.userId) {
+        const session = await repository.getSession(sessionId);
+        if (session?.userId === connection.userId) store.db.sessions[session.id] = session;
       }
     }
     next();
@@ -118,8 +133,11 @@ router.use(async (req, res, next) => {
 });
 
 function ownedSession(req: Request, id: string) {
-  const session = store.db.sessions[id];
-  return session && session.installationId === requestInstallationId(req) ? session : undefined;
+  const session = store.db.sessions[id] as any;
+  if (!session) return undefined;
+  const userId = (req as Request & { orlynxUserId?: string }).orlynxUserId;
+  if (durableStorageConfigured() && userId && session.userId) return session.userId === userId ? session : undefined;
+  return session.installationId === requestInstallationId(req) ? session : undefined;
 }
 
 
@@ -290,14 +308,23 @@ async function githubFileSnapshot(req: Request, session: any, filename: string) 
 
 async function ownedChangeSession(req: Request, changeId: string): Promise<string> {
   const installationId = requestInstallationId(req);
+  const userId = await requestUserId(req);
   for (const [sessionId, list] of Object.entries(store.db.changes)) {
-    if (store.db.sessions[sessionId]?.installationId === installationId && list.some((change) => change.id === changeId)) return sessionId;
+    const session = store.db.sessions[sessionId] as any;
+    const owned = durableStorageConfigured() && userId && session?.userId
+      ? session.userId === userId
+      : session?.installationId === installationId;
+    if (owned && list.some((change) => change.id === changeId)) return sessionId;
   }
-  if (durableStorageConfigured()) {
+  if (durableStorageConfigured() && userId) {
     const change = await controlPlaneRepository().getChangeSet(changeId);
     if (change) {
       const session = await controlPlaneRepository().getSession(change.sessionId);
-      if (session?.installationId === installationId) { store.db.sessions[session.id] = session; (store.db.changes[session.id] ||= []).push(change); return session.id; }
+      if (session?.userId === userId) {
+        store.db.sessions[session.id] = session;
+        (store.db.changes[session.id] ||= []).push(change);
+        return session.id;
+      }
     }
   }
   return '';
@@ -308,7 +335,7 @@ router.get('/sessions', async (req, res) => {
   if (!durableStorageConfigured()) return res.json([]);
   const userId = await requestUserId(req);
   if (!userId) return res.status(401).json({ error: 'Reconnect GitHub to continue.' });
-  const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 200));
   res.json(await controlPlaneRepository().listSessionsByUser(userId, limit));
 });
 
@@ -329,27 +356,28 @@ router.post('/sessions', async (req, res) => {
     const connection = await repository.getGitHubConnectionByInstallation(installationId);
     const githubRepo = (await githubListRepos(installationId)).find((item) => item.full.toLowerCase() === String(project).toLowerCase());
     if (!connection || !githubRepo) return res.status(409).json({ error: 'Reconnect GitHub before creating a durable project session.' });
-    const existing = (await repository.listSessionsByUser(connection.userId, 50))
+    const existing = (await repository.listSessionsByUser(connection.userId, 200))
       .find((item) =>
-        item.installationId === installationId
-        && item.project.toLowerCase() === String(project).toLowerCase()
+        item.project.toLowerCase() === String(project).toLowerCase()
         && item.branch === String(branch)
       );
     if (existing) {
-      store.db.sessions[existing.id] = existing;
+      const resumed = { ...existing, installationId, updatedAt: new Date().toISOString() };
+      await repository.putSession(resumed);
+      store.db.sessions[resumed.id] = resumed;
       store.save();
       if (shouldPrewarmWorkspace()) {
         await scheduleWorkspacePreparation({
-          sessionId: existing.id,
-          userId: existing.userId,
-          projectId: existing.projectId,
+          sessionId: resumed.id,
+          userId: resumed.userId,
+          projectId: resumed.projectId,
           repositoryId: githubRepo.id,
-          branch: existing.branch,
+          branch: resumed.branch,
         }, { allowFallback: false, reason: 'reopen' }).catch((error) => {
           console.warn(`[workspace] reopen prewarm scheduling failed session=${existing.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
         });
       }
-      return res.json(existing);
+      return res.json(resumed);
     }
   }
 
