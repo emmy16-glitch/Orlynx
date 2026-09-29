@@ -14,7 +14,7 @@ import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-p
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, openCodeToolsFor, prepareReflection, reflectionInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
-import { emitPersisted } from './events.js';
+import { emitPersisted, redactSensitivePayload, redactSensitiveText } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import type { EventType } from '@orlynx/shared';
 
@@ -289,7 +289,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
-        const resultPayload = message.result || { error: message.error || 'Workspace command failed.' };
+        const resultPayload = redactSensitivePayload(message.result || { error: message.error || 'Workspace command failed.' });
         await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
         publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
@@ -381,7 +381,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          const responseText = String(message.result?.responseText || '');
+          const responseText = redactSensitiveText(String(message.result?.responseText || ''));
           const engineSessionId = String(message.result?.engineSessionId || command.payload.engineSessionId || '');
           if (engineSessionId) {
             const adapterId = String(command.payload.adapterId || 'opencode');
