@@ -163,11 +163,17 @@ async function startManagedContainer(name) {
   });
 }
 
-async function touchManagedActivity(name) {
+const managedActivityTouches = new Map();
+
+async function touchManagedActivity(name, force = false) {
+  const now = Date.now();
+  const last = Number(managedActivityTouches.get(name) || 0);
+  if (!force && now - last < 15_000) return;
   await docker(['exec', name, 'sh', '-c', `mkdir -p /home/orlynx/.orlynx/runtime && touch "${ACTIVITY_FILE}"`], {
     allowFailure: true,
     timeoutMs: 5_000,
   });
+  managedActivityTouches.set(name, now);
 }
 
 async function activityEpoch(name, state) {
@@ -231,6 +237,7 @@ function upstreamHeaders(headers, address, port) {
 }
 
 async function proxyPreview(req, res, context) {
+  await touchManagedActivity(context.name);
   const address = await containerAddress(context.name);
   if (!address) return json(res, 404, { error: 'Preview workspace is unavailable.' });
 
@@ -370,7 +377,7 @@ async function connectWorkspace(name, body) {
   const githubToken = String(body.githubToken || '');
   if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword || !githubToken) throw new Error('invalid bridge configuration');
   if (!(await inspect(name))) throw new Error('runner not found');
-  await touchManagedActivity(name);
+  await touchManagedActivity(name, true);
 
   const values = {
     ORLYNX_CONTROL: bridgeUrl,
@@ -463,6 +470,12 @@ server.on('upgrade', (req, socket, head) => {
   if (!preview || preview.denied) { socket.destroy(); return; }
 
   void (async () => {
+    await touchManagedActivity(preview.name);
+    const previewLease = setInterval(() => { void touchManagedActivity(preview.name).catch(() => {}); }, 15_000);
+    previewLease.unref?.();
+    const clearPreviewLease = () => clearInterval(previewLease);
+    socket.once('close', clearPreviewLease);
+    socket.once('error', clearPreviewLease);
     const address = await containerAddress(preview.name);
     if (!address) { socket.destroy(); return; }
     const upstream = http.request({
