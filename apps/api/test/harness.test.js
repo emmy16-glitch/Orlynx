@@ -36,6 +36,7 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
   );
   assert.deepEqual(verificationRequirementsFor('explain how this file works'), []);
   assert.deepEqual(verificationRequirementsFor('start localhost and verify preview'), ['preview']);
+  assert.deepEqual(verificationRequirementsFor('check online for the latest official docs'), ['browser']);
 });
 
 test('harness starts durable and progressively discloses tool families', () => {
@@ -58,6 +59,13 @@ test('harness starts durable and progressively discloses tool families', () => {
   const executing = advanceHarnessPhase(context, 'executing', { mode: 'build', permission: 'full' });
   assert.ok(executing.toolFamilies.includes('terminal'));
   assert.ok(executing.toolFamilies.includes('tests'));
+
+  const researching = advanceHarnessPhase(createHarnessCheckpoint({
+    prompt: 'search the web for the latest official docs', mode: 'build', permission: 'full', plane: 'workspace',
+  }), 'executing', { mode: 'build', permission: 'full' });
+  assert.ok(researching.toolFamilies.includes('browser'));
+  assert.equal(openCodeToolsFor(researching).websearch, true);
+  assert.equal(openCodeToolsFor(researching).webfetch, true);
 
   assert.deepEqual(toolFamiliesFor({ mode: 'ask', permission: 'read-only', phase: 'executing' }), ['repository']);
   assert.equal(openCodeToolsFor({
@@ -155,6 +163,16 @@ test('result verifier uses durable canonical evidence instead of trusting final 
   assert.equal(cp.verification.status, 'passed');
   assert.deepEqual(cp.verification.missing, []);
   assert.deepEqual(cp.verification.satisfied, ['changes', 'tests', 'build', 'commit', 'publish']);
+});
+
+test('browser research verification requires real web tool evidence', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'search the web for the latest official docs',
+    mode: 'build', permission: 'full', plane: 'workspace',
+  });
+  cp = verifyHarness(cp, [evt(1, 'tool.completed', { tool: 'websearch', exitCode: 0 })]);
+  assert.equal(cp.verification.status, 'passed');
+  assert.deepEqual(cp.verification.satisfied, ['browser']);
 });
 
 test('result verifier requests one salvage pass for missing evidence or progress-only text', () => {
