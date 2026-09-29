@@ -1,80 +1,85 @@
-# Workspace runtime (execution plane)
+# Workspace runtime
 
-Orlynx separates the user-facing control plane from repository execution.
+Orlynx separates the user-facing control plane from mutable repository execution.
 
-- Render hosts the API, direct chat, task admission, SSE and bridge gateway.
+- Render hosts the control plane.
 - Postgres is product truth.
-- A workspace provider owns the mutable repository checkout and execution
-  environment.
-- OpenCode is Agent Adapter #1 inside the workspace.
+- WorkspaceProvider owns mutable compute.
+- the authenticated Orlynx bridge exposes execution primitives.
+- OpenCode is Agent Adapter #1.
 
 ## Providers
 
 ### Orlynx Runner
 
-When `ORLYNX_RUNNER_URL` and `ORLYNX_RUNNER_TOKEN` are configured and the
-provider mode is `auto` or `orlynx-runner`, Orlynx prefers a prebuilt runner.
+Preferred when configured.
 
-The runner is prepared in the background after repository selection. The runtime
-already contains Node 24, bridge dependencies and the pinned OpenCode binary.
+The runner uses a prebuilt runtime image containing the bridge and pinned native OpenCode package.
+
+Workspaces can prewarm after repository open.
 
 ### GitHub Codespaces
 
-Codespaces remain supported as the fallback provider. The existing GitHub
-Codespaces lifecycle, SSH bootstrap and recovery code remains available.
+Supported fallback/recovery provider.
 
-This means a runner outage does not strand a durable Build task when fallback is
-enabled.
+Codespaces bootstrap a private Orlynx runtime and install/smoke-test the CPU-compatible native OpenCode package.
 
 ## Bridge
 
-Every workspace runs the same outbound Orlynx bridge.
+The bridge connects outbound to the Orlynx control plane with a short-lived scoped credential.
 
-The bridge authenticates to `/bridge` with a short-lived HMAC credential scoped
-to user, session, workspace and connection IDs.
+It exposes constrained repository operations including:
 
-Commands are persisted before dispatch. A connected bridge receives commands
-immediately over WebSocket. Durable command claiming remains the reconnect and
-cross-instance recovery path.
+- filesystem;
+- PTY/shell;
+- Git;
+- tests/builds;
+- Preview discovery/forwarding;
+- registered agent adapters.
 
-The bridge exposes typed operations rather than an unrestricted remote shell API:
-constrained test/build commands, policy-filtered PTY input, repository-scoped
-files, Git operations, port discovery and registered agent adapters.
+Commands are persisted before relying on the WebSocket fast path.
 
 ## Readiness
 
-Workspace lifecycle remains:
+Workspace readiness and agent readiness are separate.
 
-```text
-not_created -> creating -> starting -> bootstrapping -> connecting -> ready
-                                                    \-> failed
-ready -> stopping -> stopped
-```
+A workspace is ready when the provider environment and authenticated bridge are ready.
 
-`ready` means the provider environment exists and the authenticated bridge is
-connected. Agent adapter health is stored separately.
+OpenCode may still be starting/repairing/unavailable.
 
-A workspace can therefore be usable for shell/files/Git while OpenCode is
-temporarily unavailable.
+This separation is intentional.
+
+## OpenCode self-healing
+
+The bridge resolves the OpenCode executable through multiple known locations.
+
+If none passes a version probe, it installs the pinned native package appropriate for the workspace CPU/libc into a private Orlynx repair directory.
+
+The repaired binary is probed again before server startup.
+
+This protects long-lived/stale workspaces from path drift or missing runtime packages.
+
+## Preview
+
+Workspace Preview is provider-aware.
+
+Warm runner Preview uses the signed runner gateway.
+
+Codespaces Preview uses verified port forwarding and browser-resolvable URLs.
+
+API-only HTTP roots are not accepted as browser Preview.
 
 ## Prewarming
 
-Prewarming is intentionally provider-aware.
+- runner: may prepare asynchronously when repository session opens;
+- Codespaces: normally starts only when execution requires it.
 
-- Orlynx Runner: prepare asynchronously when the durable repository session opens.
-- Codespaces: start only when execution is requested, unless future product
-  policy explicitly changes that.
+Chat should remain usable while prewarming occurs.
 
-Chat never waits for prewarming to finish.
+## Session independence
 
-## Runner host
+Stopping/replacing compute must not delete the project conversation.
 
-The first implementation is under `runner-manager/` and
-`runner-runtime/`. The manager requires a Docker-capable host and creates one
-isolated container per workspace.
+A different device can reconnect to the same durable session and recover current workspace/task state.
 
-A standard Render web service remains the control plane and should not be treated
-as a privileged Docker host.
-
-See [warm-runner-architecture.md](warm-runner-architecture.md) for deployment and
-security details.
+See cloud-workspace-lifecycle.md and warm-runner-architecture.md.
