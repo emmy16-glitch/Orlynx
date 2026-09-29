@@ -237,6 +237,21 @@ test('Build admission proves repository freshness before model execution', () =>
   assert.match(bridge, /state: 'branch_mismatch'/);
 });
 
+test('Codespace repository sync uses native Git credentials without persisting the GitHub token', () => {
+  const runtime = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  const worker = fs.readFileSync(new URL('../../../runtime-worker/src/index.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(runtime, /ORLYNX_GITHUB_TOKEN/);
+  assert.doesNotMatch(worker, /ORLYNX_GITHUB_TOKEN/);
+  const syncBlock = bridge.slice(bridge.indexOf("case 'git.sync':"), bridge.indexOf("case 'git.diff':"));
+  assert.doesNotMatch(syncBlock, /if \(!GITHUB_TOKEN\) throw new Error\('GitHub credentials are unavailable in this workspace\.'\)/);
+  assert.match(syncBlock, /const authEnv = GITHUB_TOKEN \? \{/);
+  assert.match(syncBlock, /native Codespaces Git credential helper/);
+  assert.match(agents, /errorKind: 'repository'/);
+});
+
 test('Build dependency hydration avoids accidental lockfile churn', () => {
   assert.match(buildPresentationInstruction('build'), /prefer npm ci rather than npm install/i);
   assert.match(buildPresentationInstruction('build'), /Do not leave package-lock\.json changed unless the task intentionally changes dependencies/i);

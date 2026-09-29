@@ -41,6 +41,7 @@ const friendlyFailure = (value?: string) => {
   if (/timeout|timed out/i.test(message)) return 'The operation timed out. It may still be running.';
   if (/rate.?limit/i.test(message)) return 'The AI provider is temporarily rate limited. Try again shortly.';
   if (/quota|credits/i.test(message)) return 'The selected provider has reached its available quota or credits.';
+  if (/(?:github|repository|\bgit\b).*(?:auth|unauthori|credential|access)|(?:auth|credential).*(?:github|repository|\bgit\b)/i.test(message)) return 'Repository access needs attention.';
   if (/auth|unauthori|credential/i.test(message)) return 'The AI connection needs attention.';
   return compact(message, 180);
 };
@@ -217,8 +218,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           : event.errorKind === 'model' ? 'Model unavailable'
             : event.errorKind === 'rate_limit' ? 'Model is busy'
               : event.errorKind === 'quota' ? 'AI quota reached'
-                : event.errorKind === 'engine' ? 'AI runtime unavailable'
-                  : event.errorKind === 'verification' ? 'Verification needs attention'
+                : event.errorKind === 'repository' ? 'Repository access needs attention'
+                  : event.errorKind === 'engine' ? 'AI runtime unavailable'
+                    : event.errorKind === 'verification' ? 'Verification needs attention'
                     : 'Work needs attention';
       putActivity(state, {
         id: `run-error:${event.runId}`,
