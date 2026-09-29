@@ -321,6 +321,7 @@ export default function ProductionApp() {
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [ai, setAi] = useState<any>({ state: 'disconnected', adapterId: 'opencode', adapters: [], mode: 'build', permission: 'ask-first', providers: { connected: 0, total: 0 } });
+  const aiRef = useRef<any>(ai);
   const [aiModels, setAiModels] = useState<any[]>([]);
   const [aiModelError, setAiModelError] = useState('');
   const [aiProviders, setAiProviders] = useState<any[]>([]);
@@ -1064,6 +1065,10 @@ export default function ProductionApp() {
     } catch (error: any) { setError(error.message || 'Project could not be opened.'); }
   }
 
+  useEffect(() => {
+    aiRef.current = ai;
+  }, [ai]);
+
   async function setAiPrefs(patch: { adapterId?: string; modelId?: string; mode?: string; permission?: string }) {
     if (!session) return;
     const requestId = ++aiPrefRequestRef.current;
@@ -1074,13 +1079,17 @@ export default function ProductionApp() {
       ? aiModels.find((model: any) => String(model.id).toLowerCase() === String(patch.modelId).toLowerCase())
       : undefined;
 
-    setAi((current: any) => ({
-      ...current,
-      ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId } : {}),
-      ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
-      ...(patch.permission !== undefined ? { permission: patch.permission } : {}),
-      ...(optimisticModel ? { model: optimisticModel, state: 'ready', message: 'Ready.' } : {}),
-    }));
+    setAi((current: any) => {
+      const next = {
+        ...current,
+        ...(patch.adapterId !== undefined ? { adapterId: patch.adapterId } : {}),
+        ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
+        ...(patch.permission !== undefined ? { permission: patch.permission } : {}),
+        ...(optimisticModel ? { model: optimisticModel, state: 'ready', message: 'Ready.' } : {}),
+      };
+      aiRef.current = next;
+      return next;
+    });
 
     try {
       const result = await j<any>(await fetch(`/v1/ai/session/${session.id}`, {
@@ -1115,7 +1124,10 @@ export default function ProductionApp() {
         await refreshAi(session.id);
       }
     } catch (error: any) {
-      if (requestId === aiPrefRequestRef.current) setAi(previous);
+      if (requestId === aiPrefRequestRef.current) {
+        aiRef.current = previous;
+        setAi(previous);
+      }
       setError(error.message || 'AI preference could not be saved.');
     }
   }
@@ -1126,8 +1138,9 @@ export default function ProductionApp() {
   // preserving one continuous conversation without spawning a parallel chat.
   async function sendMessage(overrideText?: string): Promise<boolean> {
     const text = (overrideText ?? composer).trim();
+    const activeAi = aiRef.current || ai;
     if (!session || !text || submittingRef.current || sending || !online) return false;
-    if (!ai.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return false; }
+    if (!activeAi.model?.id) { setShowConnectAI(true); setError('Choose a model before sending your message.'); return false; }
     submittingRef.current = true;
     // Sending a message is explicit intent to return to the live edge. Without
     // this reset, a user who had scrolled up can submit successfully while the
@@ -1138,7 +1151,7 @@ export default function ProductionApp() {
     setSending(true); setError('');
     const clientId = uid();
     try {
-      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: ai.adapterId || 'opencode', modelId: ai.model.id, mode: ai.mode, fullAccessForThisTask: ai.mode === 'build' && tempFullAccess }) }));
+      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: activeAi.adapterId || 'opencode', modelId: activeAi.model.id, mode: activeAi.mode, fullAccessForThisTask: activeAi.mode === 'build' && tempFullAccess }) }));
       if (!overrideText) { setComposer(''); try { localStorage.removeItem(draftKey(session.id)); } catch {} }
       setTempFullAccess(false);
       setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
