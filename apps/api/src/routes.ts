@@ -308,14 +308,23 @@ async function githubFileSnapshot(req: Request, session: any, filename: string) 
 
 async function ownedChangeSession(req: Request, changeId: string): Promise<string> {
   const installationId = requestInstallationId(req);
+  const userId = await requestUserId(req);
   for (const [sessionId, list] of Object.entries(store.db.changes)) {
-    if (store.db.sessions[sessionId]?.installationId === installationId && list.some((change) => change.id === changeId)) return sessionId;
+    const session = store.db.sessions[sessionId] as any;
+    const owned = durableStorageConfigured() && userId && session?.userId
+      ? session.userId === userId
+      : session?.installationId === installationId;
+    if (owned && list.some((change) => change.id === changeId)) return sessionId;
   }
-  if (durableStorageConfigured()) {
+  if (durableStorageConfigured() && userId) {
     const change = await controlPlaneRepository().getChangeSet(changeId);
     if (change) {
       const session = await controlPlaneRepository().getSession(change.sessionId);
-      if (session?.installationId === installationId) { store.db.sessions[session.id] = session; (store.db.changes[session.id] ||= []).push(change); return session.id; }
+      if (session?.userId === userId) {
+        store.db.sessions[session.id] = session;
+        (store.db.changes[session.id] ||= []).push(change);
+        return session.id;
+      }
     }
   }
   return '';
