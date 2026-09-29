@@ -148,7 +148,11 @@ PORT=8080
 - the compiled Orlynx bridge;
 - `node-pty` and `ws`;
 - a pinned native OpenCode binary;
+- Playwright plus a preinstalled Chromium browser;
+- Chromium's Debian shared-library/runtime dependencies;
 - bridge health/startup tooling.
+
+CI launches Chromium inside the built runner image. A runner image is not considered verified merely because the browser package downloaded successfully.
 
 The runtime image is built in CI. Runtime dependencies are therefore not
 installed when a user submits a Build task.
@@ -210,6 +214,25 @@ gateway. It may equal `ORLYNX_RUNNER_URL` when the control-plane API and browser
 can reach the same host.
 
 OpenCode's private port is explicitly excluded from preview forwarding.
+
+## Browser and E2E readiness
+
+Browser automation is an execution capability, not something a Build task should discover by crashing.
+
+Docker runner-manager hosts advertise `browserE2e=true` because the versioned runtime image already contains Playwright, Chromium and the Linux libraries Chromium needs. Native direct-runner hosts probe their actual shared libraries and advertise `browserE2e` truthfully.
+
+When a queued task explicitly needs Playwright/E2E/browser testing and its assigned direct runner reports that browser execution is unavailable, Orlynx preserves the task and switches it to the Codespaces fallback automatically.
+
+Codespace bootstrap inspects the repository. If it declares Playwright, `@playwright/test` or `@axe-core/playwright`, Orlynx:
+
+1. resolves the repository's locked Playwright version;
+2. installs a private matching Playwright CLI;
+3. installs Chromium system dependencies when missing;
+4. installs the matching Chromium browser;
+5. launches Chromium once as a readiness proof;
+6. writes a versioned marker so later turns skip the setup.
+
+Set `ORLYNX_PREWARM_BROWSER_RUNTIME=0` only when browser preparation is intentionally disabled.
 
 ## Failure behavior
 
