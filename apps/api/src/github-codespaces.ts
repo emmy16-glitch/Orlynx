@@ -90,7 +90,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   private async sessionHasActiveWork(sessionId: string): Promise<boolean> {
     try {
       const tasks = await controlPlaneRepository().listTasks(sessionId);
-      return tasks.some((task) => task.state === 'running' || task.state === 'queued');
+      return tasks.some((task) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(task.state));
     } catch {
       return true;
     }
