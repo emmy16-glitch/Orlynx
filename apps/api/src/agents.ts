@@ -279,12 +279,12 @@ async function executeDirectTask(
       run.state = 'failed';
       run.activity = 'Needs development environment';
       run.finishedAt = now;
-      run.errorKind = 'engine';
+      run.errorKind = 'verification';
       store.save();
       emit(session.id, 'run.failed', {
         taskId: task.id,
         error: `This request needs workspace evidence Orlynx could not verify in direct chat: ${task.harness.verification.missing.join(', ')}.`,
-        errorKind: 'engine',
+        errorKind: 'verification',
         recoverable: true,
       }, run.id);
       return;
