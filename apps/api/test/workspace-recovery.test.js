@@ -65,6 +65,15 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
   }
 });
 
+test('workspace OpenCode readiness ignores one transient health miss before declaring unavailable', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /OPENCODE_HEALTH_FAILURE_THRESHOLD = 2/);
+  assert.match(bridge, /openCodeTransientHealthFailures \+= 1/);
+  assert.match(bridge, /keeping adapter ready/);
+  assert.match(bridge, /openCodeTransientHealthFailures < OPENCODE_HEALTH_FAILURE_THRESHOLD/);
+  assert.match(bridge, /openCodeTransientHealthFailures = 0;\s*openCodeLifecycle = \{ state: 'ready' \}/);
+});
+
 test('workspace bridge repairs a missing or stale OpenCode binary before declaring the adapter unavailable', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(bridge, /resolveOpenCodeBinary/);
