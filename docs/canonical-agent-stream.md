@@ -168,3 +168,36 @@ persisted server-side in the existing durable `OrlynxEvent` ledger (no new
 database or transport was introduced), identity scoping and thread
 projection live beside the current SSE/snapshot recovery model, and
 Preview/runtime truth stays outside the chat event protocol entirely.
+
+
+## Current conversation extensions (2026-09-29)
+
+The current protocol projection also preserves same-run user continuation.
+
+Multiple durable user messages can carry the same runId and project into one stable ThreadTurn. The first message remains the turn anchor; later follow-ups remain individually preserved and render in order.
+
+Explicit next-task intent is represented by a separate durable queued task rather than another message inside the active run.
+
+### Investigation grouping
+
+Safe reflection dialogue uses source types agent.dialogue.orlynx and agent.dialogue.model with a reflectionId.
+
+The browser groups matching dialogue into one ordered Investigation N status part.
+
+This surface carries useful observation/hypothesis summaries without exposing private hidden chain-of-thought.
+
+### Secret sanitization
+
+Canonical event persistence sanitizes secret-like values before writing the durable ledger.
+
+Historical events are sanitized again before replay/reflection, so old unsafe payloads are not blindly reintroduced into current model context.
+
+### Adapter failure isolation
+
+Agent-adapter state events remain distinct from workspace state.
+
+An unavailable OpenCode adapter can surface one actionable status without changing a ready workspace into a failed workspace.
+
+### Cross-device replay
+
+Conversation restore starts from server-owned GitHub-user sessions. A fresh device can rebuild its thread from durable messages/run snapshots/activity history even when localStorage has no prior session pointer.
