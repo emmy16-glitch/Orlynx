@@ -1,207 +1,318 @@
 # Orlynx
 
-Orlynx is a phone-first, GitHub-native AI development workspace. A user connects
-GitHub, opens an authorized repository, chats with Orlynx, watches real agent work,
-reviews changes, and explicitly publishes them. The product keeps repository,
-conversation, task, approvals, workspace and activity state in one durable session.
+Orlynx is a **phone-first, GitHub-native AI software-development workspace** built around one durable project conversation.
 
-There is no production demo agent, fake cloud state, PAT entry flow, or silent local
-fallback. When a real integration is unavailable Orlynx fails closed.
+A user connects GitHub, opens an authorized repository, talks naturally, lets Orlynx inspect or execute work when permitted, watches real evidence as the work happens, reviews changes and Preview, and publishes through a controlled GitHub path.
 
-## Quick start
+Orlynx is not a demo-agent UI, a Codespaces dashboard, a hosted terminal, or a thin chat wrapper around one model. It is the product and orchestration layer that keeps repository identity, conversation, tasks, execution, verification, recovery, memory and publication coherent even when the model, coding agent or compute provider changes.
 
-Requirements: Node.js 24 and npm.
+> **Current production architecture:** Render control plane + Postgres durable state + Orlynx warm runner when available + GitHub Codespaces fallback + authenticated workspace bridge + OpenCode as Agent Adapter #1.
 
-```sh
-npm install
-npm run dev
-```
+There is no production fake agent, fake cloud state, PAT-entry flow or silent local fallback. When a real required integration is unavailable, Orlynx fails closed or falls back only through an explicit supported provider path.
 
-Open **http://localhost:5173/**. Vite proxies `/v1` and `/health` to the API
-on **http://localhost:4000/**.
+## Start with the documentation
 
-Useful commands:
+- [Documentation index](docs/README.md)
+- [What Orlynx is](docs/orlynx-overview.md)
+- [Architecture overview](docs/architecture-overview.md)
+- [How Orlynx learns and remembers](docs/learning-and-memory.md)
+- [Product vision and roadmap](docs/product-vision-and-roadmap.md)
+- [Orlynx engineering standard](docs/engineering-standard.md)
+- [End-to-end verification](docs/end-to-end-verification.md)
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start web and API development servers |
-| `npm run dev:web` | Start only the Vite client |
-| `npm run dev:api` | Start only the API |
-| `npm run typecheck` | Type-check all workspaces |
-| `npm test` | Run automated tests |
-| `npm run e2e` | Run API end-to-end checks against a live API |
-| `npm run build` | Build all workspaces |
+## Product mental model
 
-Pull requests and pushes to `main` run the same typecheck/test/build verification
-through GitHub Actions.
+~~~text
+Open repository
+   ↓
+Talk to Orlynx
+   ↓
+Ask / Plan / Build
+   ↓
+Orlynx gathers facts and chooses the correct execution lane
+   ↓
+Direct model lane OR real workspace execution
+   ↓
+Orlynx ↔ Model Investigation loop when evidence conflicts
+   ↓
+Verification against the requested outcome
+   ↓
+Review changes / tests / Preview / receipts
+   ↓
+Controlled GitHub publication
+   ↓
+Verified lessons may improve future relevant work
+~~~
+
+The browser is a control surface. It is not the source of truth for active work.
+
+## What Orlynx owns
+
+Orlynx owns the durable product contracts around:
+
+- authenticated user and GitHub identity;
+- authorized repositories and branches;
+- project sessions and message history;
+- task admission and ordering;
+- same-run continuation;
+- explicit queued next work;
+- model, mode, permission and agent selection;
+- workspace lifecycle;
+- agent-adapter readiness;
+- canonical event history and replay;
+- acceptance criteria and verification;
+- approvals and change sets;
+- Preview readiness;
+- GitHub publication;
+- verified learning/memory;
+- secret redaction;
+- audit.
+
+The connected model provides reasoning. It does not own authorization, queue order, durable state, publication policy or the definition of “done.”
+
+## Ask, Plan and Build
+
+### Ask
+
+For explanation, normal conversation and repository questions that do not require mutation.
+
+Ask can use the direct model lane without starting a workspace.
+
+### Plan
+
+For structured analysis and implementation planning.
+
+Plan can also stay in the direct lane when real execution is unnecessary.
+
+### Build
+
+For real project work: file edits, terminal commands, tests, builds, Git, Preview and deployment-related operations according to the task, permission profile and available tools.
+
+Build work is admitted durably before execution.
+
+## Continuation versus queueing
+
+Natural messages such as “also check this”, “what have you done?”, “finish it” and “make sure mobile works too” continue the **same active run** while it is still steerable. They are stored in durable history and fed back to the connected model before finalization.
+
+Only explicit next-task wording such as “queue this”, “do this next” or “after this finishes...” creates a separate queued task.
+
+Queued work is durable, visible, editable, cancellable and sequential. It must not accidentally execute beside active work.
+
+## Harness and verification
+
+Orlynx uses an execution harness rather than trusting a completion sentence from the model.
+
+The harness tracks phase, step budget, allowed tool families, live user steering, inferred acceptance criteria, satisfied/missing verification, contradictions, reflection attempts, final synthesis and relevant learned lessons.
+
+Depending on the request, acceptance evidence may include:
+
+- file changes;
+- passing tests;
+- successful build/typecheck;
+- commit receipt;
+- publication receipt;
+- deployment evidence;
+- browser-reachable Preview;
+- browser research.
+
+A model saying “done” is not proof that the requested outcome happened.
+
+## Investigation blocks
+
+When reality disagrees with the expected outcome, Orlynx uses a bounded evidence loop:
+
+~~~text
+Orlynx observation
+    ↓
+Model hypothesis / next check
+    ↓
+actual tool evidence
+    ↓
+Orlynx verification
+    ↓
+repeat only when needed
+~~~
+
+The UI groups this into ordered **Investigation 1, Investigation 2, ...** sections.
+
+These sections expose useful hypotheses, evidence, corrections and conclusions. They do not expose private hidden chain-of-thought.
+
+## How Orlynx learns
+
+Orlynx does **not** retrain the connected model.
+
+It learns through an Orlynx-owned verified lesson memory. A lesson can be stored only after reflection/investigation occurred, real evidence was gathered, the harness verification passed, and a usable verified resolution existed.
+
+Lessons are user-scoped, normally repository-scoped, optionally environment-scoped, redacted, relevance-ranked and limited to a small top-ranked set. They are supplied to the model as evidence, not absolute truth.
+
+Fresh verified evidence always overrides remembered information.
+
+See [docs/learning-and-memory.md](docs/learning-and-memory.md).
 
 ## Production architecture
 
-```text
+~~~text
 Phone / browser
       |
       v
 Orlynx control plane (Render)
       |
-      +-- GitHub App / OAuth
-      +-- Postgres durable sessions + events + approvals + audit
+      +-- GitHub App / repository authorization
+      +-- direct Ask / Plan model lane
+      +-- task admission + verification harness
+      +-- Postgres durable sessions/tasks/events/audit/memory
       +-- workspace orchestration
+      +-- authenticated bridge gateway
       |
       v
-Render warm runner (preferred)
+Workspace provider
       |
-      +-- authenticated Orlynx workspace bridge
-      |    +-- PTY / Git / filesystem
-      |    +-- preview-port discovery
-      |    +-- OpenCode (Adapter #1)
-      |    +-- future agent adapters
+      +-- Orlynx warm runner (preferred when configured)
       |
-      +-- GitHub Codespaces fallback
-           (used only when runner fallback is needed)
-```
+      +-- GitHub Codespaces (fallback/recovery)
+              |
+              v
+      Orlynx workspace bridge
+              |
+              +-- PTY / Git / filesystem
+              +-- tests / builds / Preview discovery
+              +-- OpenCode (Adapter #1)
+              +-- future agent adapters
+~~~
 
-### GitHub
+Render owns the persistent Node web/API process, SSE, bridge gateway, GitHub integration, task orchestration and direct model lane.
 
-Repository access uses the Orlynx GitHub App only. Normal users click **Connect
-GitHub**, authorize/install Orlynx on GitHub, choose all or selected repositories,
-and return automatically. Installation tokens stay server-side and short-lived.
+When DATABASE_URL or POSTGRES_URL is configured, Postgres is authoritative for production state. Local JSON under data/ is development/test fallback only.
 
-The one-time owner GitHub App bootstrap can use the official App Manifest flow;
-see [docs/github-app-manifest.md](docs/github-app-manifest.md).
+## Workspace providers
 
-### Durable state
+The Orlynx runner is preferred when configured because it can be prebuilt and prewarmed.
 
-When `DATABASE_URL` or `POSTGRES_URL` is configured, Postgres is authoritative
-for users, GitHub connections, projects, sessions, messages, tasks, activity
-events, AI session preferences, workspaces, approvals, attachments, bridge
-commands, per-adapter sessions and health, change sets, webhook-delivery
-receipts and audit records.
+GitHub Codespaces remains a real supported fallback/recovery provider.
 
-Local JSON under `data/` is only a development/test fallback. It is not accepted
-as production truth on hosted deployments.
+A provider change must preserve the same project conversation and task identity.
 
-### Remote execution
+## Agent adapters
 
-Real execution prefers the prewarmed Render runner. Orlynx prepares the
-repository there and connects the authenticated workspace bridge; GitHub
-Codespaces remains a fallback execution provider rather than the normal startup
-path. A workspace is ready only when the selected provider and authenticated
-bridge are usable, and agent runtimes keep their own independent health
-lifecycle.
+OpenCode is **Agent Adapter #1**, not the definition of Orlynx.
 
-The bridge provides the real PTY, filesystem, Git operations, command execution
-and preview-port discovery regardless of the selected workspace provider. Agent
-runtimes are registered behind `apps/api/src/agent-runtime.ts`. OpenCode is
-Adapter #1. If OpenCode fails, workspace shell/files/Git remain available and
-only OpenCode-assigned tasks are affected.
+The adapter boundary allows future coding agents to implement the same Orlynx-owned contract for readiness, sessions, models, streaming, tools, cancel/resume and diff/change evidence.
 
-### Events, queueing and mobile recovery
+Adding an agent should not require rebuilding session state, task scheduling, publication rules or the conversation UI.
 
-User prompts are admitted to the durable task ledger before execution. Exactly one
-queued task per session is atomically promoted to `running`; later prompts remain
-ordered and survive API restarts. Model, mode and access policy are snapshotted on
-the admitted task so changing conversation settings cannot silently change an
-older queued request.
+See [docs/agent-engine.md](docs/agent-engine.md).
 
-Agent/runtime events are normalized and persisted before being streamed to the
-browser over SSE. Every event has a stable ID and monotonically increasing
-session sequence. Reconnect requests use `?after=<sequence>` so a phone can sleep,
-lose Wi-Fi, switch networks and replay missed activity without duplicates.
+## Canonical events, streaming and recovery
 
-The browser also refreshes the authoritative session when it returns to the
-foreground. localStorage is only a convenience pointer/draft cache; identity-owned
-sessions can be recovered on another authenticated device.
+Runtime/provider events are normalized into a versioned Orlynx event vocabulary before the primary UI depends on them.
 
-### Safe Git publishing
+Events are persisted with stable IDs and monotonically increasing session sequence numbers.
 
-The AI/provider shell never receives GitHub credentials and cannot run an
-authenticated raw push. Normal change sets still support review/approval,
-commit, and PR publication. When the user explicitly asks Orlynx to
-`push to main` (or chooses the equivalent publish action) and the project's
-access policy permits it, the control plane may authorize that one
-default-branch push through the workspace bridge. The bridge rejects default
-branch pushes unless that explicit control-plane approval flag is present.
-Dirty or behind workspaces are rejected before publishing, and publish actions
-are written to the audit log.
+The browser streams through SSE and reconnects with its last sequence cursor. This allows recovery after phone sleep, network switching, backgrounding, refresh, API restart and workspace reconnect.
+
+While the reader is near the latest output, Orlynx follows the stream. When the reader scrolls upward, auto-follow stops rather than dragging the viewport back down.
+
+See [docs/canonical-agent-stream.md](docs/canonical-agent-stream.md) and [docs/streaming-and-reconnect.md](docs/streaming-and-reconnect.md).
+
+## Preview
+
+Preview is not considered ready merely because a port answers.
+
+Orlynx checks browser suitability and provider forwarding. API-only JSON roots are rejected as browser previews.
+
+The diagnostic order is provider-first: verify Orlynx/GitHub forwarding before changing project configuration just to work around infrastructure.
+
+Supported Vite workspaces receive Orlynx-managed Codespaces compatibility so repositories should not normally need manual Vite host-allowance edits.
+
+## GitHub publication
+
+GitHub credentials stay server-side.
+
+The agent shell cannot perform an unrestricted authenticated raw push.
+
+When the user explicitly requests publication and configured policy allows it, Orlynx uses its controlled publication path. Explicit branch names are preserved exactly; Orlynx does not silently map one named branch to another.
+
+Publication is rejected when required Git state or authorization is unsafe, and consequential actions are auditable.
+
+## Secret handling
+
+Secret-like values are redacted before event streaming and durable event persistence.
+
+Historical events are sanitized again before replay or reflection.
+
+The redaction layer recognizes common forms of GitHub tokens, API keys, authorization/bearer values and password/secret/token fields.
+
+This is defense in depth; credentials should still be kept out of model-visible evidence whenever possible.
 
 ## Interface
 
-The project experience is chat-first. On mobile the primary project navigation is:
+The project experience is conversation-first.
 
-```text
+Mobile primary navigation is intentionally compact:
+
+~~~text
 Chat · Files · Changes · More
-```
+~~~
 
-Agent/model/mode/access controls live near the composer. The Agent picker selects
-the registered coding adapter (OpenCode is Adapter #1 today) independently from
-the model picker. Codespaces, bridge credentials and provider plumbing remain
-implementation details rather than top-level navigation.
+Agent/model/mode/access controls live near the composer.
 
-The conversation pipeline is a server-authoritative canonical agent protocol
-projected as a thread of turns with typed message parts. Private model
-reasoning is never rendered; safe process labels (`Inspecting repository`,
-`Running tests`) describe work instead.
+Infrastructure concepts such as bridge credentials, provider ports and container lifecycle are implementation detail unless they are needed for diagnosis.
 
-```text
-provider event → AgentAdapter → canonical event → durable ledger → SSE
-      → thread projection (turns owned by run IDs) → typed part renderers
-```
+## Quick start
 
-Key modules:
+Requirements: Node.js 24 and npm.
+
+~~~sh
+npm install
+npm run dev
+~~~
+
+Open **http://localhost:5173/**. Vite proxies /v1 and /health to the API on **http://localhost:4000/**.
+
+| Command | Purpose |
+| --- | --- |
+| npm run dev | Start web and API development servers |
+| npm run dev:web | Start only the Vite client |
+| npm run dev:api | Start only the API |
+| npm run typecheck | Type-check workspaces |
+| npm test | Run automated API tests |
+| npm run e2e | Run API end-to-end checks against a live API |
+| npm run build | Build all workspaces |
+| npm run render:build | Production Render build entry point |
+
+Pull requests and pushes to main run repository verification through GitHub Actions.
+
+## Key code locations
 
 | Layer | Location |
 | --- | --- |
-| Versioned protocol vocabulary + adapter boundary | `packages/shared/src/index.ts` (`CANONICAL_PROTOCOL_VERSION`, `EventType`, `AgentAdapterCapabilities`) |
-| Server-side canonicalization + bridge semantic preservation | `apps/api/src/agent-protocol.ts`, `apps/api/src/bridge-gateway.ts` |
-| Session core, queue, persistence, recovery | `apps/api/src/agents.ts`, `apps/api/src/events.ts`, `apps/api/src/storage.ts` |
-| OpenCode adapter (Adapter #1) | `apps/api/src/agent-runtime.ts`, `apps/api/src/opencode*.ts` |
-| Instant direct-chat lane | `apps/api/src/direct-chat.ts` |
-| Browser compatibility adapter + deterministic store | `apps/web/src/agent-stream/adapter.ts`, `store.ts` |
-| Thread projection + typed parts | `apps/web/src/agent-stream/thread.ts`, `parts.ts` |
-| Typed tool/part renderer registry | `apps/web/src/ui/tool-parts.tsx` |
-| Transcript, composer, Preview wiring | `apps/web/src/ProductionApp.tsx`, `apps/web/src/ui/preview*.tsx` |
+| Shared protocol/types | packages/shared/src/index.ts |
+| Task admission/direct execution | apps/api/src/agents.ts |
+| Harness / verification / steering | apps/api/src/harness.ts |
+| Verified learning memory | apps/api/src/agent-memory.ts |
+| Canonical event persistence/redaction | apps/api/src/events.ts |
+| Bridge gateway | apps/api/src/bridge-gateway.ts |
+| Agent adapter/runtime | apps/api/src/agent-runtime.ts, apps/api/src/opencode*.ts |
+| Workspace bridge | bridge/src/index.ts |
+| Browser event store/projection | apps/web/src/agent-stream/ |
+| Typed work renderers | apps/web/src/ui/tool-parts.tsx |
+| Main product shell | apps/web/src/ProductionApp.tsx |
+| Warm runner | runner-manager/, runner-runtime/ |
 
-Each user request owns a turn: user message → assistant response (streamed
-live, then durable) → compact supporting work (terminal, file changes, test
-results, approvals) → quiet message actions (`Copy / Retry|Resume / ⋯`).
-One logical tool is one UI object that mutates in place; completed work is
-static and only the current activity animates. See
-[docs/canonical-agent-stream.md](docs/canonical-agent-stream.md) for the full
-contract, including identity rules, replay/recovery, permissions, Stop/Cancel
-semantics and the open-source patterns it draws on (AG-UI, ACP, Cline,
-OpenHands, assistant-ui/tool-ui, LangGraph, Bolt-style Preview loop).
+## Production
 
-Production deployments are triggered from `main` to the connected Render web
-service (Render dashboard → Orlynx production service; pushes to `main` build
-and deploy through `scripts/render-build.sh`). The persistent Node process
-owns HTTP, SSE and `/bridge` WebSocket traffic. The warm Render runner is the
-preferred execution plane with GitHub Codespaces as fallback. Orlynx is not a
-Vercel architecture: do not deploy it to Vercel or reintroduce Vercel into the
-runtime path.
+Render is the production control plane.
 
-## Production configuration
+Do not reintroduce Vercel into the active Orlynx runtime architecture.
 
-See `.env.example` and [docs/render-production.md](docs/render-production.md).
-Production requires durable storage, GitHub App configuration, credential
-encryption and bridge signing. Secrets must remain server-side.
+Pushes to main build/deploy through the configured Render service using scripts/render-build.sh.
 
-## Documentation
+See [Render production](docs/render-production.md), [Production architecture](docs/production-architecture.md), [Warm runner architecture](docs/warm-runner-architecture.md), [Secrets and environment](docs/secrets-and-environment.md) and [End-to-end verification](docs/end-to-end-verification.md).
 
-- [Agent protocol + conversation architecture](docs/canonical-agent-stream.md) — canonical events, adapter boundary, thread/parts/renderers, recovery
-- [Render production](docs/render-production.md) — production hosting, build, environment, deploy checks
-- [Production architecture](docs/production-architecture.md) — control plane, execution plane, networking
-- [Warm runner architecture](docs/warm-runner-architecture.md) — preferred runner, prewarm, fallback
-- [System integration](docs/system-integration.md)
-- [Session lifecycle](docs/session-lifecycle.md)
-- [Streaming and reconnect](docs/streaming-and-reconnect.md)
-- [Chat scroll behavior](docs/chat-scroll-behavior.md)
-- [Direct chat architecture](docs/direct-chat-architecture.md)
-- [Workspace runtime](docs/workspace-runtime.md) / [Cloud workspace lifecycle](docs/cloud-workspace-lifecycle.md)
-- [Agent engine](docs/agent-engine.md) / [Agent permissions](docs/agent-permissions.md) / [Agent UI guidelines](docs/agent-ui-guidelines.md) / [Agent activity presentation](docs/agent-activity-presentation.md)
-- [GitHub App integration](docs/github-app-integration.md) / [App manifest](docs/github-app-manifest.md)
-- [Design system](docs/orlynx-design-system.md) / [UI architecture](docs/orlynx-ui-architecture.md) / [Component registry](docs/orlynx-component-registry.md) / [Responsive behavior](docs/orlynx-responsive-behavior.md) / [Screens](docs/orlynx-screen-inventory.md)
-- [AI connections](docs/ai-connections.md) / [Model switching](docs/model-switching.md) / [UI intelligence](docs/ui-intelligence-layer.md)
-- [Secrets and environment](docs/secrets-and-environment.md)
-- [End-to-end verification](docs/end-to-end-verification.md)
+## Long-term direction
 
-See [direct chat architecture](docs/direct-chat-architecture.md) for provider dependencies, model routing, authentication, streaming and production verification.
+Orlynx is intended to become a persistent engineering workspace with multiple interchangeable coding-agent adapters, stronger verified repository intelligence, CI/CD and production feedback as verification evidence, team/shared project memory with explicit access controls, policy-aware higher autonomy, specialized subagents coordinated under one durable parent task, additional/self-hosted execution backends, and stronger enterprise isolation/audit/retention controls.
+
+Future roadmap items are not current-product claims.
+
+See [docs/product-vision-and-roadmap.md](docs/product-vision-and-roadmap.md).
