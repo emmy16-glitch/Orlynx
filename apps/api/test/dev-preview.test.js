@@ -68,6 +68,28 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(gateway, /verified: true/);
   });
 
+  it('Codespaces injects trusted forwarded hosts globally instead of editing each Vite repo', () => {
+    const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
+    const apiWorker = fs.readFileSync(path.join(root, 'apps/api/src/runtime-worker.ts'), 'utf8');
+    const worker = fs.readFileSync(path.join(root, 'runtime-worker/src/index.ts'), 'utf8');
+
+    assert.match(bridge, /function codespacesPreviewEnvironment/);
+    assert.match(bridge, /__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS/);
+    assert.match(bridge, /GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN/);
+    assert.match(bridge, /RAILS_DEVELOPMENT_HOSTS/);
+    assert.match(bridge, /\.app\.github\.dev/);
+    assert.doesNotMatch(bridge, /allowedHosts\s*[:=]\s*true/);
+
+    for (const source of [apiWorker, worker]) {
+      assert.match(source, /ORLYNX_BRIDGE_REVISION/);
+      assert.match(source, /ORLYNX_FORCE_OPENCODE_RESTART/);
+      assert.match(source, /existing_revision/);
+      assert.match(source, /force_opencode_restart/);
+    }
+    assert.match(bridge, /forceOpenCodeRestart/);
+    assert.match(bridge, /startOpenCode\(Boolean\(OPENCODE_API_KEY\), restartForRuntimeRefresh\)/);
+  });
+
   it('Codespaces Preview uses only confirmed GitHub forwarding metadata', () => {
     const bridge = fs.readFileSync(path.join(root, 'bridge/src/index.ts'), 'utf8');
     const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');
