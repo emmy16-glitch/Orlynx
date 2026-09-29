@@ -134,6 +134,24 @@ export function instructionForModeAccess(mode: AgentMode, permission: Permission
   return '';
 }
 
+async function conversationContinuityInstruction(sessionId: string, currentMessageId?: string): Promise<string> {
+  const messages = await controlPlaneRepository().listMessages(sessionId).catch(() => []);
+  const end = currentMessageId ? messages.findIndex((message) => message.id === currentMessageId) : messages.length;
+  const prior = (end >= 0 ? messages.slice(0, end) : messages)
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .slice(-12)
+    .map((message) => ({
+      role: message.role,
+      content: String(message.text || '').slice(-6_000),
+    }));
+  if (!prior.length) return '';
+  return [
+    'Continue the same Orlynx project conversation across Ask, Plan and Build. The execution lane changed, not the conversation.',
+    'Use this prior user/assistant history as private continuity context. Do not quote the wrapper or claim a new chat/session started.',
+    `<orlynx_conversation_history>${JSON.stringify(prior)}</orlynx_conversation_history>`,
+  ].join('\n');
+}
+
 export function buildPresentationInstruction(mode: AgentMode): string {
   if (mode !== 'build') return '';
   return [
@@ -596,9 +614,11 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
         lessonIds: lessons.map((lesson) => lesson.id),
       }, run.id);
     }
+    const continuity = await conversationContinuityInstruction(sessionId, task.messageId);
     const privateSystem = [
       instructionForModeAccess(mode, permission),
       buildPresentationInstruction(mode),
+      continuity,
       harnessSystemInstruction(task.harness),
       agentMemoryInstruction(lessons),
     ].filter(Boolean).join('\n\n');
@@ -703,9 +723,11 @@ export async function resumeWaitingInputTask(sessionId: string, taskId: string, 
   }
   store.save();
 
+  const continuity = await conversationContinuityInstruction(sessionId, task.messageId);
   const system = [
     instructionForModeAccess(mode, permission),
     buildPresentationInstruction(mode),
+    continuity,
     harnessSystemInstruction(task.harness),
     agentMemoryInstruction(lessons),
   ].filter(Boolean).join('\n\n');
