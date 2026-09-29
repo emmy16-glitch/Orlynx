@@ -522,7 +522,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       emit(sessionId, 'run.failed', {
         taskId: nextQueued.id,
         error: readyWorkspace.failureCode || 'The development environment could not start. Your message is saved and can be retried.',
-        errorKind: 'engine',
+        errorKind: 'repository',
         recoverable: true,
       }, nextQueued.runId);
       return promoteNextQueuedRunInner(sessionId);
@@ -834,8 +834,39 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       return run;
     }
 
-    const connection = await adapter.readiness(session.project, sessionId);
-    if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable for this workspace.`);
+    // Workspace Build readiness is owned by the workspace adapter lifecycle.
+    // Do not gate a healthy workspace on the separate direct/control-plane
+    // OpenCode runtime: that caused Build to fail while the workspace adapter
+    // was already reporting ready.
+    const workspaceAdapter = await repository.getWorkspaceAgentAdapter(workspace.id, adapter.id);
+    if (!workspaceAdapter || workspaceAdapter.state !== 'ready') {
+      task.state = 'queued';
+      task.updatedAt = new Date().toISOString();
+      await repository.putTask(task);
+      run.state = 'queued';
+      run.activity = 'Waiting for workspace AI runtime';
+      run.finishedAt = undefined;
+      run.errorKind = undefined;
+      store.save();
+      const state = workspaceAdapter?.state || 'missing';
+      emit(sessionId, 'run.state', {
+        taskId: task.id,
+        state: 'queued',
+        message: `Workspace AI runtime is ${state}; continuing automatically when it is ready.`,
+      }, run.id);
+      emit(sessionId, 'activity.progress', {
+        taskId: task.id,
+        sourceType: 'agent.runtime.wait',
+        adapterId: adapter.id,
+        state,
+        text: state === 'busy'
+          ? 'OpenCode is finishing the previous operation…'
+          : state === 'starting' || state === 'installing'
+            ? 'Starting OpenCode in this workspace…'
+            : 'Reconnecting OpenCode in this workspace…',
+      }, run.id);
+      return run;
+    }
     const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), session.project, sessionId, adapter.status);
     // Workspace readiness already has a single canonical workspace lifecycle row.
     // Do not emit a second "Development environment ready" activity for the same turn.
@@ -884,6 +915,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const now = new Date().toISOString();
     const detail = error instanceof Error ? error.message : 'Orlynx AI could not start this queued task.';
     const errorKind = (error as { errorKind?: AgentRun['errorKind'] }).errorKind || classifyError(detail);
+    console.warn(`[queue] promotion failed session=${sessionId} task=${task.id} workspace=${task.workspaceId} adapter=${task.adapterId || 'opencode'} model=${task.modelId || 'none'} kind=${errorKind} detail=${detail.replace(/\s+/g, ' ').slice(0, 700)}`);
     task.state = 'failed';
     task.updatedAt = now;
     await repository.putTask(task);
@@ -924,8 +956,10 @@ export async function resumeWaitingInputTask(sessionId: string, taskId: string, 
   if (!modelId) throw new Error('Choose a model before continuing this task.');
 
   const adapter = getAgentAdapter(task.adapterId || prefs.adapterId || 'opencode');
-  const connection = await adapter.readiness(session.project, sessionId);
-  if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} is unavailable for this workspace.`);
+  const workspaceAdapter = await repository.getWorkspaceAgentAdapter(workspace.id, adapter.id);
+  if (!workspaceAdapter || workspaceAdapter.state !== 'ready') {
+    throw new Error(`The workspace AI runtime is ${workspaceAdapter?.state || 'not ready'}; reconnect the development environment before continuing this task.`);
+  }
   const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
   if (!engineSessionId) throw new Error('The connected model session is no longer available to resume.');
 
