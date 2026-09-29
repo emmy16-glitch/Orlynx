@@ -24,7 +24,6 @@ function bootstrapScript(body: BootstrapRequest, bridge: string): string {
   const env = [
     `ORLYNX_CONTROL=${body.bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${body.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${body.workspaceId}`,
     `ORLYNX_SESSION_ID=${body.sessionId}`, `ORLYNX_USER_ID=${body.userId}`, `ORLYNX_CONNECTION_ID=${body.connectionId}`, `OPENCODE_SERVER_PASSWORD=${body.openCodePassword}`,
-    `ORLYNX_GITHUB_TOKEN=${body.githubUserToken}`,
   ].map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
