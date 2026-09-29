@@ -245,9 +245,10 @@ test('Codespace repository sync uses native Git credentials without persisting t
 
   assert.doesNotMatch(runtime, /ORLYNX_GITHUB_TOKEN/);
   assert.doesNotMatch(worker, /ORLYNX_GITHUB_TOKEN/);
-  assert.doesNotMatch(bridge, /if \(!GITHUB_TOKEN\) throw new Error\('GitHub credentials are unavailable in this workspace\.'\)/);
-  assert.match(bridge, /const authEnv = GITHUB_TOKEN \? \{/);
-  assert.match(bridge, /native Codespaces Git credential helper/);
+  const syncBlock = bridge.slice(bridge.indexOf("case 'git.sync':"), bridge.indexOf("case 'git.diff':"));
+  assert.doesNotMatch(syncBlock, /if \(!GITHUB_TOKEN\) throw new Error\('GitHub credentials are unavailable in this workspace\.'\)/);
+  assert.match(syncBlock, /const authEnv = GITHUB_TOKEN \? \{/);
+  assert.match(syncBlock, /native Codespaces Git credential helper/);
   assert.match(agents, /errorKind: 'repository'/);
 });
 
