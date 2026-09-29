@@ -641,7 +641,8 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,title,problem,lesson,evidence,tags,provider,success_count,created_at,updated_at,last_used_at)
       VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
-      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,updated_at=EXCLUDED.updated_at`;
+      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,updated_at=EXCLUDED.updated_at
+      WHERE agent_lessons.user_id=EXCLUDED.user_id`;
   }
   async listAgentLessons(userId: string, projectId?: string, limit = 40) {
     await this.initialize();
