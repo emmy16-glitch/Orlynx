@@ -132,13 +132,17 @@ export function buildThread(
   // steers an active task, the response continues beneath that new message
   // instead of remaining attached to the first prompt and later reshuffling.
   for (const reply of liveReplies) {
-    const turn = turnForRunAt(reply.runId);
+    const exact = reply.userMessageId ? turnByUserMessage.get(reply.userMessageId) : undefined;
+    const hasRunTurns = (turnsByRun.get(reply.runId) || []).length > 0;
+    const turn = hasRunTurns ? turnForRunAt(reply.runId) : exact || turnForRunAt(reply.runId);
+    if (!hasRunTurns && exact) {
+      exact.runId = reply.runId;
+      registerRunTurn(reply.runId, exact);
+    }
     turn.liveReply = reply;
     if (!turn.userMessage && reply.userMessageId) {
-      const exact = turnByUserMessage.get(reply.userMessageId);
-      if (exact) exact.liveReply = reply;
       const user = messages.find((message) => message.id === reply.userMessageId && message.role === 'user');
-      if (user && !turn.userMessage) {
+      if (user) {
         turn.userMessage = user;
         turn.userMessageId = user.id;
         turn.userMessages = [user];
