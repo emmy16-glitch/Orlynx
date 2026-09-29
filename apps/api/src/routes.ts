@@ -15,7 +15,7 @@ import { publicSiteUrl } from './site.js';
 import { clearOAuthStateCookie, clearSessionCookie, installationIdFor, oauthStateFor, requestInstallationId, requireSession, setOAuthStateCookie, setSessionCookie } from './auth.js';
 import type { Request } from 'express';
 import crypto from 'node:crypto';
-import { safeName } from '@orlynx/shared';
+import { safeName, type ChatMessage } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
@@ -415,7 +415,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
   if (!selectedModel && !instantReply && !publishIntent) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
-  const msg = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user' as const, text, createdAt: new Date().toISOString() };
+  const msg: ChatMessage = { id: (clientId as string) || uuid(), sessionId: s.id, role: 'user', text: String(text), createdAt: new Date().toISOString() };
   s.checkpoint = { ...(s.checkpoint || { decisions: [], branch: s.branch, filesTouched: [], pendingIssues: [] }), goal: text.slice(0,200), branch: s.branch, updatedAt: new Date().toISOString() };
   (store.db.messages[s.id] ||= []).push(msg);
   store.save();
@@ -437,6 +437,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
       (item) => item.state === 'waiting_input' && (item.plane || 'workspace') === 'workspace',
     );
     if (waitingInputTask && steeringAction !== 'stop') {
+      msg.runId = waitingInputTask.runId;
+      store.save();
+      await repository.putMessage(msg);
       try {
         const resumedRun = await resumeWaitingInputTask(s.id, waitingInputTask.id, String(text));
         return res.json({ message: msg, run: resumedRun, plane: 'workspace', resumed: true, targetRunId: waitingInputTask.runId });
@@ -538,50 +541,32 @@ router.post('/sessions/:id/messages', async (req, res) => {
           }, activeTask.runId);
         }
 
-        const ackRunId = `run_${uuid().slice(0, 8)}`;
-        const ackTaskId = `task_${uuid()}`;
-        const reply = steeringAction === 'stop'
-          ? 'Stopped the current Build task.'
-          : steeringAction === 'replace'
-            ? 'Updated the current Build task with your new direction.'
-            : 'Added that to the current Build task.';
-        const assistant = { id: `msg_${ackRunId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId: ackRunId, createdAt: now };
-        const ackRun = {
-          id: ackRunId,
-          sessionId: s.id,
-          engine: selectedAdapterId,
-          plane: 'direct' as const,
-          model: selectedModel || undefined,
-          mode: effectiveMode,
-          permission: prefs.permission,
-          state: 'completed' as const,
-          activity: 'Ready',
-          startedAt: now,
-          finishedAt: now,
-        };
-        (store.db.messages[s.id] ||= []).push(assistant);
-        (store.db.runs[s.id] ||= []).push(ackRun as any);
+        msg.runId = activeTask.runId;
         store.save();
-        await repository.putMessage(assistant);
-        await repository.putTask({
-          id: ackTaskId,
+        await repository.putMessage(msg);
+
+        const currentRun = (store.db.runs[s.id] || []).find((item) => item.id === activeTask.runId);
+        const run = currentRun || {
+          id: activeTask.runId || activeTask.id,
           sessionId: s.id,
-          workspaceId: 'direct',
-          plane: 'direct',
-          runId: ackRunId,
-          messageId: msg.id,
-          state: 'completed',
-          prompt: String(text),
-          modelId: selectedModel || undefined,
-          adapterId: selectedAdapterId,
-          mode: effectiveMode,
-          permission: prefs.permission,
-          createdAt: now,
-          updatedAt: now,
+          engine: activeTask.adapterId || selectedAdapterId,
+          plane: activeTask.plane || 'workspace',
+          model: activeTask.modelId || selectedModel || undefined,
+          mode: activeTask.mode || effectiveMode,
+          permission: activeTask.permission || prefs.permission,
+          state: steeredTask.state,
+          activity: steeringAction === 'stop' ? 'Stopped' : 'Continuing same task',
+          startedAt: activeTask.createdAt,
+          ...(['completed','failed','cancelled'].includes(steeredTask.state) ? { finishedAt: now } : {}),
+        };
+        return res.json({
+          message: msg,
+          run,
+          plane: activeTask.plane || 'workspace',
+          continuation: true,
+          steering: steeringAction,
+          targetRunId: activeTask.runId,
         });
-        emit(s.id, 'message.end', { taskId: ackTaskId, instant: true, steering: steeringAction }, ackRunId);
-        emit(s.id, 'run.completed', { taskId: ackTaskId, summary: reply, instant: true, steering: steeringAction }, ackRunId);
-        return res.json({ message: msg, run: ackRun, plane: 'direct', instant: true, steering: steeringAction, targetRunId: activeTask.runId });
       }
     }
   }
@@ -1310,6 +1295,64 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
   }
 });
 
+router.patch('/sessions/:id/tasks/:taskId', async (req, res) => {
+  const session = ownedSession(req, req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!durableStorageConfigured()) return res.status(503).json({ error: 'Durable task storage is not configured.' });
+
+  const repository = controlPlaneRepository();
+  const task = await repository.getTask(req.params.taskId);
+  if (!task || task.sessionId !== session.id) return res.status(404).json({ error: 'task not found' });
+  if (task.state !== 'queued') return res.status(409).json({ error: 'Only queued tasks can be edited before they start.' });
+
+  const prompt = String(req.body?.text ?? req.body?.prompt ?? '').trim();
+  if (!prompt) return res.status(400).json({ error: 'Queued task text cannot be empty.' });
+  if (prompt.length > 20_000) return res.status(413).json({ error: 'Queued task text is too long.' });
+
+  const now = new Date().toISOString();
+  task.prompt = prompt;
+  task.harness = createHarnessCheckpoint({
+    prompt,
+    mode: task.mode || 'build',
+    permission: task.tempPermission || task.permission || 'full',
+    plane: task.plane || 'workspace',
+    now,
+  });
+  task.updatedAt = now;
+  await repository.putTask(task);
+
+  if (task.messageId) {
+    const messages = await repository.listMessages(session.id);
+    const original = messages.find((message) => message.id === task.messageId);
+    if (original?.role === 'user') {
+      const updated = { ...original, text: prompt, runId: task.runId || original.runId };
+      await repository.putMessage(updated);
+      const memoryMessage = (store.db.messages[session.id] || []).find((message) => message.id === original.id);
+      if (memoryMessage) Object.assign(memoryMessage, updated);
+      store.save();
+    }
+  }
+
+  emit(session.id, 'run.state', {
+    taskId: task.id,
+    state: 'queued',
+    queueEdited: true,
+    message: 'Queued task updated.',
+  }, task.runId);
+
+  return res.json({
+    id: task.runId || task.id,
+    taskId: task.id,
+    sessionId: task.sessionId,
+    plane: task.plane || 'workspace',
+    state: task.state,
+    prompt: task.prompt,
+    model: task.modelId,
+    mode: task.mode,
+    startedAt: task.createdAt,
+  });
+});
+
 router.post('/sessions/:id/agent-runs', async (req, res) => {
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
@@ -1374,9 +1417,13 @@ router.get('/sessions/:id/runs', async (req, res) => {
     // durable queued work admitted before a previous disconnect or deploy.
     await promoteNextQueuedRun(req.params.id).catch(() => null);
     const tasks = await controlPlaneRepository().listTasks(req.params.id);
+    const queuedIds = tasks.filter((task) => task.state === 'queued').map((task) => task.id);
     return res.json(tasks.map((task) => ({
       id: task.runId || task.id,
+      taskId: task.id,
       sessionId: task.sessionId,
+      prompt: task.prompt,
+      queuePosition: task.state === 'queued' ? queuedIds.indexOf(task.id) + 1 : undefined,
       engine: task.adapterId || 'opencode',
       plane: task.plane || 'workspace',
       state: task.state,
