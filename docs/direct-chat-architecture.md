@@ -1,5 +1,7 @@
 # Direct chat and development execution
 
+> Current architecture note: direct Ask/Plan and workspace Build share the same durable project conversation and continuation semantics. Natural follow-ups received while a direct response is active are fed back into the same run before finalization where possible.
+
 Normal chat runs in the persistent Node API through AI SDK 6. It does not spawn
 OpenCode, install packages, start a localhost server, clone a repository, or
 request a Codespace. The existing messages, task queue, event ledger and SSE
@@ -97,13 +99,13 @@ use real SDK packages with deterministic HTTP/SSE fixtures: they verify early
 deltas, cancellation, public rejection classification and saved credentials.
 These fixtures do not prove live model availability.
 
-Before release, verify Render's current build command and deployed SHA, then
+For each production release, verify Render's current build command and deployed SHA, then
 health, frontend, catalog, AI overview, session retrieval, SSE, authenticated
 Hello on multiple free models, reload and cancellation, followed by memory/CPU
 and restart metrics. Test account-backed models only if the account has access.
 Render workspace selection and a signed-in Orlynx session are required for the
 corresponding private production checks. CI and production evidence must be
-recorded separately; until those gates pass this remains a draft repair.
+recorded separately. Passing repository tests is not a substitute for live provider verification.
 
 Inspected upstream sources:
 - https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts
@@ -115,3 +117,12 @@ Inspected upstream sources:
 - https://opencode.ai/docs/zen/
 
 The bundled models.dev metadata is distributed under [its MIT license](models-dev-LICENSE.txt).
+
+
+## Same-run continuation
+
+Direct Ask/Plan follows the same high-level conversation contract as Build.
+
+If a natural user follow-up arrives while the provider is answering, Orlynx stores it in the durable task inbox and can feed it back to the selected model before finalization. A late follow-up found at the finalization boundary keeps the same run alive instead of being silently stranded behind a completed answer.
+
+Explicit “queue/next/after this” intent still creates separate durable work rather than mutating the active run.
