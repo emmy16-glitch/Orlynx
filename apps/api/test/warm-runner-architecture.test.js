@@ -11,6 +11,7 @@ import {
 } from '../src/bridge-live.ts';
 import { defaultWorkspaceProviderId, shouldPrewarmWorkspace } from '../src/workspace-providers.ts';
 import { OrlynxRunnerProvider } from '../src/orlynx-runner.ts';
+import { rankedRunnerHosts, runnerGlobalMaxWorkspaces, runnerHosts } from '../src/runner-pool.ts';
 import { workspaceShouldAdoptPreferredRunner } from '../src/workspaces.ts';
 
 function withEnv(values, fn) {
@@ -60,6 +61,58 @@ test('workspace provider prefers configured warm runner and otherwise preserves 
 });
 
 
+
+test('distributed runner pool ranks healthy capacity and defaults to a global 50-workspace ceiling', async () => {
+  const previousHosts = process.env.ORLYNX_RUNNER_HOSTS;
+  const previousUrl = process.env.ORLYNX_RUNNER_URL;
+  const previousToken = process.env.ORLYNX_RUNNER_TOKEN;
+  const previousMax = process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES;
+  const previousFetch = globalThis.fetch;
+  try {
+    process.env.ORLYNX_RUNNER_HOSTS = JSON.stringify([
+      { id: 'host-a', url: 'https://runner-a.example.com', region: 'eu', weight: 1 },
+      { id: 'host-b', url: 'https://runner-b.example.com', region: 'eu', weight: 1 },
+    ]);
+    delete process.env.ORLYNX_RUNNER_URL;
+    process.env.ORLYNX_RUNNER_TOKEN = 'pool-test-token';
+    delete process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES;
+
+    globalThis.fetch = async (url) => {
+      const target = String(url);
+      const body = target.includes('runner-a')
+        ? { ok: true, capacity: 10, running: 8, available: 2, stopped: 1 }
+        : { ok: true, capacity: 10, running: 2, available: 8, stopped: 2 };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+
+    assert.deepEqual(runnerHosts().map((host) => host.id), ['host-a', 'host-b']);
+    assert.equal(runnerGlobalMaxWorkspaces(), 50);
+    const ranked = await rankedRunnerHosts();
+    assert.equal(ranked[0]?.id, 'host-b');
+    assert.equal(ranked[1]?.id, 'host-a');
+  } finally {
+    if (previousHosts == null) delete process.env.ORLYNX_RUNNER_HOSTS; else process.env.ORLYNX_RUNNER_HOSTS = previousHosts;
+    if (previousUrl == null) delete process.env.ORLYNX_RUNNER_URL; else process.env.ORLYNX_RUNNER_URL = previousUrl;
+    if (previousToken == null) delete process.env.ORLYNX_RUNNER_TOKEN; else process.env.ORLYNX_RUNNER_TOKEN = previousToken;
+    if (previousMax == null) delete process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES; else process.env.ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES = previousMax;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('runner pool persists host ownership and manager exposes cache/capacity/drain controls', () => {
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  const pool = fs.readFileSync(new URL('../src/runner-pool.ts', import.meta.url), 'utf8');
+  const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
+  assert.match(storage, /runner_host_id/);
+  assert.match(pool, /ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES \|\| 50/);
+  assert.match(pool, /ORLYNX_RUNNER_CIRCUIT_FAILURES/);
+  assert.match(pool, /health\.running \/ Math\.max\(1, .*health\.capacity\)/);
+  assert.match(manager, /ORLYNX_RUNNER_MAX_WORKSPACES \|\| 10/);
+  assert.match(manager, /ORLYNX_RUNNER_GIT_CACHE_ROOT/);
+  assert.match(manager, /git', \['clone', '--mirror'/);
+  assert.match(manager, /draining: DRAINING/);
+  assert.match(manager, /available: DRAINING \? 0/);
+});
 
 test('legacy idle/broken Codespaces migrate to the preferred warm runner without stealing active work', () => {
   const base = {
