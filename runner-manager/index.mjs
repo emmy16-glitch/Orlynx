@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -9,7 +12,11 @@ const CPU_LIMIT = process.env.ORLYNX_RUNNER_CPUS || '2';
 const MEMORY_LIMIT = process.env.ORLYNX_RUNNER_MEMORY || '4g';
 const PIDS_LIMIT = process.env.ORLYNX_RUNNER_PIDS || '512';
 const PREVIEW_PROXY_PORT = Number(process.env.ORLYNX_RUNNER_PREVIEW_PROXY_PORT || 4108);
-const MAX_RUNNING = Math.max(1, Number(process.env.ORLYNX_RUNNER_MAX_WORKSPACES || 4));
+const MAX_RUNNING = Math.max(1, Number(process.env.ORLYNX_RUNNER_MAX_WORKSPACES || 10));
+const HOST_ID = String(process.env.ORLYNX_RUNNER_HOST_ID || os.hostname() || 'runner-host').replace(/[^A-Za-z0-9._-]+/g, '-');
+const HOST_REGION = String(process.env.ORLYNX_RUNNER_REGION || '');
+const DRAINING = process.env.ORLYNX_RUNNER_DRAINING === '1';
+const CACHE_ROOT = path.resolve(process.env.ORLYNX_RUNNER_GIT_CACHE_ROOT || '/var/lib/orlynx/git-cache');
 const IDLE_SECONDS = Math.max(300, Number(process.env.ORLYNX_RUNNER_IDLE_SECONDS || 3600));
 const RECLAIM_SECONDS = Math.max(IDLE_SECONDS, Number(process.env.ORLYNX_RUNNER_RECLAIM_SECONDS || 21600));
 const CLEANUP_SECONDS = Math.max(30, Number(process.env.ORLYNX_RUNNER_CLEANUP_SECONDS || 60));
@@ -138,6 +145,50 @@ async function managedNames(runningOnly = false) {
   return result.stdout.split('\n').map((value) => value.trim()).filter(Boolean);
 }
 
+async function poolCounts() {
+  const [runningNames, allNames] = await Promise.all([managedNames(true), managedNames(false)]);
+  const running = runningNames.length;
+  const stopped = Math.max(0, allNames.length - running);
+  return {
+    capacity: MAX_RUNNING,
+    running,
+    stopped,
+    available: DRAINING ? 0 : Math.max(0, MAX_RUNNING - running),
+    draining: DRAINING,
+  };
+}
+
+async function ensureRepositoryCache(repositoryId, fullName, githubToken) {
+  if (process.env.ORLYNX_RUNNER_GIT_CACHE === '0') return '';
+  fs.mkdirSync(CACHE_ROOT, { recursive: true, mode: 0o700 });
+  const cachePath = path.join(CACHE_ROOT, `${Number(repositoryId)}.git`);
+  const basic = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
+  const env = {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+  };
+  const remote = `https://github.com/${fullName}.git`;
+  try {
+    if (!fs.existsSync(cachePath)) {
+      await run('git', ['clone', '--mirror', remote, cachePath], {
+        env,
+        timeoutMs: Math.max(60_000, Number(process.env.ORLYNX_RUNNER_CACHE_TIMEOUT_MS || 180_000)),
+      });
+    } else {
+      await run('git', ['-C', cachePath, 'remote', 'set-url', 'origin', remote], { env, timeoutMs: 15_000 });
+      await run('git', ['-C', cachePath, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*'], {
+        env,
+        timeoutMs: Math.max(30_000, Number(process.env.ORLYNX_RUNNER_CACHE_TIMEOUT_MS || 120_000)),
+      });
+    }
+    return cachePath;
+  } catch (error) {
+    console.warn('[runner-manager] repository cache unavailable; falling back to direct clone', redact(error instanceof Error ? error.message : error));
+    return '';
+  }
+}
+
 let allocationTail = Promise.resolve();
 async function withAllocationLock(fn) {
   const previous = allocationTail;
@@ -149,6 +200,7 @@ async function withAllocationLock(fn) {
 }
 
 async function assertRunnerCapacity(excludeName = '') {
+  if (DRAINING) throw new Error('Orlynx runner host is draining and is not accepting new workspaces.');
   const running = (await managedNames(true)).filter((name) => name !== excludeName);
   if (running.length >= MAX_RUNNING) throw new Error(`Orlynx runner capacity is full (${running.length}/${MAX_RUNNING}).`);
 }
@@ -315,17 +367,20 @@ async function createWorkspace(body) {
   }
 
   const fullName = await resolveRepository(repositoryId, githubToken);
+  const cachePath = await ensureRepositoryCache(repositoryId, fullName, githubToken);
   const createArgs = [
     'create',
     '--name', name,
     '--label', `orlynx.workspace=${workspaceId}`,
     '--label', `orlynx.session=${sessionId}`,
     '--label', `orlynx.user=${userId}`,
+    '--label', `orlynx.host=${HOST_ID}`,
     '--cpus', CPU_LIMIT,
     '--memory', MEMORY_LIMIT,
     '--pids-limit', PIDS_LIMIT,
     '--security-opt', 'no-new-privileges:true',
     '--cap-drop', 'ALL',
+    ...(cachePath ? ['--mount', `type=bind,src=${cachePath},dst=/opt/orlynx/git-cache/repo.git,readonly`] : []),
     IMAGE,
   ];
   await withAllocationLock(async () => {
@@ -351,7 +406,12 @@ GIT_AUTH_HEADER="$(printf '%s' '${authEncoded}' | base64 -d)"
 ORLYNX_BRANCH="$(printf '%s' '${branchEncoded}' | base64 -d)"
 ORLYNX_REPOSITORY="$(printf '%s' '${repoEncoded}' | base64 -d)"
 if [ ! -d /workspace/repo/.git ]; then
-  git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/$ORLYNX_REPOSITORY.git" /workspace/repo
+  if [ -d /opt/orlynx/git-cache/repo.git ]; then
+    git clone --no-hardlinks --single-branch --branch "$ORLYNX_BRANCH" /opt/orlynx/git-cache/repo.git /workspace/repo
+    git -C /workspace/repo remote set-url origin "https://github.com/$ORLYNX_REPOSITORY.git"
+  else
+    git -c http.https://github.com/.extraheader="$GIT_AUTH_HEADER" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/$ORLYNX_REPOSITORY.git" /workspace/repo
+  fi
 fi
 unset GIT_AUTH_HEADER
 `;
@@ -404,7 +464,16 @@ async function route(req, res) {
   const url = new URL(req.url || '/', 'http://runner.local');
   if (req.method === 'GET' && url.pathname === '/health') {
     const probe = await docker(['version', '--format', '{{.Client.Version}}'], { allowFailure: true, timeoutMs: 5_000 }).catch(() => ({ code: 1 }));
-    return json(res, probe.code === 0 && TOKEN ? 200 : 503, { ok: probe.code === 0 && Boolean(TOKEN), service: 'orlynx-runner-manager', image: IMAGE });
+    const counts = probe.code === 0 ? await poolCounts() : { capacity: MAX_RUNNING, running: 0, stopped: 0, available: 0, draining: DRAINING };
+    return json(res, probe.code === 0 && TOKEN ? 200 : 503, {
+      ok: probe.code === 0 && Boolean(TOKEN),
+      service: 'orlynx-runner-manager',
+      hostId: HOST_ID,
+      region: HOST_REGION || undefined,
+      image: IMAGE,
+      cacheEnabled: process.env.ORLYNX_RUNNER_GIT_CACHE !== '0',
+      ...counts,
+    });
   }
   if (!authorized(req.headers.authorization)) return json(res, 401, { error: 'Unauthorized.' });
 
@@ -514,7 +583,7 @@ cleanupTimer.unref?.();
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[runner-manager] listening on :${PORT} maxRunning=${MAX_RUNNING} idleSeconds=${IDLE_SECONDS}`);
+    console.log(`[runner-manager] listening on :${PORT} host=${HOST_ID} maxRunning=${MAX_RUNNING} idleSeconds=${IDLE_SECONDS} cache=${process.env.ORLYNX_RUNNER_GIT_CACHE !== '0'} draining=${DRAINING}`);
     void cleanupManagedRunners().catch(() => {});
   });
 }
