@@ -66,6 +66,25 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
 });
 
 
+test('Codespace bootstrap provides a private authenticated safe GitHub CLI for Preview forwarding', () => {
+  for (const relative of ['../src/runtime-worker.ts', '../../../runtime-worker/src/index.ts']) {
+    const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
+    assert.match(source, /ORLYNX_GITHUB_TOKEN/);
+    assert.match(source, /gh version 2\.101\.0/);
+    assert.match(source, /9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8/);
+    assert.match(source, /b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f/);
+    assert.match(source, /sha256sum -c/);
+    assert.match(source, /ORLYNX_GH_BIN=%s/);
+    assert.match(source, /downloaded=0/);
+  }
+
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
+  assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
+  assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
+  assert.doesNotMatch(bridge, /--all-interfaces/);
+});
+
 test('Orlynx-owned Codespaces can be identified for safe cross-session reuse', () => {
   assert.equal(orlynxSessionId('Orlynx ses_abc123'), 'ses_abc123');
   assert.equal(orlynxSessionId('My personal Codespace'), null);
