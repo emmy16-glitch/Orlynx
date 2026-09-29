@@ -1,69 +1,42 @@
 # Model switching
 
-Model selection is an Orlynx session preference, not a hardcoded property of the repository or one coding-agent runtime.
+## Catalog
 
-## Discovery
+Orlynx presents models through the selected AI/agent integration.
 
-The model picker should be populated from real catalog/provider metadata used by the relevant execution path.
+Direct chat can use the bundled/refreshed models.dev metadata used by the API transport layer, while workspace OpenCode exposes the models available through its provider/runtime path.
 
-For direct Ask/Plan, Orlynx uses the catalog/provider transport described in [direct-chat-architecture.md](direct-chat-architecture.md).
-
-Workspace agent adapters may expose additional adapter-specific model capability.
-
-Orlynx must not invent model names merely to keep the picker populated.
+The UI must not invent availability for a model the active path cannot actually use.
 
 ## Selection
 
-The composer keeps model selection visible alongside mode, access and agent selection.
+The composer keeps Agent and Model as separate controls.
 
-A selected model is identified by a stable provider/model ID where the provider supports that shape.
+A model selection is stored in durable session preferences.
 
-## Persistence
+## Admission snapshot
 
-Selection is persisted server-side per session so another authenticated device can restore the same project state.
+When a task is admitted, the relevant model/adapter/mode/access state is snapshotted on the task.
 
-Task admission snapshots the effective selection where necessary.
+Changing the picker while work is active does not rewrite the active run underneath it.
 
-Changing the picker while a run is active must not silently change the model already executing that admitted run.
+## Cross-device persistence
 
-The new selection normally applies to the next turn.
+Session AI preferences are server-side.
 
-## No silent fallback
+Opening the same durable conversation on another authenticated device restores the session preference rather than relying on that device's localStorage.
 
-If the selected model becomes unavailable:
+## Failure
 
-- preserve the user's draft and conversation;
-- report needs-attention/unavailable state;
-- allow the user to select/reconnect another model;
-- do not silently switch to an unrelated provider/model.
+If a selected model becomes unavailable:
 
-Provider fallback can be a future explicit policy feature, but it must be visible and governed rather than accidental.
+- preserve the conversation;
+- preserve draft/attachments;
+- show the real availability/authentication problem;
+- do not silently switch to an unrelated model.
 
-## Direct versus agent-runtime model use
+Free/public model availability and account-authenticated model availability are distinct conditions.
 
-A model that is available for direct text chat is not automatically proof that the selected coding-agent adapter can use it for workspace execution.
+## Future adapters
 
-Likewise, an adapter may expose model capability that is not appropriate for the lightweight direct lane.
-
-The UI and server should resolve availability against the execution path rather than presenting one misleading universal readiness flag.
-
-## Free/public models
-
-When a provider/catalog marks a model as usable without a stored credential, Orlynx may use that supported public flow.
-
-A provider rejection must be reported accurately.
-
-For example, an upstream 403 public rejection is not automatically a saved-key expiration, and a 429 is rate limiting rather than proof of billing state.
-
-## Switching standard
-
-Model switching must preserve:
-
-- project/session identity;
-- message history;
-- attachments;
-- queued tasks;
-- workspace state;
-- learned lessons.
-
-Only the intended future model choice changes.
+Future coding-agent adapters may expose different model catalogs/capabilities. The Orlynx session/task contract should stay stable even when adapter-specific discovery differs.
