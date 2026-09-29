@@ -126,6 +126,19 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
   let title = activity.title;
   let summary = activity.summary;
   let evidence = activity.evidence;
+  const sourceType = activity.sourceType || (typeof evidence?.sourceType === 'string' ? evidence.sourceType : '');
+  if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') {
+    const raw = String(activity.title || '');
+    const reflectionId = typeof evidence?.reflectionId === 'number' ? evidence.reflectionId : Number(evidence?.reflectionId || 0) || undefined;
+    title = sourceType === 'agent.dialogue.orlynx' ? 'Orlynx → Model' : 'Model → Orlynx';
+    summary = raw.replace(/^\s*(?:Orlynx\s*[→>-]\s*Model|Model\s*[→>-]\s*Orlynx):\s*/i, '').trim() || activity.summary;
+    evidence = { ...(evidence || {}), sourceType, ...(reflectionId ? { reflectionId } : {}) };
+  } else if (sourceType === 'agent.memory') {
+    const raw = String(activity.title || '');
+    title = 'Orlynx learned';
+    summary = raw.replace(/^\s*Orlynx learned(?: from this verified recovery)?\s*[·:-]?\s*/i, '').trim() || activity.summary;
+    evidence = { ...(evidence || {}), sourceType };
+  }
   if (activity.kind === 'receipt') {
     const command = typeof activity.evidence?.command === 'string' ? activity.evidence.command : '';
     const counts = category === 'test' ? parseTestCounts(activity.rawOutput || '') : undefined;
