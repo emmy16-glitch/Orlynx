@@ -179,6 +179,8 @@ export interface HarnessCheckpoint {
   stagnantReflections?: number;
   /** Persistent verified lessons supplied to this run. */
   lessonsApplied?: string[];
+  /** Explicit user intent: wait behind all currently active work, not merely this execution lane. */
+  queueAfterActive?: boolean;
   updatedAt: string;
 }
 
