@@ -1,160 +1,209 @@
 # Render production
 
-Render is the primary Orlynx control plane. One persistent Node web service serves
-the built frontend, Express API, session SSE streams and the authenticated
-`/bridge` WebSocket gateway. GitHub Codespaces remains the execution plane and
-OpenCode runs inside each workspace.
+Render is the primary Orlynx control plane.
+
+A persistent Node service serves the built frontend, Express API, direct AI chat, session SSE streams and the authenticated /bridge WebSocket gateway.
+
+Mutable repository execution does not run inside the Render web process.
+
+The preferred execution provider is the Orlynx warm runner when configured; GitHub Codespaces remains the supported fallback/recovery provider.
 
 ## Service
 
-Repository: `emmy16-glitch/Orlynx`  
-Branch: `main`  
+Repository: emmy16-glitch/Orlynx  
+Branch: main  
 Runtime: Node.js 24  
-Build: `npm run render:build`  
-Start: `PATH="$PWD/.render-bin:$PATH" npm run start --workspace=@orlynx/api`
+Build: npm run render:build  
+Start: PATH="$PWD/.render-bin:$PATH" npm run start --workspace=@orlynx/api
 
-`scripts/render-build.sh` builds every workspace and installs a private copy of
-the GitHub CLI into `.render-bin`. This is required by the local Codespaces
-bootstrap path.
+scripts/render-build.sh builds every workspace and prepares the production artifact.
 
-## Required host settings
+## Public origin
 
-Use the Render service's canonical HTTPS origin for the public URL:
+Use the canonical Render HTTPS origin:
 
-```text
+~~~text
 ORLYNX_PUBLIC_URL=https://orlynx.onrender.com
 ORLYNX_HOSTED_PRODUCTION=1
-ORLYNX_BOOTSTRAP_MODE=local
-```
+~~~
 
-Production also requires the server-side values documented in `.env.example`:
+Do not configure a Vercel origin as production Orlynx.
 
-- `DATABASE_URL` or `POSTGRES_URL`
-- `ORLYNX_CREDENTIAL_ENCRYPTION_KEY`
-- `ORLYNX_BRIDGE_SIGNING_SECRET`
-- `ORLYNX_SESSION_SECRET` (recommended even though existing GitHub secrets can
-  provide a fallback signing secret)
-- `GITHUB_APP_ID`
-- `GITHUB_APP_SLUG`
-- `GITHUB_CLIENT_ID`
-- `GITHUB_APP_CLIENT_SECRET`
-- `GITHUB_APP_PRIVATE_KEY`
-- `GITHUB_WEBHOOK_SECRET`
+Same-origin checks, GitHub callbacks, bridge URLs and product links depend on the canonical Render origin.
 
-Do not copy a Vercel `ORLYNX_PUBLIC_URL` value into Render. Same-origin
-protection, OAuth return URLs and the Codespace bridge URL all depend on this
-being the Render origin.
+## Durable storage
+
+Production requires Postgres through DATABASE_URL or POSTGRES_URL.
+
+Hosted production must not treat process memory, local JSON files or browser localStorage as authoritative product state.
+
+Durable state includes sessions, messages, tasks, events, workspaces, bridge commands, approvals, audit data, agent/runtime state and verified lessons.
+
+## Core secrets
+
+Production requires the relevant values documented in .env.example, including durable database configuration, credential-encryption secret, bridge signing secret, session secret and GitHub App credentials.
+
+Never log secret values.
 
 ## GitHub App URLs
 
-The production GitHub App must allow the Render origin. Configure its public and
-callback URLs consistently:
+Production GitHub App URLs must use the Render origin:
 
-```text
+~~~text
 Homepage:  https://orlynx.onrender.com
 Callback:  https://orlynx.onrender.com/v1/github/setup
 Setup URL: https://orlynx.onrender.com/v1/github/setup
 Webhook:   https://orlynx.onrender.com/v1/github/webhook
-```
+~~~
 
-If repository-selection updates use "Redirect on update", they should return to
-the same setup URL.
+Repository-selection updates should return to the same Orlynx setup route.
 
-## Execution provider
+## Workspace-provider configuration
 
-Render remains the web/control plane. When a separate Docker-capable runner host
-is configured, set:
+When the warm runner is available, the normal provider configuration is:
 
-```text
+~~~text
 ORLYNX_WORKSPACE_PROVIDER=auto
-ORLYNX_RUNNER_URL=https://<private-runner-host>
+ORLYNX_RUNNER_URL=https://<runner-host>
 ORLYNX_RUNNER_TOKEN=<independent secret>
 ORLYNX_PREWARM_WORKSPACES=1
-```
+~~~
 
-The Render web service does not need Docker privileges. It talks to the runner
-manager over authenticated HTTPS. GitHub Codespaces remains the fallback
-provider and still uses `ORLYNX_BOOTSTRAP_MODE=local`.
+The Render web service does not need Docker privileges.
 
-See [warm runner architecture](warm-runner-architecture.md).
+It talks to the runner manager over authenticated HTTPS.
 
-## Orchestrator worker
+GitHub Codespaces remains the fallback/recovery provider when policy and user authorization allow it.
 
-The current Render rollout uses `apps/api/scripts/production-start.mjs` as the
-service start supervisor. It launches the API and the durable orchestrator as
-separate child processes from the same deployed artifact whenever Postgres is
-configured. The child environment is forced to
-`ORLYNX_ORCHESTRATOR_MODE=worker`, so HTTP handlers only persist workspace jobs
-and the orchestrator process claims them with leases.
+See [warm-runner-architecture.md](warm-runner-architecture.md).
 
-This keeps the existing service's secrets/configuration intact and avoids
-duplicating sensitive GitHub/credential settings during rollout.
+## Durable orchestration
 
-For a later infrastructure split, the orchestrator can still run as its own
-persistent Render background worker using the same build artifact and environment:
+Workspace lifecycle work is persisted before execution.
 
-```text
-Build: npm run render:build
-Start: npm run start:orchestrator --workspace=@orlynx/api
-ORLYNX_ORCHESTRATOR_MODE=worker
-```
+The production supervisor can run the API and durable orchestration worker from the same deployed artifact. The worker claims persisted workspace jobs with leases and retries transient failures.
 
-Set `ORLYNX_ORCHESTRATOR_MODE=worker` on the web service as well. HTTP handlers
-then only persist workspace jobs. The worker claims them with Postgres row
-locking, renews leases while provisioning, retries transient failures with
-backoff, and promotes queued Build work after readiness.
+The key rule is that HTTP request lifetime must not own long-running workspace preparation.
 
-For local/single-service development, `ORLYNX_ORCHESTRATOR_MODE=inline` keeps a
-compatibility executor, but it still writes the durable job before execution.
+A restart or client disconnect must not erase admitted workspace work.
 
 ## Durable chat execution
 
-Messages are stored before agent execution. The task ledger is an ordered durable
-inbox:
-
-```text
+~~~text
 user message
-    -> durable message + queued task
-    -> atomic oldest-task promotion
-    -> bridge agent.run
-    -> OpenCode event stream
-    -> durable Orlynx events
-    -> browser SSE
-    -> completion/failure
-    -> promote next queued task
-```
+    ↓
+durable message
+    ↓
+durable task + harness checkpoint
+    ↓
+same-run continuation OR explicit queued task
+    ↓
+direct model lane OR workspace lane
+    ↓
+durable normalized events
+    ↓
+verification / Investigation if needed
+    ↓
+final durable assistant result
+    ↓
+promote next queued task
+~~~
 
-Only one task can be `running` for a session. Follow-up messages remain
-`queued` and survive API redeploys. The task snapshots model, mode and access
-policy at admission time.
+Queued work is never promoted while another task is running, waiting for user input or waiting for approval.
 
-## Streaming and bridge behavior
+## Follow-ups
 
-Render keeps SSE and WebSocket connections on the persistent Node service. Orlynx
-uses event-first delivery with durable replay:
+Natural follow-up messages during active work remain attached to the same run.
 
-- OpenCode events are primary; a slower session poll is recovery only.
-- Bridge results/commands are durable and idempotent.
-- Browser SSE receives in-process events immediately and checks Postgres on a
-  slower recovery interval.
-- SSE sequence replay fills gaps after sleep, network changes or server restarts.
-- A bridge READY event attempts to resume the oldest admitted queued task.
+Before finalizing, the API re-reads durable task state. If a late follow-up arrived during verification/final synthesis, the task is continued under the same run identity rather than silently completing and losing that message.
 
-## Verification after a deployment
+This finalization boundary is regression-tested.
 
-A production release should show all of the following before it is treated as
-healthy:
+## Streaming
 
-1. GitHub Actions typecheck, tests and build pass for the deployed commit.
-2. Render reports the same commit as live.
-3. Startup logs report that the GitHub App is configured and the API is listening.
-4. `/health` is healthy and durable storage is available.
-5. GitHub OAuth returns to the Render origin.
-6. A Codespace reaches bridge/OpenCode ready.
-7. A chat response streams live.
-8. A second prompt sent during the first run is queued and starts automatically.
-9. Reconnecting the browser replays events without duplicates.
+Browser activity uses SSE.
 
-## Lightweight chat dependencies
+Workspace execution uses the authenticated bridge WebSocket.
 
-The API owns its AI SDK dependencies in `apps/api/package.json` and the root lockfile. Build with `bash scripts/render-build.sh`; do not install AI packages in `.render-ai`. The build and startup verify compiled provider imports. See [direct chat architecture](direct-chat-architecture.md) for routing, snapshots, authentication and production smoke tests.
+Normalized events are persisted, secret-like payload values are sanitized, live in-process broadcast provides low latency and durable sequence replay repairs gaps.
+
+## Investigation stream
+
+Reflection/diagnosis events are grouped by reflection identity into ordered Investigation sections in the UI.
+
+An Investigation can show the Orlynx observation, the connected model hypothesis/next check and the resulting evidence.
+
+Private hidden chain-of-thought is not rendered.
+
+## Preview
+
+Preview diagnosis is provider-first.
+
+Before modifying project configuration, Orlynx verifies process/listener, browser suitability, provider forwarding and browser-resolvable URL.
+
+API-only JSON roots are rejected as Preview.
+
+Codespaces Vite compatibility is supplied globally by the workspace environment where supported so repositories should not repeatedly need bespoke host config changes.
+
+## Post-deploy verification
+
+A release should not be treated as healthy until the relevant checks pass.
+
+### Build/revision
+
+1. GitHub Actions verification passes for the exact commit.
+2. Render reports the same revision live.
+3. Startup completes without fatal configuration/runtime errors.
+4. /health reports expected durable dependencies.
+
+### GitHub
+
+5. GitHub connection/install callback returns to the Render origin.
+6. Authorized repositories remain installation-scoped.
+7. Publication preserves requested branch and returns a receipt.
+
+### Direct conversation
+
+8. Ask/Plan streams from a selected working model.
+9. A follow-up sent while output is streaming continues the same run.
+10. Cancellation interrupts the provider request without reporting success.
+
+### Workspace
+
+11. Warm runner reaches bridge-ready when configured.
+12. If runner preparation fails and fallback is allowed, Codespaces can recover the durable task.
+13. Agent-adapter readiness remains separate from bridge/workspace readiness.
+
+### Queue
+
+14. “Also check this” continues the active run.
+15. “Queue this / do this next” creates a visible queued task.
+16. queued work is editable/cancellable.
+17. queued work does not run beside active/waiting work.
+18. the next task starts only after the active run reaches a terminal state.
+
+### Investigation / verification
+
+19. Missing acceptance evidence prevents premature completion.
+20. Investigation blocks appear in order when reflection is required.
+21. the final result reflects the newest same-run user update.
+
+### Streaming / mobile
+
+22. Reload/reconnect replays events without duplicates.
+23. scrolling upward stops auto-follow.
+24. returning to the latest content resumes normal follow behavior.
+
+### Security
+
+25. secret-like values are absent from streamed/durable event payloads.
+26. historical replay remains sanitized.
+27. learned lessons remain user-scoped.
+
+## Production evidence
+
+Keep CI evidence and live-production evidence separate.
+
+Passing unit tests does not prove a live model provider is available, GitHub permissions are correct, Render deployed the intended SHA, a runner host is reachable or Codespaces authorization is healthy.
+
+Production claims should always be tied to the exact deployed revision.

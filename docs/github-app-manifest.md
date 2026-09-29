@@ -1,63 +1,105 @@
-# GitHub App manifest bootstrap (one-time owner setup)
+# GitHub App manifest bootstrap
 
-Normal users never see this flow. They click **Connect GitHub** after the Orlynx
-platform GitHub App is configured.
+This is an **owner-only, one-time setup path** for creating the Orlynx GitHub App through GitHub's official App Manifest flow.
 
-## Flow
+Normal users never use this page. They use **Connect GitHub**.
 
-1. Owner opens the protected GitHub App bootstrap route with
-   `ORLYNX_SETUP_TOKEN`.
-2. Orlynx builds a manifest using the canonical production URL.
-3. GitHub shows its official App-creation confirmation. The owner approves.
-4. GitHub redirects to Orlynx with a temporary manifest code.
-5. The backend verifies single-use state and exchanges the code at
-   `POST /app-manifests/{code}/conversions`.
-6. Generated credentials are written directly to Vercel production environment
-   storage when Vercel automation credentials are available.
-7. A production redeploy is triggered and the bootstrap route locks after the App
-   is configured.
+## Current manifest behavior
 
-Private keys, client secrets and webhook secrets are never returned to the browser
-or printed to logs.
+The manifest is built from the canonical ORLYNX_PUBLIC_URL and requests the capabilities Orlynx currently uses:
 
-## Manifest permissions
+- contents: write;
+- metadata: read;
+- pull requests: write;
+- codespaces: write;
+- codespaces lifecycle admin: write.
 
-`apps/api/src/manifest.ts → buildManifest()` requests only permissions used by
-real Orlynx features:
-
-- `contents: write` — repository content/commit/push operations;
-- `metadata: read` — repository metadata required with repository access;
-- `pull_requests: write` — open a review PR for safe default-branch publishing;
-- `codespaces: write` — create/use the user's Codespaces;
-- `codespaces_lifecycle_admin: write` — start/stop supported Codespace lifecycle.
-
-No PAT flow is used and no administration/secrets/actions permission is requested
-unless a future real feature proves it is necessary.
-
-Changing the manifest permissions for an existing production GitHub App can
-require the installation owner to accept the updated permission on GitHub before
-the new capability becomes available. Orlynx must report that as a connection
-needs-attention state rather than pretending PR creation succeeded.
-
-## URLs
-
-The manifest uses the actual canonical production origin for:
+The manifest also configures:
 
 - homepage;
-- setup/callback;
+- webhook URL;
 - manifest conversion redirect;
-- webhook.
+- normal GitHub setup/OAuth callback;
+- setup-on-update / Redirect on update behavior.
 
-Preview deployments must not silently replace production callback URLs.
+Do not expand permissions without a real implemented feature that requires them.
+
+## Setup flow
+
+1. The owner enables the protected setup path with ORLYNX_SETUP_TOKEN.
+2. Orlynx builds the manifest using the canonical production URL.
+3. GitHub shows the official App-creation confirmation.
+4. The owner approves creation.
+5. GitHub redirects to Orlynx with a short-lived manifest conversion code.
+6. Orlynx validates signed setup state.
+7. Orlynx exchanges the code with GitHub.
+8. The returned App credentials must be stored in the production secret environment.
+9. The production service is redeployed/restarted with those credentials.
+10. Once the App is configured, the owner setup route locks.
+
+Private keys, client secrets and webhook secrets must never be rendered into a normal browser page or printed into logs.
+
+## Render is production
+
+The active Orlynx production control plane is Render.
+
+The canonical production URL, callback URLs and webhook URLs must therefore use the Render origin.
+
+Do not point the production GitHub App at Vercel.
+
+## Legacy Vercel bootstrap helper in code
+
+The current source still contains a legacy function named persistCredentialsToVercel in apps/api/src/manifest.ts.
+
+That helper belongs to the earlier deployment architecture.
+
+It is **not** the current production deployment standard and must not be used as justification to configure Orlynx production on Vercel.
+
+Until that legacy helper is removed or replaced with a Render-safe owner setup workflow, generated credentials should be installed through the secure Render secret-management path used by the operator.
+
+The application must never expose generated secrets as a copy/paste workaround in a normal user flow.
+
+## Canonical GitHub environment keys
+
+The GitHub gateway's canonical configuration names are:
+
+- ORLYNX_PUBLIC_URL
+- GITHUB_APP_ID
+- GITHUB_APP_SLUG
+- GITHUB_CLIENT_ID
+- GITHUB_APP_CLIENT_SECRET
+- GITHUB_APP_PRIVATE_KEY
+- GITHUB_WEBHOOK_SECRET
+
+The runtime accepts GITHUB_PRIVATE_KEY only as a legacy alias. New configuration should use GITHUB_APP_PRIVATE_KEY.
+
+## State security
+
+Manifest setup state is:
+
+- signed;
+- expiring;
+- single-use;
+- owner-protected.
+
+A missing/invalid setup token or already-configured App locks the owner bootstrap.
 
 ## Webhooks
 
-The webhook endpoint verifies `X-Hub-Signature-256` and records
-`X-GitHub-Delivery` in durable Postgres storage so redelivery cannot be processed
-as a new authorization change across serverless instances/redeploys.
+The manifest points GitHub at the Orlynx webhook endpoint.
 
-## If Vercel automation is unavailable
+Webhook payloads are verified using X-Hub-Signature-256.
 
-If Orlynx cannot write generated credentials to Vercel securely, the bootstrap
-must stop and report the exact owner action required. It must never print secrets
-into the page or chat as a workaround.
+Delivery IDs are persisted durably in production so GitHub redelivery is idempotent across service restarts.
+
+## Permission changes
+
+Changing App permissions for an already-installed App may require installation owners to accept the new permissions on GitHub.
+
+Orlynx must report this as a connection-needs-attention state rather than pretending the new capability already works.
+
+## Future cleanup
+
+The legacy Vercel credential-persistence helper should eventually be removed or replaced by a production-provider-neutral bootstrap abstraction.
+
+That cleanup is code work, not documentation work, and should receive tests before the old helper is deleted.

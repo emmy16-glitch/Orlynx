@@ -53,7 +53,7 @@ turn the product into a dashboard of infrastructure modules.
 | Publish | `POST /v1/changes/:id/push` | real GitHub push/PR result |
 | GitHub picker | GitHub App routes | live authorized installation repositories |
 | Attachments | multipart session route | durable metadata + workspace transfer |
-| Cloud | session cloud routes | GitHub Codespaces + durable workspace state |
+| Workspace | session workspace/cloud routes | durable WorkspaceProvider state (Orlynx Runner preferred; Codespaces fallback) |
 | Preview | session ports | real workspace bridge port discovery |
 | Terminal | session terminal routes | real PTY in workspace bridge |
 
@@ -95,3 +95,20 @@ pretending a provider succeeded.
 Controls use touch-sized targets, visible focus, semantic labels and text alongside
 status color. Activity updates are batched; history/raw-output views are bounded;
 screen readers should receive milestone announcements rather than token/log spam.
+
+
+## Active continuation and explicit queue
+
+The transcript should visually preserve one active goal even when the user sends follow-up messages during execution.
+
+Natural follow-ups are rendered inside the same run/turn relationship.
+
+Explicit next-task intent appears in the durable queue tray with position, mode, Edit and Cancel controls.
+
+Active work is not duplicated as a queued item.
+
+## Investigation presentation
+
+When reflection is required, the transcript groups Orlynx/model diagnostic dialogue into ordered Investigation sections.
+
+The presentation exposes useful observations, hypotheses and evidence while keeping private hidden chain-of-thought out of the UI.

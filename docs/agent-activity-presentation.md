@@ -146,10 +146,8 @@ visible activity. See [streaming-and-reconnect.md](streaming-and-reconnect.md).
 ## Raw output retention and security
 
 Raw output lives in event receipts, not in chat message text. A receipt is rendered
-as a reference plus concise evidence by default. The API currently persists its
-event ledger to the local JSON store and retains the newest 2,000 events per
-session; the web client keeps at most 300 runtime events and the normalized
-presentation at most 100 rows. Individual output payloads are not yet stored in a
+as a reference plus concise evidence by default. Production persists the canonical
+event ledger in durable Postgres; local JSON is development/test fallback only. Client projections remain bounded so replay and long-running sessions do not produce unbounded browser memory growth. Individual output payloads are not yet stored in a
 separate blob/log service or expired independently, so adapters should avoid
 putting secrets or excessively large transcripts in event payloads. Future durable
 providers should use a bounded raw-log store and expose authorized receipt
@@ -188,3 +186,10 @@ rotation, and keyboard interactions remains a manual/device validation item.
 Summary mode keeps commands and implementation evidence one action away. Code
 mode reveals observable commands, paths, edit snippets and final diff evidence
 inline while preserving raw diagnostics as a separate explicit action.
+
+
+## Current Investigation presentation
+
+Reflection dialogue now uses ordered Investigation blocks grouped by reflection identity. These blocks are a specialized status presentation inside the canonical thread and should not be collapsed back into generic raw activity rows.
+
+Secret-like event content is sanitized before durable persistence/streaming and historical replay is sanitized again before reflection.

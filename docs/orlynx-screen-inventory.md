@@ -1,68 +1,196 @@
-# Orlynx Screen Inventory
+# Orlynx screen inventory
 
-The inventory separates UI that is functional against this repository's current
-API from workflows blocked by provider infrastructure. A polished screen does not
-imply a production service behind it.
+This inventory describes the current product model, not the early prototype.
 
-## Entry and navigation
+## Entry and repository selection
 
-| Screen | UI state | Behavior / limitation |
-| --- | --- | --- |
-| Welcome | first visit, no restorable session | Connect GitHub details; continue into explicit local demo |
-| Home | recent projects and GitHub summary | Open recents, local project form, repository picker |
-| Projects | recent list, local open/create, GitHub entry | Session resumes per project; local repositories are local API data |
-| GitHub connection | unconfigured, connected, expired, unavailable | Read-only connection details; authorization must be configured server-side |
-| Repository picker | search, all/personal/organization/recent filters, selection, branch selection | Metadata and branches from configured GitHub access; import clones a selected branch |
-| Agents | native agent, provider availability | Native is a demo adapter; OpenCode/Cline are explicitly unavailable |
-| Tasks | empty or latest current-session run | Task history is limited to the active project/session; no cross-account task service |
-| Global search | project and open-project files | Search is local and limited to recents/current file list, not a remote index |
+| Screen / surface | Current role |
+| --- | --- |
+| Welcome / connect | Connect GitHub and restore existing authenticated project state |
+| Repository picker | Choose among GitHub repositories authorized to the Orlynx App installation |
+| Branch selection | Select the working branch before opening/importing the project |
+| Recent projects | Resume durable project sessions rather than opening disposable chat tabs |
 
 ## Project workspace
 
-| View | Implemented behavior | Limitation |
-| --- | --- | --- |
-| Chat | restored conversation, live assistant response, attachments, normalized agent stream, composer, stop, offline draft | Native agent is simulated; tool/action coverage is illustrative |
-| Activity | stable status, grouped actions, test/file evidence, explicit raw logs | raw receipt retention is event-bounded, not byte/TTL-bounded |
-| Files | folder navigation, name filter, text file viewer | read-only; no in-browser edit/rename |
-| Changes | change-set list, expandable file detail, approval, local commit, confirmed GitHub push | no syntax-highlighted line diff, accept/reject implementation, or push to arbitrary remotes |
-| Preview | explicit URL, embedded sandboxed frame, reload and external open | no automatic dev-server discovery or port forwarder |
-| Terminal | separate command panel, output, keyboard hint row | no PTY; keyboard hints are visual only; server shell adapter is local |
-| More | Terminal, Cloud, Tasks, Settings entry points | no advanced provider control plane |
+The primary workspace is conversation-first.
 
-## Context and global screens
+### Chat
 
-- **Cloud:** status, provider identity, work/stop/refresh and return-to-chat. The
-  current local implementation simulates readiness; Codespaces provisioning is not
-  wired even if the GitHub repository connection exists.
-- **Settings:** Account/local profile, GitHub, AI provider availability, Cloud,
-  appearance (System/Light/Dark), agent defaults, notification/security summary,
-  and runtime data detail.
-- **Approvals:** inline file-change approval and an explicit separate push-review
-  confirmation. There is no generic Yes/No destructive dialog.
-- **Attachments:** device file picker, upload states, chat attachment chips. Link,
-  direct repository-file attach, camera UI variants, and attachment delete are not
-  implemented by the current API.
+Chat is the main orchestration surface.
 
-## Shared visual states
+It contains:
 
-Empty project/recent/tasks/files/changes/preview states; GitHub disconnected,
-expired, no-access, loading, and network failure; project restore; working agent;
-offline/draft preservation; cloud preparing/ready/stopped/failed; pending/stale/
-committed/pushed change sets; upload progress/failure; preview unavailable; and
-terminal idle/output are represented. Provider-specific OAuth return, real account
-profile, model settings, cloud billing/machine selection, notification delivery,
-and remote reconnect remain out of scope until their services exist.
+- durable user/assistant turns;
+- selected model;
+- selected mode: Ask / Plan / Build;
+- selected access profile;
+- selected coding-agent adapter;
+- streamed model output;
+- normalized execution evidence;
+- ordered Investigation blocks;
+- same-run follow-up messages;
+- explicit queue tray;
+- Stop/cancel controls;
+- attachment entry points.
 
-## Screen map
+Natural follow-ups continue active work where possible.
 
-```text
-Welcome → GitHub details → Repository picker → Branch select → Import → Project/Chat
-  ├─ Home → Projects → open/resume project
-  ├─ Agents → Task history → original project session
-  ├─ Cloud → same project conversation
-  └─ Settings → GitHub / Agents / Cloud / Appearance / Security detail
+Explicit next-task intent creates visible queued work.
 
-Project header → Chat | Files | Changes | Preview | Terminal | More
-More → Terminal | Cloud | Tasks | Settings
-Changes → Review file details → Approve → Local commit → Review push → Push
-```
+### Files
+
+Files exposes repository/workspace file context without turning the product into a full IDE clone.
+
+The exact source may depend on workspace readiness and repository state.
+
+### Changes
+
+Changes is the review surface for modifications and publication preparation.
+
+It should make it possible to understand:
+
+- what files changed;
+- the relevant diff/evidence;
+- whether review/approval is required;
+- whether commit/publication succeeded;
+- the resulting receipt/branch target.
+
+### Preview
+
+Preview opens only a browser-usable forwarded surface.
+
+API-only ports are not treated as Preview.
+
+Codespaces and runner Preview use provider-specific forwarding under one Orlynx product contract.
+
+### Terminal
+
+Terminal is a real workspace PTY capability and is not the main chat transcript.
+
+Raw terminal output stays separate from user-facing work summaries.
+
+### More / contextual surfaces
+
+Depending on viewport and current implementation, More/contextual surfaces expose secondary project functions such as:
+
+- terminal;
+- workspace/provider state;
+- task/queue information;
+- settings;
+- integration details.
+
+Infrastructure should remain secondary to the project conversation.
+
+## Queue UI
+
+The queue tray represents explicit future work only.
+
+For each queued task the UI can surface:
+
+- position;
+- mode;
+- prompt summary;
+- Edit;
+- Cancel.
+
+Active work status is not duplicated inside the queued list.
+
+Queued tasks are sequential.
+
+## Investigation UI
+
+Reflection/diagnostic dialogue is grouped into ordered:
+
+- Investigation 1;
+- Investigation 2;
+- etc.
+
+Each Investigation can show:
+
+- Orlynx observation;
+- model hypothesis/next check;
+- evidence underneath.
+
+Long Investigation content is scroll-bounded.
+
+The UI does not expose private hidden chain-of-thought.
+
+## Streaming behavior
+
+The latest streamed output follows automatically while the user is reading at the bottom.
+
+If the user scrolls upward, follow mode stops.
+
+The user can return to current activity without losing their reading position.
+
+## Mobile
+
+Mobile remains a first-class control surface.
+
+The project navigation is intentionally compact, with the primary set centered on:
+
+~~~text
+Chat · Files · Changes · More
+~~~
+
+Secondary tooling does not compete with the core project flow.
+
+Queue, Investigation, composer and current-work status must remain usable on narrow screens.
+
+## Desktop
+
+Desktop can expose more repository/project context at once, but it should preserve the same mental model:
+
+- conversation is primary;
+- files/changes are supporting surfaces;
+- infrastructure is contextual;
+- current work and queued work remain distinct.
+
+## GitHub publication
+
+Publication controls must communicate the actual branch target.
+
+If the user explicitly names a branch, the UI/backend must not silently substitute another target.
+
+Publication is performed through controlled Orlynx/GitHub integration rather than exposing raw credentials to the agent shell.
+
+## Current integrations represented in the UI
+
+The deployed product architecture supports real state for:
+
+- GitHub App connection;
+- authorized repositories;
+- connected model/provider state;
+- Orlynx warm runner when configured;
+- GitHub Codespaces fallback/recovery;
+- authenticated bridge;
+- OpenCode adapter;
+- real workspace files/shell/Git;
+- real Preview forwarding;
+- durable queue state;
+- approvals/change sets;
+- controlled publication.
+
+## Explicitly future surfaces
+
+The following should not be presented as current unless implementation and production verification are added:
+
+- additional real coding-agent adapters beyond OpenCode;
+- team/shared project memory;
+- multi-agent parallel orchestration;
+- autonomous scheduled maintenance;
+- production observability feedback loops;
+- enterprise organization policy administration.
+
+## Historical note
+
+Older versions of this document described simulated native agents, local-only cloud state and unimplemented Codespaces behavior.
+
+Those statements were prototype-era truth and are no longer current architecture.
+
+For current behavior, use:
+
+- [orlynx-overview.md](orlynx-overview.md)
+- [architecture-overview.md](architecture-overview.md)
+- [end-to-end-verification.md](end-to-end-verification.md)
