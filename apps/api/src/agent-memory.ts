@@ -28,15 +28,22 @@ function words(value: string): string[] {
 }
 
 function lessonScore(lesson: AgentLessonRecord, query: Set<string>, projectId?: string, provider?: string): number {
-  let score = lesson.projectId && lesson.projectId === projectId ? 8 : lesson.scope === 'environment' ? 2 : 0;
   const searchable = new Set([
     ...lesson.tags,
     ...words(lesson.title),
     ...words(lesson.problem),
     ...words(lesson.lesson),
   ]);
-  for (const token of query) if (searchable.has(token)) score += 2;
-  if (provider && lesson.provider === provider) score += 3;
+  let overlap = 0;
+  for (const token of query) if (searchable.has(token)) overlap += 1;
+  // Memory must be relevant before it can influence a new run. Repository or
+  // environment scope alone is not enough; otherwise unrelated old lessons
+  // gradually pollute every future prompt.
+  if (overlap === 0) return 0;
+  let score = overlap * 3;
+  if (lesson.projectId && lesson.projectId === projectId) score += 4;
+  else if (lesson.scope === 'environment') score += 1;
+  if (provider && lesson.provider === provider) score += 1;
   score += Math.min(3, Math.max(0, lesson.successCount - 1));
   return score;
 }
@@ -48,7 +55,7 @@ export async function relevantAgentLessons(
 ): Promise<AgentLessonRecord[]> {
   const repository = controlPlaneRepository();
   const candidates = await repository.listAgentLessons(session.userId, session.projectId, 50);
-  const query = new Set(words(`${prompt} ${provider || ''}`));
+  const query = new Set(words(prompt));
   const ranked = candidates
     .map((lesson) => ({ lesson, score: lessonScore(lesson, query, session.projectId, provider) }))
     .filter((item) => item.score > 0)
@@ -68,9 +75,9 @@ export function agentMemoryInstruction(lessons: AgentLessonRecord[]): string {
   ].join('\n');
 }
 
-function lessonId(scope: string, projectId: string | undefined, target: string[], tags: string[]): string {
+function lessonId(userId: string, scope: string, projectId: string | undefined, target: string[], tags: string[]): string {
   return `lesson_${createHash('sha256')
-    .update([scope, projectId || 'global', target.slice().sort().join(','), tags.slice(0, 12).join(',')].join('|'))
+    .update([userId, scope, projectId || 'global', target.slice().sort().join(','), tags.slice(0, 12).join(',')].join('|'))
     .digest('hex')
     .slice(0, 24)}`;
 }
@@ -120,7 +127,7 @@ export async function rememberVerifiedLesson(input: {
   );
 
   const repositoryLesson: AgentLessonRecord = {
-    id: lessonId('repository', input.session.projectId, target, tags),
+    id: lessonId(input.session.userId, 'repository', input.session.projectId, target, tags),
     userId: input.session.userId,
     projectId: input.session.projectId,
     sessionId: input.session.id,
@@ -142,7 +149,7 @@ export async function rememberVerifiedLesson(input: {
   if (environmentRelevant(environmentText)) {
     const environmentLesson: AgentLessonRecord = {
       ...repositoryLesson,
-      id: lessonId('environment', undefined, target, tags),
+      id: lessonId(input.session.userId, 'environment', undefined, target, tags),
       projectId: undefined,
       scope: 'environment',
       title: clean(`Environment lesson: ${title}`, 220),
