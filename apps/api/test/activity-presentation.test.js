@@ -168,6 +168,29 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
+  it('streams Orlynx ↔ model diagnostic exchanges as distinct visible rows', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 1,
+        text: 'Orlynx → Model: preview is unverified although localhost returned HTTP 200.',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 1,
+        text: 'Model → Orlynx: inspect forwarding and authentication instead of restarting Vite.',
+      }),
+      event(3, 'activity.progress', {
+        sourceType: 'agent.memory',
+        text: 'Orlynx learned from this verified recovery · saved 2 reusable lessons.',
+      }),
+    ]);
+    assert.equal(rows.length, 3);
+    assert.match(rows[0].title, /^Orlynx → Model:/);
+    assert.match(rows[1].title, /^Model → Orlynx:/);
+    assert.match(rows[2].title, /^Orlynx learned/);
+  });
+
   it('chat consumes canonical stream selectors rather than raw lifecycle reducers', () => {
     const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
     // Thread projection owns turn grouping by run/user-message IDs — timestamp
