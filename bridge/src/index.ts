@@ -326,6 +326,7 @@ function assistantText(message: { parts?: Array<Record<string, any>> } | undefin
 }
 async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
+  const reflectionId = Number(payload.reflectionId || 0);
   let engineSessionId = String(payload.engineSessionId || '');
   if (typeof payload.openCodePublicAccess === 'boolean') {
     const restarted = await ensureOpenCodeAuthMode(payload.openCodePublicAccess);
@@ -399,6 +400,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   const toolParts = new Map<string, Record<string, any>>();
   const toolStates = new Map<string, string>();
   const toolOutputs = new Map<string, string>();
+  let reflectionDiagnosticEmitted = false;
 
   const emitRetry = (status: Record<string, any>) => {
     const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
@@ -429,9 +431,27 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
   const emitTextDelta = (partID: string, delta: string) => {
     if (!delta) return;
     const before = textParts.get(partID) || '';
+    const combined = before + delta;
     bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
-    textParts.set(partID, before + delta);
+    textParts.set(partID, combined);
     visible += delta;
+
+    if (reflectionId > 0 && !reflectionDiagnosticEmitted) {
+      const lineEnd = combined.indexOf('\n');
+      const firstLine = (lineEnd >= 0 ? combined.slice(0, lineEnd) : combined).trim();
+      if (/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine) && (lineEnd >= 0 || firstLine.length >= 80)) {
+        reflectionDiagnosticEmitted = true;
+        bridgeEvent(ws, 'activity.progress', {
+          sourceType: 'agent.dialogue.model',
+          reflectionId,
+          text: firstLine.slice(0, 420),
+        }, taskId, runId);
+      } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
+        // Do not hold or reinterpret normal assistant text when the model does
+        // not follow the diagnostic-line convention.
+        reflectionDiagnosticEmitted = true;
+      }
+    }
   };
 
   const flushTextPart = (partID: string) => {
