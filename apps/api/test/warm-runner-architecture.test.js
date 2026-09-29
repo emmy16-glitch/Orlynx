@@ -217,6 +217,10 @@ test('Render direct runner provides a single isolated workspace without nested D
   const source = fs.readFileSync(new URL('../../../runner-direct/index.mjs', import.meta.url), 'utf8');
   assert.match(source, /service: 'orlynx-direct-runner'/);
   assert.match(source, /capacity: 1/);
+  assert.match(source, /current\.state === 'stopped'/);
+  assert.match(source, /reassigning stopped workspace/);
+  assert.match(source, /current\.state === 'running' && idle >= IDLE_SECONDS/);
+  assert.doesNotMatch(source, /current\.state !== 'stopped' \|\| idle < RECLAIM_SECONDS/);
   assert.match(source, /git', \['clone', '--filter=blob:none'/);
   assert.match(source, /GIT_CONFIG_KEY_0: 'http\.https:\/\/github\.com\/\.extraheader'/);
   assert.match(source, /spawn\(process\.execPath, \[BRIDGE_PATH\]/);

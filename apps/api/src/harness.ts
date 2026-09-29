@@ -44,6 +44,7 @@ export function verificationRequirementsFor(prompt: string): string[] {
   if (/\b(push|publish)\b/.test(value) || /\bto\s+main\b/.test(value)) required.add('publish');
   if (/\b(deploy|deployment|redeploy)\b/.test(value)) required.add('deployment');
   if (/\b(localhost|local\s*host|preview|start\s+(?:the\s+)?(?:app|server|dev))\b/.test(value)) required.add('preview');
+  if (/\b(?:check|search|look\s*up|research|browse)\s+(?:the\s+)?(?:web|internet|online)\b|\b(?:latest|current|official)\s+(?:online\s+)?(?:docs|documentation)\b|\bweb(?:search|fetch)\b/.test(value)) required.add('browser');
 
   return [...required];
 }
@@ -70,6 +71,7 @@ export function toolFamiliesFor(input: {
   if (required.has('commit') || required.has('publish') || input.phase === 'verifying') families.add('git');
   if (required.has('preview') || input.phase === 'verifying') families.add('preview');
   if (required.has('deployment')) families.add('deployment');
+  if (required.has('browser')) families.add('browser');
 
   return [...families];
 }
@@ -282,6 +284,8 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
         || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b/.test(command)
         || /\btsc\b/.test(command)
       )) found.add('build');
+      const tool = String(payload.tool || payload.toolName || '').toLowerCase();
+      if (exitCode === 0 && ['webfetch', 'websearch'].includes(tool)) found.add('browser');
       if (exitCode === 0 && (
         semanticType === 'test-result'
         || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b/.test(command)

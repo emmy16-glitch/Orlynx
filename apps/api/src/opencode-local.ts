@@ -80,7 +80,7 @@ function safeProviderError(error: unknown, publicAccess: boolean): ProviderReque
 
 function runtimeConfig(): { baseURL: string; authorization: string } {
   const baseURL = String(process.env.ORLYNX_OPENCODE_RUNTIME_URL || '').replace(/\/$/, '');
-  const username = String(process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME || 'orlynx');
+  const username = String(process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME || 'opencode');
   const password = String(process.env.ORLYNX_OPENCODE_RUNTIME_PASSWORD || '');
   if (!baseURL || !password) {
     throw new ProviderRequestError('The OpenCode free-model runtime is not configured.', 503, true);
@@ -129,29 +129,29 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
   if (now < runtimePrewarmRetryAt) return Promise.resolve(false);
 
   runtimePrewarmPromise = (async () => {
+    const timeoutMs = Math.max(20_000, Number(process.env.ORLYNX_OPENCODE_PREWARM_TIMEOUT_MS || 75_000));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('runtime prewarm timeout')), timeoutMs);
+    timer.unref?.();
+
     try {
-      const response = await runtimeFetch('/global/health', {
-        headers: { Accept: 'application/json' },
-      }, 20_000);
-      if (response.ok) {
-        runtimePrewarmAt = Date.now();
-        runtimePrewarmRetryAt = 0;
-        console.info('[ai-runtime] prewarm ready');
-        return true;
-      }
-      // One failed wake request is enough to kick a sleeping Render service.
-      // Back off before probing again so frequent catalog/status polling cannot
-      // hammer the runtime edge with repeated 502s.
-      runtimePrewarmRetryAt = Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS;
-      console.warn(`[ai-runtime] prewarm returned HTTP ${response.status}; backing off`);
-      return false;
+      // A free Render runtime can return transient 502/503 responses while it
+      // wakes. Use the same readiness loop as a real model request instead of
+      // probing once and then repeatedly backing off while the service boots.
+      await waitForRuntimeReady(controller.signal);
+      runtimePrewarmAt = Date.now();
+      runtimePrewarmRetryAt = 0;
+      console.info('[ai-runtime] prewarm ready');
+      return true;
     } catch (error) {
-      runtimePrewarmRetryAt = Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS;
-      // Prewarming is best-effort and must never break catalog/overview calls.
-      const name = error instanceof Error ? error.name : 'Error';
-      console.warn(`[ai-runtime] prewarm request failed (${name}); backing off`);
+      const status = error instanceof ProviderRequestError ? error.statusCode : undefined;
+      const transient = status ? TRANSIENT_RUNTIME_STATUSES.has(status) : true;
+      runtimePrewarmRetryAt = Date.now() + (transient ? RUNTIME_PREWARM_FAILURE_BACKOFF_MS : RUNTIME_PREWARM_TTL_MS);
+      const detail = status ? `HTTP ${status}` : error instanceof Error ? error.name : 'Error';
+      console.warn(`[ai-runtime] prewarm unavailable (${detail}); backing off`);
       return false;
     } finally {
+      clearTimeout(timer);
       runtimePrewarmPromise = null;
     }
   })();

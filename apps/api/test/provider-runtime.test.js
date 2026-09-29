@@ -451,6 +451,7 @@ test('production keeps the main API lightweight and prewarms the external OpenCo
   assert.match(buildScript, /^npm ci --include=dev$/m);
   assert.doesNotMatch(buildScript, /Installing local OpenCode sidecar|apps\/api\/\.opencode-runtime/);
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
+  assert.match(providerSource, /ORLYNX_OPENCODE_RUNTIME_USERNAME \|\| 'opencode'/);
   assert.match(providerSource, /export function warmOpenCodeRuntime/);
   assert.match(routesSource, /router\.get\('\/ai\/catalog'[\s\S]*void warmOpenCodeRuntime\(\)/);
   assert.match(routesSource, /router\.get\('\/ai\/overview'[\s\S]*void warmOpenCodeRuntime\(\)/);
@@ -471,18 +472,38 @@ test('runtime prewarm hits health once and is throttled', async (t) => {
   assert.equal(healthCalls, 1);
 });
 
-test('runtime prewarm backs off after a transient 502 instead of hammering status polling', async (t) => {
+test('runtime prewarm waits through a transient Render 502 and becomes ready', async (t) => {
   configureRuntime(t);
+  const previousPoll = process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+  process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = '0';
+  t.after(() => {
+    if (previousPoll === undefined) delete process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS;
+    else process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS = previousPoll;
+  });
   let healthCalls = 0;
   mockFetch(t, async (url) => {
     throw new Error('Unexpected fetch ' + url);
   }, async () => {
     healthCalls++;
-    return new Response('bad gateway', { status: 502 });
+    return healthCalls === 1
+      ? new Response('bad gateway', { status: 502 })
+      : Response.json({ healthy: true });
   });
 
-  assert.equal(await warmOpenCodeRuntime(), false);
-  assert.equal(await warmOpenCodeRuntime(), false);
-  assert.equal(await warmOpenCodeRuntime(), false);
-  assert.equal(healthCalls, 1);
+  assert.equal(await warmOpenCodeRuntime(), true);
+  assert.equal(await warmOpenCodeRuntime(), true);
+  assert.equal(healthCalls, 2);
+});
+
+test('runtime default username matches the OpenCode server default', async (t) => {
+  configureRuntime(t);
+  delete process.env.ORLYNX_OPENCODE_RUNTIME_USERNAME;
+  mockFetch(t, async (url) => {
+    throw new Error('Unexpected fetch ' + url);
+  }, async (_url, init) => {
+    assert.equal(runtimeAuth(init), 'Basic ' + Buffer.from('opencode:runtime-test-secret').toString('base64'));
+    return Response.json({ healthy: true });
+  });
+
+  assert.equal(await warmOpenCodeRuntime(), true);
 });
