@@ -15,8 +15,6 @@ export function instantReplyFor(input: {
   branch: string;
 }): string | null {
   const text = input.text.trim();
-  const lower = text.toLowerCase();
-
   if (/\b(what|which)\s+(repo|repository|project)\b[\s\S]{0,35}\b(connected|open|using|working|currently)\b|\bwhat\s+(repo|repository|project)\s+(are|r)\s+(you|u)\b/i.test(text)) {
     return `Currently connected to **${input.project}** on **${input.branch}**.`;
   }
@@ -29,17 +27,6 @@ export function instantReplyFor(input: {
       return 'In **Plan mode**, I can read repository context, explain the codebase, investigate issues, and produce implementation plans. I will not run commands or change files until you switch to **Build**.';
     }
     return 'In **Ask mode**, I can read repository context and answer questions about the codebase. I will not run commands or change files until you switch to **Build**.';
-  }
-
-  if (input.mode !== 'build' && executionPlaneFor(text, 'build') === 'workspace') {
-    const action = /\bpull\b/i.test(lower)
-      ? 'Pulling changes'
-      : /\b(git\s+status|status)\b/i.test(lower)
-        ? 'Checking Git status'
-        : /\b(start|run)\b[\s\S]{0,25}\b(local\s*host|localhost|server|app|dev)\b/i.test(lower)
-          ? 'Starting the local app/server'
-          : 'That request';
-    return `${action} needs the development environment, so it cannot run in **${input.mode === 'plan' ? 'Plan' : 'Ask'} mode**. Switch to **Build** and send the same request; Orlynx will route it straight to the workspace instead of asking the chat model.`;
   }
 
   return null;
