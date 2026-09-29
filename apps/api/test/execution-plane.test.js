@@ -223,6 +223,36 @@ test('queued Build work tells the user what runtime state it is waiting on', () 
   assert.match(agents, /Starting OpenCode in the existing workspace/);
 });
 
+test('workspace Build uses workspace adapter readiness instead of the separate direct runtime', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const claimed = agents.slice(
+    agents.indexOf('const task = await repository.claimQueuedTask'),
+    agents.indexOf('export async function resumeWaitingInputTask'),
+  );
+  assert.match(claimed, /getWorkspaceAgentAdapter\(workspace\.id, adapter\.id\)/);
+  assert.match(claimed, /Workspace Build readiness is owned by the workspace adapter lifecycle/);
+  assert.doesNotMatch(claimed, /adapter\.readiness\(session\.project, sessionId\)/);
+  assert.match(claimed, /Workspace AI runtime is .*continuing automatically when it is ready/);
+
+  const resume = agents.slice(
+    agents.indexOf('export async function resumeWaitingInputTask'),
+    agents.indexOf('export async function recoverInterruptedDirectRuns'),
+  );
+  assert.match(resume, /getWorkspaceAgentAdapter\(workspace\.id, adapter\.id\)/);
+  assert.doesNotMatch(resume, /adapter\.readiness\(session\.project, sessionId\)/);
+});
+
+test('unrecoverable workspace failures are classified as repository failures, not AI runtime failures', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const repairBlock = agents.slice(
+    agents.indexOf("if (readyWorkspace.state === 'failed')"),
+    agents.indexOf("if (readyWorkspace.state !== 'ready'"),
+  );
+  assert.match(repairBlock, /failedRun\.errorKind = 'repository'/);
+  assert.match(repairBlock, /errorKind: 'repository'/);
+  assert.doesNotMatch(repairBlock, /errorKind: 'engine'/);
+});
+
 test('Build admission proves repository freshness before model execution', () => {
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
