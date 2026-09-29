@@ -530,7 +530,20 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const adapterId = nextQueued.adapterId || 'opencode';
     const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);
     if (!adapterState || ['not_installed', 'installing', 'starting', 'busy', 'unavailable'].includes(adapterState.state)) {
-      console.info(`[queue] waiting session=${sessionId} task=${nextQueued.id} adapter=${adapterId} state=${adapterState?.state || 'missing'}`);
+      const state = adapterState?.state || 'missing';
+      console.info(`[queue] waiting session=${sessionId} task=${nextQueued.id} adapter=${adapterId} state=${state}`);
+      const text = state === 'busy' ? 'OpenCode is finishing the previous operation…'
+        : state === 'installing' ? 'Preparing OpenCode in the workspace…'
+          : state === 'starting' ? 'Starting OpenCode in the existing workspace…'
+            : state === 'unavailable' ? 'OpenCode disconnected · recovering the existing workspace runtime…'
+              : 'Checking the workspace AI runtime…';
+      emit(sessionId, 'activity.progress', {
+        taskId: nextQueued.id,
+        sourceType: 'agent.runtime.wait',
+        adapterId,
+        state,
+        text,
+      }, nextQueued.runId);
       return null;
     }
     if (adapterState.state === 'failed') {
