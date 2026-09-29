@@ -41,7 +41,7 @@ copies any older data once and drops the old `engine_sessions` table and
 
 ## Workspace vs adapter lifecycle
 
-Workspace lifecycle describes GitHub Codespace + authenticated Orlynx bridge.
+Workspace lifecycle describes the selected execution provider (Orlynx Runner or GitHub Codespaces) + authenticated Orlynx bridge.
 
 Adapter lifecycle is independent:
 
@@ -56,7 +56,7 @@ adapter are blocked/failed.
 ## OpenCode adapter
 
 OpenCode currently provides the first production adapter. Its implementation
-uses the private OpenCode server inside the Codespace and the existing
+uses the private OpenCode server inside the workspace and the existing
 OpenCode HTTP/session APIs, but those details are contained behind the adapter
 boundary.
 
@@ -81,3 +81,14 @@ When another adapter is added, the expected work is:
 
 It should not require rewriting Codespaces, Git, files, terminal, queueing or
 the primary chat UI.
+
+
+## Relationship to the Orlynx harness
+
+The adapter does not decide when a task is verified or complete.
+
+Orlynx owns acceptance criteria, live steering, reflection, queue ordering and verified memory. The adapter supplies reasoning/execution capability behind those boundaries.
+
+## Future adapter standard
+
+A future adapter is acceptable only if it can plug into the same durable session/task/event/permission contracts without creating a parallel product architecture.
