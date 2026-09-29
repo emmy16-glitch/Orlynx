@@ -100,8 +100,15 @@ router.use(async (req, res, next) => {
     }
   }
   if (req.path === '/integrations/status' && req.query.sessionId && installationId && durableStorageConfigured()) {
-    const session = await controlPlaneRepository().getSession(String(req.query.sessionId));
-    if (session?.installationId === installationId) store.db.sessions[session.id] = session;
+    const repository = controlPlaneRepository();
+    const [session, connection] = await Promise.all([
+      repository.getSession(String(req.query.sessionId)),
+      repository.getGitHubConnectionByInstallation(installationId),
+    ]);
+    if (session && connection?.userId === session.userId) {
+      store.db.sessions[session.id] = session;
+      (req as Request & { orlynxUserId?: string }).orlynxUserId = connection.userId;
+    }
   }
   if (publicEndpoint(req)) return next();
   if ((process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1') && !durableStorageConfigured() && !storageOptionalEndpoint(req)) {
@@ -126,7 +133,7 @@ router.use(async (req, res, next) => {
 });
 
 function ownedSession(req: Request, id: string) {
-  const session = store.db.sessions[id] as (typeof store.db.sessions[string] & { userId?: string }) | undefined;
+  const session = store.db.sessions[id] as any;
   if (!session) return undefined;
   const userId = (req as Request & { orlynxUserId?: string }).orlynxUserId;
   if (durableStorageConfigured() && userId && session.userId) return session.userId === userId ? session : undefined;
