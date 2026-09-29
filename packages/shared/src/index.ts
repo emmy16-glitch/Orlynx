@@ -89,7 +89,7 @@ export interface AgentRun {
   activity?: string;
   startedAt: string;
   finishedAt?: string;
-  errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'verification' | 'unknown';
+  errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'verification' | 'input' | 'unknown';
 }
 
 export type WorkspaceProviderId = 'github-codespaces' | 'orlynx-runner';
@@ -164,6 +164,19 @@ export interface HarnessCheckpoint {
   lastProgressAt?: string;
   lastCheckpointAt?: string;
   salvageAttempts: number;
+  /** Model-guided reason/act/observe cycles after an unexpected result. */
+  reflectionAttempts?: number;
+  /** Acceptance evidence that first triggered reflection. */
+  reflectionTarget?: string[];
+  /** Evidence conflicts detected by the deterministic control plane. */
+  contradictions?: string[];
+  /** Compact observable evidence supplied back to the reasoning model. */
+  reflectionEvidence?: string[];
+  /** Used to tell the model when the same unresolved state repeats. */
+  lastReflectionSignature?: string;
+  stagnantReflections?: number;
+  /** Persistent verified lessons supplied to this run. */
+  lessonsApplied?: string[];
   updatedAt: string;
 }
 
