@@ -105,7 +105,7 @@ function codespacesPreviewEnvironment(): NodeJS.ProcessEnv {
   );
   // GitHub Codespaces injects trusted development-host suffixes for framework
   // integrations. Reuse those exact GitHub-owned domains for Vite rather than
-  // editing every repository or setting the unsafe allowedHosts=true.
+  // editing every repository or enabling an unsafe wildcard host policy.
   for (const candidate of String(process.env.RAILS_DEVELOPMENT_HOSTS || '').split(',')) {
     const host = candidate.trim();
     if (/^\.?[a-z0-9.-]*(?:app\.github\.dev|githubpreview\.dev)$/i.test(host)) hosts.add(host.startsWith('.') ? host : `.${host}`);
