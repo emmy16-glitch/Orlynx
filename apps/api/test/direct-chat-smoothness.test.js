@@ -134,11 +134,12 @@ test('direct runtime outages fail over the same durable turn to workspace comput
   assert.match(agents, /task\.state = 'queued'/);
   assert.match(agents, /run\.plane = 'workspace'/);
   assert.match(agents, /direct_runtime_failover/);
-  assert.match(agents, /The fast AI runtime is unavailable\. Orlynx is continuing this same turn on resilient workspace compute\./);
+  assert.match(agents, /selectWorkspaceProvider\(\{ taskText: task\.prompt \}\)/);
+  assert.match(agents, /message: 'Switching compute…'/);
   assert.match(agents, /\[502, 503, 504\]\.includes\(error\.statusCode \|\| 0\)/);
   assert.match(storage, /getProject\(id: string\)/);
   assert.match(runtime, /DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 12_000/);
-  assert.match(runtime, /runtimeCircuitUntil/);
-  assert.match(runtime, /Fast AI runtime is recovering · switching compute/);
+  assert.match(runtime, /computeTargetQuarantined\('direct-runtime'\)/);
+  assert.match(runtime, /input\.onStatus\?\.\('Switching compute…'\)/);
 });
 
