@@ -646,7 +646,7 @@ async function executeDirectTask(
         const detail = error instanceof Error ? error.message : '';
         const transientStatus = error instanceof ProviderRequestError
           && (!error.statusCode || [502, 503, 504].includes(error.statusCode));
-        const transientMessage = /did not start streaming|response deadline|timed out|timeout|connection .*failed|runtime .*unavailable|temporarily unavailable/i.test(detail);
+        const transientMessage = /did not start streaming|timed out|timeout|connection .*failed|runtime .*unavailable|temporarily unavailable/i.test(detail);
         if (visible.length !== visibleBefore || (!transientStatus && !transientMessage)) throw error;
         markProviderActivity();
         emit(session.id, 'activity.progress', {
