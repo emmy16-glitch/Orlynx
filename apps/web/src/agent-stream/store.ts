@@ -379,7 +379,28 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       // Terminal output is already represented by the tool/PTY surfaces. It
       // must not become another generic "Thought" row.
       if (event.sourceType === 'pty.output') return;
+      // Harness/model dialogue is durable diagnostic evidence, not user-facing chat.
+      if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model' || event.sourceType === 'agent.reflection') return;
       const prior = state.activities[event.activityId];
+
+      if (event.sourceType === 'agent.memory') {
+        const count = Number(/(\d+)\s+(?:verified\s+|reusable\s+)?lessons?/i.exec(String(event.text || ''))?.[1] || 0);
+        putActivity(state, {
+          id: event.activityId,
+          runId: event.runId,
+          taskId: event.taskId,
+          sequence: event.sequence,
+          startedSequence: prior?.startedSequence || event.sequence,
+          timestamp: prior?.timestamp || event.timestamp,
+          state: 'success',
+          kind: 'agent',
+          title: 'Applied verified project lessons',
+          summary: count > 0 ? `${count} ${count === 1 ? 'lesson' : 'lessons'}` : undefined,
+          sourceType: 'agent.memory',
+          evidence: count > 0 ? { lessonCount: count } : prior?.evidence,
+        });
+        return;
+      }
 
       if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model') {
         const detail = event.type === 'ACTIVITY_UPDATE' && event.detail && typeof event.detail === 'object'
