@@ -105,6 +105,13 @@ export interface ControlPlaneRepository {
   putWorkspace(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
+  touchWorkspaceRuntime(workspaceId: string, update: {
+    runtimeState?: WorkspaceRecord['runtimeState'];
+    capabilities?: string[];
+    providerHeartbeatAt?: string;
+    agentHeartbeatAt?: string;
+    taskHeartbeatAt?: string;
+  }): Promise<void>;
   enqueueWorkspaceJob(value: WorkspaceJobRecord): Promise<boolean>;
   claimWorkspaceJobs(workerId: string, limit?: number, leaseSeconds?: number): Promise<WorkspaceJobRecord[]>;
   completeWorkspaceJob(id: string): Promise<void>;
@@ -159,11 +166,21 @@ const migrations = [
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS partial_text text`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS adapter_id text NOT NULL DEFAULT 'opencode'`,
   `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS harness_state jsonb`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS verification_backend text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS verification_run_id bigint`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS verification_url text`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS verification_workflow text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tasks_session_message_idx ON tasks(session_id, message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_session_state_created_idx ON tasks(session_id, state, created_at)`,
   `CREATE TABLE IF NOT EXISTS workspaces (id text PRIMARY KEY, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), provider text NOT NULL, codespace_name text, runner_id text, repository_id bigint NOT NULL, branch text NOT NULL, state text NOT NULL, bridge_state text NOT NULL, connection_id text, repo_root text, failure_code text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runner_id text`,
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runner_host_id text`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS provider_resource_id text`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS runtime_state text`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS capabilities jsonb`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS provider_heartbeat_at timestamptz`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS agent_heartbeat_at timestamptz`,
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS task_heartbeat_at timestamptz`,
   `CREATE TABLE IF NOT EXISTS workspace_jobs (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind text NOT NULL, state text NOT NULL, allow_fallback boolean NOT NULL DEFAULT true, reason text, worker_id text, lease_until timestamptz, available_at timestamptz NOT NULL DEFAULT now(), attempt integer NOT NULL DEFAULT 0, error text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `ALTER TABLE workspace_jobs ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now()`,
   `CREATE UNIQUE INDEX IF NOT EXISTS workspace_jobs_active_idx ON workspace_jobs(workspace_id,kind) WHERE state IN ('queued','leased')`,
@@ -250,14 +267,24 @@ function mapSession(r: Record<string, unknown>): ProjectSession & { userId: stri
 }
 
 function mapWorkspace(row: Record<string, unknown>): WorkspaceRecord {
+  const provider = String(row.provider || 'github-codespaces');
   return {
     id: String(row.id), sessionId: String(row.session_id), userId: String(row.user_id), projectId: String(row.project_id),
-    provider: row.provider === 'orlynx-runner' ? 'orlynx-runner' : 'github-codespaces', codespaceName: row.codespace_name ? String(row.codespace_name) : undefined, runnerId: row.runner_id ? String(row.runner_id) : undefined,
+    provider: (provider === 'orlynx-runner' || provider === 'e2b' ? provider : 'github-codespaces') as WorkspaceRecord['provider'],
+    codespaceName: row.codespace_name ? String(row.codespace_name) : undefined,
+    runnerId: row.runner_id ? String(row.runner_id) : undefined,
     runnerHostId: row.runner_host_id ? String(row.runner_host_id) : undefined,
+    providerResourceId: row.provider_resource_id ? String(row.provider_resource_id) : undefined,
     repositoryId: Number(row.repository_id), branch: String(row.branch), state: row.state as WorkspaceRecord['state'],
     bridgeState: row.bridge_state as WorkspaceRecord['bridgeState'],
     connectionId: row.connection_id ? String(row.connection_id) : undefined, repoRoot: row.repo_root ? String(row.repo_root) : undefined,
-    failureCode: row.failure_code ? String(row.failure_code) : undefined, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+    failureCode: row.failure_code ? String(row.failure_code) : undefined,
+    runtimeState: row.runtime_state ? row.runtime_state as WorkspaceRecord['runtimeState'] : undefined,
+    capabilities: Array.isArray(row.capabilities) ? row.capabilities.map(String) : undefined,
+    providerHeartbeatAt: row.provider_heartbeat_at ? iso(row.provider_heartbeat_at) : undefined,
+    agentHeartbeatAt: row.agent_heartbeat_at ? iso(row.agent_heartbeat_at) : undefined,
+    taskHeartbeatAt: row.task_heartbeat_at ? iso(row.task_heartbeat_at) : undefined,
+    createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
   };
 }
 
@@ -296,6 +323,10 @@ function mapTask(row: Record<string, unknown>): TaskRecord {
     permission: row.permission ? row.permission as TaskRecord['permission'] : undefined,
     tempPermission: row.temp_permission ? row.temp_permission as TaskRecord['tempPermission'] : undefined,
     partialText: row.partial_text ? String(row.partial_text) : undefined,
+    verificationBackend: row.verification_backend ? row.verification_backend as TaskRecord['verificationBackend'] : undefined,
+    verificationRunId: row.verification_run_id ? Number(row.verification_run_id) : undefined,
+    verificationUrl: row.verification_url ? String(row.verification_url) : undefined,
+    verificationWorkflow: row.verification_workflow ? String(row.verification_workflow) : undefined,
     harness: (row.harness_state || undefined) as TaskRecord['harness'],
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -399,9 +430,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async listMessages(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM messages WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), role: r.role as ChatMessage['role'], text: String(r.text), createdAt: iso(r.created_at), runId: r.run_id ? String(r.run_id) : undefined })); }
   async putTask(v: TaskRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,harness_state,created_at,updated_at)
-      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
-      ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,verification_backend,verification_run_id,verification_url,verification_workflow,harness_state,created_at,updated_at)
+      VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.verificationBackend || null},${v.verificationRunId || null},${v.verificationUrl || null},${v.verificationWorkflow || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
+      ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
   }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
   async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }
@@ -450,10 +481,30 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,runner_host_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.runnerHostId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,runner_host_id=EXCLUDED.runner_host_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,runner_host_id,provider_resource_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,runtime_state,capabilities,provider_heartbeat_at,agent_heartbeat_at,task_heartbeat_at,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.runnerHostId || null},${v.providerResourceId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.runtimeState || null},${JSON.stringify(v.capabilities || null)},${v.providerHeartbeatAt || null},${v.agentHeartbeatAt || null},${v.taskHeartbeatAt || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,runner_host_id=EXCLUDED.runner_host_id,provider_resource_id=EXCLUDED.provider_resource_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,runtime_state=EXCLUDED.runtime_state,capabilities=EXCLUDED.capabilities,provider_heartbeat_at=EXCLUDED.provider_heartbeat_at,agent_heartbeat_at=EXCLUDED.agent_heartbeat_at,task_heartbeat_at=EXCLUDED.task_heartbeat_at,updated_at=EXCLUDED.updated_at`;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
+  async touchWorkspaceRuntime(workspaceId: string, update: {
+    runtimeState?: WorkspaceRecord['runtimeState'];
+    capabilities?: string[];
+    providerHeartbeatAt?: string;
+    agentHeartbeatAt?: string;
+    taskHeartbeatAt?: string;
+  }) {
+    await this.initialize();
+    await this.sql.query(
+      `UPDATE workspaces SET
+         runtime_state=COALESCE($2,runtime_state),
+         capabilities=COALESCE($3::jsonb,capabilities),
+         provider_heartbeat_at=COALESCE($4::timestamptz,provider_heartbeat_at),
+         agent_heartbeat_at=COALESCE($5::timestamptz,agent_heartbeat_at),
+         task_heartbeat_at=COALESCE($6::timestamptz,task_heartbeat_at),
+         updated_at=GREATEST(updated_at,now())
+       WHERE id=$1`,
+      [workspaceId, update.runtimeState || null, update.capabilities ? JSON.stringify(update.capabilities) : null, update.providerHeartbeatAt || null, update.agentHeartbeatAt || null, update.taskHeartbeatAt || null],
+    );
+  }
   async enqueueWorkspaceJob(v: WorkspaceJobRecord) {
     await this.initialize();
     const result = await this.sql.query(
