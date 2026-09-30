@@ -99,7 +99,7 @@ export interface ControlPlaneRepository {
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
-  /** Durable sessions that still contain queued/running work. Used by cold-start recovery. */
+  /** Durable sessions with executable queued/running work. Human-wait states are intentionally excluded so they cannot starve recovery sweeps. */
   listActiveTaskSessionIds?(limit?: number): Promise<string[]>;
   getTask(id: string): Promise<TaskRecord | null>;
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
@@ -443,7 +443,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     return rows<{ session_id: string }>(await this.sql.query(
       `SELECT session_id
          FROM tasks
-        WHERE state IN ('queued','running','waiting_input','waiting_approval')
+        WHERE state IN ('queued','running')
         GROUP BY session_id
         ORDER BY MIN(updated_at), session_id
         LIMIT $1`,
