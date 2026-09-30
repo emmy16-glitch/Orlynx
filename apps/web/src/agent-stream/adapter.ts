@@ -86,7 +86,7 @@ function phaseId(event: RawEvent): string {
     : raw === 'opencode.retry' ? 'provider-retry'
       : raw === 'pty.output' ? 'pty-output'
         : raw === 'agent.dialogue.orlynx' || raw === 'agent.dialogue.model' ? 'reflection'
-          : raw === 'agent.memory' ? `memory-${event.sequence || reflectionId}`
+          : raw === 'agent.memory' ? 'memory'
             : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
@@ -283,12 +283,21 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
         files: Array.isArray(payload.files) ? payload.files : undefined,
       }];
 
-    case 'activity.started':
-      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: str(payload.sourceType) || undefined }];
-    case 'activity.progress':
-      return [{ ...common, type: 'ACTIVITY_UPDATE', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: str(payload.sourceType) || undefined, detail: payload }];
-    case 'activity.completed':
+    case 'activity.started': {
+      const sourceType = str(payload.sourceType);
+      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
+      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined }];
+    }
+    case 'activity.progress': {
+      const sourceType = str(payload.sourceType);
+      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
+      return [{ ...common, type: 'ACTIVITY_UPDATE', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined, detail: payload }];
+    }
+    case 'activity.completed': {
+      const sourceType = str(payload.sourceType);
+      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
       return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined }];
+    }
 
     case 'workspace.preparing':
       return [{ ...common, type: 'WORKSPACE_STATE', activityId: workspaceId(event), state: 'preparing', message: str(payload.message) || undefined, provider: str(payload.provider) || undefined }];
