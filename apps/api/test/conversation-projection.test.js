@@ -297,7 +297,9 @@ describe('conversation projection: stream/telemetry hygiene', () => {
     const b = evt('tool.started', { tool: 'read', path: 'b.ts', callId: 'r2' });
     const rows = toActivities([b, a]);
     assert.deepEqual(rows.map((r) => r.sequence).sort((x, y) => x - y), rows.map((r) => r.sequence));
-    assert.equal(rows[0].evidence?.path, 'a.ts');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sequence, a.sequence);
+    assert.deepEqual(rows[0].evidence?.files, ['a.ts', 'b.ts']);
   });
 
   it('repeated identical thought progress does not open a row per tick', () => {
