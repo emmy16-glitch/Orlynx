@@ -52,9 +52,18 @@ const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS ||
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
   const queued = tasks.filter((item) => item.state === 'queued');
-  const hasActive = tasks.some((item) => ['running', 'waiting_input', 'waiting_approval'].includes(item.state));
-  if (hasActive) return undefined;
-  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+  const running = tasks.some((item) => item.state === 'running');
+  if (running) return undefined;
+
+  // Human-waiting Build work must not freeze normal conversation. Direct chat
+  // is read-only and can safely answer while another task waits for approval
+  // or user input. Workspace/mutation tasks remain sequential behind the wait.
+  const direct = queued.find((item) => (item.plane || 'workspace') === 'direct');
+  if (direct) return direct;
+
+  const waitingForHuman = tasks.some((item) => item.state === 'waiting_input' || item.state === 'waiting_approval');
+  if (waitingForHuman) return undefined;
+  return queued[0];
 }
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
