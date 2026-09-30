@@ -99,7 +99,7 @@ export interface ControlPlaneRepository {
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
-  /** Durable sessions that still contain queued/running work. Used by cold-start recovery. */
+  /** Durable sessions with executable queued/running work. Human-wait states are intentionally excluded so they cannot starve recovery sweeps. */
   listActiveTaskSessionIds?(limit?: number): Promise<string[]>;
   getTask(id: string): Promise<TaskRecord | null>;
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
@@ -126,9 +126,10 @@ export interface ControlPlaneRepository {
   appendEvent(value: Omit<OrlynxEvent, 'sequence'>): Promise<OrlynxEvent>;
   listEvents(sessionId: string, after?: number, limit?: number): Promise<OrlynxEvent[]>;
   listRecentEvents(sessionId: string, limit?: number): Promise<OrlynxEvent[]>;
+  listRunEvents(sessionId: string, runId: string, limit?: number): Promise<OrlynxEvent[]>;
   queueCommand(value: BridgeCommand): Promise<void>;
   claimCommands(workspaceId: string, limit?: number): Promise<BridgeCommand[]>;
-  completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>): Promise<void>;
+  completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>): Promise<boolean>;
   getCommand(id: string): Promise<BridgeCommand | null>;
   putAttachment(value: { id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; blobUrl?: string; contentBase64?: string; createdAt: string }): Promise<void>;
   listAttachments(sessionId: string): Promise<Array<{ id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; createdAt: string }>>;
@@ -443,7 +444,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     return rows<{ session_id: string }>(await this.sql.query(
       `SELECT session_id
          FROM tasks
-        WHERE state IN ('queued','running','waiting_input','waiting_approval')
+        WHERE state IN ('queued','running')
         GROUP BY session_id
         ORDER BY MIN(updated_at), session_id
         LIMIT $1`,
@@ -644,6 +645,25 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     ));
     return recent.reverse().map((r) => ({ eventId: String(r.event_id), sequence: Number(r.sequence), sessionId: String(r.session_id), taskId: r.task_id ? String(r.task_id) : undefined, runId: r.run_id ? String(r.run_id) : undefined, workspaceId: r.workspace_id ? String(r.workspace_id) : undefined, type: r.type as OrlynxEvent['type'], payload: r.payload as Record<string, unknown>, timestamp: iso(r.timestamp) }));
   }
+  async listRunEvents(sessionId: string, runId: string, limit = 1000) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 1000, 2000));
+    const recent = rows<Record<string, unknown>>(await this.sql.query(
+      'SELECT * FROM task_events WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT $3',
+      [sessionId, runId, safeLimit],
+    ));
+    return recent.reverse().map((r) => ({
+      eventId: String(r.event_id),
+      sequence: Number(r.sequence),
+      sessionId: String(r.session_id),
+      taskId: r.task_id ? String(r.task_id) : undefined,
+      runId: r.run_id ? String(r.run_id) : undefined,
+      workspaceId: r.workspace_id ? String(r.workspace_id) : undefined,
+      type: r.type as OrlynxEvent['type'],
+      payload: r.payload as Record<string, unknown>,
+      timestamp: iso(r.timestamp),
+    }));
+  }
   async queueCommand(v: BridgeCommand) { await this.initialize(); await this.sql`INSERT INTO bridge_commands (id,workspace_id,kind,payload,status,result,expires_at,created_at,updated_at) VALUES (${v.id},${v.workspaceId},${v.kind},${JSON.stringify(v.payload)},${v.status},${JSON.stringify(v.result || null)},${v.expiresAt},${v.createdAt},${v.updatedAt})`; }
   async claimCommands(workspaceId: string, limit = 20) {
     await this.initialize();
@@ -652,7 +672,17 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.sql`UPDATE bridge_commands SET status='failed',result=${JSON.stringify({ error: 'Workspace command expired before completion.' })},updated_at=now() WHERE workspace_id=${workspaceId} AND status IN ('queued','sent') AND expires_at<=now()`;
     return rows<Record<string, unknown>>(await this.sql`UPDATE bridge_commands SET status='sent',updated_at=now() WHERE id IN (SELECT id FROM bridge_commands WHERE workspace_id=${workspaceId} AND (status='queued' OR (status='sent' AND updated_at < now() - interval '15 seconds')) AND expires_at>now() ORDER BY created_at LIMIT ${limit} FOR UPDATE SKIP LOCKED) RETURNING *`).map(mapCommand);
   }
-  async completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>) { await this.initialize(); await this.sql`UPDATE bridge_commands SET status=${status},result=${JSON.stringify(result)},updated_at=now() WHERE id=${id}`; }
+  async completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>) {
+    await this.initialize();
+    const updated = rows<Record<string, unknown>>(await this.sql`
+      UPDATE bridge_commands
+         SET status=${status},result=${JSON.stringify(result)},updated_at=now()
+       WHERE id=${id}
+         AND status IN ('queued','sent')
+      RETURNING id
+    `);
+    return updated.length > 0;
+  }
   async getCommand(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM bridge_commands WHERE id=${id}`)[0]; return r ? mapCommand(r) : null; }
   async putAttachment(v: { id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; blobUrl?: string; contentBase64?: string; createdAt: string }) { await this.initialize(); await this.sql`INSERT INTO attachments (id,session_id,filename,safe_name,mime,size,hash,blob_url,content_base64,created_at) VALUES (${v.id},${v.sessionId},${v.filename},${v.safeName},${v.mime},${v.size},${v.hash || null},${v.blobUrl || null},${v.contentBase64 || null},${v.createdAt}) ON CONFLICT (id) DO NOTHING`; }
   async listAttachments(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT id,session_id,filename,safe_name,mime,size,hash,created_at FROM attachments WHERE session_id=${sessionId} ORDER BY created_at`).map((r) => ({ id: String(r.id), sessionId: String(r.session_id), filename: String(r.filename), safeName: String(r.safe_name), mime: String(r.mime), size: Number(r.size), hash: r.hash ? String(r.hash) : undefined, createdAt: iso(r.created_at) })); }

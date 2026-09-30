@@ -36,6 +36,8 @@ export interface TaskOptions {
 }
 
 const staleTaskGraceMs = 15_000;
+const bridgeHeartbeatStaleMs = Math.max(30_000, Number(process.env.ORLYNX_BRIDGE_HEARTBEAT_STALE_MS || 60_000));
+const activeTaskHeartbeatStaleMs = Math.max(90_000, Number(process.env.ORLYNX_ACTIVE_TASK_HEARTBEAT_STALE_MS || 3 * 60_000));
 // Workspace preparation can legitimately take longer than a single provider
 // startup window (cold Render runners, Codespaces provisioning, deploys, etc.).
 // Queued Build work is durable and must not be cancelled just because recovery
@@ -405,6 +407,60 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
       }
       continue;
     }
+
+    if ((task.plane || 'workspace') === 'workspace' && task.workspaceId && task.workspaceId !== 'direct') {
+      const workspace = await repository.getWorkspace(task.workspaceId);
+      if (workspace) {
+        const taskTouched = Date.parse(task.updatedAt || task.createdAt);
+        const bridgeTouched = workspace.agentHeartbeatAt ? Date.parse(workspace.agentHeartbeatAt) : Number.NaN;
+        const taskAge = Number.isFinite(taskTouched) ? now - taskTouched : Number.POSITIVE_INFINITY;
+        const bridgeFresh = Number.isFinite(bridgeTouched) && now - bridgeTouched <= bridgeHeartbeatStaleMs;
+
+        if (
+          taskAge >= bridgeHeartbeatStaleMs
+          && (
+            workspace.state !== 'ready'
+            || workspace.bridgeState !== 'ready'
+            || !bridgeFresh
+          )
+        ) {
+          await scheduleWorkspacePreparation({
+            sessionId: workspace.sessionId,
+            userId: workspace.userId,
+            projectId: workspace.projectId,
+            repositoryId: workspace.repositoryId,
+            branch: workspace.branch,
+          }, { allowFallback: true, reason: 'running_task_bridge_recovery' }).catch(() => undefined);
+        }
+
+        // A healthy bridge now reports exact activeTaskIds. If the workspace
+        // itself is alive but this running task has not received a task-level
+        // heartbeat for several minutes, the agent command is no longer active.
+        // Release it early instead of displaying "Working" for the full 30m
+        // command timeout. We do not replay mutation work automatically.
+        const exactTaskHeartbeats = Array.isArray(workspace.capabilities) && workspace.capabilities.includes('task-heartbeat-v2');
+        if (exactTaskHeartbeats && bridgeFresh && taskAge >= activeTaskHeartbeatStaleMs) {
+          task.state = 'failed';
+          task.updatedAt = nowIso;
+          await repository.putTask(task);
+          changed = true;
+          const run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === task.runId);
+          if (run && (run.state === 'running' || run.state === 'queued')) {
+            run.state = 'failed';
+            run.finishedAt = nowIso;
+            run.errorKind = 'engine';
+          }
+          emit(sessionId, 'run.failed', {
+            taskId: task.id,
+            error: 'The workspace is online, but the previous AI task is no longer active. It was released so you can continue safely.',
+            errorKind: 'engine',
+            recoverable: true,
+          }, task.runId);
+          continue;
+        }
+      }
+    }
+
     const touched = Date.parse(task.updatedAt || task.createdAt);
     if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
 

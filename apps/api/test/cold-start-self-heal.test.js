@@ -7,7 +7,8 @@ test('cold-start worker sweeps durable active sessions without browser activity'
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
 
   assert.match(storage, /listActiveTaskSessionIds/);
-  assert.match(storage, /state IN \('queued','running','waiting_input','waiting_approval'\)/);
+  assert.match(storage, /state IN \('queued','running'\)/);
+  assert.doesNotMatch(storage, /WHERE state IN \('queued','running','waiting_input','waiting_approval'\)/);
   assert.match(jobs, /recoverDurableTaskSessionsOnce/);
   assert.match(jobs, /recoverInterruptedDirectRuns/);
   assert.match(jobs, /ORLYNX_RECOVERY_SWEEP_MS \|\| 30_000/);

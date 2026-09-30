@@ -8,7 +8,7 @@ import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
 import { markWorkspaceConnectionLost, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
-import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
+import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket , releaseBridgeCommandDelivery } from './bridge-live.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
@@ -303,7 +303,39 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
         const resultPayload = message.result || { error: message.error || 'Workspace command failed.' };
-        await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
+
+        // Durable commands are at-most-once at the state-machine layer. The
+        // workspace deliberately replays a remembered RESULT after reconnect,
+        // and two API instances can race on the same result. Never let a late
+        // duplicate overwrite an expired/failed/completed command or re-run the
+        // associated task finalization.
+        if (command && (command.status === 'completed' || command.status === 'failed')) {
+          const priorResult = command.result || {};
+          publishLiveBridgeResult(message.commandId, {
+            ok: command.status === 'completed',
+            result: priorResult,
+            error: command.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
+          });
+          releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
+          console.info(`[bridge] ignored duplicate terminal result command=${message.commandId} status=${command.status}`);
+          return;
+        }
+
+        const accepted = await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
+        if (command && !accepted) {
+          const latest = await repository.getCommand(message.commandId);
+          const priorResult = latest?.result || {};
+          publishLiveBridgeResult(message.commandId, {
+            ok: latest?.status === 'completed',
+            result: priorResult,
+            error: latest?.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
+          });
+          releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
+          console.info(`[bridge] ignored raced late result command=${message.commandId} status=${latest?.status || 'unknown'}`);
+          return;
+        }
+
+        releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
         publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || '');
@@ -312,8 +344,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const now = new Date().toISOString();
           const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
 
-          if (task?.state === 'cancelled') {
-            console.info(`[bridge] ignored late result for cancelled run=${runId}`);
+          if (task && ['cancelled', 'failed', 'completed'].includes(task.state)) {
+            console.info(`[bridge] ignored late result for terminal run=${runId} taskState=${task.state}`);
             void promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
           }
@@ -553,8 +585,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          let recent = (await repository.listRecentEvents(claims.sessionId, 1000))
-            .filter((event) => event.runId === runId)
+          let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
           await repository.putTask(task);
@@ -632,7 +663,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                   alreadyPublished: published.alreadyPublished,
                 },
               });
-              recent = (await repository.listRecentEvents(claims.sessionId, 1000)).filter((event) => event.runId === runId);
+              recent = await repository.listRunEvents(claims.sessionId, runId, 1000);
               task.harness = verifyHarness(task.harness, recent, publishedAt);
               await repository.putTask(task);
             } catch (error) {
@@ -785,8 +816,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                         artifacts,
                       },
                     });
-                    recent = (await repository.listRecentEvents(claims.sessionId, 1000))
-                      .filter((event) => event.runId === runId)
+                    recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
                       .map(sanitizeEvent);
                   }
                 }
@@ -1124,12 +1154,26 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             capabilities,
             agentHeartbeatAt: now,
           });
-          const tasks = await repository.listTasks(claims.sessionId);
-          for (const task of tasks) {
-            if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'running') continue;
-            task.updatedAt = now;
-            await repository.putTask(task);
-            await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
+
+          const activeTaskIds = new Set(
+            Array.isArray(heartbeatPayload.activeTaskIds)
+              ? heartbeatPayload.activeTaskIds.map(String).filter(Boolean)
+              : [],
+          );
+          if (activeTaskIds.size) {
+            const tasks = await repository.listTasks(claims.sessionId);
+            let touchedTask = false;
+            for (const task of tasks) {
+              if (
+                (task.plane || 'workspace') !== 'workspace'
+                || task.state !== 'running'
+                || !activeTaskIds.has(task.id)
+              ) continue;
+              task.updatedAt = now;
+              await repository.putTask(task);
+              touchedTask = true;
+            }
+            if (touchedTask) await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
           }
           return;
         }

@@ -336,21 +336,73 @@ export async function githubUserAccessToken(userId: string): Promise<string> {
   const repository = controlPlaneRepository();
   // The installation lookup is intentionally explicit: a user-scoped token is
   // never substituted with an app installation token or operator PAT.
-  const connection = await repository.getGitHubConnectionByUser(userId);
-  if (!connection) throw new Error('GitHub user authorization is required for Codespaces.');
-  const expiresAt = connection.accessTokenExpiresAt ? Date.parse(connection.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
-  if (expiresAt > Date.now() + 5 * 60_000) return decryptCredential(connection.accessToken);
-  if (!connection.refreshToken) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
-  const response = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(), grant_type: 'refresh_token', refresh_token: decryptCredential(connection.refreshToken) }),
-    signal: AbortSignal.timeout(10_000),
+  const current = await repository.getGitHubConnectionByUser(userId);
+  if (!current) throw new Error('GitHub user authorization is required for Codespaces.');
+  const currentExpiresAt = current.accessTokenExpiresAt ? Date.parse(current.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
+  if (currentExpiresAt > Date.now() + 5 * 60_000) return decryptCredential(current.accessToken);
+
+  const existingRefresh = userTokenRefreshes.get(userId);
+  if (existingRefresh) return existingRefresh;
+
+  const refresh = (async () => {
+    // Re-read after acquiring single-flight ownership. Another request/process
+    // may already have persisted a rotated token between the first read and now.
+    const connection = await repository.getGitHubConnectionByUser(userId);
+    if (!connection) throw new Error('GitHub user authorization is required for Codespaces.');
+    const expiresAt = connection.accessTokenExpiresAt ? Date.parse(connection.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
+    if (expiresAt > Date.now() + 5 * 60_000) return decryptCredential(connection.accessToken);
+    if (!connection.refreshToken) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+
+    const refreshExpiresAt = connection.refreshTokenExpiresAt ? Date.parse(connection.refreshTokenExpiresAt) : Number.POSITIVE_INFINITY;
+    if (refreshExpiresAt <= Date.now() + 60_000) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+
+    let response: Response | undefined;
+    try {
+      response = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(), grant_type: 'refresh_token', refresh_token: decryptCredential(connection.refreshToken) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      response = undefined;
+    }
+    const body = response
+      ? await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number }
+      : {};
+
+    if (!response?.ok || !body.access_token) {
+      // A rolling deploy can briefly run old+new API processes. Another
+      // process may have consumed/rotated this refresh token milliseconds
+      // earlier and persisted the replacement. Re-read durable state before
+      // incorrectly forcing the user through OAuth again.
+      for (const delay of [0, 150, 350, 700]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        const latest = await repository.getGitHubConnectionByUser(userId);
+        if (!latest) break;
+        const latestExpiresAt = latest.accessTokenExpiresAt ? Date.parse(latest.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
+        if (latestExpiresAt > Date.now() + 5 * 60_000) return decryptCredential(latest.accessToken);
+      }
+      if (!response || response.status >= 500) {
+        throw new Error('GitHub authorization refresh is temporarily unavailable. Orlynx can retry without reconnecting your account.');
+      }
+      throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+    }
+    const now = new Date();
+    await repository.upsertGitHubConnection({
+      ...connection,
+      accessToken: encryptCredential(body.access_token),
+      refreshToken: body.refresh_token ? encryptCredential(body.refresh_token) : connection.refreshToken,
+      accessTokenExpiresAt: body.expires_in ? new Date(now.getTime() + body.expires_in * 1000).toISOString() : undefined,
+      refreshTokenExpiresAt: body.refresh_token_expires_in ? new Date(now.getTime() + body.refresh_token_expires_in * 1000).toISOString() : connection.refreshTokenExpiresAt,
+      updatedAt: now.toISOString(),
+    });
+    return body.access_token;
+  })().finally(() => {
+    if (userTokenRefreshes.get(userId) === refresh) userTokenRefreshes.delete(userId);
   });
-  const body = await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number };
-  if (!response.ok || !body.access_token) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
-  const now = new Date();
-  await repository.upsertGitHubConnection({ ...connection, accessToken: encryptCredential(body.access_token), refreshToken: body.refresh_token ? encryptCredential(body.refresh_token) : connection.refreshToken, accessTokenExpiresAt: body.expires_in ? new Date(now.getTime() + body.expires_in * 1000).toISOString() : undefined, refreshTokenExpiresAt: body.refresh_token_expires_in ? new Date(now.getTime() + body.refresh_token_expires_in * 1000).toISOString() : connection.refreshTokenExpiresAt, updatedAt: now.toISOString() });
-  return body.access_token;
+
+  userTokenRefreshes.set(userId, refresh);
+  return refresh;
 }
 
 
@@ -570,6 +622,10 @@ function githubHeaders(token: string, accept = 'application/vnd.github+json'): R
 
 const tokenCache = new Map<number, { token: string; expiresAt: number; permissions: Record<string, string> }>();
 const repositoryCache = new Map<number, { repos: GitHubRepository[]; expiresAt: number }>();
+// GitHub user refresh tokens may rotate. After a long idle, browser restore,
+// Codespaces wake and runtime bootstrap can all request a user token at once.
+// Only one refresh per user may consume the currently stored refresh token.
+const userTokenRefreshes = new Map<string, Promise<string>>();
 async function installationToken(installationId: number): Promise<string> {
   const cached = tokenCache.get(installationId);
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;

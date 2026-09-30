@@ -874,12 +874,31 @@ export default function ProductionApp() {
 
   async function resolveApproval(approvalId: string, decision: 'allow_once' | 'deny') {
     if (!session?.id) throw new Error('Open a project before resolving permissions.');
-    await j(await fetch(`/v1/sessions/${session.id}/approvals/${encodeURIComponent(approvalId)}/resolve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision }),
-    }));
-    await refreshSession(session.id);
+    const sessionId = session.id;
+    const deadline = Date.now() + 3 * 60_000;
+
+    for (;;) {
+      const result = await j<any>(await fetch(`/v1/sessions/${sessionId}/approvals/${encodeURIComponent(approvalId)}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      }));
+
+      if (!result?.recoveringWorkspace || decision !== 'allow_once') break;
+      setWorkspaceReadNotice(String(result.message || 'Waking the development environment before continuing…'));
+
+      const delay = Math.max(500, Math.min(5_000, Number(result.retryAfterMs || 1_500)));
+      if (Date.now() + delay >= deadline) {
+        throw new Error('The development environment is still waking. Your approval is preserved; try again when the workspace is ready.');
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, delay));
+      if (currentSessionRef.current?.id && currentSessionRef.current.id !== sessionId) {
+        throw new Error('The approval is still pending in the project you left.');
+      }
+    }
+
+    setWorkspaceReadNotice('');
+    await refreshSession(sessionId);
     if (decision === 'allow_once') void refreshPorts();
   }
 

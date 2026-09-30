@@ -69,7 +69,7 @@ function activityAt(): string | undefined {
 }
 
 function runtimeCapabilities(): string[] {
-  const capabilities = ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters'];
+  const capabilities = ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', 'task-heartbeat-v2'];
   try {
     const runtime = path.join(os.homedir(), '.orlynx', 'runtime');
     if (fs.readdirSync(runtime).some((name) => /^playwright-.*\.ready$/.test(name))) capabilities.push('browser-e2e');
@@ -1362,7 +1362,21 @@ function connect(delay = 0): void {
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
             }
-            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready', capabilities: runtimeCapabilities(), activityAt: activityAt() } } }));
+            ws.send(JSON.stringify({
+              kind: 'EVENT',
+              event: {
+                type: 'heartbeat',
+                payload: {
+                  bridge: 'ready',
+                  capabilities: runtimeCapabilities(),
+                  activityAt: activityAt(),
+                  // Workspace liveness is not task liveness. The API renews
+                  // only these exact durable tasks, so an idle healthy bridge
+                  // cannot keep a dead/hung agent run alive forever.
+                  activeTaskIds: [...activeAgents.keys()],
+                },
+              },
+            }));
           }, 15_000);
         }
         return;

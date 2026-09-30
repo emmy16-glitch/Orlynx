@@ -52,6 +52,10 @@ export function sendBridgeCommandNow(workspaceId: string, command: LiveBridgeCom
   return true;
 }
 
+export function releaseBridgeCommandDelivery(workspaceId: string, commandId: string): void {
+  liveBridges.get(workspaceId)?.delivered.delete(commandId);
+}
+
 type BridgeResult = {
   ok: boolean;
   result: Record<string, unknown>;
