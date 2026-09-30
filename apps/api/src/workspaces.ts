@@ -225,7 +225,15 @@ async function prepareWorkspaceOnce(
   let refreshAdapterFallback: Awaited<ReturnType<typeof repository.listWorkspaceAgentAdapters>> = [];
   try {
     if (workspace.state === 'creating' && !hasProviderHandle(workspace)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.create', provider: workspace.provider, message: `Starting ${providerLabel(workspace.provider)}…` });
+      emit(input.sessionId, 'workspace.preparing', {
+        stage: 'workspace.create',
+        provider: workspace.provider,
+        message: workspace.provider === 'github-codespaces'
+          ? 'Starting Codespace…'
+          : workspace.provider === 'e2b'
+            ? 'Starting E2B workspace…'
+            : 'Starting Orlynx workspace…',
+      });
       workspace = await provider.create({ workspaceId: workspace.id, sessionId: input.sessionId, userId: input.userId, projectId: input.projectId, repositoryId: input.repositoryId, branch: input.branch });
       await repository.putWorkspace(workspace);
     } else if (workspace.state === 'failed') {
@@ -303,7 +311,15 @@ async function prepareWorkspaceOnce(
     }
 
     if (['creating', 'starting'].includes(workspace.state)) {
-      emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.wait', provider: workspace.provider, message: `Waiting for ${providerLabel(workspace.provider)}…` });
+      emit(input.sessionId, 'workspace.preparing', {
+        stage: 'workspace.wait',
+        provider: workspace.provider,
+        message: workspace.provider === 'github-codespaces'
+          ? 'Waiting for GitHub…'
+          : workspace.provider === 'e2b'
+            ? 'Waiting for E2B…'
+            : 'Waiting for runner…',
+      });
       const readyTimeout = workspace.provider === 'orlynx-runner'
         ? Math.max(15_000, Number(process.env.ORLYNX_RUNNER_READY_TIMEOUT_MS || 60_000))
         : workspace.provider === 'e2b'
@@ -326,7 +342,11 @@ async function prepareWorkspaceOnce(
             emit(input.sessionId, 'workspace.preparing', {
               stage: 'workspace.wait',
               state: workspace.state,
-              message: `Checking ${providerLabel(workspace.provider)} status again…`,
+              message: workspace.provider === 'github-codespaces'
+                ? 'Checking GitHub status again…'
+                : workspace.provider === 'e2b'
+                  ? 'Checking E2B status again…'
+                  : 'Checking runner status again…',
             });
           }
           await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -339,10 +359,18 @@ async function prepareWorkspaceOnce(
             stage: 'workspace.state',
             state: workspace.state,
             message: workspace.state === 'connecting'
-              ? `${providerLabel(workspace.provider)} ready. Starting Orlynx runtime…`
+              ? workspace.provider === 'github-codespaces'
+                ? 'Codespace online. Starting SSH…'
+                : workspace.provider === 'e2b'
+                  ? 'E2B workspace online. Starting bridge…'
+                  : 'Runner ready. Starting bridge…'
               : workspace.state === 'failed'
                 ? `${providerLabel(workspace.provider)} start failed. Preparing recovery…`
-                : `Starting ${providerLabel(workspace.provider)}…`,
+                : workspace.provider === 'github-codespaces'
+                  ? 'Starting Codespace…'
+                  : workspace.provider === 'e2b'
+                    ? 'Starting E2B workspace…'
+                    : 'Starting runner…',
           });
         }
         if (workspace.state === 'connecting' || workspace.state === 'failed') break;
@@ -351,7 +379,11 @@ async function prepareWorkspaceOnce(
           emit(input.sessionId, 'workspace.preparing', {
             stage: 'workspace.wait',
             state: workspace.state,
-            message: `Waiting for ${providerLabel(workspace.provider)}…`,
+            message: workspace.provider === 'github-codespaces'
+              ? 'Waiting for GitHub…'
+              : workspace.provider === 'e2b'
+                ? 'Waiting for E2B…'
+                : 'Waiting for runner…',
           });
         }
         await new Promise((resolve) => setTimeout(resolve, 1_500));
@@ -382,7 +414,14 @@ async function prepareWorkspaceOnce(
       await repository.putWorkspace(workspace);
       await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'installing', updatedAt: workspace.updatedAt });
       const bridgeToken = createBridgeToken({ workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId }, 600);
-      emit(input.sessionId, 'workspace.preparing', { stage: 'agent.connect', message: `Starting Orlynx runtime in ${providerLabel(workspace.provider)}…` });
+      emit(input.sessionId, 'workspace.preparing', {
+        stage: 'agent.connect',
+        message: workspace.provider === 'github-codespaces'
+          ? 'Starting SSH and Orlynx bridge…'
+          : workspace.provider === 'e2b'
+            ? 'Starting Orlynx bridge in E2B…'
+            : 'Starting Orlynx bridge…',
+      });
       console.info(`[workspace] connecting runtime session=${workspace.sessionId} workspace=${workspace.id} provider=${workspace.provider}`);
       if (!provider.connect) throw new Error(`Workspace provider ${workspace.provider} cannot connect the Orlynx runtime.`);
       await provider.connect(workspace, { bridgeToken, connectionId, openCodePassword: crypto.randomBytes(32).toString('base64url') });
