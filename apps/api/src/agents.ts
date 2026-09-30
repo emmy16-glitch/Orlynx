@@ -397,10 +397,10 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
     if (task.verificationBackend === 'github-actions' && task.verificationRunId) {
       const workspace = await repository.getWorkspace(task.workspaceId);
       if (workspace) {
-        task.updatedAt = nowIso;
-        await repository.putTask(task);
         const runId = task.runId || `run_${uuid().slice(0, 8)}`;
         task.runId = runId;
+        task.updatedAt = nowIso;
+        await repository.putTask(task);
         void executeGitHubActionsVerificationTask(sessionId, task.id, workspace, runId);
       }
       continue;
