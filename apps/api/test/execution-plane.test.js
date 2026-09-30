@@ -172,17 +172,17 @@ test('Build work waits while a workspace is failed or still starting', () => {
 });
 
 
-test('stale delayed Build work expires instead of executing much later', () => {
+test('workspace Build queue survives normal recovery windows and running work never expires by queue age', () => {
   const now = Date.parse('2026-09-25T19:00:00Z');
-  const oldQueued = {
+  const abandonedQueued = {
     id: 'old-queued', sessionId: 's', workspaceId: 'w', plane: 'workspace',
-    state: 'queued', prompt: 'install execution', createdAt: '2026-09-25T18:30:00Z', updatedAt: '2026-09-25T18:30:00Z'
+    state: 'queued', prompt: 'install execution', createdAt: '2026-09-24T18:30:00Z', updatedAt: '2026-09-24T18:30:00Z'
   };
-  const recentlyQueued = { ...oldQueued, id: 'recent', createdAt: '2026-09-25T18:50:00Z', updatedAt: '2026-09-25T18:50:00Z' };
-  const delayedRunning = { ...oldQueued, id: 'delayed-running', state: 'running', updatedAt: '2026-09-25T18:50:00Z' };
-  assert.equal(delayedWorkspaceTaskExpired(oldQueued, now), true);
-  assert.equal(delayedWorkspaceTaskExpired(recentlyQueued, now), false);
-  assert.equal(delayedWorkspaceTaskExpired(delayedRunning, now), true);
+  const recoveringQueued = { ...abandonedQueued, id: 'recovering', createdAt: '2026-09-25T18:30:00Z', updatedAt: '2026-09-25T18:30:00Z' };
+  const longRunning = { ...recoveringQueued, id: 'long-running', state: 'running', updatedAt: '2026-09-25T18:59:00Z' };
+  assert.equal(delayedWorkspaceTaskExpired(abandonedQueued, now), true);
+  assert.equal(delayedWorkspaceTaskExpired(recoveringQueued, now), false);
+  assert.equal(delayedWorkspaceTaskExpired(longRunning, now), false);
 });
 
 
