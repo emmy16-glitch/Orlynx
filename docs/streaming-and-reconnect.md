@@ -69,3 +69,7 @@ Large inline payloads are bounded; full large artifacts belong in dedicated stor
 Render is the production control plane. This document does not depend on Vercel stream-lifetime behavior.
 
 If the hosting topology changes later, the durable event/replay contract should remain stable even if transport implementation changes.
+
+## Recovery hardening, 2026-09-30
+
+Run snapshots include updatedAt. The browser versions lifecycle transitions independently of partial text, ignores older snapshots and older replayed lifecycle events, removes obsolete queue placeholders, and settles running activities when an authoritative terminal snapshot arrives. Cursor allocation and event insertion are atomic across control-plane processes.

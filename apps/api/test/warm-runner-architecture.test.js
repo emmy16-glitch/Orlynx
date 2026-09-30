@@ -214,14 +214,14 @@ test('legacy idle/broken Codespaces migrate to the preferred warm runner without
   assert.equal(workspaceShouldAdoptPreferredRunner(legacyRunner, 'github-codespaces', 'busy'), false);
 });
 
-test('broken Codespace recovery escapes to the preferred warm runner before replacing another Codespace', () => {
+test('broken Codespace recovery uses broker eligibility before bounded replacement', () => {
   const workspaces = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
-  const failover = workspaces.indexOf("stage: 'workspace.failover'");
+  const failover = workspaces.indexOf('const fallbackProvider =');
   const replacement = workspaces.indexOf("stage: 'codespace.replace'", failover);
-  assert.ok(failover >= 0, 'broken Codespace path must expose warm-runner failover');
-  assert.ok(replacement > failover, 'warm-runner failover must be attempted before creating another Codespace');
-  assert.match(workspaces, /defaultWorkspaceProviderId\(\) === 'orlynx-runner'/);
-  assert.match(workspaces, /runnerRecoveryAttempted/);
+  assert.ok(failover >= 0);
+  assert.ok(replacement > failover);
+  assert.match(workspaces, /attempted: context.attemptedProviders/);
+  assert.doesNotMatch(workspaces, /runnerRecoveryAttempted/);
 });
 
 test('workspace message admission consults the broker before reconnect mutation', () => {

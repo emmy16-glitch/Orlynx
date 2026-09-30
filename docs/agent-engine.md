@@ -103,3 +103,7 @@ Workspace tools are exposed through the Bridge/harness according to task permiss
 A future coding agent should implement the same high-level contract for readiness, engine session, model selection, streaming, tools, cancellation, and evidence.
 
 Adding another agent must not require rebuilding Postgres state, Compute Broker, workspace providers, queue, publication, memory, or frontend conversation architecture.
+
+## Recovery hardening, 2026-09-30
+
+Workspace OpenCode has a 60-second first-progress budget and a 90-second silence budget when no tool is active; active tools retain the larger execution budget. Retry status is bounded. A safe pre-output/pre-tool transient or public-route failure permits one retry of the exact selected model after acknowledged abort. Missing engine sessions are recreated. Adapter health can repair the private OpenCode server without replacing shell/files/Git.

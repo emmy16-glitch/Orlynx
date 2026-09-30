@@ -80,6 +80,8 @@ function updateRun(state: AgentStreamState, event: StreamProjectionEvent, patch:
     id: event.runId,
     state: patch.state || prior?.state || 'queued',
     messageId,
+    lastStateSequence: event.sequence,
+    stateUpdatedAt: stamp(event.timestamp),
   };
 }
 
@@ -98,6 +100,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
   if (state.seenEventIds.has(event.eventId)) return;
   state.seenEventIds.add(event.eventId);
   state.lastSequence = Math.max(state.lastSequence, event.sequence || 0);
+  if (event.runId && ['RUN_QUEUED', 'RUN_STARTED', 'RUN_STATE', 'RUN_FINISHED', 'RUN_ERROR'].includes(event.type)
+    && event.sequence <= (state.runs[event.runId]?.lastStateSequence || 0)) return;
 
   switch (event.type) {
     case 'RUN_QUEUED': {
@@ -711,6 +715,10 @@ export function reconcileAgentStream(
     const runId = String(run?.id || '');
     if (!runId) continue;
     const existingRun = state.runs[runId];
+    const stateSnapshotAt = stamp(run.updatedAt || run.finishedAt || run.startedAt);
+    // HTTP snapshots can arrive after a newer SSE transition. Version the run
+    // lifecycle independently from partial text so old Queued cannot rewind it.
+    if (existingRun?.stateUpdatedAt && stateSnapshotAt < existingRun.stateUpdatedAt) continue;
     const messageId = existingRun?.messageId || `assistant:${runId}`;
     const terminal = ['completed', 'failed', 'cancelled'].includes(String(run.state || ''));
 
@@ -727,7 +735,11 @@ export function reconcileAgentStream(
       finishedAt: String(run.finishedAt || existingRun?.finishedAt || '') || undefined,
       error: existingRun?.error,
       errorKind: String(run.errorKind || existingRun?.errorKind || '') || undefined,
+      lastStateSequence: existingRun?.lastStateSequence,
+      stateUpdatedAt: stateSnapshotAt,
     };
+    if (terminal) resolveRunActivities(state, runId, run.state === 'completed' ? 'success' : run.state === 'cancelled' ? 'cancelled' : 'failed');
+    if (run.state === 'running' || terminal) delete state.activities[`queue:${runId}`];
 
     if (terminal && durableRunIds.has(runId)) {
       delete state.messages[messageId];

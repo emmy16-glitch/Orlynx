@@ -96,6 +96,28 @@ test('durable snapshots repair state without rewinding fresher SSE', () => {
   assert.equal(selectLiveReplies(repaired)[0].text, 'newest response');
 });
 
+test('stale queued snapshot and late replay cannot rewind a newer running state', () => {
+  let live = applyRawAgentEvents(emptyAgentStreamState(), [
+    raw('q', 1, 'run.queued'),
+    raw('start', 3, 'run.started', 'run-a', {}, '2026-09-27T10:00:03Z'),
+  ]);
+  live = reconcileAgentStream(live, [{ id: 'run-a', state: 'queued', updatedAt: '2026-09-27T10:00:01Z' }], []);
+  live = applyRawAgentEvents(live, [raw('late-q', 2, 'run.state', 'run-a', { state: 'queued' })]);
+  assert.equal(live.runs['run-a'].state, 'running');
+  assert.equal(live.activities['queue:run-a'], undefined);
+});
+
+test('refresh restores current failover state and terminal snapshot resolves stale activities', () => {
+  const refreshed = rebuildAgentStream([raw('q', 1, 'run.queued', 'run-a', { plane: 'workspace' })], [
+    { id: 'run-a', state: 'running', plane: 'workspace', updatedAt: '2026-09-27T10:00:03Z' },
+  ], []);
+  assert.equal(refreshed.runs['run-a'].state, 'running');
+  assert.equal(refreshed.activities['queue:run-a'], undefined);
+  const terminal = reconcileAgentStream(refreshed, [{ id: 'run-a', state: 'completed', updatedAt: '2026-09-27T10:00:04Z' }], []);
+  assert.equal(terminal.runs['run-a'].state, 'completed');
+  assert.equal(selectActivities(terminal).filter(item => item.state === 'running').length, 0);
+});
+
 test('React consumes the canonical stream instead of a raw event switchboard', () => {
   const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
   const facade = fs.readFileSync(new URL('../../web/src/ui/mapping.ts', import.meta.url), 'utf8');

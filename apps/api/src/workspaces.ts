@@ -3,13 +3,26 @@ import { v4 as uuid } from 'uuid';
 import type { WorkspaceProviderId, WorkspaceRecord } from '@orlynx/shared';
 import { createBridgeToken } from './bridge-auth.js';
 import { bridgeRuntimeRevision } from './runtime-worker.js';
-import { defaultWorkspaceProviderId, fallbackWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled } from './workspace-providers.js';
+import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled } from './workspace-providers.js';
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
-import { noteComputeFailure, noteComputeSuccess, selectWorkspaceProvider } from './compute-broker.js';
+import { computeTargetQuarantined, noteComputeFailure, noteComputeSuccess, selectWorkspaceProvider } from './compute-broker.js';
 
-type PreparationContext = { allowFallback: boolean; runnerRecoveryAttempted?: boolean; attemptedProviders: Set<WorkspaceProviderId>; promise: Promise<WorkspaceRecord> };
+type PreparationContext = { allowFallback: boolean; attemptedProviders: Set<WorkspaceProviderId>; onProviderAttempt?: (provider: WorkspaceProviderId) => Promise<void>; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
+
+async function rerouteWorkspace(workspace: WorkspaceRecord, provider: WorkspaceProviderId): Promise<WorkspaceRecord> {
+  const repository = controlPlaneRepository();
+  await repository.archiveWorkspaceResource(workspace);
+  const migrated: WorkspaceRecord = {
+    ...workspace, provider, runnerId: undefined, runnerHostId: undefined, providerResourceId: undefined,
+    codespaceName: undefined, state: 'creating', bridgeState: 'disconnected', connectionId: undefined,
+    failureCode: undefined, runtimeState: 'connecting', capabilities: undefined, updatedAt: new Date().toISOString(),
+  };
+  await repository.putWorkspace(migrated);
+  await repository.putWorkspaceAgentAdapter({ workspaceId: migrated.id, adapterId: 'opencode', state: 'not_installed', updatedAt: migrated.updatedAt });
+  return migrated;
+}
 
 export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
   return /ssh server|error getting ssh server details|Codespace SSH did not become ready/i.test(failureCode || '');
@@ -199,7 +212,7 @@ export async function ensureWorkspaceRecord(
 
 export async function prepareWorkspace(
   input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
-  options: { allowFallback?: boolean } = {},
+  options: { allowFallback?: boolean; onProviderAttempt?: (provider: WorkspaceProviderId) => Promise<void> } = {},
 ): Promise<WorkspaceRecord> {
   const running = activePreparations.get(input.sessionId);
   if (running) {
@@ -208,7 +221,7 @@ export async function prepareWorkspace(
   }
   const context = {
     allowFallback: options.allowFallback !== false,
-    runnerRecoveryAttempted: false,
+    onProviderAttempt: options.onProviderAttempt,
     attemptedProviders: new Set<WorkspaceProviderId>(),
     promise: Promise.resolve(null as unknown as WorkspaceRecord),
   };
@@ -220,14 +233,22 @@ export async function prepareWorkspace(
 async function prepareWorkspaceOnce(
   input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
   replacementDepth = 0,
-  context: PreparationContext = { allowFallback: true, runnerRecoveryAttempted: false, attemptedProviders: new Set<WorkspaceProviderId>(), promise: Promise.resolve(null as unknown as WorkspaceRecord) },
+  context: PreparationContext = { allowFallback: true, attemptedProviders: new Set<WorkspaceProviderId>(), promise: Promise.resolve(null as unknown as WorkspaceRecord) },
 ): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   const preparationStartedAt = Date.now();
   let workspace = await ensureWorkspaceRecord(input);
+  if (!workspaceFullyReady(workspace) && computeTargetQuarantined(workspace.provider)) {
+    context.attemptedProviders.add(workspace.provider);
+    const alternate = context.allowFallback ? await selectWorkspaceProvider({ attempted: context.attemptedProviders }) : null;
+    if (!alternate) throw new Error('All eligible workspace compute is temporarily quarantined. Recovery will retry within its bounded budget.');
+    workspace = await rerouteWorkspace(workspace, alternate);
+    emit(input.sessionId, 'workspace.preparing', { stage: 'workspace.fallback', provider: alternate, message: 'Switching compute…' });
+  }
   let provider = providerForWorkspace(workspace);
   void runnerFallbackEnabled;
   context.attemptedProviders.add(workspace.provider);
+  await context.onProviderAttempt?.(workspace.provider);
   const hasProviderHandle = (value: WorkspaceRecord) => value.provider === 'orlynx-runner'
     ? Boolean(value.runnerId)
     : value.provider === 'e2b'
@@ -403,7 +424,7 @@ async function prepareWorkspaceOnce(
       }
       if (['creating', 'starting'].includes(workspace.state)) {
         if (workspace.provider === 'github-codespaces') {
-          const alternate = context.allowFallback ? fallbackWorkspaceProviderId(workspace.provider, context.attemptedProviders) : null;
+          const alternate = context.allowFallback ? await selectWorkspaceProvider({ attempted: context.attemptedProviders }) : null;
           if (!alternate) {
             await repository.putWorkspace(workspace);
             emit(input.sessionId, 'workspace.preparing', {
@@ -481,7 +502,7 @@ async function prepareWorkspaceOnce(
       // workspace is still healthy. If gh codespace ssh cannot see the
       // Codespace but the REST API still can, restore the proven-good bridge
       // instead of turning a refresh problem into a workspace outage.
-      if (workspace.provider === 'github-codespaces' && refreshFallback && workspaceNeedsCodespaceReplacement(detail)) {
+      if (workspace.provider === 'github-codespaces' && refreshFallback && workspaceNeedsCodespaceReplacement(detail) && replacementDepth < 1) {
         try {
           const verified = await provider.get(refreshFallback);
           if (workspaceFullyReady(verified)) {
@@ -518,86 +539,26 @@ async function prepareWorkspaceOnce(
           }, refreshFallback);
           await repository.putWorkspace(replacement);
           console.warn(`[workspace] replaced stale Codespace after refresh 404 session=${input.sessionId} old=${refreshFallback.codespaceName || 'unknown'} new=${replacement.codespaceName || 'unknown'}`);
-          return prepareWorkspaceOnce(input, replacementDepth, context);
+          return prepareWorkspaceOnce(input, replacementDepth + 1, context);
         } catch (replacementError) {
           console.warn(`[workspace] stale Codespace replacement failed session=${input.sessionId}: ${replacementError instanceof Error ? replacementError.message : 'unknown error'}`);
         }
       }
 
-      if (
-        workspace.provider === 'github-codespaces'
-        && !refreshFallback
-        && workspace.codespaceName
-        && workspaceNeedsCodespaceReplacement(detail)
-        && defaultWorkspaceProviderId() === 'orlynx-runner'
-        && !context.runnerRecoveryAttempted
-      ) {
-        context.runnerRecoveryAttempted = true;
-        try {
-          const now = new Date().toISOString();
-          const runnerWorkspace: WorkspaceRecord = {
-            ...workspace,
-            provider: 'orlynx-runner',
-            runnerId: undefined,
-            codespaceName: undefined,
-            state: 'creating',
-            bridgeState: 'disconnected',
-            connectionId: undefined,
-            failureCode: undefined,
-            updatedAt: now,
-          };
-          await repository.putWorkspace(runnerWorkspace);
-          await repository.putWorkspaceAgentAdapter({
-            workspaceId: runnerWorkspace.id,
-            adapterId: 'opencode',
-            state: 'not_installed',
-            updatedAt: now,
-          });
-          emit(input.sessionId, 'workspace.preparing', {
-            stage: 'workspace.failover',
-            provider: 'orlynx-runner',
-            message: 'Codespace recovery is slow — switching to the warm Orlynx runner…',
-          });
-          console.warn(`[workspace] failing over broken Codespace to warm runner session=${input.sessionId} detail=${detail}`);
-          return prepareWorkspaceOnce(input, replacementDepth, context);
-        } catch (runnerRecoveryError) {
-          console.warn(`[workspace] warm-runner failover setup failed session=${input.sessionId}: ${runnerRecoveryError instanceof Error ? runnerRecoveryError.message : 'unknown error'}`);
-        }
-      }
-
-      const providerLocalFailure = workspace.provider === 'e2b'
-        && /E2B|sandbox|API key|unauthorized|HTTP\s+(?:401|403)/i.test(detail);
-      const permanentProviderFailure = !providerLocalFailure
-        && /permission|forbidden|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
+      const permanentProviderFailure = /permission|forbidden|unauthorized|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
       const fallbackProvider = context.allowFallback && !permanentProviderFailure
         ? await selectWorkspaceProvider({
             attempted: context.attemptedProviders,
             preferredProvider: workspace.provider,
-          }).catch(() => fallbackWorkspaceProviderId(workspace.provider, context.attemptedProviders))
+          }).catch(() => null)
         : null;
       if (fallbackProvider) {
         console.warn(`[workspace] provider failover session=${input.sessionId} from=${workspace.provider} to=${fallbackProvider}: ${detail}`);
-        await provider.destroy(workspace).catch(() => {});
-        const now = new Date().toISOString();
-        workspace = {
-          ...workspace,
-          provider: fallbackProvider,
-          runnerId: undefined,
-          runnerHostId: undefined,
-          providerResourceId: undefined,
-          codespaceName: undefined,
-          state: 'creating',
-          bridgeState: 'disconnected',
-          connectionId: undefined,
-          failureCode: undefined,
-          runtimeState: 'connecting',
-          capabilities: undefined,
-          updatedAt: now,
-        };
+        // Failure does not prove an existing checkout is disposable. Retain
+        // the provider resource and its scoped metadata for safe recovery.
+        workspace = await rerouteWorkspace(workspace, fallbackProvider);
         context.attemptedProviders.add(fallbackProvider);
         provider = providerForWorkspace(workspace);
-        await repository.putWorkspace(workspace);
-        await repository.putWorkspaceAgentAdapter({ workspaceId: workspace.id, adapterId: 'opencode', state: 'not_installed', updatedAt: now });
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'workspace.fallback',
           provider: fallbackProvider,

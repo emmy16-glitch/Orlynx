@@ -1,5 +1,5 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
-import type { AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
+import type { AISessionPrefs, ChangeSet, ChatMessage, OrlynxEvent, ProjectSession, TaskRecord, WorkspaceRecord, WorkspaceProviderId } from '@orlynx/shared';
 
 export interface GitHubConnectionRecord {
   userId: string;
@@ -74,6 +74,7 @@ export interface WorkspaceJobRecord {
   availableAt?: string;
   attempt: number;
   error?: string;
+  providerAttempts?: WorkspaceProviderId[];
   createdAt: string;
   updatedAt: string;
 }
@@ -107,6 +108,7 @@ export interface ControlPlaneRepository {
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
   claimQueuedTask(sessionId: string, taskId: string): Promise<TaskRecord | null>;
   putWorkspace(value: WorkspaceRecord): Promise<void>;
+  archiveWorkspaceResource(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
   touchWorkspaceRuntime(workspaceId: string, update: {
@@ -118,10 +120,12 @@ export interface ControlPlaneRepository {
   }): Promise<void>;
   enqueueWorkspaceJob(value: WorkspaceJobRecord): Promise<boolean>;
   claimWorkspaceJobs(workerId: string, limit?: number, leaseSeconds?: number): Promise<WorkspaceJobRecord[]>;
-  completeWorkspaceJob(id: string): Promise<void>;
-  renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds?: number): Promise<boolean>;
-  retryWorkspaceJob(id: string, error: string, delaySeconds?: number): Promise<void>;
-  failWorkspaceJob(id: string, error: string): Promise<void>;
+  getLatestWorkspaceJob(workspaceId: string): Promise<WorkspaceJobRecord | null>;
+  noteWorkspaceJobProviderAttempt(id: string, provider: WorkspaceProviderId, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>): Promise<boolean>;
+  completeWorkspaceJob(id: string, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>): Promise<boolean>;
+  renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds?: number, attempt?: number): Promise<boolean>;
+  retryWorkspaceJob(id: string, error: string, delaySeconds: number, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>): Promise<boolean>;
+  failWorkspaceJob(id: string, error: string, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>): Promise<boolean>;
   putWorkspaceAgentAdapter(value: WorkspaceAgentAdapterRecord): Promise<void>;
   getWorkspaceAgentAdapter(workspaceId: string, adapterId: string): Promise<WorkspaceAgentAdapterRecord | null>;
   listWorkspaceAgentAdapters(workspaceId: string): Promise<WorkspaceAgentAdapterRecord[]>;
@@ -186,8 +190,10 @@ const migrations = [
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS provider_heartbeat_at timestamptz`,
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS agent_heartbeat_at timestamptz`,
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS task_heartbeat_at timestamptz`,
+  `CREATE TABLE IF NOT EXISTS workspace_recovery_resources (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS workspace_jobs (id text PRIMARY KEY, workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind text NOT NULL, state text NOT NULL, allow_fallback boolean NOT NULL DEFAULT true, reason text, worker_id text, lease_until timestamptz, available_at timestamptz NOT NULL DEFAULT now(), attempt integer NOT NULL DEFAULT 0, error text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `ALTER TABLE workspace_jobs ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now()`,
+  `ALTER TABLE workspace_jobs ADD COLUMN IF NOT EXISTS provider_attempts jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE UNIQUE INDEX IF NOT EXISTS workspace_jobs_active_idx ON workspace_jobs(workspace_id,kind) WHERE state IN ('queued','leased')`,
   `CREATE INDEX IF NOT EXISTS workspace_jobs_claim_idx ON workspace_jobs(state,lease_until,created_at)`,
   `CREATE TABLE IF NOT EXISTS event_sequences (session_id text PRIMARY KEY, sequence bigint NOT NULL)`,
@@ -307,6 +313,7 @@ function mapWorkspaceJob(row: Record<string, unknown>): WorkspaceJobRecord {
     availableAt: row.available_at ? iso(row.available_at) : undefined,
     attempt: Number(row.attempt || 0),
     error: row.error ? String(row.error) : undefined,
+    providerAttempts: Array.isArray(row.provider_attempts) ? row.provider_attempts as WorkspaceProviderId[] : [],
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -449,7 +456,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,verification_backend,verification_run_id,verification_url,verification_workflow,harness_state,created_at,updated_at)
       VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.verificationBackend || null},${v.verificationRunId || null},${v.verificationUrl || null},${v.verificationWorkflow || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
-      ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
+      ON CONFLICT (id) DO UPDATE SET workspace_id=EXCLUDED.workspace_id,adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
   }
   async completeDirectTaskIfUnchanged(v: TaskRecord, expectedSteeringRevision: number) {
     await this.initialize();
@@ -484,7 +491,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }
   async claimNextQueuedTask(sessionId: string) {
     await this.initialize();
-    const row = rows<Record<string, unknown>>(await this.sql`
+    const results = await this.sql.transaction([
+      this.sql`SELECT id FROM sessions WHERE id=${sessionId} FOR UPDATE`,
+      this.sql`
       WITH candidate AS (
         SELECT queued.id
         FROM tasks queued
@@ -493,8 +502,10 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
           AND NOT EXISTS (
             SELECT 1 FROM tasks active
             WHERE active.session_id=${sessionId}
-              AND active.state='running'
-              AND COALESCE(active.execution_plane, 'workspace') = COALESCE(queued.execution_plane, 'workspace')
+              AND (active.state='running' OR (
+                active.state IN ('waiting_input','waiting_approval')
+                AND COALESCE(queued.execution_plane, 'workspace') <> 'direct'
+              ))
           )
         ORDER BY CASE WHEN queued.execution_plane='direct' THEN 0 ELSE 1 END, queued.created_at, queued.id
         LIMIT 1
@@ -504,12 +515,16 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       SET state='running', updated_at=now()
       WHERE id IN (SELECT id FROM candidate)
       RETURNING *
-    `)[0];
+    `,
+    ], { isolationLevel: 'ReadCommitted' });
+    const row = rows<Record<string, unknown>>(results[1])[0];
     return row ? mapTask(row) : null;
   }
   async claimQueuedTask(sessionId: string, taskId: string) {
     await this.initialize();
-    const row = rows<Record<string, unknown>>(await this.sql`
+    const results = await this.sql.transaction([
+      this.sql`SELECT id FROM sessions WHERE id=${sessionId} FOR UPDATE`,
+      this.sql`
       UPDATE tasks queued
       SET state='running', updated_at=now()
       WHERE queued.id=${taskId}
@@ -518,11 +533,15 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
         AND NOT EXISTS (
           SELECT 1 FROM tasks active
           WHERE active.session_id=${sessionId}
-            AND active.state='running'
-            AND COALESCE(active.execution_plane, 'workspace') = COALESCE(queued.execution_plane, 'workspace')
+            AND (active.state='running' OR (
+              active.state IN ('waiting_input','waiting_approval')
+              AND COALESCE(queued.execution_plane, 'workspace') <> 'direct'
+            ))
         )
       RETURNING queued.*
-    `)[0];
+    `,
+    ], { isolationLevel: 'ReadCommitted' });
+    const row = rows<Record<string, unknown>>(results[1])[0];
     return row ? mapTask(row) : null;
   }
   async putWorkspace(v: WorkspaceRecord) {
@@ -530,6 +549,13 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,runner_host_id,provider_resource_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,runtime_state,capabilities,provider_heartbeat_at,agent_heartbeat_at,task_heartbeat_at,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.runnerHostId || null},${v.providerResourceId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.runtimeState || null},${JSON.stringify(v.capabilities || null)},${v.providerHeartbeatAt || null},${v.agentHeartbeatAt || null},${v.taskHeartbeatAt || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,runner_host_id=EXCLUDED.runner_host_id,provider_resource_id=EXCLUDED.provider_resource_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,runtime_state=EXCLUDED.runtime_state,capabilities=EXCLUDED.capabilities,provider_heartbeat_at=EXCLUDED.provider_heartbeat_at,agent_heartbeat_at=EXCLUDED.agent_heartbeat_at,task_heartbeat_at=EXCLUDED.task_heartbeat_at,updated_at=EXCLUDED.updated_at`;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
+  async archiveWorkspaceResource(value: WorkspaceRecord) {
+    await this.initialize();
+    const resource = value.runnerId || value.providerResourceId || value.codespaceName;
+    if (!resource) return;
+    const id = `${value.id}:${value.provider}:${resource}`;
+    await this.sql`INSERT INTO workspace_recovery_resources (id,workspace_id,session_id,record) VALUES (${id},${value.id},${value.sessionId},${JSON.stringify(value)}::jsonb) ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record`;
+  }
   async getWorkspace(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE id=${id}`)[0]; return r ? mapWorkspace(r) : null; }
   async touchWorkspaceRuntime(workspaceId: string, update: {
     runtimeState?: WorkspaceRecord['runtimeState'];
@@ -591,31 +617,40 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     );
     return rows<Record<string, unknown>>(result).map(mapWorkspaceJob);
   }
-  async completeWorkspaceJob(id: string) {
+  async getLatestWorkspaceJob(workspaceId: string) {
     await this.initialize();
-    await this.sql`UPDATE workspace_jobs SET state='completed',worker_id=NULL,lease_until=NULL,error=NULL,updated_at=now() WHERE id=${id}`;
+    const row = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_jobs WHERE workspace_id=${workspaceId} ORDER BY created_at DESC,id DESC LIMIT 1`)[0];
+    return row ? mapWorkspaceJob(row) : null;
   }
-  async renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds = 90) {
+  async noteWorkspaceJobProviderAttempt(id: string, provider: WorkspaceProviderId, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>) {
+    await this.initialize();
+    return rows(await this.sql`UPDATE workspace_jobs SET provider_attempts=provider_attempts || ${JSON.stringify([provider])}::jsonb WHERE id=${id} AND state='leased' AND worker_id=${lease.workerId || null} AND attempt=${lease.attempt} AND lease_until>now() AND jsonb_array_length(provider_attempts)<36 RETURNING id`).length > 0;
+  }
+  async completeWorkspaceJob(id: string, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>) {
+    await this.initialize();
+    return rows(await this.sql`UPDATE workspace_jobs SET state='completed',worker_id=NULL,lease_until=NULL,error=NULL,updated_at=now() WHERE id=${id} AND state='leased' AND worker_id=${lease.workerId || null} AND attempt=${lease.attempt} AND lease_until>now() RETURNING id`).length > 0;
+  }
+  async renewWorkspaceJobLease(id: string, workerId: string, leaseSeconds = 90, attempt?: number) {
     await this.initialize();
     const safeLease = Math.max(30, Math.min(Number(leaseSeconds) || 90, 600));
     const result = await this.sql.query(
       `UPDATE workspace_jobs SET lease_until=now() + ($3 * interval '1 second'),updated_at=now()
-       WHERE id=$1 AND state='leased' AND worker_id=$2 RETURNING id`,
-      [id, workerId, safeLease],
+       WHERE id=$1 AND state='leased' AND worker_id=$2 AND attempt=$4 AND lease_until>now() RETURNING id`,
+      [id, workerId, safeLease, attempt ?? null],
     );
     return rows<Record<string, unknown>>(result).length > 0;
   }
-  async retryWorkspaceJob(id: string, error: string, delaySeconds = 3) {
+  async retryWorkspaceJob(id: string, error: string, delaySeconds: number, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>) {
     await this.initialize();
     const safeDelay = Math.max(1, Math.min(Number(delaySeconds) || 3, 300));
-    await this.sql.query(
-      `UPDATE workspace_jobs SET state='queued',worker_id=NULL,lease_until=NULL,available_at=now() + ($3 * interval '1 second'),error=$2,updated_at=now() WHERE id=$1`,
-      [id, error.slice(0,1000), safeDelay],
-    );
+    return rows(await this.sql.query(
+      `UPDATE workspace_jobs SET state='queued',worker_id=NULL,lease_until=NULL,available_at=now() + ($3 * interval '1 second'),error=$2,updated_at=now() WHERE id=$1 AND state='leased' AND worker_id=$4 AND attempt=$5 AND lease_until>now() RETURNING id`,
+      [id, error.slice(0,1000), safeDelay, lease.workerId || null, lease.attempt],
+    )).length > 0;
   }
-  async failWorkspaceJob(id: string, error: string) {
+  async failWorkspaceJob(id: string, error: string, lease: Pick<WorkspaceJobRecord, 'workerId' | 'attempt'>) {
     await this.initialize();
-    await this.sql`UPDATE workspace_jobs SET state='failed',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id}`;
+    return rows(await this.sql`UPDATE workspace_jobs SET state='failed',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id} AND state='leased' AND worker_id=${lease.workerId || null} AND attempt=${lease.attempt} AND lease_until>now() RETURNING id`).length > 0;
   }
   async putWorkspaceAgentAdapter(v: WorkspaceAgentAdapterRecord) {
     await this.initialize();
@@ -645,10 +680,20 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       timestamp: iso(existing.timestamp),
     };
 
-    const seq = rows<{ sequence: string }>(await this.sql`INSERT INTO event_sequences (session_id,sequence) VALUES (${v.sessionId},1) ON CONFLICT (session_id) DO UPDATE SET sequence=event_sequences.sequence+1 RETURNING sequence`)[0];
-    const event = { ...v, sequence: Number(seq.sequence) };
-    const inserted = rows<Record<string, unknown>>(await this.sql`INSERT INTO task_events (event_id,sequence,session_id,task_id,run_id,workspace_id,type,payload,timestamp) VALUES (${event.eventId},${event.sequence},${event.sessionId},${event.taskId || null},${event.runId || null},${event.workspaceId || null},${event.type},${JSON.stringify(event.payload)},${event.timestamp}) ON CONFLICT (event_id) DO NOTHING RETURNING *`)[0];
-    if (inserted) return event;
+    // Allocate the cursor and insert its event in one transaction/statement.
+    // Separate commits let another process publish sequence N+1 before N is
+    // inserted; a browser advancing its cursor would then miss N forever.
+    const inserted = rows<Record<string, unknown>>(await this.sql`
+      WITH seq AS (
+        INSERT INTO event_sequences (session_id,sequence) VALUES (${v.sessionId},1)
+        ON CONFLICT (session_id) DO UPDATE SET sequence=event_sequences.sequence+1
+        RETURNING sequence
+      )
+      INSERT INTO task_events (event_id,sequence,session_id,task_id,run_id,workspace_id,type,payload,timestamp)
+      SELECT ${v.eventId},seq.sequence,${v.sessionId},${v.taskId || null},${v.runId || null},${v.workspaceId || null},${v.type},${JSON.stringify(v.payload)}::jsonb,${v.timestamp}::timestamptz FROM seq
+      ON CONFLICT (event_id) DO NOTHING RETURNING *
+    `)[0];
+    if (inserted) return { ...v, sequence: Number(inserted.sequence) };
 
     // Concurrent duplicate: another writer inserted the same provider event.
     const winner = rows<Record<string, unknown>>(await this.sql`SELECT * FROM task_events WHERE event_id=${v.eventId}`)[0];

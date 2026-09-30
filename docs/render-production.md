@@ -115,3 +115,7 @@ After a meaningful architecture deploy, verify:
 ## Production principle
 
 Render hosts the control plane. Compute providers are replaceable underneath it.
+
+## Recovery hardening, 2026-09-30
+
+The 2026-09-30 reliability audit records public application health separately from Render service/deploy/log evidence. A public health response does not verify the deployed commit, all runner capacities, E2B authorization or authenticated user-task recovery. See [the audit](reliability-audit-2026-09-30.md).

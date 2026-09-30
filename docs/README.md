@@ -163,3 +163,7 @@ Changes to any of the following require documentation review in the same pull re
 - user-visible modes, permissions, failover or recovery.
 
 The README is the entry point; subsystem documents remain the detailed source of truth.
+
+## Recovery hardening, 2026-09-30
+
+See [Reliability audit, 2026-09-30](reliability-audit-2026-09-30.md) for executable PostgreSQL reproductions, recovery invariants, and production verification limits.

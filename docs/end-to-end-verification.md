@@ -234,3 +234,7 @@ Do not claim a future feature merely because architecture has an extension point
 Examples that remain roadmap-dependent unless separately implemented/verified include additional production coding-agent adapters, team-shared memory, production-outcome learning and general autonomous scheduled maintenance.
 
 See product-vision-and-roadmap.md.
+
+## Recovery hardening, 2026-09-30
+
+Recovery regressions now execute the actual repository SQL against embedded PostgreSQL (PGlite), including failover workspace rebinding, human-wait queue guards, claims, lease expiry/fencing, completed preparation wake-up, Git freshness ordering, and event replay. HTTP/SSE adapter tests reproduce stale sessions and model route failures. These tests do not replace live Render/provider verification. See [the audit](reliability-audit-2026-09-30.md).

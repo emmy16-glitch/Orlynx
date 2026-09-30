@@ -42,6 +42,8 @@ try {
 let openCodeLifecycle: AdapterLifecycle = { state: 'starting' };
 let openCodeTransientHealthFailures = 0;
 const OPENCODE_HEALTH_FAILURE_THRESHOLD = 2;
+let openCodeRepair: Promise<{ state: 'ready' | 'failed'; reason?: string }> | undefined;
+let nextOpenCodeRepairAt = 0;
 
 function rememberOpenCodeAuthMode(mode: OpenCodeAuthMode | undefined): void {
   openCodeAuthMode = mode;
@@ -82,7 +84,7 @@ function sendCommandReply(ws: WebSocket, commandId: string, reply: CommandReply)
   if (ws.readyState !== WebSocket.OPEN) return;
   try { ws.send(JSON.stringify({ kind: 'RESULT', commandId, ...reply })); } catch { /* a replacement socket will receive the durable retry */ }
 }
-function runCommandOnce(command: Command, ws: WebSocket): void {
+export function runCommandOnce(command: Command, ws: WebSocket): void {
   touchActivity();
   const prior = completed.get(command.commandId);
   if (prior) { sendCommandReply(ws, command.commandId, prior); return; }
@@ -543,7 +545,24 @@ function openCodeErrorMessage(value: unknown): string {
 function assistantText(message: { parts?: Array<Record<string, any>> } | undefined): string {
   return (message?.parts || []).filter((part) => part.type === 'text' && !part.synthetic && !part.ignored).map((part) => String(part.text || '')).join('');
 }
-async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
+export async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
+  try {
+    return await runAgentOnce(payload, ws);
+  } catch (error) {
+    const failure = error as Error & { retrySafe?: boolean; engineSessionId?: string };
+    const transient = /\b(?:429|502|503|504)\b|econn|timed out|timeout|connection.*(?:closed|failed)/i.test(failure.message || '');
+    const publicRoute = payload.openCodePublicAccess === true && /\b(?:401|403)\b/.test(failure.message || '')
+      && !/unsupported|unknown model|model.*not found/i.test(failure.message || '');
+    if (!failure.retrySafe || payload.recoveryAttempt || !(transient || publicRoute)) throw error;
+    // Replay only before any visible output or tool invocation, and only once.
+    // Abort must be acknowledged before a replacement prompt is submitted.
+    if (failure.engineSessionId) await opencodeRequest({ path: `/session/${failure.engineSessionId}/abort`, method: 'POST', timeoutMs: 5_000 });
+    bridgeEvent(ws, 'activity.progress', { sourceType: 'agent.runtime.retry', text: 'Retrying the selected model…' }, String(payload.taskId || ''), String(payload.runId || ''));
+    return runAgentOnce({ ...payload, engineSessionId: '', recoveryAttempt: 1 }, ws);
+  }
+}
+
+async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
   const reflectionId = Number(payload.reflectionId || 0);
   let engineSessionId = String(payload.engineSessionId || '');
@@ -565,7 +584,17 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
     engineSessionId,
   }, taskId, runId);
 
-  const prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' }) as { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
+  let prior: { body?: Array<{ info?: Record<string, any>; parts?: Array<Record<string, any>> }> };
+  try {
+    prior = await opencodeRequest({ path: `/session/${engineSessionId}/message`, method: 'GET' });
+  } catch (error) {
+    if (!/\b404\b/.test(error instanceof Error ? error.message : '')) throw error;
+    const created = await opencodeRequest({ path: '/session', method: 'POST', body: { title: `Orlynx ${String(payload.sessionId || '')}` } }) as { body?: { id?: string } };
+    engineSessionId = String(created.body?.id || '');
+    if (!engineSessionId) throw new Error('OpenCode did not recreate the stale session.');
+    prior = { body: [] };
+    bridgeEvent(ws, 'state.delta', { scope: 'harness', state: 'executing', engineSessionId }, taskId, runId);
+  }
   const previousAssistant = [...(prior.body || [])].reverse().find((message) => message.info?.role === 'assistant')?.info?.id;
   const messageRoles = new Map<string, string>();
   for (const message of prior.body || []) {
@@ -608,6 +637,9 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   let assistant: { info?: Record<string, any>; parts?: Array<Record<string, any>> } | undefined;
   let visible = '';
   let finished = false;
+  let lastProgressAt = Date.now();
+  const firstProgressMs = Math.max(10_000, Number(process.env.ORLYNX_AGENT_FIRST_PROGRESS_MS || 60_000));
+  const silenceMs = Math.max(30_000, Number(process.env.ORLYNX_AGENT_SILENCE_MS || 90_000));
   let lastRetryKey = '';
   let streamFallbackNotified = false;
   const textParts = new Map<string, string>();
@@ -623,6 +655,7 @@ async function runAgent(payload: Record<string, unknown>, ws: WebSocket) {
   let reflectionDiagnosticEmitted = false;
 
   const emitRetry = (status: Record<string, any>) => {
+    if (Number(status.attempt || 0) > 2) throw new Error('The model provider exceeded the bounded retry budget (HTTP 503).');
     const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
     if (key === lastRetryKey) return;
     lastRetryKey = key;
@@ -812,6 +845,10 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 
   try {
     while (Date.now() < deadline && !finished) {
+      const activeTool = [...toolStates.values()].some(state => state === 'running' || state === 'pending');
+      if (!activeTool && Date.now() - lastProgressAt > (visible ? silenceMs : firstProgressMs)) {
+        throw new Error(visible ? 'OpenCode stopped making progress before completion.' : 'OpenCode first response timed out.');
+      }
       if (nextEvent) {
         const outcome = await Promise.race([
           nextEvent.then((value) => ({ kind: 'event' as const, value })).catch((error) => ({ kind: 'stream-error' as const, error })),
@@ -825,8 +862,9 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
             const event = outcome.value.value;
             nextEvent = iterator?.next();
             const properties = event.properties || {};
-            const sessionID = String(properties.sessionID || '');
+            const sessionID = String(properties.sessionID || properties.part?.sessionID || properties.info?.sessionID || '');
             if (sessionID && sessionID !== engineSessionId) continue;
+            if (sessionID === engineSessionId && ['message.part.updated', 'message.part.delta', 'message.updated'].includes(String(event.type))) lastProgressAt = Date.now();
 
             if (event.type === 'message.part.updated') {
               const part = properties.part && typeof properties.part === 'object' ? properties.part as Record<string, any> : undefined;
@@ -917,7 +955,16 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
     const previewPorts = await ports();
     return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    Object.assign(failure, { retrySafe: !visible && toolParts.size === 0, engineSessionId });
+    // A timed-out run must not remain alive in OpenCode after Orlynx fails it.
+    await opencodeRequest({ path: `/session/${engineSessionId}/abort`, method: 'POST', timeoutMs: 5_000 }).catch(() => undefined);
+    throw failure;
   } finally {
+    // iterator.next() may still be pending when an error/idle event ends the
+    // run. Observe its abort rejection before closing the stream.
+    void nextEvent?.catch(() => undefined);
     streamAbort.abort();
     for (const timer of toolFailureTimers.values()) clearTimeout(timer);
     toolFailureTimers.clear();
@@ -951,7 +998,6 @@ const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
         openCodeLifecycle = { state: 'ready' };
         return openCodeLifecycle;
       }
-      if (openCodeLifecycle.state === 'failed') return openCodeLifecycle;
       if (openCodeLifecycle.state === 'starting') return openCodeLifecycle;
 
       // A single slow /global/health response must not flap a working adapter
@@ -968,6 +1014,13 @@ const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
 
       openCodeTransientHealthFailures = OPENCODE_HEALTH_FAILURE_THRESHOLD;
       openCodeLifecycle = { state: 'unavailable', ...(health === 'unauthorized' ? { reason: 'auth_mismatch' } : {}) };
+      // Repair only the private agent server. Shell/files/Git and repository
+      // edits survive; no provider replacement is needed for this fault.
+      if (!activeAgents.size && OPENCODE_PASSWORD && Date.now() >= nextOpenCodeRepairAt) {
+        nextOpenCodeRepairAt = Date.now() + 60_000;
+        openCodeRepair ||= startOpenCode(openCodeAuthMode === 'account', true).finally(() => { openCodeRepair = undefined; });
+        openCodeLifecycle = await openCodeRepair;
+      }
       return openCodeLifecycle;
     },
     run: runAgent,

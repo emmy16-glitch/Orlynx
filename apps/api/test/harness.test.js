@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
+  MAX_REFLECTION_ATTEMPTS,
   advanceHarnessPhase,
   applySteering,
   consumeHarnessStep,
@@ -22,6 +23,28 @@ import {
   verificationRequirementsFor,
   verifyHarness,
 } from '../src/harness.ts';
+
+test('IPv6 localhost failure cannot invalidate verified IPv4/provider Preview evidence', () => {
+  const checkpoint = createHarnessCheckpoint({ prompt: 'start localhost', mode: 'build', permission: 'full', plane: 'workspace' });
+  const events = [
+    { type: 'tool.failed', payload: { command: 'curl http://[::1]:5173', error: 'connection refused' } },
+    { type: 'preview.ready', payload: { port: 5173, url: 'https://workspace-5173.app.github.dev', verified: true, localAddress: '127.0.0.1' } },
+  ];
+  const verified = verifyHarness(checkpoint, events);
+  assert.equal(verified.verification.status, 'passed');
+  assert.equal(shouldReflect(verified, 'The application is reachable at the verified Preview URL.'), false);
+});
+
+test('unavailable external Preview terminates Investigation at the reflection budget', () => {
+  let checkpoint = createHarnessCheckpoint({ prompt: 'start localhost', mode: 'build', permission: 'full', plane: 'workspace' });
+  const events = [{ type: 'preview.state', payload: { state: 'preparing', localReady: true, verified: false } }];
+  checkpoint = verifyHarness(checkpoint, events);
+  for (let attempt = 0; attempt < MAX_REFLECTION_ATTEMPTS; attempt++) {
+    assert.equal(shouldReflect(checkpoint, ''), true);
+    checkpoint = prepareReflection(checkpoint, events);
+  }
+  assert.equal(shouldReflect(checkpoint, 'Local app is healthy; external forwarding remains unavailable.'), false);
+});
 
 function evt(sequence, type, payload = {}) {
   return {

@@ -371,3 +371,7 @@ Render is the active production control plane.
 Pushes to `main` build/deploy through the configured Render service. The direct runner pool is configured separately and is health-checked by Orlynx itself.
 
 Do not reintroduce Vercel into the active production runtime architecture.
+
+## Recovery hardening, 2026-09-30
+
+Reliability recovery now durably rebinds tasks when compute changes, serializes queue claims by session, fences workspace-job completion by lease generation, and commits event cursors with their events. See [the reliability audit](docs/reliability-audit-2026-09-30.md) for reproduced failures, regression coverage, and remaining production verification.
