@@ -104,15 +104,10 @@ export function executionPlaneForSession(
   const readyWorkspace = workspace.state === 'ready' && workspace.bridgeState === 'ready';
   if (!readyWorkspace) return base;
 
-  // Build is a stateful coding conversation. Once its development environment
-  // is already warm, keep subsequent Build turns on that same workspace even
-  // when the newest message is explanatory. Switching a live Build
-  // conversation onto the separate direct runtime loses engine-session
-  // continuity and can make the very next reply pay an unrelated cold start.
-  if (mode === 'build') return 'workspace';
-
-  // Ask/Plan remain lightweight unless the answer explicitly depends on
-  // mutable workspace truth.
+  // Workspace continuity is handled earlier by the active-task steering path.
+  // Once no task is actively executing, a warm/stale workspace must not pull
+  // ordinary conversation into cloud execution. Only questions that truly
+  // depend on mutable checkout/runtime truth should use the workspace.
   if (needsLiveWorkspaceState(text)) return 'workspace';
 
   return base;
