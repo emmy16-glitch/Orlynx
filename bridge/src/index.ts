@@ -64,6 +64,20 @@ function touchActivity(): void {
   } catch {}
 }
 
+function activityAt(): string | undefined {
+  try { return fs.statSync(ACTIVITY_FILE).mtime.toISOString(); } catch { return undefined; }
+}
+
+function runtimeCapabilities(): string[] {
+  const capabilities = ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters'];
+  try {
+    const runtime = path.join(os.homedir(), '.orlynx', 'runtime');
+    if (fs.readdirSync(runtime).some((name) => /^playwright-.*\.ready$/.test(name))) capabilities.push('browser-e2e');
+  } catch {}
+  for (const id of bridgeAgentAdapters.keys()) capabilities.push(`agent:${id}`);
+  return capabilities;
+}
+
 function sendCommandReply(ws: WebSocket, commandId: string, reply: CommandReply): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   try { ws.send(JSON.stringify({ kind: 'RESULT', commandId, ...reply })); } catch { /* a replacement socket will receive the durable retry */ }
@@ -1079,8 +1093,9 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       // Keep the legacy top-level openCode field while exposing the generic
       // adapter map. Older control-plane builds used health.openCode; newer
       // builds read adapters.opencode.state.
-      return { bridge: 'ready', openCode: adapters.opencode?.state, adapters };
+      return { bridge: 'ready', openCode: adapters.opencode?.state, adapters, capabilities: runtimeCapabilities(), activityAt: activityAt() };
     }
+    case 'runtime.capabilities': return { capabilities: runtimeCapabilities(), activityAt: activityAt() };
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
     case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
     case 'fs.write-attachment': {
@@ -1227,7 +1242,7 @@ function connect(delay = 0): void {
       let message: { kind: string; token?: string; commandId?: string; type?: string; payload?: Record<string, unknown> }; try { message = JSON.parse(String(raw)); } catch { return; }
       // The server attaches its message listener after verifying durable
       // workspace state. Wait for its request so HELLO cannot be lost.
-      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.1.0', os: os.platform(), arch: os.arch(), capabilities: ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', ...[...bridgeAgentAdapters.keys()].map((id) => `agent:${id}`)] })); return; }
+      if (message.kind === 'HELLO_REQUEST') { ws.send(JSON.stringify({ kind: 'HELLO', workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, userId: USER_ID, connectionId: CONNECTION_ID, bridgeVersion: '2.1.0', os: os.platform(), arch: os.arch(), capabilities: runtimeCapabilities() })); return; }
       if ((message.kind === 'AUTHENTICATED' || message.kind === 'CREDENTIAL') && message.token) {
         token = message.token;
         if (message.kind === 'AUTHENTICATED') {
@@ -1235,7 +1250,7 @@ function connect(delay = 0): void {
           // Workspace readiness is independent of any agent adapter. Make shell,
           // files, Git and ports available immediately; adapters report their
           // own lifecycle asynchronously.
-          ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, adapters: { opencode: { state: 'starting' } } }));
+          ws.send(JSON.stringify({ kind: 'READY', repoRoot: REPO_ROOT, capabilities: runtimeCapabilities(), adapters: { opencode: { state: 'starting' } } }));
           void openCodeStartup.then((adapter) => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId: 'opencode', adapter }));
           }).catch((error) => {
@@ -1248,7 +1263,7 @@ function connect(delay = 0): void {
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
             }
-            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready' } } }));
+            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready', capabilities: runtimeCapabilities(), activityAt: activityAt() } } }));
           }, 15_000);
         }
         return;
