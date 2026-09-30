@@ -1,8 +1,23 @@
 # Production architecture
 
-Render is the Orlynx control plane. Postgres is production truth. Mutable repository execution is supplied by a workspace provider behind one Orlynx-owned contract.
+## Summary
 
-The preferred execution provider is the Orlynx warm runner when configured. GitHub Codespaces remains a supported fallback and recovery provider.
+Render is the active Orlynx control plane. Postgres is production truth.
+
+The current production architecture has:
+
+- Render API/control plane;
+- durable workspace orchestrator;
+- Postgres;
+- direct OpenCode conversational runtime;
+- adaptive Compute Broker;
+- five direct Render runner hosts;
+- E2B workspace provider;
+- GitHub Codespaces provider;
+- authenticated workspace bridge;
+- OpenCode Agent Adapter #1.
+
+Vercel is not part of the active production runtime.
 
 ## Topology
 
@@ -11,138 +26,193 @@ Browser / PWA
     |
     | HTTPS + SSE
     v
-Render Web/API
+Render Orlynx control plane
     |
-    +-- authentication
-    +-- GitHub App integration
-    +-- direct Ask / Plan model lane
-    +-- durable task admission
-    +-- same-run continuation + explicit queue
-    +-- harness / verification / reflection
-    +-- verified lesson memory
-    +-- event persistence / redaction / replay
-    +-- changes / approvals / controlled publication
-    +-- authenticated bridge gateway
+    +-- auth + GitHub App
+    +-- durable messages/tasks/queue
+    +-- direct Ask/Plan runtime
+    +-- Compute Broker
+    +-- harness/verification
+    +-- event replay/redaction
+    +-- controlled publication
+    +-- bridge gateway
     |
-    +---------------------> Postgres
+    +-----------------------> Postgres
+    |
+    +-- direct-runtime health
     |
     v
-WorkspaceProvider
+Workspace execution
     |
-    +-- Orlynx Runner (preferred)
-    |      +-- isolated prebuilt workspace
-    |      +-- Orlynx bridge
-    |      +-- OpenCode adapter runtime
+    +-- Orlynx runner pool (5 direct Render services)
+    +-- E2B
+    +-- GitHub Codespaces
     |
-    +-- GitHub Codespaces (fallback/recovery)
-           +-- Orlynx bridge
-           +-- OpenCode adapter runtime
+    v
+Orlynx workspace bridge
+    |
+    +-- fs / PTY / Git
+    +-- tests / build
+    +-- ports / Preview
+    +-- browser evidence where supported
+    +-- OpenCode adapter
 ~~~
 
 ## Control-plane boundary
 
-The Render control plane owns user/session identity, GitHub authorization, direct model chat, task admission, queue ordering, continuation/steering, execution harness, verification criteria, reflection orchestration, verified memory, workspace orchestration, normalized events, SSE replay, encrypted provider credentials, approvals, change sets, publication policy/receipts and audit.
+The control plane owns identity, authorization, session/task state, queue semantics, compute selection, harness, verification, memory, events, credentials, approvals, publication, and audit.
 
-Repository code execution does not run inside the Render web process.
+Repository code executes outside the control-plane process.
 
-## Execution providers
+## API and orchestrator processes
 
-The workspace-provider boundary keeps compute replaceable.
+The production supervisor launches:
 
-### Orlynx Runner
+- `dist/index.js` for API/websocket/SSE/control-plane HTTP;
+- `dist/orchestrator-worker.js` when durable Postgres storage exists.
 
-Preferred when configured and healthy.
+Workspace jobs are durable and leased, so the worker can restart without forgetting accepted Build work.
 
-It provides a prebuilt runtime image, one isolated workspace per active environment, background prewarming, preinstalled bridge/runtime dependencies, low-latency reuse, bounded capacity/idle reclamation and a signed browser Preview gateway.
+## Compute Broker
 
-### GitHub Codespaces
+Workspace selection is no longer a static “runner then Codespaces” rule.
 
-Codespaces remain a supported fallback/recovery path and use the same bridge/task/event contracts.
+The broker ranks configured compute using health/history/capability.
 
-Fallback should preserve session ID, task identity, user history and queue order. The browser should not need a different product workflow because compute changed.
+Workspace providers:
 
-## Direct versus workspace execution
+- `orlynx-runner`;
+- `e2b`;
+- `github-codespaces`.
 
-Ask/Plan work can use the direct lane when mutable project execution is unnecessary.
+The direct runtime is health-tracked as an additional fast path.
 
-Build work uses a real workspace provider and the authenticated bridge.
+A healthy existing workspace stays sticky where possible.
 
-Both lanes persist under the same durable project conversation.
+See [compute-broker.md](compute-broker.md).
+
+## Current direct runner pool
+
+Production is configured with five direct Render runner services.
+
+Each direct runner currently supplies one workspace slot.
+
+The control plane authenticates to runners with an internal runner credential. Runner health is application-level and reports usable capacity/capability, not merely whether Render says the service deployed.
+
+The broker consumes this health.
+
+## Docker runner architecture
+
+The repository also contains the scalable runner-manager/runtime model:
+
+- runner manager controls Docker;
+- runner runtime is a prebuilt development image;
+- one container can represent one isolated workspace.
+
+This path is CI-built and browser-smoke-tested but is distinct from the current five direct Render runner services.
+
+See [runner-runtime-and-docker.md](runner-runtime-and-docker.md).
+
+## Direct runtime
+
+The direct OpenCode runtime serves lightweight conversational work.
+
+It has bounded wake/recovery behavior.
+
+If a confirmed transient runtime outage occurs before useful output, the broker can quarantine the direct path and promote the same durable turn to workspace execution.
+
+This keeps direct runtime failure from becoming a mandatory user resend.
 
 ## Durable task model
 
-A user message that needs a run is stored before execution.
+A task is persisted before execution.
 
-Natural follow-ups can stay attached to the active run. Explicit next-task intent creates a separate queued task.
+Natural follow-ups can steer the same active task. Explicit next-task intent creates a separate queued task.
 
-The queue is sequential: queued work is not promoted while another task is running, waiting for input or waiting for approval.
+Queue promotion respects running, waiting-input, and waiting-approval states.
 
-## Harness and verification
+Late follow-ups are protected during finalization through a steering-revision guard.
 
-The harness converts user intent into observable acceptance requirements.
+## Workspace freshness
 
-Examples include changes, tests, build, commit, publish, deployment, Preview and browser research.
+Before Build execution, Orlynx validates workspace repository freshness.
 
-Missing evidence keeps the task in work/verification rather than allowing optimistic completion.
+A clean behind default branch can fast-forward.
 
-## Reflection and learning
+A specific recovery exists for incidental `package-lock.json` drift: the patch is preserved under Orlynx recovery storage, the lockfile is restored, and the workspace can fast-forward. Real source changes or unsafe divergence remain blocking conditions.
 
-Unexpected or contradictory observations can trigger a bounded Investigation loop between Orlynx and the connected model.
+## Bridge transport
 
-A learned lesson is only persisted after reflection occurred, verification passed and a usable verified resolution exists.
+The workspace bridge uses authenticated WebSocket transport.
 
-Lessons remain user-isolated and relevance-gated.
+Commands are durable before live delivery so a dropped socket does not become the only copy of an operation.
 
-See [learning-and-memory.md](learning-and-memory.md).
+Connection credentials are scoped and rotated.
 
-## Realtime and durability
+## Agent adapter readiness
 
-Postgres is authoritative for product state.
+Workspace health and OpenCode adapter health are separate.
 
-The authenticated bridge WebSocket is the normal low-latency workspace transport. Commands are persisted before direct socket delivery so recovery can survive reconnects and process boundaries.
+A workspace can remain usable while OpenCode repairs/restarts.
 
-Browser activity uses SSE with stable event IDs and monotonically increasing session sequence.
+## Realtime delivery
 
-Recovery is authoritative snapshot plus ordered events after the last cursor.
+Browser activity uses SSE over canonical persisted events.
 
-## Event security
-
-Secret-like values are sanitized before event persistence and streaming.
-
-Historical events are sanitized again before replay/reflection.
-
-This is defense in depth; credentials should still be kept out of repository/model-visible output.
+Refresh/reconnect uses the session event sequence to recover ordered state.
 
 ## Preview
 
-Preview has a provider-aware verification path.
+Preview is provider-aware.
 
-Orlynx distinguishes a browser-renderable Preview from an API-only HTTP port.
+Direct runners use signed Preview proxying.
 
-For Codespaces, Orlynx manages the required cloud-preview environment for supported dev servers such as Vite and diagnoses forwarding before editing repository config.
+Codespaces uses forwarding.
 
-For warm runners, signed Preview routing connects the browser to the isolated workspace.
-
-## GitHub publication
-
-The agent runtime does not receive unrestricted GitHub credentials.
-
-Publication is executed through Orlynx-controlled paths.
-
-Rules include preserving exact branch intent, refusing to guess ambiguous targets, requiring explicit publication intent, enforcing policy, rejecting unsafe Git state and persisting audit evidence.
-
-Default-branch publication may occur only when explicit intent and server-side policy authorize that controlled path.
+Containerized runner-runtime images include Playwright/Chromium so browser capability can be advertised and verified.
 
 ## Security
 
-Production boundaries include GitHub App authorization rather than PAT entry, short-lived installation tokens, signed callback state, HMAC webhook verification, encrypted persisted provider credentials, short-lived bridge credentials, user-isolated learned lessons, event/history sanitization, server-side permissions, per-workspace execution isolation and audit for consequential actions.
+Production boundaries include:
 
-A production runner must not execute unrelated repositories in one shared shell process.
+- GitHub App instead of PAT-entry workflow;
+- server-side installation credentials;
+- encrypted persisted provider credentials;
+- scoped bridge credentials;
+- shared internal runner authentication;
+- repository-isolated workspaces;
+- secret redaction before event persistence/stream;
+- controlled publication;
+- audit.
+
+## Health and startup smoke
+
+Production startup verifies or reports:
+
+- model catalog;
+- GitHub App permissions;
+- E2B health;
+- runner-pool health/capacity;
+- direct-runtime warm status.
+
+A direct-runtime failure does not imply total production failure if broker alternatives remain healthy.
+
+## CI release gates
+
+CI verifies:
+
+- dependencies;
+- supervisor syntax;
+- typecheck;
+- API tests;
+- build;
+- compiled provider runtime;
+- runner runtime Docker build;
+- Chromium launch inside runner image;
+- runner manager image build.
 
 ## Deployment truth
 
-Render is the active production control plane.
+A production claim should identify the deployed commit and live Render deploy, not only the latest GitHub commit.
 
-Vercel is not part of the production runtime topology and should not be reintroduced into current architecture documentation or deployment instructions.
-
-See [render-production.md](render-production.md), [warm-runner-architecture.md](warm-runner-architecture.md), [architecture-overview.md](architecture-overview.md) and [end-to-end-verification.md](end-to-end-verification.md).
+For operational procedure see [render-production.md](render-production.md).
