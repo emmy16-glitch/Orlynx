@@ -356,13 +356,34 @@ export async function githubUserAccessToken(userId: string): Promise<string> {
     const refreshExpiresAt = connection.refreshTokenExpiresAt ? Date.parse(connection.refreshTokenExpiresAt) : Number.POSITIVE_INFINITY;
     if (refreshExpiresAt <= Date.now() + 60_000) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
 
-    const response = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(), grant_type: 'refresh_token', refresh_token: decryptCredential(connection.refreshToken) }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const body = await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number };
-    if (!response.ok || !body.access_token) throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+    let response: Response | undefined;
+    try {
+      response = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(), grant_type: 'refresh_token', refresh_token: decryptCredential(connection.refreshToken) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      response = undefined;
+    }
+    const body = response
+      ? await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; refresh_token_expires_in?: number }
+      : {};
+
+    if (!response?.ok || !body.access_token) {
+      // A rolling deploy can briefly run old+new API processes. Another
+      // process may have consumed/rotated this refresh token milliseconds
+      // earlier and persisted the replacement. Re-read durable state before
+      // incorrectly forcing the user through OAuth again.
+      for (const delay of [0, 150, 350, 700]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        const latest = await repository.getGitHubConnectionByUser(userId);
+        if (!latest) break;
+        const latestExpiresAt = latest.accessTokenExpiresAt ? Date.parse(latest.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
+        if (latestExpiresAt > Date.now() + 5 * 60_000) return decryptCredential(latest.accessToken);
+      }
+      throw new Error('GitHub user authorization expired. Reconnect GitHub.');
+    }
     const now = new Date();
     await repository.upsertGitHubConnection({
       ...connection,
