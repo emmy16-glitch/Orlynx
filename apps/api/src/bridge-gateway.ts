@@ -582,8 +582,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          let recent = (await repository.listRecentEvents(claims.sessionId, 1000))
-            .filter((event) => event.runId === runId)
+          let recent = await repository.listRunEvents(claims.sessionId, runId, 1000)
             .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
           await repository.putTask(task);
@@ -661,7 +660,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                   alreadyPublished: published.alreadyPublished,
                 },
               });
-              recent = (await repository.listRecentEvents(claims.sessionId, 1000)).filter((event) => event.runId === runId);
+              recent = await repository.listRunEvents(claims.sessionId, runId, 1000);
               task.harness = verifyHarness(task.harness, recent, publishedAt);
               await repository.putTask(task);
             } catch (error) {
@@ -814,8 +813,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                         artifacts,
                       },
                     });
-                    recent = (await repository.listRecentEvents(claims.sessionId, 1000))
-                      .filter((event) => event.runId === runId)
+                    recent = await repository.listRunEvents(claims.sessionId, runId, 1000)
                       .map(sanitizeEvent);
                   }
                 }
