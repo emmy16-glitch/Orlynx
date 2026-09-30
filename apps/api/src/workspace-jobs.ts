@@ -109,7 +109,10 @@ export async function runWorkspaceOrchestratorOnce(
   if (!durableStorageConfigured()) return [];
   const repository = controlPlaneRepository();
   const leaseSeconds = Math.max(60, Number(process.env.ORLYNX_ORCHESTRATOR_LEASE_SECONDS || 180));
-  const maxAttempts = Math.max(1, Number(process.env.ORLYNX_ORCHESTRATOR_MAX_ATTEMPTS || 4));
+  // Infrastructure recovery is intentionally patient. A Build task is durable,
+  // so transient runner/Codespaces outages should get several bounded retries
+  // instead of exhausting the orchestrator while the user's task is still queued.
+  const maxAttempts = Math.max(1, Number(process.env.ORLYNX_ORCHESTRATOR_MAX_ATTEMPTS || 12));
   const jobs = await repository.claimWorkspaceJobs(id, limit, leaseSeconds);
   const touchedSessions = new Set<string>();
 
