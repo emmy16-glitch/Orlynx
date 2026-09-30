@@ -564,6 +564,10 @@ export default function ProductionApp() {
     lastScrollTopRef.current = window.scrollY;
     setNewActivity(false);
     setSession(record); currentSessionRef.current = record;
+    // The free-model runtime is a separate service and may have slept even
+    // while the main Orlynx API stayed available. Wake it as soon as the user
+    // opens a project, before they press Send.
+    void fetch('/v1/ai/runtime/prewarm', { method: 'POST' }).catch(() => {});
     try {
       localStorage.setItem(LAST_SESSION, JSON.stringify({ id: record.id, project: record.project }));
       localStorage.setItem(sessionKey(record.project), record.id);
@@ -731,6 +735,7 @@ export default function ProductionApp() {
       if (document.visibilityState === 'visible' && currentSessionRef.current) {
         retryAttemptRef.current = 0;
         connectEvents(currentSessionRef.current.id);
+        void fetch('/v1/ai/runtime/prewarm', { method: 'POST' }).catch(() => {});
         refreshSession(currentSessionRef.current.id).then(() => setOnline(true)).catch(() => {});
       }
     };
