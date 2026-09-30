@@ -2,474 +2,404 @@
 
 ## Architectural goal
 
-Orlynx separates product truth, reasoning, execution and presentation so that no single model, provider or browser session is allowed to become the whole system.
+Orlynx separates **product truth**, **reasoning**, **execution**, and **presentation** so no browser session, model, agent runtime, or compute provider becomes the whole system.
 
-The architecture is designed around five durable ideas:
+Five core ideas drive the design:
 
-1. the conversation survives infrastructure changes;
-2. tasks are admitted before execution;
-3. execution providers are replaceable;
-4. evidence is normalized before presentation;
+1. the conversation survives infrastructure change;
+2. a task is admitted durably before execution;
+3. execution compute is replaceable;
+4. events/evidence are normalized before presentation;
 5. completion is verified against the user's requested outcome.
 
-## Topology
+## Current topology
 
 ~~~text
-                          ┌─────────────────────────────┐
-                          │ Browser / phone / desktop   │
-                          │ Chat · Files · Changes      │
-                          └──────────────┬──────────────┘
-                                         │ HTTPS + SSE
+                          Browser / phone
+                               |
+                         HTTPS + SSE
+                               |
+                               v
+┌──────────────────────────────────────────────────────────────────┐
+│                 Orlynx control plane on Render                  │
+│                                                                  │
+│ Identity / GitHub App / sessions / messages / tasks / queue     │
+│ Direct OpenCode conversational lane                              │
+│ Harness / verification / reflection                              │
+│ Compute Broker                                                   │
+│ Workspace orchestrator                                           │
+│ Bridge gateway                                                   │
+│ Agent adapter registry                                           │
+│ Events / replay / redaction                                      │
+│ Memory / approvals / publication / audit                         │
+└──────────────┬───────────────────────────────┬───────────────────┘
+               │                               │
+               │ Postgres                      │ workspace routing
+               v                               v
+       Durable product truth             Compute Broker
+                                               |
+                            ┌──────────────────┼──────────────────┐
+                            v                  v                  v
+                     Orlynx runners           E2B          GitHub Codespaces
+                            \                  |                  /
+                             \                 |                 /
+                              └──────────┬──────┴────────────────┘
                                          v
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Orlynx control plane on Render                   │
-│                                                                     │
-│  Identity / GitHub App / sessions / messages / tasks / queue       │
-│  Direct Ask + Plan lane                                             │
-│  Harness + verification + reflection                                │
-│  Memory retrieval + verified lesson persistence                     │
-│  Workspace orchestration                                             │
-│  Agent adapter registry                                              │
-│  Event normalization / replay / redaction                           │
-│  Changes / approvals / publication / audit                          │
-└───────────────┬───────────────────────────┬───────────────────────────┘
-                │                           │
-                │ Postgres                  │ authenticated bridge WS
-                v                           v
-      ┌───────────────────┐        ┌──────────────────────────────┐
-      │ Durable product   │        │ Workspace execution provider │
-      │ truth             │        │                              │
-      │ sessions/tasks    │        │  Orlynx Runner preferred     │
-      │ events/audit/etc. │        │  Codespaces fallback         │
-      └───────────────────┘        └──────────────┬───────────────┘
-                                                  │
-                                                  v
-                                      ┌──────────────────────────┐
-                                      │ Orlynx workspace bridge  │
-                                      │ files / PTY / Git        │
-                                      │ tests / builds / ports   │
-                                      │ Preview / agent runtime  │
-                                      └──────────────┬───────────┘
-                                                     │
-                                                     v
-                                      ┌──────────────────────────┐
-                                      │ Agent Adapter             │
-                                      │ OpenCode today            │
-                                      │ future adapters later     │
-                                      └──────────────────────────┘
+                              Authenticated workspace bridge
+                                         |
+                            ┌────────────┼────────────┐
+                            v            v            v
+                          files        shell/Git    tests/Preview
+                                         |
+                                         v
+                                   OpenCode adapter
+                                         |
+                                         v
+                                    selected model
 ~~~
 
-## 1. Browser layer
+## Browser layer
 
-The browser is a client of durable state, not the owner of that state.
+The browser is responsible for:
 
-It is responsible for:
-
-- rendering the project conversation;
+- rendering the durable project conversation;
 - submitting user messages;
-- selecting model, mode, access and agent;
-- showing queued work;
-- presenting normalized live activity;
-- rendering Investigation blocks;
-- showing files, changes, terminal and Preview;
-- keeping draft/local convenience state;
-- reconnecting from the last durable sequence.
+- selecting model/mode/access/agent;
+- showing queue state;
+- projecting normalized live activity;
+- files/changes/terminal/Preview surfaces;
+- reconnecting from the last durable event cursor.
 
-It is not responsible for deciding whether a task actually completed.
+It is not responsible for deciding whether a task completed.
 
 A browser refresh must not erase task identity.
 
-## 2. Control plane
+## Control plane
 
-The control plane is the Orlynx product brain.
+The Render control plane is the Orlynx product brain.
 
 It owns:
 
 - authentication;
 - GitHub authorization;
-- session identity;
+- sessions;
 - task admission;
-- active-versus-queued semantics;
-- steering and continuation;
-- selected workspace provider;
-- model and agent preferences;
-- harness state;
-- verification requirements;
-- event persistence;
-- redaction;
-- learned lessons;
+- continuation vs queue semantics;
+- model/mode/permission preferences;
+- Compute Broker routing;
+- workspace orchestration;
+- harness/verification;
+- memory;
+- event persistence/replay;
 - approvals;
-- publication policy;
-- audit.
+- publication/audit.
 
-The control plane intentionally does not execute arbitrary repository code inside the Render web process.
+Arbitrary repository code does not run inside the web/API process.
 
-## 3. Durable state
+## Production processes
 
-Production uses Postgres as authoritative state.
+`apps/api/scripts/production-start.mjs` supervises:
 
-Durable data includes, depending on subsystem:
+- the API process;
+- the durable workspace-orchestrator worker when Postgres is configured.
+
+If either supervised child exits unexpectedly, the supervisor shuts down so the host can restart cleanly instead of leaving a half-alive production instance.
+
+## Postgres durable truth
+
+Production Postgres stores authoritative state for subsystems such as:
 
 - users;
-- GitHub connections/installations;
+- GitHub installations/connections;
 - projects;
 - sessions;
 - messages;
 - tasks;
-- task harness checkpoints;
-- normalized events;
+- harness state;
+- canonical events;
 - AI preferences;
 - workspaces;
-- agent sessions and adapter health;
+- workspace jobs/leases;
 - bridge commands/results;
-- change sets;
-- approvals;
+- agent sessions;
+- approvals/change sets;
 - publication/deployment receipts;
-- learned lessons;
-- webhook delivery receipts;
-- audit records.
+- lessons;
+- webhook/audit records.
 
-Local JSON storage is a development/testing fallback only.
+Local JSON storage is development/test fallback only.
 
-## 4. Task admission
+## Task admission
 
 A user message that requires a run becomes durable before execution.
 
-The basic flow is:
-
 ~~~text
 user message
-   ↓
+    |
+    v
 durable message
-   ↓
+    |
+    v
 durable task
-   ↓
-active continuation OR queued work
-   ↓
+    |
+    +-- continue active run
+    +-- start current turn
+    +-- queue explicit next task
+    |
+    v
 execution
-   ↓
+    |
+    v
 durable normalized evidence
-   ↓
+    |
+    v
 verification
-   ↓
+    |
+    v
 durable assistant result
 ~~~
 
-This gives Orlynx a stable answer to the question:
+## Queue and continuation
 
-> What work did the user actually ask for, and what state is it in now?
+A natural follow-up stays attached to the active run when possible.
 
-## 5. Continuation and queueing
+An explicit next-task request creates a separate durable queued task.
 
-Orlynx distinguishes two kinds of follow-up.
+The scheduler must not promote queued work while another task is:
 
-### Continuation
+- running;
+- waiting for user input;
+- waiting for approval.
 
-A natural follow-up to the active task remains attached to the current run.
+Completion is also guarded against a late steering race so a last-moment follow-up cannot be overwritten by an older finalization snapshot.
 
-Examples:
+## Direct execution lane
 
-- “also check mobile”;
-- “finish the remaining part”;
-- “what have you done?”;
-- “make sure the tests still pass”.
+Lightweight Ask/Plan work can use the direct OpenCode runtime without a workspace.
 
-These become durable steering input and are fed back to the connected model.
+Direct runtime behavior includes:
 
-### Explicit next task
+- bounded health wake/probe;
+- durable OpenCode conversation keying;
+- re-creation of lost runtime sessions;
+- recovery context from Orlynx durable history;
+- streaming first-token/silence protection;
+- temporary broker quarantine after infrastructure failure.
 
-Clear queue intent creates a separate durable task.
+If the runtime fails before useful output, the same durable task can be promoted to workspace compute.
 
-Examples:
+## Compute Broker
 
-- “queue this”;
-- “do this next”;
-- “after this finishes, update docs”.
+The broker chooses workspace providers and tracks direct-runtime health.
 
-Queued work is sequential.
+It scores:
 
-The scheduler must not promote a queued task while another task is running, waiting for input or waiting for approval.
+- GitHub Codespaces;
+- E2B;
+- Orlynx runner pool.
 
-## 6. Direct lane versus workspace lane
+Inputs include success history, consecutive failures, latency EMA, quarantine, current workspace preference, attempted providers, runner capacity/load, and browser capability.
 
-Orlynx has two execution planes.
+See [compute-broker.md](compute-broker.md).
 
-### Direct lane
+## Workspace provider abstraction
 
-Used when the request can be answered without mutable project execution.
+Workspace providers implement a common Orlynx lifecycle so provider choice does not change product semantics.
 
-Typical work:
+Current provider IDs are:
 
-- conversation;
-- repository explanation;
-- Ask;
-- Plan;
-- bounded context lookup.
+- `orlynx-runner`;
+- `e2b`;
+- `github-codespaces`.
 
-The direct lane can stream the connected model response through the same durable conversation model.
+A provider switch must preserve session/task identity.
 
-### Workspace lane
+## Orlynx runner pool
 
-Used when the task needs real project execution.
+The runner pool treats several runner hosts as one logical execution backend.
 
-Typical work:
+Current hosted production uses five direct Render runner services.
 
-- file edits;
-- terminal commands;
-- tests;
-- builds;
-- Git operations;
-- Preview;
-- deployment work;
-- browser research when required by the task and supported.
+The pool tracks per-host:
 
-Both lanes obey the same high-level conversation semantics.
+- health;
+- capacity;
+- running/available count;
+- draining state;
+- latency;
+- browser/E2E capability;
+- circuit-open state;
+- workspace ownership.
 
-## 7. Harness and verification
+A hosting-provider “live” status is not enough; Orlynx uses application-level health.
 
-The harness is Orlynx's execution discipline.
+## E2B
 
-It determines which tool families are available and what observable acceptance evidence is required.
+E2B is an independent isolated workspace provider.
 
-A task may require proof of:
+It gives Orlynx another recovery path outside both the direct Render runner pool and GitHub Codespaces.
 
-- changes;
-- tests;
-- build;
-- commit;
-- publish;
-- deployment;
-- Preview;
-- browser research.
+## GitHub Codespaces
 
-The harness keeps a bounded step budget and moves through phases such as receiving, context loading, executing, verifying, waiting, finalizing and completed/failed/cancelled.
+Codespaces provides GitHub-managed repository compute and remains a supported durable provider.
 
-If required evidence is missing, Orlynx should continue working or explain the precise unresolved boundary instead of claiming success.
+It uses the same bridge/task/event contracts after bootstrap.
 
-## 8. Reflection / Investigation
+## Workspace orchestrator
 
-When observed state contradicts the expected result, Orlynx can enter a reflection loop.
+The broker chooses the provider; the orchestrator prepares it.
 
-The reflection loop is bounded and evidence-driven.
+Workspace preparation jobs are stored durably.
 
-~~~text
-unexpected observation
-    ↓
-Orlynx records contradiction
-    ↓
-connected model proposes next hypothesis/check
-    ↓
-Orlynx executes allowed check
-    ↓
-new evidence
-    ↓
-verify again
-~~~
+The worker:
 
-The UI exposes this in ordered Investigation sections.
+1. claims a job with a lease;
+2. renews the lease during long preparation;
+3. prepares provider/bridge/runtime;
+4. retries transient failure with bounded backoff;
+5. completes or records a precise failure;
+6. periodically sweeps active sessions for recovery.
 
-Private model chain-of-thought is not stored or rendered.
+A dead worker does not own the job forever; its lease expires and another recovery pass can continue.
 
-## 9. Workspace provider abstraction
+## Bridge
 
-Mutable project execution is behind a provider boundary.
-
-### Orlynx Runner
-
-The preferred provider when configured.
-
-Characteristics:
-
-- prebuilt runtime image;
-- background prewarming;
-- isolated workspace;
-- preinstalled bridge;
-- preinstalled/pinned agent runtime;
-- low startup latency relative to cold Codespaces;
-- controlled capacity and idle reclamation.
-
-### GitHub Codespaces
-
-Supported fallback and recovery provider.
-
-Characteristics:
-
-- GitHub-managed compute;
-- existing repository authorization relationship;
-- slower cold-start path;
-- same bridge contract once connected.
-
-A provider switch must preserve session and task identity.
-
-## 10. Bridge
-
-The bridge is the authenticated boundary between control plane and workspace.
-
-It provides the operational primitives Orlynx needs without handing the model direct control-plane credentials.
+The Bridge connects outbound from the workspace to the control plane using scoped credentials.
 
 Capabilities include:
 
-- filesystem operations;
-- PTY/shell;
+- fs;
+- exec/PTY;
 - Git;
-- tests/build commands;
-- Preview port discovery;
-- agent runtime startup/session;
-- structured events;
-- command result delivery.
+- ports;
+- tests/builds;
+- Preview discovery;
+- verification artifacts;
+- agent adapters.
 
-Bridge credentials are short-lived and scoped.
+Commands are persisted before socket delivery. The Bridge remembers completed command results and avoids double execution for the same command ID.
 
-Commands are persisted before relying on the socket fast path.
+## Workspace readiness vs adapter readiness
 
-## 11. Agent adapter boundary
+A workspace and its coding agent are intentionally separate state machines.
 
-A coding agent is replaceable.
+A workspace can have:
 
-The adapter declares capabilities and translates between the selected agent runtime and Orlynx's canonical task/event model.
+~~~text
+shell/files/Git ready
+OpenCode starting
+~~~
+
+or:
+
+~~~text
+workspace ready
+OpenCode temporarily unavailable
+~~~
+
+This allows Orlynx to repair the agent without falsely declaring the entire environment dead.
+
+## OpenCode adapter
 
 OpenCode is Adapter #1.
 
-The adapter is not allowed to redefine:
+The adapter boundary translates OpenCode lifecycle, model selection, streaming, tools, cancel/resume, and change evidence into Orlynx-owned semantics.
 
-- task ordering;
-- durable session identity;
-- permissions;
-- publication policy;
-- event replay;
-- memory ownership;
-- UI structure.
+Future coding agents should plug into that boundary rather than duplicating session/task/permission architecture.
 
-This makes future adapters possible without duplicating the application architecture.
+## Runner runtime and Docker
 
-## 12. Canonical event protocol
+The repository contains:
 
-Provider events are normalized into Orlynx-owned event types.
+- current direct runner implementation;
+- Docker runner-runtime image;
+- Docker runner-manager.
 
-Important categories include:
+The Dockerfile is the build recipe, the image is the packaged environment, and a container is a running image instance.
 
-- run lifecycle;
-- assistant messages;
-- tools;
-- terminal;
-- files;
+The runner-runtime image bakes in the bridge, OpenCode, Playwright/Chromium, and common development dependencies.
+
+See [runner-runtime-and-docker.md](runner-runtime-and-docker.md).
+
+## Harness and verification
+
+The harness translates user intent into observable acceptance criteria.
+
+Evidence may include:
+
+- changed files;
 - tests;
-- builds;
+- build/typecheck;
 - Preview;
-- approvals;
-- workspace state;
-- changes;
-- receipts;
-- extension events.
+- browser E2E;
+- commit/publish/deploy receipts.
 
-Events have stable IDs and session sequence numbers.
+Missing evidence prevents optimistic completion.
 
-The browser projects them into typed message parts rather than rendering raw provider payloads.
+## Canonical events
 
-## 13. Streaming and recovery
+Provider/runtime events are normalized into Orlynx-owned event types with stable IDs and session sequence numbers.
 
-SSE is used for browser activity delivery.
+The frontend renders typed Orlynx events instead of raw provider payloads.
 
-The browser reconnects with its last durable sequence:
+## Streaming and recovery
 
-~~~text
-GET /v1/sessions/:id/events?after=<sequence>
-~~~
+SSE delivers browser activity.
 
-Recovery uses:
+Recovery is:
 
 ~~~text
-authoritative snapshot + later ordered events = current view
+authoritative snapshot + ordered events after cursor = current view
 ~~~
 
-The system is designed so replay cannot duplicate one logical tool call into multiple visible rows.
+The architecture is designed for:
 
-## 14. Secret redaction
+- phone sleep;
+- network switching;
+- browser refresh;
+- API restart;
+- bridge reconnect;
+- provider migration.
 
-Sensitive values are redacted before they become durable event payloads or streamed output.
+## GitHub publication
 
-Current protections recognize common forms of:
+GitHub credentials remain server-side.
 
-- GitHub tokens;
-- API keys;
-- authorization/bearer values;
-- password/secret fields;
-- token-like long values.
+Agents do not get unrestricted raw publication authority.
 
-Historical event replay is sanitized again before reuse.
+Orlynx enforces explicit intent, branch safety, policy, audit, and publication receipts.
 
-Memory evidence is separately cleaned before persistence.
+## Learning
 
-Redaction is defense in depth; it does not replace proper credential isolation.
+Verified lessons live above the model.
 
-## 15. Preview architecture
+Fresh current evidence outranks prior memory.
 
-Preview readiness is product state, not string matching.
+## Failure philosophy
 
-Orlynx checks whether a port corresponds to a usable browser surface and whether provider forwarding resolves to a browser-reachable URL.
-
-JSON/API-only roots are not treated as browser Preview.
-
-The diagnostic order is provider-first:
-
-1. local process/listener;
-2. HTTP/browser suitability;
-3. provider forwarding;
-4. public URL;
-5. project configuration only when evidence points there.
-
-This reduces destructive “fix the app config until Preview works” behavior.
-
-## 16. GitHub publication
-
-GitHub credentials stay outside the agent shell.
-
-Publication happens through Orlynx-controlled operations.
-
-The system must preserve:
-
-- exact branch intent;
-- explicit user publish intent;
-- policy checks;
-- clean/valid Git state;
-- audit trail;
-- publication receipt.
-
-An explicitly named branch is never silently remapped.
-
-## 17. Learning
-
-Orlynx learning happens above the model.
-
-Verified post-reflection lessons are stored in Orlynx durable memory and selectively applied to future relevant work.
-
-See [learning-and-memory.md](learning-and-memory.md).
-
-## 18. Failure philosophy
-
-Orlynx should fail closed on security and fail recoverably on infrastructure.
+Orlynx should fail closed on security and recover on infrastructure.
 
 Examples:
 
-- missing GitHub authorization → block repository mutation;
-- lost browser connection → keep task alive and replay later;
-- dead agent runtime → preserve workspace shell/files/Git where possible;
-- runner failure → use Codespaces fallback if policy allows;
-- stale remembered lesson → prefer fresh evidence;
-- ambiguous branch target → investigate or ask, never guess;
-- missing verification → do not claim completion.
+- missing repository authorization -> block mutation;
+- browser offline -> server work continues;
+- direct runtime 502 -> quarantine and switch compute;
+- runner failure -> broker tries another provider;
+- lost bridge -> durable reconnect/retry;
+- stale checkout with only incidental lockfile drift -> preserve recovery patch and fast-forward;
+- missing verification -> do not claim completion.
 
-## 19. Architecture invariants
+## Architecture invariants
 
-Future refactors should preserve these invariants:
+Future refactors should preserve:
 
-1. no browser-only source of truth for active work;
-2. no model-owned authentication state;
-3. no provider-specific UI protocol;
-4. no unbounded raw event/log persistence;
+1. no browser-only source of truth;
+2. no model-owned authorization state;
+3. no fixed provider hard dependency for ordinary infrastructure failures;
+4. no provider-specific UI protocol;
 5. no hidden parallel queue execution;
-6. no completion without evidence where evidence is required;
-7. no memory across users;
-8. no direct secret exposure to repository code unless explicitly required by a narrow operation;
+6. no completion without required evidence;
+7. no memory leakage across users;
+8. no unrestricted secret exposure to repository code;
 9. no Preview readiness based on a guessed URL;
-10. no architecture fork for each new agent adapter or compute provider.
+10. no new agent/provider that forks the product architecture.
