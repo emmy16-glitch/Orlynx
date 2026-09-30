@@ -397,7 +397,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           title: 'Applied verified project lessons',
           summary: count > 0 ? `${count} ${count === 1 ? 'lesson' : 'lessons'}` : undefined,
           sourceType: 'agent.memory',
-          evidence: count > 0 ? { lessonCount: count } : prior?.evidence,
+          evidence: { sourceType: 'agent.memory', ...(count > 0 ? { lessonCount: count } : {}) },
         });
         return;
       }
