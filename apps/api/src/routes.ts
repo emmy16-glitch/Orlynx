@@ -9,6 +9,7 @@ import { saveAttachment } from './attachments.js';
 import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, resumeWaitingInputTask, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
+import { warmOpenCodeRuntime } from './opencode-local.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
@@ -562,16 +563,44 @@ router.post('/sessions/:id/messages', async (req, res) => {
           });
         }
 
-        // If the model/provider is temporarily unavailable while the workspace
-        // transport itself is healthy, preserve the same waiting task. This is
-        // the only case that should reject immediate resume; transport failure
-        // must never make Send look broken.
+        // The user's reply is already durable. Never make them resend it
+        // merely because the model/runtime was briefly unavailable. Requeue the
+        // same task and let the normal workspace/provider recovery path decide
+        // whether it can resume or must surface a real terminal provider error.
+        steered.state = 'queued';
+        if (steered.harness) {
+          steered.harness = advanceHarnessPhase(steered.harness, 'routing', {
+            mode: steered.mode || 'build',
+            permission: steered.tempPermission || steered.permission || 'full',
+            now,
+          });
+        }
+        steered.updatedAt = now;
         await repository.putTask(steered);
-        return res.status(503).json({
+        if (waitingWorkspace) {
+          void scheduleWorkspacePreparation({
+            sessionId: waitingWorkspace.sessionId,
+            userId: waitingWorkspace.userId,
+            projectId: waitingWorkspace.projectId,
+            repositoryId: waitingWorkspace.repositoryId,
+            branch: waitingWorkspace.branch,
+          }, { allowFallback: true, reason: 'waiting_input_provider_recovery' }).catch((repairError) => {
+            console.warn(`[harness] waiting-input provider recovery failed session=${s.id}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+          });
+        }
+        emit(s.id, 'run.state', {
+          taskId: steered.id,
+          state: 'queued',
+          message: 'Your reply was saved. Orlynx is recovering the AI runtime and will continue this same task automatically.',
+        }, steered.runId);
+        return res.status(202).json({
           message: msg,
-          error: detail,
-          waitingForSameTask: true,
+          run: { id: steered.runId, sessionId: s.id, plane: 'workspace', state: 'queued' },
+          plane: 'workspace',
+          resumed: false,
           continued: true,
+          queued: true,
+          recoveringRuntime: true,
           targetRunId: steered.runId,
         });
       }
@@ -812,9 +841,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
 
-    // Keep repository continuity on an existing workspace. Build follow-ups
-    // stay with the same OpenCode session, while Ask/Plan reuse only an already
-    // ready workspace and never cold-start one just for conversation.
+    // Active Build follow-ups were already attached to their running task
+    // above. For a new turn, a merely warm workspace must not make ordinary
+    // conversation pay cloud/runtime recovery latency.
     let workspace = await repository.getWorkspaceBySession(s.id);
     plane = executionPlaneForSession(String(text), effectiveMode, workspace);
 
@@ -1889,6 +1918,14 @@ router.post('/changes/:changeId/push', async (req, res) => {
 });
 
 // unified AI layer (engine underneath, one experience on top)
+router.post('/ai/runtime/prewarm', async (_req, res) => {
+  // Authenticated hint only. Do not block navigation or chat on a cold
+  // downstream free-model runtime; wake it in the background so the next turn
+  // is more likely to stream immediately.
+  void warmOpenCodeRuntime().catch(() => false);
+  return res.status(202).json({ warming: true });
+});
+
 router.get('/ai/catalog', async (_req, res) => {
   try {
     const { models } = await listProviderConnections('', undefined, undefined);

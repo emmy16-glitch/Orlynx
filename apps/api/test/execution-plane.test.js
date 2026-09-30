@@ -15,7 +15,7 @@ test('an existing Codespace never changes the mode/request execution decision', 
   assert.equal(executionPlaneFor('Run git status -sb', 'build'), 'workspace');
 });
 
-test('a ready workspace preserves Build continuity while Ask and Plan stay lightweight', () => {
+test('a ready workspace is used only when the new turn needs mutable workspace truth', () => {
   const ready = { state: 'ready', bridgeState: 'ready' };
   const connecting = { state: 'connecting', bridgeState: 'disconnected' };
 
@@ -25,15 +25,15 @@ test('a ready workspace preserves Build continuity while Ask and Plan stay light
   assert.equal(executionPlaneForSession('Is the dev server running?', 'ask', ready), 'workspace');
   assert.equal(executionPlaneForSession('Show me the current git diff', 'plan', ready), 'workspace');
 
-  // Once Build already has a warm workspace, conversational follow-ups stay
-  // with the same OpenCode/workspace session instead of cold-starting the
-  // separate direct runtime.
-  assert.equal(executionPlaneForSession('Explain the authentication flow', 'build', ready), 'workspace');
-  assert.equal(executionPlaneForSession('Review this architecture and suggest improvements', 'build', ready), 'workspace');
-  assert.equal(executionPlaneForSession('How can we improve everything significantly?', 'build', ready), 'workspace');
+  // With no active task to steer, ordinary Build-mode conversation remains
+  // direct even if an old workspace row is warm. This prevents a stale bridge
+  // from turning simple chat into cloud reconnection.
+  assert.equal(executionPlaneForSession('Explain the authentication flow', 'build', ready), 'direct');
+  assert.equal(executionPlaneForSession('Review this architecture and suggest improvements', 'build', ready), 'direct');
+  assert.equal(executionPlaneForSession('How can we improve everything significantly?', 'build', ready), 'direct');
 
-  // Ask and Plan retain the fast direct lane unless they explicitly need live
-  // mutable state.
+  // Ask and Plan also retain the fast direct lane unless they explicitly need
+  // live mutable state.
   assert.equal(executionPlaneForSession('Explain this file', 'ask', ready), 'direct');
   assert.equal(executionPlaneForSession('Plan the next fix', 'plan', ready), 'direct');
 
@@ -155,11 +155,17 @@ test('direct chat bypasses a blocked workspace task in the queue', () => {
   assert.equal(chooseNextQueuedTask([first, second])?.id, 'chat-task');
 });
 
-test('queued work never starts concurrently with unresolved active work', () => {
-  const queued = { id: 'queued', state: 'queued', plane: 'direct', prompt: 'next', createdAt: '', updatedAt: '' };
-  for (const state of ['running', 'waiting_input', 'waiting_approval']) {
-    const active = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
-    assert.equal(chooseNextQueuedTask([active, queued]), undefined, state);
+test('direct chat remains available while Build waits for human input, but not while work is actively running', () => {
+  const direct = { id: 'direct-chat', state: 'queued', plane: 'direct', prompt: 'Explain this', createdAt: '', updatedAt: '' };
+  const workspace = { id: 'workspace-next', state: 'queued', plane: 'workspace', prompt: 'Change the code', createdAt: '', updatedAt: '' };
+
+  const running = { id: 'active-running', state: 'running', plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+  assert.equal(chooseNextQueuedTask([running, direct]), undefined);
+
+  for (const state of ['waiting_input', 'waiting_approval']) {
+    const waiting = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+    assert.equal(chooseNextQueuedTask([waiting, direct])?.id, 'direct-chat', state);
+    assert.equal(chooseNextQueuedTask([waiting, workspace]), undefined, `${state}-workspace`);
   }
 });
 

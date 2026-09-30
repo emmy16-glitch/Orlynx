@@ -24,6 +24,7 @@ const executingDirectTasks = new Set<string>();
 const executingActionsVerifications = new Set<string>();
 const activeAgentSessions = new Map<string, { adapterId: AgentAdapterId; project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
+const directTaskTimeoutMs = Math.max(2 * 60_000, Number(process.env.ORLYNX_DIRECT_TASK_TIMEOUT_MS || 4 * 60_000));
 
 export interface TaskOptions {
   modelId?: string;
@@ -51,9 +52,18 @@ const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS ||
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
   const queued = tasks.filter((item) => item.state === 'queued');
-  const hasActive = tasks.some((item) => ['running', 'waiting_input', 'waiting_approval'].includes(item.state));
-  if (hasActive) return undefined;
-  return queued.find((item) => (item.plane || 'workspace') === 'direct') || queued[0];
+  const running = tasks.some((item) => item.state === 'running');
+  if (running) return undefined;
+
+  // Human-waiting Build work must not freeze normal conversation. Direct chat
+  // is read-only and can safely answer while another task waits for approval
+  // or user input. Workspace/mutation tasks remain sequential behind the wait.
+  const direct = queued.find((item) => (item.plane || 'workspace') === 'direct');
+  if (direct) return direct;
+
+  const waitingForHuman = tasks.some((item) => item.state === 'waiting_input' || item.state === 'waiting_approval');
+  if (waitingForHuman) return undefined;
+  return queued[0];
 }
 
 export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?: string } | null | undefined): boolean {
@@ -462,7 +472,8 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
     }
 
     const touched = Date.parse(task.updatedAt || task.createdAt);
-    if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
+    const taskTimeoutMs = (task.plane || 'workspace') === 'direct' ? directTaskTimeoutMs : timeoutMs;
+    if (!Number.isFinite(touched) || touched + taskTimeoutMs + staleTaskGraceMs > now) continue;
 
     task.state = 'failed';
     task.updatedAt = nowIso;
@@ -527,6 +538,9 @@ async function executeDirectTask(
   let visible = task.partialText || '';
   let pendingDelta = '';
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  let providerActivityAt = task.updatedAt || new Date().toISOString();
+  let persistedActivityAt = task.updatedAt || '';
+  const markProviderActivity = () => { providerActivityAt = new Date().toISOString(); };
   const flushDelta = () => {
     if (!pendingDelta) return;
     const delta = pendingDelta;
@@ -543,11 +557,15 @@ async function executeDirectTask(
   };
   const heartbeat = setInterval(() => {
     if (task.state !== 'running' || run.state !== 'running') return;
-    // Flush before snapshotting so reload recovery can use updatedAt as a
-    // cutoff without replaying text already present in partialText.
+    // A timer is not evidence that the provider is making progress. Persist
+    // partial text continuously, but advance updatedAt only when a real status,
+    // activity event, or token arrived. This prevents silent hung calls from
+    // looking healthy forever.
     flushDelta();
     task.partialText = visible;
-    task.updatedAt = new Date().toISOString();
+    if (providerActivityAt === persistedActivityAt) return;
+    task.updatedAt = providerActivityAt;
+    persistedActivityAt = providerActivityAt;
     void repository.putTask(task).catch(() => {});
   }, 1000);
   heartbeat.unref?.();
@@ -601,10 +619,17 @@ async function executeDirectTask(
       modelId,
       mode: task.mode || run.mode || 'build',
       harnessSystem: directHarnessSystem,
-      onStatus: (text) => emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id),
-      onActivity: (type, payload) => emit(session.id, type, { taskId: task.id, ...payload }, run.id),
+      onStatus: (text) => {
+        markProviderActivity();
+        emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id);
+      },
+      onActivity: (type, payload) => {
+        markProviderActivity();
+        emit(session.id, type, { taskId: task.id, ...payload }, run.id);
+      },
       onDelta: (delta) => {
         if (run.state !== 'running') return;
+        markProviderActivity();
         visible += delta;
         task.partialText = visible;
         pendingDelta += delta;
@@ -613,7 +638,37 @@ async function executeDirectTask(
       },
     });
 
-    let responseText = await streamDirectTurn(task.prompt, task.messageId);
+    const retrySilentTurn = async (prompt: string, messageId?: string): Promise<string> => {
+      const visibleBefore = visible.length;
+      const attemptStartedAt = Date.now();
+      try {
+        return await streamDirectTurn(prompt, messageId);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : '';
+        const elapsedMs = Date.now() - attemptStartedAt;
+        const fastTransientStatus = error instanceof ProviderRequestError
+          && [502, 503, 504].includes(error.statusCode || 0)
+          && elapsedMs < 15_000;
+        const firstTokenStall = /did not start streaming in time/i.test(detail);
+        const fastTransportFailure = elapsedMs < 15_000
+          && /connection .*failed|fetch failed|ECONNRESET|socket .*closed|temporarily unavailable/i.test(detail);
+
+        // Never repeat a full 75s Render-runtime wake timeout. A retry is only
+        // useful when the failure was fast, or when the runtime/model was
+        // admitted but failed to produce its first token.
+        if (visible.length !== visibleBefore || (!fastTransientStatus && !firstTokenStall && !fastTransportFailure)) throw error;
+        markProviderActivity();
+        emit(session.id, 'activity.progress', {
+          taskId: task.id,
+          sourceType: 'direct.chat.retry',
+          text: 'AI connection stalled before any response · retrying once…',
+        }, run.id);
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        return streamDirectTurn(prompt, messageId);
+      }
+    };
+
+    let responseText = await retrySilentTurn(task.prompt, task.messageId);
 
     // Direct Ask/Plan follows the same continuation contract as workspace
     // Build. Messages received while the provider is answering are stored in
@@ -661,7 +716,7 @@ async function executeDirectTask(
       }
       const history = await repository.listMessages(session.id);
       const latestContinuation = [...history].reverse().find((message) => message.role === 'user' && message.runId === run.id);
-      await streamDirectTurn(updateText, latestContinuation?.id);
+      await retrySilentTurn(updateText, latestContinuation?.id);
       responseText = visible;
     }
     if (visible) responseText = visible;

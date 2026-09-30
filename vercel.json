@@ -31,5 +31,8 @@
       "destination": "https://orlynx.onrender.com",
       "permanent": false
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": false
+  }
 }

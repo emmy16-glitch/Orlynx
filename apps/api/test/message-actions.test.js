@@ -78,7 +78,9 @@ describe('retry semantics (§§144-149, 175-178, 183, 185)', () => {
     const src = app();
     assert.match(src, /overrideText \?\? composer/);
     assert.match(src, /const clientId = uid\(\)/);
-    assert.match(src, /fetch\(\`\/v1\/sessions\/\$\{session\.id\}\/messages\`, \{ method: 'POST'/);
+    assert.match(src, /fetch\(\`\/v1\/sessions\/\$\{session\.id\}\/messages\`, \{/);
+    assert.match(src, /method: 'POST'/);
+    assert.match(src, /body: messageBody/);
     assert.match(src, /if \(!overrideText\) \{ setComposer\(''\);/);
     const editStart = src.indexOf('function editAndResend');
     const editEnd = src.indexOf('async function startCloud', editStart);

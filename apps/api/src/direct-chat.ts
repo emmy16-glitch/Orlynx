@@ -4,6 +4,9 @@ import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEn
 import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
+const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 5 * 60_000));
+const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 30_000));
+const DIRECT_STREAM_SILENCE_TIMEOUT_MS = Math.max(20_000, Number(process.env.ORLYNX_DIRECT_STREAM_SILENCE_TIMEOUT_MS || 45_000));
 
 export type ExecutionPlane = 'direct' | 'workspace';
 
@@ -101,15 +104,10 @@ export function executionPlaneForSession(
   const readyWorkspace = workspace.state === 'ready' && workspace.bridgeState === 'ready';
   if (!readyWorkspace) return base;
 
-  // Build is a stateful coding conversation. Once its development environment
-  // is already warm, keep subsequent Build turns on that same workspace even
-  // when the newest message is explanatory. Switching a live Build
-  // conversation onto the separate direct runtime loses engine-session
-  // continuity and can make the very next reply pay an unrelated cold start.
-  if (mode === 'build') return 'workspace';
-
-  // Ask/Plan remain lightweight unless the answer explicitly depends on
-  // mutable workspace truth.
+  // Workspace continuity is handled earlier by the active-task steering path.
+  // Once no task is actively executing, a warm/stale workspace must not pull
+  // ordinary conversation into cloud execution. Only questions that truly
+  // depend on mutable checkout/runtime truth should use the workspace.
   if (needsLiveWorkspaceState(text)) return 'workspace';
 
   return base;
@@ -411,6 +409,47 @@ export async function streamDirectRepositoryChat(input: {
 }): Promise<string> {
   const controller = new AbortController();
   active.set(input.runId, controller);
+  const turnTimer = setTimeout(() => {
+    controller.abort(new Error('Direct chat exceeded the response deadline before completing.'));
+  }, DIRECT_TURN_TIMEOUT_MS);
+  turnTimer.unref?.();
+  let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstTokenNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamSilenceTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstTokenSeen = false;
+  const clearFirstTokenTimer = () => {
+    if (firstTokenTimer) {
+      clearTimeout(firstTokenTimer);
+      firstTokenTimer = undefined;
+    }
+    if (firstTokenNoticeTimer) {
+      clearTimeout(firstTokenNoticeTimer);
+      firstTokenNoticeTimer = undefined;
+    }
+  };
+  const clearStreamSilenceTimer = () => {
+    if (!streamSilenceTimer) return;
+    clearTimeout(streamSilenceTimer);
+    streamSilenceTimer = undefined;
+  };
+  const armStreamSilenceTimer = () => {
+    clearStreamSilenceTimer();
+    streamSilenceTimer = setTimeout(() => {
+      controller.abort(new Error('The model stopped streaming for too long.'));
+    }, DIRECT_STREAM_SILENCE_TIMEOUT_MS);
+    streamSilenceTimer.unref?.();
+  };
+  const armFirstTokenTimer = () => {
+    if (firstTokenSeen || firstTokenTimer) return;
+    firstTokenNoticeTimer = setTimeout(() => {
+      input.onStatus?.('The model is taking longer than usual · Orlynx will recover automatically if it stalls.');
+    }, Math.min(12_000, Math.max(5_000, Math.floor(DIRECT_FIRST_TOKEN_TIMEOUT_MS / 2))));
+    firstTokenNoticeTimer.unref?.();
+    firstTokenTimer = setTimeout(() => {
+      controller.abort(new Error('The model did not start streaming in time.'));
+    }, DIRECT_FIRST_TOKEN_TIMEOUT_MS);
+    firstTokenTimer.unref?.();
+  };
   const started = performance.now();
   const initialMemory = process.memoryUsage().rss;
   const initialCpu = process.cpuUsage();
@@ -425,8 +464,25 @@ export async function streamDirectRepositoryChat(input: {
     const contextStarted = performance.now();
     const projectName = input.session.project.split('/').pop() || '';
     const needsContext = shouldLoadRepositoryContext(input.prompt, input.mode, projectName);
-    const context = needsContext ? await repositoryContext(input.session, input.prompt, input.onActivity)
-      : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    let context = `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    if (needsContext) {
+      try {
+        context = await repositoryContext(input.session, input.prompt, input.onActivity);
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        timings.repoContextFallback = 1;
+        input.onActivity?.('activity.progress', {
+          text: 'Repository context is temporarily unavailable · continuing without blocking chat…',
+          sourceType: 'repository.context.fallback',
+        });
+        context = [
+          `Repository: ${input.session.project}`,
+          `Branch: ${input.session.branch}`,
+          'The live GitHub repository map/source excerpts could not be loaded for this turn.',
+          'Do not invent repository file contents or claim they were inspected. Use durable conversation context and general knowledge; explicitly say when a repository-specific detail needs inspection.',
+        ].join('\n');
+      }
+    }
     controller.signal.throwIfAborted();
     timings.repoContextMs = performance.now() - contextStarted;
     const modeInstruction = input.mode === 'plan'
@@ -457,13 +513,32 @@ export async function streamDirectRepositoryChat(input: {
       system,
       messages: turns,
       requestId: input.messageId || input.runId,
-      onTiming: (stage, ms) => { timings[stage] = Math.round(ms); },
+      onTiming: (stage, ms) => {
+        timings[stage] = Math.round(ms);
+        if (stage === 'modelRequestStartedMs') armFirstTokenTimer();
+      },
       signal: controller.signal,
-      onDelta: input.onDelta,
-      onStatus: input.onStatus,
+      onDelta: (delta) => {
+        if (!firstTokenSeen) {
+          firstTokenSeen = true;
+          clearFirstTokenTimer();
+        }
+        armStreamSilenceTimer();
+        input.onDelta(delta);
+      },
+      onStatus: (message) => {
+        // Runtime wake/status updates are genuine progress before the model
+        // begins streaming. Once text starts, only text deltas renew the stream
+        // silence watchdog so repeated generic status cannot mask a hung model.
+        if (!firstTokenSeen) input.onStatus?.(message);
+        else input.onStatus?.(message);
+      },
     });
     return cleanAssistantText(raw, input.prompt);
   } finally {
+    clearTimeout(turnTimer);
+    clearFirstTokenTimer();
+    clearStreamSilenceTimer();
     timings.totalMs = Math.round(performance.now() - started);
     const cpu = process.cpuUsage(initialCpu);
     console.info('[direct-chat] ' + JSON.stringify({ session: input.session.id, run: input.runId,

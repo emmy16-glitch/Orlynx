@@ -243,7 +243,8 @@ test('waiting-for-user replies stay attached to the same task across workspace r
   assert.match(routes, /waitingInputTask/);
   assert.match(routes, /applySteering\(waitingInputTask, String\(text\), 'append'/);
   assert.match(routes, /reason: 'waiting_input_resume'/);
-  assert.match(routes, /waitingForSameTask: true/);
+  assert.match(routes, /recoveringWorkspace: true|recoveringRuntime: true/);
+  assert.doesNotMatch(routes, /waitingForSameTask: true/);
   assert.match(routes, /task\.state === 'waiting_input'/);
 });
 

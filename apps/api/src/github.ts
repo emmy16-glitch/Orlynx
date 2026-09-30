@@ -620,6 +620,15 @@ function githubHeaders(token: string, accept = 'application/vnd.github+json'): R
   return { Authorization: `Bearer ${token}`, Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' };
 }
 
+const GITHUB_API_TIMEOUT_MS = Math.max(5_000, Number(process.env.ORLYNX_GITHUB_API_TIMEOUT_MS || 15_000));
+
+function githubApiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    signal: init.signal || AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
+  });
+}
+
 const tokenCache = new Map<number, { token: string; expiresAt: number; permissions: Record<string, string> }>();
 const repositoryCache = new Map<number, { repos: GitHubRepository[]; expiresAt: number }>();
 // GitHub user refresh tokens may rotate. After a long idle, browser restore,
@@ -632,7 +641,7 @@ async function installationToken(installationId: number): Promise<string> {
   const installation = store.db.githubInstallations.find((item) => item.id === installationId);
   if (!installation) throw new Error('This GitHub installation is not connected to Orlynx.');
   if ((installation.status || 'active') === 'suspended') throw new Error('This GitHub installation is suspended. Ask an organization owner to unsuspend it, then reconnect.');
-  const response = await fetch(`${API}/app/installations/${installationId}/access_tokens`, { method: 'POST', headers: githubHeaders(createAppJwt()), body: '{}' });
+  const response = await githubApiFetch(`${API}/app/installations/${installationId}/access_tokens`, { method: 'POST', headers: githubHeaders(createAppJwt()), body: '{}' });
   if (!response.ok) throw new Error(`GitHub could not issue an installation token (HTTP ${response.status}).`);
   const data = await response.json() as { token: string; expires_at: string; permissions?: Record<string, string> };
   const token = { token: data.token, expiresAt: Date.parse(data.expires_at), permissions: data.permissions || {} };
@@ -724,7 +733,7 @@ export async function githubListRepos(installationId?: number): Promise<GitHubRe
     const token = await installationToken(installation.id);
     const installationRepos: GitHubRepository[] = [];
     for (let page = 1; page <= 10; page++) {
-      const response = await fetch(`${API}/installation/repositories?per_page=100&page=${page}`, { headers: githubHeaders(token) });
+      const response = await githubApiFetch(`${API}/installation/repositories?per_page=100&page=${page}`, { headers: githubHeaders(token) });
       if (!response.ok) throw new Error(`Could not list repositories for GitHub installation ${installation.account} (HTTP ${response.status}).`);
       const data = await response.json() as { repositories: { id: number; full_name: string; name: string; owner: { login: string; type: string }; private: boolean; default_branch: string; language: string | null; updated_at: string; html_url: string }[]; total_count: number };
       installationRepos.push(...data.repositories.map((repo) => ({ id: repo.id, full: repo.full_name, name: repo.name, owner: repo.owner.login, ownerType: repo.owner.type, private: repo.private, defaultBranch: repo.default_branch, language: repo.language, updatedAt: repo.updated_at, url: repo.html_url, installationId: installation.id })));
@@ -750,7 +759,7 @@ async function findRepository(fullName: string, installationId?: number): Promis
 export async function githubBranches(fullName: string, installationId?: number): Promise<string[]> {
   const repo = await findRepository(fullName, installationId);
   const token = await installationToken(repo.installationId);
-  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/branches?per_page=100`, { headers: githubHeaders(token) });
+  const response = await githubApiFetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/branches?per_page=100`, { headers: githubHeaders(token) });
   // findRepository already enforces installation authorization, so a 404 here
   // means the repository exists but has no branches yet (e.g. empty repo).
   if (response.status === 404) return [];
@@ -762,7 +771,7 @@ export async function githubBranches(fullName: string, installationId?: number):
 export async function githubRepositoryFiles(fullName: string, branch: string, directory: string, installationId?: number): Promise<{ name: string; dir: boolean; modified: boolean }[]> {
   const repo = await findRepository(fullName, installationId); const token = await installationToken(repo.installationId);
   const clean = directory.replace(/^\/+|\/+$/g, ''); if (clean.split('/').includes('..')) throw new Error('path escape denied');
-  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
+  const response = await githubApiFetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
   if (!response.ok) throw new Error(`GitHub could not read repository files (HTTP ${response.status}).`);
   const body = await response.json() as Array<{ name: string; type: string }>;
   if (!Array.isArray(body)) throw new Error('The requested GitHub path is not a directory.');
@@ -790,19 +799,19 @@ export async function githubRepositoryTree(fullName: string, branch: string, ins
 
   // Resolve branch -> commit -> tree explicitly. This works for branch names
   // containing slashes and avoids treating a commit SHA as a tree SHA.
-  const refResponse = await fetch(`${API}/repos/${owner}/${name}/git/ref/heads/${refPath}`, { headers: githubHeaders(token) });
+  const refResponse = await githubApiFetch(`${API}/repos/${owner}/${name}/git/ref/heads/${refPath}`, { headers: githubHeaders(token) });
   if (!refResponse.ok) throw new Error(`GitHub could not resolve repository branch (HTTP ${refResponse.status}).`);
   const refBody = await refResponse.json() as { object?: { sha?: string } };
   const commitSha = refBody.object?.sha;
   if (!commitSha) throw new Error('GitHub branch response did not include a commit SHA.');
 
-  const commitResponse = await fetch(`${API}/repos/${owner}/${name}/git/commits/${encodeURIComponent(commitSha)}`, { headers: githubHeaders(token) });
+  const commitResponse = await githubApiFetch(`${API}/repos/${owner}/${name}/git/commits/${encodeURIComponent(commitSha)}`, { headers: githubHeaders(token) });
   if (!commitResponse.ok) throw new Error(`GitHub could not resolve repository commit (HTTP ${commitResponse.status}).`);
   const commitBody = await commitResponse.json() as { tree?: { sha?: string } };
   const treeSha = commitBody.tree?.sha;
   if (!treeSha) throw new Error('GitHub commit response did not include a tree SHA.');
 
-  const treeResponse = await fetch(`${API}/repos/${owner}/${name}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, { headers: githubHeaders(token) });
+  const treeResponse = await githubApiFetch(`${API}/repos/${owner}/${name}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, { headers: githubHeaders(token) });
   if (!treeResponse.ok) throw new Error(`GitHub could not map repository files (HTTP ${treeResponse.status}).`);
   const body = await treeResponse.json() as {
     truncated?: boolean;
@@ -820,7 +829,7 @@ export async function githubRepositoryTree(fullName: string, branch: string, ins
 export async function githubRepositoryFile(fullName: string, branch: string, filename: string, installationId?: number): Promise<string> {
   const repo = await findRepository(fullName, installationId); const token = await installationToken(repo.installationId);
   const clean = filename.replace(/^\/+/, ''); if (!clean || clean.split('/').includes('..')) throw new Error('path escape denied');
-  const response = await fetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
+  const response = await githubApiFetch(`${API}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/contents/${clean.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`, { headers: githubHeaders(token) });
   if (!response.ok) throw new Error(`GitHub could not read this file (HTTP ${response.status}).`);
   const body = await response.json() as { type?: string; encoding?: string; content?: string; size?: number };
   if (body.type !== 'file' || body.encoding !== 'base64' || !body.content || Number(body.size || 0) > 1_000_000) throw new Error('This GitHub file cannot be displayed.');

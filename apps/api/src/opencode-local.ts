@@ -408,10 +408,23 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   }
   input.onTiming?.('modelRequestStartedMs', performance.now() - started);
 
+  let remoteAbortPromise: Promise<unknown> | null = null;
   const abortRemote = () => {
-    void runtimeFetch(`/session/${encodeURIComponent(sessionID)}/abort`, { method: 'POST' }, 3_000).catch(() => {});
+    // A first-token watchdog may retry the same durable turn. Do not start that
+    // retry until the previous OpenCode session has acknowledged (or timed out)
+    // its abort request; otherwise two generations can overlap in one session.
+    remoteAbortPromise ||= runtimeFetch(
+      `/session/${encodeURIComponent(sessionID)}/abort`,
+      { method: 'POST' },
+      3_000,
+    ).catch(() => undefined);
   };
   input.signal.addEventListener('abort', abortRemote, { once: true });
+  // Cancellation can land in the tiny gap after prompt admission but before
+  // this listener is attached. AbortSignal does not replay old abort events,
+  // so explicitly catch up here; otherwise the remote OpenCode generation can
+  // keep running after Orlynx believes it was cancelled.
+  if (input.signal.aborted) abortRemote();
 
   const reader = eventResponse.body.getReader();
   const decoder = new TextDecoder();
@@ -532,6 +545,9 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   } finally {
     input.signal.removeEventListener('abort', abortRemote);
     try { await reader.cancel(); } catch {}
+    if (input.signal.aborted && remoteAbortPromise) {
+      try { await remoteAbortPromise; } catch {}
+    }
     input.onTiming?.('providerTotalMs', performance.now() - started);
   }
 
