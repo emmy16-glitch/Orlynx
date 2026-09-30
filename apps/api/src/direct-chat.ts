@@ -4,7 +4,7 @@ import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEn
 import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
-const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 3 * 60_000));
+const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 5 * 60_000));
 const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 30_000));
 const DIRECT_STREAM_SILENCE_TIMEOUT_MS = Math.max(20_000, Number(process.env.ORLYNX_DIRECT_STREAM_SILENCE_TIMEOUT_MS || 45_000));
 
@@ -419,12 +419,18 @@ export async function streamDirectRepositoryChat(input: {
   }, DIRECT_TURN_TIMEOUT_MS);
   turnTimer.unref?.();
   let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstTokenNoticeTimer: ReturnType<typeof setTimeout> | undefined;
   let streamSilenceTimer: ReturnType<typeof setTimeout> | undefined;
   let firstTokenSeen = false;
   const clearFirstTokenTimer = () => {
-    if (!firstTokenTimer) return;
-    clearTimeout(firstTokenTimer);
-    firstTokenTimer = undefined;
+    if (firstTokenTimer) {
+      clearTimeout(firstTokenTimer);
+      firstTokenTimer = undefined;
+    }
+    if (firstTokenNoticeTimer) {
+      clearTimeout(firstTokenNoticeTimer);
+      firstTokenNoticeTimer = undefined;
+    }
   };
   const clearStreamSilenceTimer = () => {
     if (!streamSilenceTimer) return;
@@ -440,6 +446,10 @@ export async function streamDirectRepositoryChat(input: {
   };
   const armFirstTokenTimer = () => {
     if (firstTokenSeen || firstTokenTimer) return;
+    firstTokenNoticeTimer = setTimeout(() => {
+      input.onStatus?.('The model is taking longer than usual · Orlynx will recover automatically if it stalls.');
+    }, Math.min(12_000, Math.max(5_000, Math.floor(DIRECT_FIRST_TOKEN_TIMEOUT_MS / 2))));
+    firstTokenNoticeTimer.unref?.();
     firstTokenTimer = setTimeout(() => {
       controller.abort(new Error('The model did not start streaming in time.'));
     }, DIRECT_FIRST_TOKEN_TIMEOUT_MS);
