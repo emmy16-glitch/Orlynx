@@ -36,6 +36,19 @@ export function e2bConfigured(): boolean {
   return Boolean(apiKey());
 }
 
+export async function e2bPlatformHealth(): Promise<{ configured: boolean; healthy: boolean }> {
+  if (!e2bConfigured()) return { configured: false, healthy: false };
+  try {
+    // Listing one page validates the control-plane credential without creating
+    // a billable sandbox or touching a user's workspace.
+    const paginator = Sandbox.list({ apiKey: requireConfigured(), limit: 1 });
+    await paginator.nextItems();
+    return { configured: true, healthy: true };
+  } catch {
+    return { configured: true, healthy: false };
+  }
+}
+
 async function connectSandbox(workspace: WorkspaceRecord): Promise<Sandbox> {
   if (!workspace.providerResourceId) throw new Error('E2B workspace has no sandbox id.');
   return Sandbox.connect(workspace.providerResourceId, {
