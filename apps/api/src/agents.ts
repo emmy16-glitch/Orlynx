@@ -438,7 +438,8 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
         // heartbeat for several minutes, the agent command is no longer active.
         // Release it early instead of displaying "Working" for the full 30m
         // command timeout. We do not replay mutation work automatically.
-        if (bridgeFresh && taskAge >= activeTaskHeartbeatStaleMs) {
+        const exactTaskHeartbeats = Array.isArray(workspace.capabilities) && workspace.capabilities.includes('task-heartbeat-v2');
+        if (exactTaskHeartbeats && bridgeFresh && taskAge >= activeTaskHeartbeatStaleMs) {
           task.state = 'failed';
           task.updatedAt = nowIso;
           await repository.putTask(task);
