@@ -102,7 +102,8 @@ A subsystem failure should damage the smallest possible scope.
 Examples:
 
 - agent unavailable → shell/files/Git can remain available;
-- runner unavailable → Codespaces fallback where permitted;
+- direct runtime unavailable → quarantine and switch compute;
+- runner unavailable → broker selects another healthy configured workspace provider;
 - browser offline → server work continues;
 - SSE disconnect → replay later;
 - one stale lesson → ignore it in favor of fresh evidence;
@@ -232,6 +233,9 @@ Changes to a contract require regression coverage.
 
 High-risk contracts include:
 
+- Compute Broker scoring/quarantine/provider-loop prevention;
+- direct-runtime failover;
+- runner health/capacity routing;
 - queue promotion;
 - continuation;
 - finalization;
@@ -276,8 +280,9 @@ Fallback must be explicit in state and policy.
 
 Examples:
 
-- runner → Codespaces can be automatic when configured;
-- model/agent must not silently switch to another provider because the selected one failed;
+- infrastructure compute can switch automatically through the Compute Broker when policy permits, while preserving task/model/mode identity;
+- the UI should surface a concise "Switching compute..." state;
+- model/agent identity must not silently change merely because compute changed;
 - publication must not silently change target branch;
 - GitHub authorization must not silently downgrade.
 
