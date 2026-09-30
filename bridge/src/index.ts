@@ -69,7 +69,7 @@ function activityAt(): string | undefined {
 }
 
 function runtimeCapabilities(): string[] {
-  const capabilities = ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters'];
+  const capabilities = ['pty', 'exec', 'fs', 'git', 'ports', 'agent-adapters', 'task-heartbeat-v2'];
   try {
     const runtime = path.join(os.homedir(), '.orlynx', 'runtime');
     if (fs.readdirSync(runtime).some((name) => /^playwright-.*\.ready$/.test(name))) capabilities.push('browser-e2e');
