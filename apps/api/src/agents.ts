@@ -497,9 +497,13 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
     if (!readyWorkspace) return null;
     if (readyWorkspace.state === 'failed') {
-      const recoverableWorkspaceFailure = readyWorkspace.provider === 'orlynx-runner'
+      const permanentWorkspaceFailure = /permission|forbidden|authorization expired|not configured|invalid .*configuration/i.test(readyWorkspace.failureCode || '');
+      const recoverableWorkspaceFailure = !permanentWorkspaceFailure && (
+        readyWorkspace.provider === 'github-codespaces'
+        || readyWorkspace.provider === 'orlynx-runner'
         || workspaceShouldAdoptPreferredRunner(readyWorkspace)
-        || workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode);
+        || workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode)
+      );
       if (recoverableWorkspaceFailure) {
         console.warn(`[queue] scheduling failed workspace repair before Build task session=${sessionId} workspace=${readyWorkspace.id} failure=${readyWorkspace.failureCode || 'unknown'}`);
         await scheduleWorkspacePreparation({
