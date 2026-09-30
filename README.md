@@ -301,6 +301,7 @@ Start with [docs/README.md](docs/README.md).
 Important documents:
 
 - [What Orlynx is](docs/orlynx-overview.md)
+- [Architecture glossary](docs/glossary.md)
 - [Architecture overview](docs/architecture-overview.md)
 - [Production architecture](docs/production-architecture.md)
 - [Compute Broker](docs/compute-broker.md)
