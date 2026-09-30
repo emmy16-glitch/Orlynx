@@ -20,7 +20,7 @@ import { safeName, type ChatMessage } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, type PublishIntent } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, publishTargetBranchFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
@@ -152,7 +152,7 @@ type WorkspacePublishResult = {
   pullRequestNumber?: number;
 };
 
-async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent): Promise<WorkspacePublishResult> {
+async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent, targetBranch?: string): Promise<WorkspacePublishResult> {
   const gate = canPerform(session.id, 'git.push');
   if (!gate.allowed) throw new Error(gate.reason || 'Publishing is blocked by the current project access level.');
   if (!durableStorageConfigured()) throw new Error('Controlled chat publishing requires the hosted Orlynx workspace.');
@@ -170,7 +170,7 @@ async function publishCommittedWorkspaceHead(req: Request, session: any, strateg
     sessionId: session.id,
     workspaceId: workspace.id,
     strategy,
-    targetBranch: session.branch,
+    targetBranch: targetBranch || session.branch,
     commitMessage: 'Orlynx verified changes',
   });
   await recordAudit(
@@ -425,6 +425,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
   const publishIntent = effectiveMode === 'build' ? publishIntentFor(String(text), s.branch) : null;
+  const publishTargetBranch = publishIntent ? publishTargetBranchFor(String(text), s.branch) : null;
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
   if (!selectedModel && !instantReply && !publishIntent) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
@@ -666,10 +667,10 @@ router.post('/sessions/:id/messages', async (req, res) => {
     };
 
     emit(s.id, 'run.started', { taskId, messageId: msg.id, plane: 'workspace', engine: selectedAdapterId, mode: effectiveMode, permission: prefs.permission }, runId);
-    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
+    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${publishTargetBranch || s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
 
     try {
-      const published = await publishCommittedWorkspaceHead(req, s, publishIntent);
+      const published = await publishCommittedWorkspaceHead(req, s, publishIntent, publishTargetBranch || undefined);
       const shortSha = published.head.slice(0, 7);
       const reply = published.pullRequestUrl
         ? `Published \`${shortSha}\` as pull request #${published.pullRequestNumber}: ${published.pullRequestUrl}`
