@@ -40,12 +40,15 @@ function classifyTool(tool: string, command: string, semanticType?: string): Act
   const canonical = categoryForSemanticType(semanticType);
   if (canonical) return canonical;
   // Legacy-history fallback only. New v1 server events carry semanticType.
-  const name = `${tool} ${command}`.toLowerCase();
-  if (/test|vitest|jest|pytest|mocha|playwright/.test(name)) return 'test';
-  if (/build|tsc|compile|webpack|vite build|next build/.test(name)) return 'build';
-  if (/git|commit|push|branch|checkout|merge|rebase/.test(name)) return 'git';
-  if (/search|read|inspect|list|grep|find|glob/.test(name)) return 'search';
-  if (/patch|edit|write|file|apply_patch/.test(name)) return 'file';
+  const toolName = tool.toLowerCase();
+  const normalized = command.trim().toLowerCase();
+  const testCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\b|:)|(?:npx\s+)?(?:vitest|jest|mocha)\b|pytest\b|python(?:3)?\s+-m\s+pytest\b|(?:npx\s+)?playwright\s+test\b|node\s+--test\b)/i.test(normalized);
+  const buildCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(normalized);
+  if (testCommand || /^(?:test|tests|vitest|jest|pytest|mocha|playwright)$/i.test(toolName)) return 'test';
+  if (buildCommand || /^(?:build|compile|typecheck|lint)$/i.test(toolName)) return 'build';
+  if (/^(?:git|commit|push|branch|checkout|merge|rebase)$/i.test(toolName) || /^git\s+/.test(normalized)) return 'git';
+  if (/^(?:search|read|inspect|list|grep|find|glob)$/i.test(toolName)) return 'search';
+  if (/^(?:patch|edit|write|file|apply_patch)$/i.test(toolName)) return 'file';
   return 'command';
 }
 
@@ -141,7 +144,7 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
       evidence = { ...(evidence || {}), ...(counts || {}) };
     } else if (category === 'build') {
       title = failed ? 'Build failed' : 'Build passed';
-    } else if (/health|curl/i.test(command)) {
+    } else if (/\bcurl\b[^\n]*(?:\/health|\/healthz|\/ready|\/readiness)(?:[/?\s"']|$)/i.test(command)) {
       title = failed ? 'Service health check failed' : 'Service health check passed';
     } else if (category === 'git' && command) {
       title = /git\s+push/i.test(command) ? (failed ? 'Git publish failed' : 'Published to GitHub')
