@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { app } from './app.js';
-import { githubAppConfigured } from './github.js';
+import { githubAppConfigured, githubPlatformHealth } from './github.js';
 import { attachBridgeGateway } from './bridge-gateway.js';
 import { warmOpenCodeProviderLayer } from './opencode-local.js';
 import { defaultWorkspaceProviderId, runnerFallbackEnabled, shouldPrewarmWorkspace } from './workspace-providers.js';
@@ -15,6 +15,19 @@ if (githubAppConfigured()) {
   console.log('[orlynx-api] GitHub App is configured. Users connect via /v1/github/install.');
 } else {
   console.log(`[orlynx-api] GitHub App is NOT fully configured (missing: ${missing.join(', ') || 'invalid ORLYNX_PUBLIC_URL'}). GitHub routes fail closed until server secrets are set.`);
+}
+
+if (githubAppConfigured()) {
+  void githubPlatformHealth()
+    .then((platform) => {
+      const permissions = platform.permissions || {};
+      console.log(
+        `[startup-smoke] github-app healthy=${platform.healthy} contents=${permissions.contents || 'none'} codespaces=${permissions.codespaces || 'none'} actions=${permissions.actions || 'none'}`,
+      );
+    })
+    .catch((error) => {
+      console.warn(`[startup-smoke] github-app capability check failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    });
 }
 
 await warmOpenCodeProviderLayer();
