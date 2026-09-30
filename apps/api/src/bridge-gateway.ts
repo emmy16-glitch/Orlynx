@@ -585,7 +585,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
-          let recent = await repository.listRunEvents(claims.sessionId, runId, 1000)
+          let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
           await repository.putTask(task);
@@ -816,7 +816,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                         artifacts,
                       },
                     });
-                    recent = await repository.listRunEvents(claims.sessionId, runId, 1000)
+                    recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
                       .map(sanitizeEvent);
                   }
                 }
