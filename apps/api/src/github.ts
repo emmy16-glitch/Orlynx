@@ -396,6 +396,18 @@ export async function githubRepositoryById(userId: string, repositoryId: number)
   };
 }
 
+export async function githubRepositoryInstallationAccess(
+  userId: string,
+  repositoryId: number,
+): Promise<{
+  repository: Awaited<ReturnType<typeof githubRepositoryById>>;
+  token: string;
+}> {
+  const repository = await githubRepositoryById(userId, repositoryId);
+  const token = await installationToken(repository.installationId);
+  return { repository, token };
+}
+
 export function githubCallbackErrorUrl(reason: string): string {
   return `${publicUrl() || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
 }
