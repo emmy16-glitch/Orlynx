@@ -619,8 +619,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         return String(record.path || '');
       }).filter(Boolean);
       const title = count === 1 && paths[0] ? `Updated ${compact(paths[0], 88)}` : `Updated ${count} files`;
-      const additions = event.files.reduce((total, file) => total + (Number((file as Record<string, unknown>)?.additions) || 0), 0);
-      const deletions = event.files.reduce((total, file) => total + (Number((file as Record<string, unknown>)?.deletions) || 0), 0);
+      const additions = event.files.reduce<number>((total, file) => total + (Number((file as Record<string, unknown>)?.additions) || 0), 0);
+      const deletions = event.files.reduce<number>((total, file) => total + (Number((file as Record<string, unknown>)?.deletions) || 0), 0);
       const lineSummary = additions || deletions ? `+${additions} −${deletions}` : '';
       const pathSummary = count > 1 && paths.length
         ? paths.slice(0, 3).map((path) => compact(path, 48)).join(' · ') + (paths.length > 3 ? ` · +${paths.length - 3} more` : '')
