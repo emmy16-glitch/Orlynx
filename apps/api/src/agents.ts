@@ -1,6 +1,6 @@
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
-import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } from '@orlynx/shared';
+import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
@@ -17,9 +17,11 @@ import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
 import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
+import { GitHubActionsUnavailableError, githubActionsVerificationEligible, runGitHubActionsVerification, selectDispatchableVerificationWorkflow } from './github-actions.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
+const executingActionsVerifications = new Set<string>();
 const activeAgentSessions = new Map<string, { adapterId: AgentAdapterId; project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
