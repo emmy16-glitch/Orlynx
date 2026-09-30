@@ -64,7 +64,17 @@ Some pre-existing coverage asserts source contracts rather than running a full e
 
 Public `https://orlynx.onrender.com/health` returned HTTP 200, ready=true, durableStorage=true, runtimeBootstrapConfigured=true and bridgeConfigured=true during this audit. The anonymous integrations response reports no connected user, which does not establish the owner's GitHub/model authentication state.
 
-Render service discovery returned “no workspace selected” and explicitly required user confirmation. The connector lists `My Workspace` (`tea-d8knvde47okc73a3m210`); confirmation was requested. Until that is supplied, deployed revision, private startup/runtime logs, all five runner application health/capacity responses, E2B authorization, direct-runtime health and the original durable production task rows are unverified.
+The user confirmed the connected Render workspace. Render reports the control plane deployment `dep-daumhdjm8hqs738q59mg` serving fix commit `f5a291f1a585dcfe161055b5e1e275e15451bc65`; the public page serves the new `index-CwtQXMLn.js` bundle. Its application health reports ready/durable storage/runtime bootstrap/Bridge configuration, all true.
+
+Production logs provide stronger evidence for the reported queue hang: task `task_121320c9-65ee-4ab3-8693-6dfa7aa3ed27`, originally promoted on the direct plane at 18:41:41 and failing with runtime unavailability, was promoted on the workspace plane at 19:54:48 after deployment. The Codespace Bridge authenticated, the stale runtime was refreshed, the adapter became ready, and selected-model review started at 19:55:27. This establishes recovery into execution, not verified final completion.
+
+Startup application probes report E2B configured/healthy and GitHub App healthy with contents, Codespaces and Actions write permissions. Earlier logs nevertheless show repository-specific GitHub App visibility rejection during E2B preparation. The exact visibility error lacked HTTP status and escaped both fallback and job retry classifiers; a shared failure classifier now treats both repository visibility messages as authorization failures, preventing rerouting and automatic retry. Repository-specific access still requires the correct installation configuration.
+
+All five public runner application health endpoints returned 200, capacity=1, available=1, draining=false, and browserE2e=false. Startup initially observed 0/5 healthy; public warming and rolling deployment subsequently established application readiness. These responses do not prove token consistency or authenticated workspace creation. Runner auto-deployment is disabled, so all five were manually rolled to the fix commit. Runners cannot serve browser E2E tasks in their current configuration.
+
+The direct runtime repeatedly returned 502 in control-plane logs despite Render reporting it live. A manual redeploy restored an HTTP 401 response to an anonymous `/global/health` probe, showing its authenticated HTTP boundary is reachable. The authenticated control-plane health probe remains to be observed; anonymous 401 is not a successful runtime health result.
+
+No Postgres instance exists in this Render workspace. The connected Neon SQL tool requires a project ID, and the available connector exposes no project-list operation; the project ID was requested without asking for credentials. Original production task/job database rows and full authenticated browser task completion remain unverified. Render log queries also intermittently returned a Loki 503/504 and cannot alone establish terminal task state.
 
 Important remaining architectural limits:
 
