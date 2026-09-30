@@ -63,3 +63,23 @@ test('browser retries message admission with the same client id across transient
   assert.match(routes, /existingMessages\.find\(\(m: \{ id: string \}\) => m\.id === clientId\)/);
   assert.match(routes, /deduplicated: true/);
 });
+
+
+test('pre-model GitHub repository context reads are network-bounded', () => {
+  const github = fs.readFileSync(new URL('../src/github.ts', import.meta.url), 'utf8');
+
+  assert.match(github, /ORLYNX_GITHUB_API_TIMEOUT_MS \|\| 15_000/);
+  assert.match(github, /function githubApiFetch/);
+  assert.match(github, /AbortSignal\.timeout\(GITHUB_API_TIMEOUT_MS\)/);
+  assert.match(github, /githubApiFetch\(\`$\{API\}\/repos\/\$\{owner\}\/\$\{name\}\/git\/trees/);
+  assert.match(github, /githubApiFetch\(\`$\{API\}\/repos\/\$\{encodeURIComponent\(repo\.owner\)\}\/\$\{encodeURIComponent\(repo\.name\)\}\/contents/);
+});
+
+test('waiting-input reply is durably queued instead of returning a retryable 503', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+
+  assert.match(routes, /reason: 'waiting_input_provider_recovery'/);
+  assert.match(routes, /recoveringRuntime: true/);
+  assert.match(routes, /Your reply was saved\. Orlynx is recovering the AI runtime/);
+  assert.doesNotMatch(routes, /waitingForSameTask: true/);
+});
