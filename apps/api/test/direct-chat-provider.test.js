@@ -152,7 +152,7 @@ test('direct Ask/Plan builds whole-repository understanding before answering', (
   assert.match(src, /sourceType: 'repository\.map'/);
   assert.doesNotMatch(src, /sourceType: 'direct\.github'/);
   assert.match(github, /git\/trees\/.*recursive=1/);
-  assert.match(agents, /onActivity: \(type, payload\) => emit\(session\.id, type/);
+  assert.match(agents, /onActivity: \(type, payload\) => \{[\s\S]*?markProviderActivity\(\);[\s\S]*?emit\(session\.id, type/);
 });
 
 test('whole-repository understanding is cached and bounded for model latency', () => {
