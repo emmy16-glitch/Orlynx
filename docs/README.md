@@ -16,6 +16,7 @@ The documentation has four jobs:
 | Document | Purpose |
 | --- | --- |
 | [Orlynx overview](orlynx-overview.md) | Product definition, modes, durable conversation, execution lanes and user mental model |
+| [Glossary](glossary.md) | Canonical definitions for broker, runner, image, container, bridge, adapter, lease, quarantine and other Orlynx terms |
 | [Architecture overview](architecture-overview.md) | End-to-end control plane, Postgres, broker, workspaces, bridge, adapters, events and recovery |
 | [Production architecture](production-architecture.md) | Current deployed topology and process boundaries |
 | [Compute Broker](compute-broker.md) | Health scoring, quarantine, sticky workspaces, direct-runtime failover and provider selection |
