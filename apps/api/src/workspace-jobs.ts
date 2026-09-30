@@ -148,19 +148,26 @@ export async function runWorkspaceOrchestratorOnce(
 
       if (prepared.state === 'ready' && prepared.bridgeState === 'ready') {
         await repository.completeWorkspaceJob(job.id);
+      } else if (prepared.provider === 'github-codespaces' && ['creating', 'starting', 'connecting', 'bootstrapping'].includes(prepared.state)) {
+        throw new Error('Codespace provisioning is still pending.');
       } else {
         throw new Error(prepared.failureCode || 'Workspace preparation ended before the bridge became ready.');
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Workspace orchestration failed.';
-      if (job.attempt < maxAttempts && retryable(error)) {
-        const delaySeconds = Math.min(60, Math.max(3, 2 ** Math.max(1, job.attempt)));
+      const provisioningPending = /Codespace provisioning is still pending/i.test(detail);
+      if (provisioningPending || (job.attempt < maxAttempts && retryable(error))) {
+        const delaySeconds = provisioningPending
+          ? Math.min(30, Math.max(5, 5 + job.attempt * 2))
+          : Math.min(60, Math.max(3, 2 ** Math.max(1, job.attempt)));
         await repository.retryWorkspaceJob(job.id, detail, delaySeconds);
         emit(job.sessionId, 'workspace.preparing', {
-          stage: 'orchestrator.retry',
+          stage: provisioningPending ? 'orchestrator.provisioning' : 'orchestrator.retry',
           attempt: job.attempt,
           retryInSeconds: delaySeconds,
-          message: 'Development environment preparation will retry automatically.',
+          message: provisioningPending
+            ? 'Codespace is still provisioning · Build remains queued and Orlynx will keep checking.'
+            : 'Development environment preparation will retry automatically.',
         });
       } else {
         await repository.failWorkspaceJob(job.id, detail);
