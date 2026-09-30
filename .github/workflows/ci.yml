@@ -105,27 +105,5 @@ jobs:
           docker push "$IMAGE:${GITHUB_SHA}"
           docker push "$IMAGE:latest"
 
-  deploy-render:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      - verify
-      - runner-runtime
-      - publish-runner-images
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy verified Render services
-        env:
-          WEB_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          ORCHESTRATOR_HOOK: ${{ secrets.RENDER_ORCHESTRATOR_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -n "$WEB_HOOK" ]; then
-            curl --fail --silent --show-error --request POST "$WEB_HOOK"
-          else
-            echo "RENDER_DEPLOY_HOOK_URL is not configured; web deploy skipped."
-          fi
-
-          if [ -n "$ORCHESTRATOR_HOOK" ]; then
-            curl --fail --silent --show-error --request POST "$ORCHESTRATOR_HOOK"
-          else
-            echo "RENDER_ORCHESTRATOR_DEPLOY_HOOK_URL is not configured; worker deploy skipped."
-          fi
+# Render web deploys are commit-driven (autoDeploy=yes). Do not call a deploy
+# hook from CI as well: that creates a second deployment for the same SHA.
