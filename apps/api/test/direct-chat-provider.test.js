@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveModel, resolveAuth } from '../src/opencode-catalog.ts';
 import { listZenModels } from '../src/zen.ts';
-import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, instantReplyFor, publishIntentFor } from '../src/direct-chat.ts';
+import { turnsForMessage, needsRepositoryContext, shouldLoadRepositoryContext, executionPlaneFor, cleanAssistantText, instantReplyFor, publishIntentFor, publishTargetBranchFor } from '../src/direct-chat.ts';
 import { chatActivities, toActivities } from '../../web/src/ui/mapping.ts';
 
 const catalog = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
