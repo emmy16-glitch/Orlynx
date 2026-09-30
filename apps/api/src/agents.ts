@@ -640,14 +640,23 @@ async function executeDirectTask(
 
     const retrySilentTurn = async (prompt: string, messageId?: string): Promise<string> => {
       const visibleBefore = visible.length;
+      const attemptStartedAt = Date.now();
       try {
         return await streamDirectTurn(prompt, messageId);
       } catch (error) {
         const detail = error instanceof Error ? error.message : '';
-        const transientStatus = error instanceof ProviderRequestError
-          && (!error.statusCode || [502, 503, 504].includes(error.statusCode));
-        const transientMessage = /did not start streaming|timed out|timeout|connection .*failed|runtime .*unavailable|temporarily unavailable/i.test(detail);
-        if (visible.length !== visibleBefore || (!transientStatus && !transientMessage)) throw error;
+        const elapsedMs = Date.now() - attemptStartedAt;
+        const fastTransientStatus = error instanceof ProviderRequestError
+          && [502, 503, 504].includes(error.statusCode || 0)
+          && elapsedMs < 15_000;
+        const firstTokenStall = /did not start streaming in time/i.test(detail);
+        const fastTransportFailure = elapsedMs < 15_000
+          && /connection .*failed|fetch failed|ECONNRESET|socket .*closed|temporarily unavailable/i.test(detail);
+
+        // Never repeat a full 75s Render-runtime wake timeout. A retry is only
+        // useful when the failure was fast, or when the runtime/model was
+        // admitted but failed to produce its first token.
+        if (visible.length !== visibleBefore || (!fastTransientStatus && !firstTokenStall && !fastTransportFailure)) throw error;
         markProviderActivity();
         emit(session.id, 'activity.progress', {
           taskId: task.id,
