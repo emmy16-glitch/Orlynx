@@ -6,6 +6,7 @@ import { streamWithOfficialOpenCode } from './opencode-local.js';
 const active = new Map<string, AbortController>();
 const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 3 * 60_000));
 const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 30_000));
+const DIRECT_STREAM_SILENCE_TIMEOUT_MS = Math.max(20_000, Number(process.env.ORLYNX_DIRECT_STREAM_SILENCE_TIMEOUT_MS || 45_000));
 
 export type ExecutionPlane = 'direct' | 'workspace';
 
@@ -418,11 +419,24 @@ export async function streamDirectRepositoryChat(input: {
   }, DIRECT_TURN_TIMEOUT_MS);
   turnTimer.unref?.();
   let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamSilenceTimer: ReturnType<typeof setTimeout> | undefined;
   let firstTokenSeen = false;
   const clearFirstTokenTimer = () => {
     if (!firstTokenTimer) return;
     clearTimeout(firstTokenTimer);
     firstTokenTimer = undefined;
+  };
+  const clearStreamSilenceTimer = () => {
+    if (!streamSilenceTimer) return;
+    clearTimeout(streamSilenceTimer);
+    streamSilenceTimer = undefined;
+  };
+  const armStreamSilenceTimer = () => {
+    clearStreamSilenceTimer();
+    streamSilenceTimer = setTimeout(() => {
+      controller.abort(new Error('The model stopped streaming for too long.'));
+    }, DIRECT_STREAM_SILENCE_TIMEOUT_MS);
+    streamSilenceTimer.unref?.();
   };
   const armFirstTokenTimer = () => {
     if (firstTokenSeen || firstTokenTimer) return;
@@ -487,14 +501,22 @@ export async function streamDirectRepositoryChat(input: {
           firstTokenSeen = true;
           clearFirstTokenTimer();
         }
+        armStreamSilenceTimer();
         input.onDelta(delta);
       },
-      onStatus: input.onStatus,
+      onStatus: (message) => {
+        // Runtime wake/status updates are genuine progress before the model
+        // begins streaming. Once text starts, only text deltas renew the stream
+        // silence watchdog so repeated generic status cannot mask a hung model.
+        if (!firstTokenSeen) input.onStatus?.(message);
+        else input.onStatus?.(message);
+      },
     });
     return cleanAssistantText(raw, input.prompt);
   } finally {
     clearTimeout(turnTimer);
     clearFirstTokenTimer();
+    clearStreamSilenceTimer();
     timings.totalMs = Math.round(performance.now() - started);
     const cpu = process.cpuUsage(initialCpu);
     console.info('[direct-chat] ' + JSON.stringify({ session: input.session.id, run: input.runId,
