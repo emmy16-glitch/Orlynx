@@ -565,6 +565,11 @@ test('direct runtime waits for remote abort acknowledgement before a stalled tur
     ...input(),
     signal: abort.signal,
   }).finally(() => { settled = true; });
+  // Register the expected rejection before releasing the remote abort. Node's
+  // test runner treats the tiny gap between rejection and a later assert.rejects
+  // attachment as an unhandled rejection even though the product behavior is
+  // correct.
+  const rejected = assert.rejects(response, /first-token watchdog/);
 
   await promptSubmitted;
   abort.abort(new Error('first-token watchdog'));
@@ -573,6 +578,6 @@ test('direct runtime waits for remote abort acknowledgement before a stalled tur
   assert.equal(settled, false, 'turn must not settle before the remote abort request finishes');
 
   releaseAbortResolve();
-  await assert.rejects(response, /first-token watchdog/);
+  await rejected;
   assert.equal(settled, true);
 });
