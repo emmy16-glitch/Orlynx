@@ -7,7 +7,7 @@ test('direct chat has bounded silence, first-token and stale-task deadlines', ()
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
 
   assert.match(direct, /ORLYNX_DIRECT_TURN_TIMEOUT_MS \|\| 3 \* 60_000/);
-  assert.match(direct, /ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS \|\| 60_000/);
+  assert.match(direct, /ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS \|\| 30_000/);
   assert.match(direct, /stage === 'modelRequestStartedMs'\) armFirstTokenTimer\(\)/);
   assert.match(direct, /firstTokenSeen = true;\s*clearFirstTokenTimer\(\)/);
   assert.match(direct, /The model did not start streaming in time/);
