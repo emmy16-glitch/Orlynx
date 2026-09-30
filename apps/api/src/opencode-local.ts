@@ -140,7 +140,10 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       // A free Render runtime can return transient 502/503 responses while it
       // wakes. Use the same readiness loop as a real model request instead of
       // probing once and then repeatedly backing off while the service boots.
-      await waitForRuntimeReady(controller.signal);
+      // Background prewarm may wait through a Render cold boot; interactive
+      // requests still use the short ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS
+      // so users fail over to workspace compute quickly.
+      await waitForRuntimeReady(controller.signal, undefined, undefined, timeoutMs);
       runtimePrewarmAt = Date.now();
       runtimePrewarmRetryAt = 0;
       console.info('[ai-runtime] prewarm ready');
@@ -192,9 +195,10 @@ async function waitForRuntimeReady(
   signal: AbortSignal,
   onStatus?: (message: string) => void,
   onTiming?: (stage: string, ms: number) => void,
+  timeoutOverrideMs?: number,
 ): Promise<void> {
   const started = performance.now();
-  const configuredTimeout = Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS || DEFAULT_RUNTIME_WAKE_TIMEOUT_MS);
+  const configuredTimeout = timeoutOverrideMs ?? Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS || DEFAULT_RUNTIME_WAKE_TIMEOUT_MS);
   const configuredPoll = Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_POLL_MS || DEFAULT_RUNTIME_WAKE_POLL_MS);
   const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(5_000, configuredTimeout) : DEFAULT_RUNTIME_WAKE_TIMEOUT_MS;
   const pollMs = Number.isFinite(configuredPoll) ? Math.max(0, configuredPoll) : DEFAULT_RUNTIME_WAKE_POLL_MS;
@@ -270,7 +274,7 @@ function scheduleOpenCodeRuntimeRecovery(): void {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('runtime recovery timeout')), 90_000);
     timeout.unref?.();
-    void waitForRuntimeReady(controller.signal)
+    void waitForRuntimeReady(controller.signal, undefined, undefined, 90_000)
       .then(() => {
         runtimePrewarmAt = Date.now();
         runtimePrewarmRetryAt = 0;
