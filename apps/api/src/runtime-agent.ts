@@ -8,7 +8,7 @@ export interface RuntimeHealth {
   activityAt?: string;
 }
 
-export interface RuntimeExecResult {
+export interface RuntimeExecResult extends Record<string, unknown> {
   code: number;
   stdout: string;
   stderr: string;
