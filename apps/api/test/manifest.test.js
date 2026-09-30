@@ -58,6 +58,7 @@ describe('github app manifest bootstrap', () => {
       pull_requests: 'write',
       codespaces: 'write',
       codespaces_lifecycle_admin: 'write',
+      actions: 'write',
     });
     assert.ok(!('default_events' in body.manifest));
     assert.ok(!('client_secret' in body.manifest) && !('pem' in body.manifest));
