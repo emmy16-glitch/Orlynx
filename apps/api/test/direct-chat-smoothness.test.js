@@ -6,12 +6,13 @@ test('direct chat has bounded silence, first-token and stale-task deadlines', ()
   const direct = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
 
-  assert.match(direct, /ORLYNX_DIRECT_TURN_TIMEOUT_MS \|\| 3 \* 60_000/);
+  assert.match(direct, /ORLYNX_DIRECT_TURN_TIMEOUT_MS \|\| 5 \* 60_000/);
   assert.match(direct, /ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS \|\| 30_000/);
   assert.match(direct, /ORLYNX_DIRECT_STREAM_SILENCE_TIMEOUT_MS \|\| 45_000/);
   assert.match(direct, /stage === 'modelRequestStartedMs'\) armFirstTokenTimer\(\)/);
   assert.match(direct, /firstTokenSeen = true;\s*clearFirstTokenTimer\(\)/);
   assert.match(direct, /The model did not start streaming in time/);
+  assert.match(direct, /The model is taking longer than usual · Orlynx will recover automatically if it stalls/);
   assert.match(direct, /The model stopped streaming for too long/);
   assert.match(direct, /armStreamSilenceTimer\(\)/);
 
@@ -34,7 +35,9 @@ test('silent transient direct-chat failure retries once only before visible outp
 
   assert.match(agents, /const retrySilentTurn = async/);
   assert.match(agents, /visible\.length !== visibleBefore/);
-  assert.match(agents, /\[502, 503, 504\]\.includes\(error\.statusCode\)/);
+  assert.match(agents, /\[502, 503, 504\]\.includes\(error\.statusCode \|\| 0\)/);
+  assert.match(agents, /elapsedMs < 15_000/);
+  assert.match(agents, /Never repeat a full 75s Render-runtime wake timeout/);
   assert.match(agents, /AI connection stalled before any response · retrying once/);
   assert.match(agents, /let responseText = await retrySilentTurn\(task\.prompt, task\.messageId\)/);
   assert.doesNotMatch(agents, /while \([^\n]*retrySilentTurn/);
