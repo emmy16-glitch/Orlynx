@@ -367,7 +367,9 @@ function eventText(event: OrlynxEvent): string {
 function artifactEvidence(events: OrlynxEvent[]): string[] {
   const evidence: string[] = [];
   for (const event of events.slice(-120)) {
-    if (event.type !== 'extension.event' || String(event.payload?.sourceType || '') !== 'verification.artifacts') continue;
+    const artifactEvent = (event.type === 'extension.event' && String(event.payload?.sourceType || '') === 'verification.artifacts')
+      || (event.type === 'state.delta' && String(event.payload?.scope || '') === 'verification-artifacts');
+    if (!artifactEvent) continue;
     const summary = String(event.payload?.summary || '').replace(/\s+/g, ' ').trim();
     if (summary) evidence.push(summary.slice(0, 1_200));
     const artifacts = Array.isArray(event.payload?.artifacts) ? event.payload.artifacts : [];
@@ -424,8 +426,10 @@ export function classifyVerificationFailure(
 
 export function evidenceSummary(events: OrlynxEvent[]): string[] {
   const eventEvidence = events.slice(-100).flatMap((event) => {
-    const artifactEvent = event.type === 'extension.event'
-      && String(event.payload?.sourceType || '') === 'verification.artifacts';
+    const artifactEvent = (event.type === 'extension.event'
+      && String(event.payload?.sourceType || '') === 'verification.artifacts')
+      || (event.type === 'state.delta'
+        && String(event.payload?.scope || '') === 'verification-artifacts');
     if (!artifactEvent && ![
       'tool.completed','tool.failed','tool.output','terminal.exited',
       'test.result','build.result','preview.ready','workspace.ready',
