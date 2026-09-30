@@ -100,3 +100,13 @@ test('project open and mobile resume proactively wake the direct AI runtime', ()
   const calls = app.match(/fetch\('\/v1\/ai\/runtime\/prewarm', \{ method: 'POST' \}\)/g) || [];
   assert.ok(calls.length >= 2, 'runtime is warmed on project open and visible resume');
 });
+
+
+test('temporary GitHub context failure degrades chat instead of failing the whole turn', () => {
+  const direct = fs.readFileSync(new URL('../src/direct-chat.ts', import.meta.url), 'utf8');
+
+  assert.match(direct, /try \{\s*context = await repositoryContext/);
+  assert.match(direct, /Repository context is temporarily unavailable · continuing without blocking chat/);
+  assert.match(direct, /Do not invent repository file contents or claim they were inspected/);
+  assert.match(direct, /timings\.repoContextFallback = 1/);
+});
