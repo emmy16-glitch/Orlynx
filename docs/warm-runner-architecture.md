@@ -1,305 +1,125 @@
-# Warm runner architecture
+# Orlynx runner architecture
 
-Orlynx supports two workspace execution providers behind the same durable task,
-bridge, event and review model:
+## Purpose
 
-1. **Orlynx Runner** — preferred when configured. A prebuilt runtime is prepared
-   in the background as soon as a repository session opens.
-2. **GitHub Codespaces** — fallback when the runner is unavailable or explicitly
-   selected.
+The Orlynx runner is one workspace-compute provider behind the Compute Broker.
 
-The browser and chat API do not need to know which provider owns the workspace.
+Current production exposes five direct Render runner services as one logical pool. The broker selects this pool when its live score/capability is appropriate; it is not an unconditional hard-coded first choice.
 
-## Request path
+## Current hosted pool
 
-```text
-Browser
-  |
-  +-- instant replies --------------------------> API memory/session state
-  |
-  +-- Ask / Plan / read-only questions --------> direct AI stream
-  |
-  +-- Build work -------------------------------> durable task
-                                                   |
-                                                   v
-                                              Orchestrator
-                                                   |
-                                    +--------------+-------------+
-                                    |                            |
-                                    v                            v
-                               Orlynx Runner                Codespaces
-                               preferred                     fallback
-                                    |                            |
-                                    +-------------+--------------+
-                                                  |
-                                                  v
-                                               Bridge
-                                                  |
-                                               OpenCode
-```
-
-Postgres remains product truth. The live bridge WebSocket is the low-latency
-transport. Bridge commands are still persisted before delivery, so a reconnect
-or API restart can redeliver them safely.
-
-## Control-plane configuration
-
-On the Render API service:
-
-```text
-ORLYNX_WORKSPACE_PROVIDER=auto
-ORLYNX_RUNNER_URL=https://runner.example.internal
-ORLYNX_RUNNER_TOKEN=<independent random secret>
-ORLYNX_PREWARM_WORKSPACES=1
-ORLYNX_RUNNER_FALLBACK_TO_CODESPACES=1
-```
-
-`auto` chooses the runner when both runner URL and token are configured. If
-they are absent, Orlynx behaves exactly as before and uses GitHub Codespaces.
-
-The runner endpoint must be HTTPS. Do not expose it without authentication.
-
-## Distributed runner pool
-
-Production Orlynx can treat several runner-manager hosts as one logical execution pool.
-
-```text
+~~~text
 Orlynx control plane
-  -> health-aware pool scheduler
-      -> runner-eu-1 (10 active)
-      -> runner-eu-2 (10 active)
-      -> runner-eu-3 (10 active)
-      -> runner-eu-4 (10 active)
-      -> runner-eu-5 (10 active)
-  -> GitHub Codespaces only after runner-pool recovery/fallback is exhausted
-```
+       |
+       v
+Runner pool
+       |
+       +-- runner 1 (capacity 1)
+       +-- runner 2 (capacity 1)
+       +-- runner 3 (capacity 1)
+       +-- runner 4 (capacity 1)
+       +-- runner 5 (capacity 1)
+~~~
 
-`ORLYNX_RUNNER_HOSTS` supplies stable host identities and HTTPS origins. Each workspace persists its selected `runnerHostId`, so later start/stop/connect/preview calls return to the host that owns that container. The scheduler probes host health, ranks by current load and latency, refuses draining/full hosts, and opens a short circuit after repeated host failures.
+Each current direct runner uses `runner-direct/index.mjs`.
 
-`ORLYNX_RUNNER_GLOBAL_MAX_WORKSPACES` defaults to 50. Capacity is therefore a pool policy rather than one giant machine. A recommended starting topology is five Docker-capable hosts with `ORLYNX_RUNNER_MAX_WORKSPACES=10` each.
+## Health and capacity
 
-Runner managers expose `capacity`, `running`, `stopped`, `available`, `draining`, host identity and region from `/health`. A host can be drained without killing existing work by setting `ORLYNX_RUNNER_DRAINING=1`; the scheduler simply stops assigning new work there.
+The pool tracks per-host:
 
-Each Docker host also maintains a credential-free bare Git object cache under `ORLYNX_RUNNER_GIT_CACHE_ROOT`. Authentication is used only while refreshing the cache. New isolated workspace containers clone from the local bare cache when possible, then point `origin` back at GitHub. This avoids repeatedly downloading the same repository objects for every new runner.
+- health
+- capacity
+- running/available slots
+- draining state
+- latency
+- browser/E2E capability
+- circuit state
+- current workspace ownership
 
-This pool is horizontally extensible: increasing 50 to 100 or 500 should be a capacity/configuration change, not a new workspace architecture.
+A hosting provider saying “live” is not enough. Orlynx uses application-level `/health` evidence.
 
-## Runner hosts
+## Host selection
 
-Orlynx has two runner-host implementations behind the same provider contract.
+The pool ranks healthy available hosts. The Compute Broker then evaluates the runner provider against E2B and Codespaces.
 
-### Render single-workspace runner
+Tasks that require browser E2E strongly penalize runner capacity that cannot truthfully advertise browser capability.
 
-`runner-direct/index.mjs` is the production MVP used when no Docker-capable VM
-is available yet. The Render service itself is the isolation boundary and it
-accepts exactly one active workspace at a time.
+## Direct runner lifecycle
 
-It:
+A direct runner typically:
 
-- clones one authorized repository with an ephemeral GitHub credential;
-- launches the existing Orlynx bridge and preinstalled OpenCode runtime;
-- keeps the checkout warm between tasks;
-- supports signed HTTP/WebSocket preview forwarding;
-- stops/reclaims idle workspace processes;
-- returns capacity-full for a second workspace so the durable orchestrator can
-  fall back to GitHub Codespaces instead of mixing repositories.
+1. authenticates the control-plane request
+2. validates identifiers/branch
+3. resolves the authorized GitHub repository
+4. clones the branch
+5. receives Bridge/OpenCode configuration
+6. starts the Bridge child process
+7. reports health/capacity
+8. proxies signed Preview traffic
+9. reclaims idle/stopped workspaces according to policy
 
-The service must be dedicated to runner execution only. It must not share the
-control-plane process or its filesystem. This is an MVP isolation boundary, not
-the final multi-tenant pool.
+## Authentication
 
-### Docker runner manager
+Runner management uses shared internal `ORLYNX_RUNNER_TOKEN` Bearer authentication with timing-safe comparison.
 
-`runner-manager/index.mjs` is the multi-workspace runner-host implementation. It requires
-a host with a Docker daemon. It creates one container per Orlynx workspace and
-applies:
+The token is infrastructure-only and must never reach the browser or repository code.
 
-- separate container filesystem/process namespace;
-- CPU, memory and PID limits;
-- dropped Linux capabilities;
-- `no-new-privileges`;
-- no persistent GitHub credential in the container configuration;
-- bridge/provider credentials streamed through `docker exec` stdin rather than
-  command arguments.
+## Idle reclamation
 
-A normal Render web service does **not** provide a Docker daemon/socket for
-hosting child containers. Keep the Orlynx control plane on Render and deploy the
-runner manager on a Docker-capable VM/container host, or replace the manager
-implementation with another isolated compute provider later.
+Each direct Render runner has one active workspace slot.
 
-Runner-manager environment:
+Stopped workspaces can be reassigned immediately. Running workspaces become reclaimable only after configured idle thresholds.
 
-```text
-ORLYNX_RUNNER_TOKEN=<same secret configured on control plane>
-ORLYNX_RUNNER_IMAGE=orlynx-runner-runtime:<version>
-ORLYNX_RUNNER_CPUS=2
-ORLYNX_RUNNER_MEMORY=4g
-ORLYNX_RUNNER_PIDS=512
-PORT=8080
-```
+## Preview
 
-## Prebuilt runtime image
+Signed Preview tokens bind workspace identity, port, and expiry. The runner verifies the signature before proxying traffic to the local development server.
 
-`runner-runtime/Dockerfile` contains:
+## Browser capability
 
-- Node 24;
-- Git;
-- Python/build tooling;
-- the compiled Orlynx bridge;
-- `node-pty` and `ws`;
-- a pinned native OpenCode binary;
-- Playwright plus a preinstalled Chromium browser;
-- Chromium's Debian shared-library/runtime dependencies;
-- bridge health/startup tooling.
+Direct runners probe their installed Linux browser dependencies.
 
-CI launches Chromium inside the built runner image. A runner image is not considered verified merely because the browser package downloaded successfully.
+Docker runner-runtime hosts advertise browser capability because Playwright/Chromium and required libraries are baked into the image.
 
-The runtime image is built in CI. Runtime dependencies are therefore not
-installed when a user submits a Build task.
+## Docker runner-manager path
 
-Workspace startup becomes:
+On a Docker-capable host, `runner-manager/index.mjs` can create multiple isolated `runner-runtime` containers:
 
-```text
-allocate container
-  -> clone repository
-  -> runner reports running
-  -> inject short-lived bridge credentials
-  -> start preinstalled bridge/OpenCode
-  -> bridge READY
-```
+~~~text
+Runner manager
+   +-- workspace container A
+   +-- workspace container B
+   +-- workspace container C
+~~~
 
-## Background prewarming
+See [runner-runtime-and-docker.md](runner-runtime-and-docker.md).
 
-When the preferred provider is `orlynx-runner`, creating a durable repository
-session queues a `workspace_jobs` preparation with `allowFallback=false`. The
-session response never waits for infrastructure startup.
+## Relationship to the Compute Broker
 
-This means the user can chat immediately while the execution workspace warms in
-parallel.
+The runner pool supplies evidence; the broker makes the product-level routing decision.
 
-Codespaces are intentionally not prewarmed from session creation because they
-remain the slower/costlier fallback.
+The broker considers runner availability/load/latency/capability together with E2B, Codespaces, failure history, quarantine, and workspace stickiness.
 
-## Bridge fast path
+See [compute-broker.md](compute-broker.md).
 
-Every command is persisted to `bridge_commands` first.
+## CI
 
-When the authenticated bridge socket is attached to the same API process, the
-command is then sent immediately over WebSocket. The one-second durable claim
-loop is recovery for reconnects or multi-instance routing, not the normal
-transport.
+Runner architecture has independent CI gates:
 
-Command results also wake an in-process waiter immediately. Database polling is
-kept as a recovery path when a result is completed by another API instance.
+- runner-runtime Docker image build
+- Chromium launch inside the image
+- runner-manager image build
 
-## Preview gateway
+This prevents the container architecture from silently rotting while current hosted production uses direct Render runners.
 
-Warm runners support browser previews without requiring the user's dev server to
-bind to the container network.
-
-```text
-browser
-  -> signed short-lived runner preview URL
-  -> runner manager validates HMAC
-  -> internal preview proxy :4108
-  -> 127.0.0.1:<discovered dev port>
-```
-
-The first signed request establishes an HttpOnly/Secure preview cookie so
-root-relative asset requests and WebSocket/HMR connections can continue on the
-same preview origin without putting the runner API token in the browser.
-
-Configure `ORLYNX_RUNNER_PUBLIC_URL` to the public HTTPS origin of the runner
-gateway. It may equal `ORLYNX_RUNNER_URL` when the control-plane API and browser
-can reach the same host.
-
-OpenCode's private port is explicitly excluded from preview forwarding.
-
-## Browser and E2E readiness
-
-Browser automation is an execution capability, not something a Build task should discover by crashing.
-
-Docker runner-manager hosts advertise `browserE2e=true` because the versioned runtime image already contains Playwright, Chromium and the Linux libraries Chromium needs. Native direct-runner hosts probe their actual shared libraries and advertise `browserE2e` truthfully.
-
-When a queued task explicitly needs Playwright/E2E/browser testing and its assigned direct runner reports that browser execution is unavailable, Orlynx preserves the task and switches it to the Codespaces fallback automatically.
-
-Codespace bootstrap inspects the repository. If it declares Playwright, `@playwright/test` or `@axe-core/playwright`, Orlynx:
-
-1. resolves the repository's locked Playwright version;
-2. installs a private matching Playwright CLI;
-3. installs Chromium system dependencies when missing;
-4. installs the matching Chromium browser;
-5. launches Chromium once as a readiness proof;
-6. writes a versioned marker so later turns skip the setup.
-
-Set `ORLYNX_PREWARM_BROWSER_RUNTIME=0` only when browser preparation is intentionally disabled.
-
-## Failure behavior
-
-If an Orlynx runner fails during preparation and
-`ORLYNX_RUNNER_FALLBACK_TO_CODESPACES` is enabled:
-
-```text
-runner failure
-  -> destroy failed runner best-effort
-  -> preserve workspace/task identity
-  -> switch provider to github-codespaces
-  -> continue preparation automatically
-```
-
-The user task remains durable throughout the transition.
-
-## Capacity and idle reuse
-
-The runner manager enforces a bounded number of simultaneously running
-workspaces with `ORLYNX_RUNNER_MAX_WORKSPACES`.
-
-Each bridge updates a private activity timestamp whenever a workspace command is
-handled and while an agent/PTY remains active. The manager therefore does not
-guess activity from browser connections.
-
-```text
-active workspace
-  -> no activity for ORLYNX_RUNNER_IDLE_SECONDS
-  -> container stopped (checkout preserved)
-  -> later request can restart it quickly
-  -> stopped for ORLYNX_RUNNER_RECLAIM_SECONDS
-  -> container removed and disk reclaimed
-```
-
-When runner capacity is full, runner provisioning fails cleanly. A Build job
-with fallback enabled can then continue through GitHub Codespaces; passive
-prewarming does not spend that fallback.
-
-## Security boundary
-
-Do not turn the runner manager into one shared shell process. Repository code is
-untrusted execution from the infrastructure point of view.
-
-Production runner implementations must maintain per-workspace isolation and
-resource limits. Future hardening should add outbound network policy, ephemeral
-volumes, stronger secret isolation, image signing/provenance and optionally
-microVM isolation.
-
-## Durable orchestration
-
-Workspace lifecycle work is persisted in `workspace_jobs` before execution.
-
-```text
-queued -> leased -> completed
-          |
-          +-> lease expires -> reclaimed by another worker
-          +-> transient error -> queued with retry delay
-          +-> terminal error -> failed
-```
-
-The worker uses `FOR UPDATE SKIP LOCKED`, bounded leases, heartbeat renewal and
-retry backoff. Production runs `apps/api/dist/orchestrator-worker.js` as a
-separate background worker with `ORLYNX_ORCHESTRATOR_MODE=worker`.
-
-HTTP handlers, task promotion and bridge recovery only schedule durable jobs.
-`prepareWorkspace()` remains the provider executor behind the orchestrator.
-
-Inline mode exists only as a deployment/local-development compatibility path;
-it still writes the durable job first, so later worker adoption does not change
-the request contract.
+## Invariants
+
+1. application health beats host deployment labels
+2. one runner failure must not lose the task
+3. capacity is bounded
+4. idle reclamation must not kill active work
+5. Preview access is signed
+6. runner credentials stay server-side
+7. provider changes preserve task/session identity
+8. browser capability is truthful
+9. unhealthy/circuit-open hosts are avoided
+10. direct and Docker-managed runners obey the same workspace contract
