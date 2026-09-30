@@ -1169,8 +1169,57 @@ export default function ProductionApp() {
     setNewActivity(false);
     setSending(true); setError('');
     const clientId = uid();
+    const messageBody = JSON.stringify({
+      text,
+      clientId,
+      adapterId: activeAi.adapterId || 'opencode',
+      modelId: activeAi.model.id,
+      mode: activeAi.mode,
+      fullAccessForThisTask: activeAi.mode === 'build' && tempFullAccess,
+    });
+
+    const admitMessage = async () => {
+      const delays = [0, 750, 1_500];
+      let lastError: any;
+      for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        if (delays[attempt]) await new Promise((resolve) => window.setTimeout(resolve, delays[attempt]));
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(new Error('message admission timeout')), 20_000);
+        try {
+          const response = await fetch(`/v1/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: messageBody,
+            signal: controller.signal,
+          });
+          const result = await j<any>(response);
+          if (attempt > 0) setWorkspaceReadNotice('');
+          return result;
+        } catch (error: any) {
+          lastError = error;
+          const status = Number(error?.status || 0);
+          const transientHttp = [502, 503, 504].includes(status);
+          const transportError = !status && (
+            error?.name === 'AbortError'
+            || error?.name === 'TimeoutError'
+            || error instanceof TypeError
+            || /fetch|network|timeout|aborted/i.test(String(error?.message || ''))
+          );
+          if (attempt >= delays.length - 1 || (!transientHttp && !transportError)) throw error;
+          setWorkspaceReadNotice(
+            attempt === 0
+              ? 'Orlynx is waking · reconnecting your message automatically…'
+              : 'Connection is still recovering · your message is safe and retrying…',
+          );
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+      throw lastError || new Error('Orlynx could not accept the message.');
+    };
+
     try {
-      const result = await j<any>(await fetch(`/v1/sessions/${session.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, clientId, adapterId: activeAi.adapterId || 'opencode', modelId: activeAi.model.id, mode: activeAi.mode, fullAccessForThisTask: activeAi.mode === 'build' && tempFullAccess }) }));
+      const result = await admitMessage();
       if (!overrideText) { setComposer(''); try { localStorage.removeItem(draftKey(session.id)); } catch {} }
       setTempFullAccess(false);
       setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
