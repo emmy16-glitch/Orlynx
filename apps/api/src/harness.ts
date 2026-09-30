@@ -287,7 +287,17 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
 
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     const payload = event.payload || {};
-    if (event.type === 'file.changed' || event.type === 'files.changed' || event.type === 'changes.updated') found.add('changes');
+    if (event.type === 'file.changed' || event.type === 'files.changed') {
+      found.add('changes');
+      // An edit after a passing check makes that check stale. The next real
+      // test/build observation may satisfy it again.
+      if (latestOutcome.has('tests')) setOutcome('tests', false);
+      if (latestOutcome.has('build')) setOutcome('build', false);
+    } else if (event.type === 'changes.updated') {
+      // End-of-run diff snapshots describe edits that may already have been
+      // verified, so they do not by themselves invalidate test/build evidence.
+      found.add('changes');
+    }
 
     if (event.type === 'test.result') {
       const failed = Number(payload.failed);
