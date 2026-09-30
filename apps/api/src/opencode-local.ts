@@ -8,7 +8,7 @@ const MAX_PROVIDERS = 64;
 const runtimeSessions = new Map<string, string>();
 const MAX_RUNTIME_SESSIONS = 256;
 const TRANSIENT_RUNTIME_STATUSES = new Set([502, 503, 504]);
-const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 75_000;
+const DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 12_000;
 const DEFAULT_RUNTIME_WAKE_POLL_MS = 2_000;
 const RUNTIME_PREWARM_TTL_MS = 5 * 60_000;
 const RUNTIME_PREWARM_FAILURE_BACKOFF_MS = 30_000;
@@ -16,12 +16,14 @@ let runtimePrewarmAt = 0;
 let runtimePrewarmRetryAt = 0;
 let runtimePrewarmPromise: Promise<boolean> | null = null;
 let runtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let runtimeCircuitUntil = 0;
 
 export function resetOpenCodeRuntimeSessionsForTests(): void {
   runtimeSessions.clear();
   runtimePrewarmAt = 0;
   runtimePrewarmRetryAt = 0;
   runtimePrewarmPromise = null;
+  runtimeCircuitUntil = 0;
   if (runtimeRecoveryTimer) clearTimeout(runtimeRecoveryTimer);
   runtimeRecoveryTimer = null;
 }
@@ -141,12 +143,14 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       await waitForRuntimeReady(controller.signal);
       runtimePrewarmAt = Date.now();
       runtimePrewarmRetryAt = 0;
+      runtimeCircuitUntil = 0;
       console.info('[ai-runtime] prewarm ready');
       return true;
     } catch (error) {
       const status = error instanceof ProviderRequestError ? error.statusCode : undefined;
       const transient = status ? TRANSIENT_RUNTIME_STATUSES.has(status) : true;
       runtimePrewarmRetryAt = Date.now() + (transient ? RUNTIME_PREWARM_FAILURE_BACKOFF_MS : RUNTIME_PREWARM_TTL_MS);
+      if (transient) runtimeCircuitUntil = Math.max(runtimeCircuitUntil, Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS);
       const detail = status ? `HTTP ${status}` : error instanceof Error ? error.name : 'Error';
       console.warn(`[ai-runtime] prewarm unavailable (${detail}); backing off`);
       return false;
@@ -356,7 +360,19 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
 }): Promise<string> {
   const started = performance.now();
   input.signal.throwIfAborted();
-  await waitForRuntimeReady(input.signal, input.onStatus, input.onTiming);
+  if (Date.now() < runtimeCircuitUntil) {
+    input.onStatus?.('Fast AI runtime is recovering · switching compute…');
+    throw new ProviderRequestError('OpenCode runtime is temporarily unavailable while recovery continues.', 503, true);
+  }
+  try {
+    await waitForRuntimeReady(input.signal, input.onStatus, input.onTiming);
+    runtimeCircuitUntil = 0;
+  } catch (error) {
+    if (error instanceof ProviderRequestError && TRANSIENT_RUNTIME_STATUSES.has(error.statusCode || 0)) {
+      runtimeCircuitUntil = Date.now() + RUNTIME_PREWARM_FAILURE_BACKOFF_MS;
+    }
+    throw error;
+  }
   input.onStatus?.('Thinking…');
 
   let session = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);

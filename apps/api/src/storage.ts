@@ -89,6 +89,7 @@ export interface ControlPlaneRepository {
   listProviderConnections(userId: string): Promise<ProviderConnectionRecord[]>;
   deleteProviderConnection(userId: string, provider: string): Promise<void>;
   upsertProject(value: { id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string }): Promise<void>;
+  getProject(id: string): Promise<{ id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string } | null>;
   putSession(value: ProjectSession & { userId: string; projectId: string }): Promise<void>;
   getSession(id: string): Promise<(ProjectSession & { userId: string; projectId: string }) | null>;
   listSessionsByUser(userId: string, limit?: number): Promise<Array<ProjectSession & { userId: string; projectId: string }>>;
@@ -405,6 +406,18 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async upsertProject(v: { id: string; userId: string; installationId: number; repositoryId: number; fullName: string; defaultBranch: string }) {
     await this.initialize();
     await this.sql`INSERT INTO projects (id,user_id,installation_id,repository_id,full_name,default_branch) VALUES (${v.id},${v.userId},${v.installationId},${v.repositoryId},${v.fullName},${v.defaultBranch}) ON CONFLICT (id) DO UPDATE SET full_name=EXCLUDED.full_name,default_branch=EXCLUDED.default_branch,updated_at=now()`;
+  }
+  async getProject(id: string) {
+    await this.initialize();
+    const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM projects WHERE id=${id}`)[0];
+    return r ? {
+      id: String(r.id),
+      userId: String(r.user_id),
+      installationId: Number(r.installation_id),
+      repositoryId: Number(r.repository_id),
+      fullName: String(r.full_name),
+      defaultBranch: String(r.default_branch),
+    } : null;
   }
   async putSession(v: ProjectSession & { userId: string; projectId: string }) {
     await this.initialize();
