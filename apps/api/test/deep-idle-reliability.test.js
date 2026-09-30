@@ -78,3 +78,13 @@ test('old approvals wake the workspace and the web client retries the same pendi
   assert.match(app, /Date\.now\(\) \+ 3 \* 60_000/);
   assert.match(app, /Your approval is preserved/);
 });
+
+
+test('completed bridge command ids are released from long-lived socket delivery memory', () => {
+  const live = fs.readFileSync(new URL('../src/bridge-live.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+
+  assert.match(live, /releaseBridgeCommandDelivery/);
+  assert.match(live, /delivered\.delete\(commandId\)/);
+  assert.match(gateway, /releaseBridgeCommandDelivery\(claims\.workspaceId, message\.commandId\)/);
+});
