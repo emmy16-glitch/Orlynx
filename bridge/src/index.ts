@@ -109,6 +109,104 @@ function safePath(relative = '.'): string {
   return result;
 }
 
+type VerificationArtifact = {
+  path: string;
+  kind: 'context' | 'screenshot' | 'trace' | 'report' | 'video' | 'other';
+  size: number;
+  excerpt?: string;
+};
+
+const VERIFICATION_ARTIFACT_ROOTS = [
+  'test-results',
+  'playwright-report',
+  'blob-report',
+  'cypress/screenshots',
+  'cypress/videos',
+  'artifacts',
+] as const;
+
+function verificationArtifactKind(relative: string): VerificationArtifact['kind'] {
+  const lower = relative.toLowerCase();
+  const base = path.basename(lower);
+  if (base === 'error-context.md' || base === 'error-context.txt') return 'context';
+  if (/\.(png|jpe?g|webp)$/.test(lower)) return 'screenshot';
+  if (base === 'trace.zip' || /(?:^|\/)trace[^/]*\.zip$/.test(lower)) return 'trace';
+  if (/\.(webm|mp4)$/.test(lower)) return 'video';
+  if (/\.(md|txt|log|json|xml|html|htm)$/.test(lower)) return 'report';
+  return 'other';
+}
+
+function verificationArtifactPriority(artifact: VerificationArtifact): number {
+  if (artifact.kind === 'context') return 100;
+  if (artifact.kind === 'screenshot') return 90;
+  if (artifact.kind === 'trace') return 85;
+  if (artifact.kind === 'report') return 70;
+  if (artifact.kind === 'video') return 50;
+  return 10;
+}
+
+function verificationArtifacts(): VerificationArtifact[] {
+  const discovered: VerificationArtifact[] = [];
+  const maxScannedFiles = 160;
+  let scannedFiles = 0;
+
+  const visit = (absolute: string, depth: number): void => {
+    if (depth > 6 || scannedFiles >= maxScannedFiles) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(absolute, { withFileTypes: true }); } catch { return; }
+
+    for (const entry of entries) {
+      if (scannedFiles >= maxScannedFiles) break;
+      const target = path.join(absolute, entry.name);
+      let stat: fs.Stats;
+      try { stat = fs.lstatSync(target); } catch { continue; }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        visit(target, depth + 1);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      scannedFiles += 1;
+
+      const relative = path.relative(REPO_ROOT, target).split(path.sep).join('/');
+      if (!relative || relative.startsWith('../')) continue;
+      const kind = verificationArtifactKind(relative);
+      const artifact: VerificationArtifact = { path: relative, kind, size: stat.size };
+
+      const textLike = kind === 'context' || kind === 'report';
+      if (textLike && stat.size > 0 && stat.size <= 512_000) {
+        try {
+          const raw = fs.readFileSync(target, 'utf8').slice(0, 12_000);
+          artifact.excerpt = redactSecrets(raw).replace(/\u0000/g, '').slice(0, 6_000);
+        } catch { /* binary or unreadable report: metadata is still useful */ }
+      }
+      discovered.push(artifact);
+    }
+  };
+
+  for (const root of VERIFICATION_ARTIFACT_ROOTS) {
+    const absolute = safePath(root);
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(absolute); } catch { continue; }
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isDirectory()) visit(absolute, 0);
+    else if (stat.isFile()) {
+      const relative = path.relative(REPO_ROOT, absolute).split(path.sep).join('/');
+      discovered.push({ path: relative, kind: verificationArtifactKind(relative), size: stat.size });
+    }
+  }
+
+  let excerpts = 0;
+  return discovered
+    .sort((a, b) => verificationArtifactPriority(b) - verificationArtifactPriority(a) || a.path.localeCompare(b.path))
+    .slice(0, 40)
+    .map((artifact) => {
+      if (!artifact.excerpt) return artifact;
+      excerpts += 1;
+      return excerpts <= 6 ? artifact : { path: artifact.path, kind: artifact.kind, size: artifact.size };
+    });
+}
+
 function redactSecrets(value: string): string {
   return String(value || '')
     .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
@@ -1096,6 +1194,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       return { bridge: 'ready', openCode: adapters.opencode?.state, adapters, capabilities: runtimeCapabilities(), activityAt: activityAt() };
     }
     case 'runtime.capabilities': return { capabilities: runtimeCapabilities(), activityAt: activityAt() };
+    case 'verification.artifacts': return { artifacts: verificationArtifacts() };
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
     case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
     case 'fs.write-attachment': {
