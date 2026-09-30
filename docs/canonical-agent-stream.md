@@ -132,10 +132,7 @@ Preview tab, `View preview` action, external open). Chat server-ready state
 never guesses readiness from a string, process death invalidates Ready, and
 the forwarded URL (never remote `localhost`) is what the user opens.
 
-Direct (instant) chat bypasses workspace startup entirely; Build tasks
-acknowledge immediately (`Preparing workspace`) while the warm Render runner
-(or Codespaces fallback) prepares. Ask/plan modes never touch mutable
-runtime state.
+Direct conversational work can bypass workspace startup when the direct OpenCode runtime is healthy. Build tasks acknowledge immediately while broker-selected workspace compute prepares. If the direct runtime fails before useful output, the same durable turn can move to workspace compute and emit a concise `Switching compute...` state. Ask/Plan remain non-mutating by mode even when their execution plane changes.
 
 ## Migration
 
