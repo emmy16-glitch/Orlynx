@@ -1362,7 +1362,21 @@ function connect(delay = 0): void {
             for (const [adapterId, adapter] of Object.entries(currentAdapters)) {
               ws.send(JSON.stringify({ kind: 'ADAPTER_STATUS', adapterId, adapter }));
             }
-            ws.send(JSON.stringify({ kind: 'EVENT', event: { type: 'heartbeat', payload: { bridge: 'ready', capabilities: runtimeCapabilities(), activityAt: activityAt() } } }));
+            ws.send(JSON.stringify({
+              kind: 'EVENT',
+              event: {
+                type: 'heartbeat',
+                payload: {
+                  bridge: 'ready',
+                  capabilities: runtimeCapabilities(),
+                  activityAt: activityAt(),
+                  // Workspace liveness is not task liveness. The API renews
+                  // only these exact durable tasks, so an idle healthy bridge
+                  // cannot keep a dead/hung agent run alive forever.
+                  activeTaskIds: [...activeAgents.keys()],
+                },
+              },
+            }));
           }, 15_000);
         }
         return;
