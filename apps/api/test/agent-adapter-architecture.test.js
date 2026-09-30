@@ -82,15 +82,18 @@ test('visible agent controls and task admission use the selected adapter explici
   assert.match(routes, /startRun\(s\.id, s\.project, text, selectedAdapterId/);
 });
 
-test('controlled Git publish keeps credentials out of the AI shell and allows explicit default-branch approval', () => {
+test('controlled Git publish keeps credentials in the control plane and never delegates publication to the AI shell', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
 
   assert.match(bridge, /case 'git\.fetch'/);
   assert.match(bridge, /payload\.allowDefaultBranch !== true/);
-  assert.match(bridge, /GitHub credentials are unavailable in this workspace/);
   assert.match(routes, /publishCommittedWorkspaceHead/);
-  assert.match(routes, /allowDefaultBranch: branch === 'main' \|\| branch === 'master'/);
+  assert.match(routes, /publishVerifiedChangeSet/);
+  assert.match(publisher, /githubInstallationApiRequest/);
+  assert.match(publisher, /force:\s*false/);
+  assert.doesNotMatch(publisher, /bridgeRequest[^\n]*['"]git\.push['"]/);
   assert.match(routes, /const publishIntent = effectiveMode === 'build' \? publishIntentFor/);
   assert.match(routes, /Published .* to/);
 });

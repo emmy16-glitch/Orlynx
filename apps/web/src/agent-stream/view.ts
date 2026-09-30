@@ -40,12 +40,15 @@ function classifyTool(tool: string, command: string, semanticType?: string): Act
   const canonical = categoryForSemanticType(semanticType);
   if (canonical) return canonical;
   // Legacy-history fallback only. New v1 server events carry semanticType.
-  const name = `${tool} ${command}`.toLowerCase();
-  if (/test|vitest|jest|pytest|mocha|playwright/.test(name)) return 'test';
-  if (/build|tsc|compile|webpack|vite build|next build/.test(name)) return 'build';
-  if (/git|commit|push|branch|checkout|merge|rebase/.test(name)) return 'git';
-  if (/search|read|inspect|list|grep|find|glob/.test(name)) return 'search';
-  if (/patch|edit|write|file|apply_patch/.test(name)) return 'file';
+  const toolName = tool.toLowerCase();
+  const normalized = command.trim().toLowerCase();
+  const testCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\b|:)|(?:npx\s+)?(?:vitest|jest|mocha)\b|pytest\b|python(?:3)?\s+-m\s+pytest\b|(?:npx\s+)?playwright\s+test\b|node\s+--test\b)/i.test(normalized);
+  const buildCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(normalized);
+  if (testCommand || /^(?:test|tests|vitest|jest|pytest|mocha|playwright)$/i.test(toolName)) return 'test';
+  if (buildCommand || /^(?:build|compile|typecheck|lint)$/i.test(toolName)) return 'build';
+  if (/^(?:git|commit|push|branch|checkout|merge|rebase)$/i.test(toolName) || /^git\s+/.test(normalized)) return 'git';
+  if (/^(?:search|read|inspect|list|grep|find|glob)$/i.test(toolName)) return 'search';
+  if (/^(?:patch|edit|write|file|apply_patch)$/i.test(toolName)) return 'file';
   return 'command';
 }
 
@@ -91,7 +94,7 @@ function toolTitle(tool: AgentStreamTool, category: ActivityCategory): string {
     if (command) return `Git: ${commandLabel(command)}`;
     return explicit || 'Working with Git';
   }
-  if (/health|curl/i.test(command)) {
+  if (/\bcurl\b[^\n]*(?:\/health|\/healthz|\/ready|\/readiness)(?:[/?\s"']|$)/i.test(command)) {
     return tool.state === 'failed' ? 'Service health check failed' : tool.state === 'success' ? 'Service health check passed' : 'Checking service health';
   }
   if (explicit) return explicit;
@@ -141,7 +144,7 @@ function makeActivity(activity: AgentStreamActivity): ActivityItem {
       evidence = { ...(evidence || {}), ...(counts || {}) };
     } else if (category === 'build') {
       title = failed ? 'Build failed' : 'Build passed';
-    } else if (/health|curl/i.test(command)) {
+    } else if (/\bcurl\b[^\n]*(?:\/health|\/healthz|\/ready|\/readiness)(?:[/?\s"']|$)/i.test(command)) {
       title = failed ? 'Service health check failed' : 'Service health check passed';
     } else if (category === 'git' && command) {
       title = /git\s+push/i.test(command) ? (failed ? 'Git publish failed' : 'Published to GitHub')
@@ -238,11 +241,59 @@ export function selectActivities(state: AgentStreamState): ActivityItem[] {
     const activity = state.activities[entry.id];
     return activity ? [makeActivity(activity)] : [];
   });
-  return rows.sort((a, b) => {
+  const sorted = rows.sort((a, b) => {
     const seq = (a.sequence || 0) - (b.sequence || 0);
     if (seq) return seq;
     return a.key.localeCompare(b.key);
-  }).slice(-500);
+  });
+
+  // Consecutive file reads are one repository-inspection activity, not a wall
+  // of "Reading x" rows. Keep the exact paths as expandable evidence.
+  const grouped: ActivityItem[] = [];
+  let readGroup: ActivityItem[] = [];
+  const flushReads = () => {
+    if (!readGroup.length) return;
+    if (readGroup.length === 1) {
+      grouped.push(readGroup[0]);
+      readGroup = [];
+      return;
+    }
+    const first = readGroup[0];
+    const files = readGroup
+      .map((item) => String(item.evidence?.path || ''))
+      .filter(Boolean);
+    grouped.push({
+      ...first,
+      key: `reads:${first.runId || 'run'}:${first.sequence}`,
+      id: `reads:${first.runId || 'run'}:${first.sequence}`,
+      category: 'search',
+      state: readGroup.some((item) => item.state === 'failed')
+        ? 'failed'
+        : readGroup.some((item) => item.state === 'running')
+          ? 'running'
+          : 'success',
+      title: 'Inspecting repository',
+      summary: `${files.length} files`,
+      evidence: { sourceType: 'repository.read-group', files },
+      rawOutput: undefined,
+      collapsible: true,
+    });
+    readGroup = [];
+  };
+
+  for (const row of sorted) {
+    const isFileRead = row.category === 'search'
+      && typeof row.evidence?.path === 'string'
+      && (row.evidence?.semanticType === 'file-read' || /^Reading\s+/i.test(row.title));
+    if (isFileRead && (!readGroup.length || readGroup[0].runId === row.runId)) {
+      readGroup.push(row);
+      continue;
+    }
+    flushReads();
+    grouped.push(row);
+  }
+  flushReads();
+  return grouped.slice(-500);
 }
 
 export type LiveReplyView = {

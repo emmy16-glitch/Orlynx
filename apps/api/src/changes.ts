@@ -1,5 +1,6 @@
 // Change Review Service — PDF §5.2: immutable base SHA, never silently overwrite.
 import { v4 as uuid } from 'uuid';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -10,16 +11,40 @@ import { pushGitHubRepository } from './github.js';
 import { emit } from './events.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 
+export function addChangeEvidence(file: ChangedFile): ChangedFile {
+  const diff = String(file.diff || '');
+  const additions = diff
+    ? diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length
+    : file.action === 'create' && typeof file.after === 'string'
+      ? (file.after ? file.after.split('\n').length : 0)
+      : undefined;
+  const deletions = diff
+    ? diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length
+    : file.action === 'delete' && typeof file.before === 'string'
+      ? (file.before ? file.before.split('\n').length : 0)
+      : undefined;
+  const afterHash = file.action !== 'delete' && typeof file.after === 'string'
+    ? crypto.createHash('sha256').update(file.after).digest('hex')
+    : undefined;
+  return {
+    ...file,
+    ...(typeof additions === 'number' ? { additions } : {}),
+    ...(typeof deletions === 'number' ? { deletions } : {}),
+    ...(afterHash ? { afterHash } : {}),
+  };
+}
+
 export function createChangeSet(sessionId: string, project: string, files: ChangedFile[], runId?: string, baseSha?: string): ChangeSet {
+  const evidencedFiles = files.map(addChangeEvidence);
   const cs: ChangeSet = {
     id: `chg_${uuid().slice(0, 8)}`, sessionId, runId,
-    baseSha: baseSha || (durableStorageConfigured() ? '' : headSha(project)), files,
+    baseSha: baseSha || (durableStorageConfigured() ? '' : headSha(project)), files: evidencedFiles,
     reviewState: 'pending', createdAt: new Date().toISOString(),
   };
   (store.db.changes[sessionId] ||= []).push(cs);
   store.save();
   if (durableStorageConfigured()) void controlPlaneRepository().putChangeSet(cs);
-  emit(sessionId, 'changes.updated', { changeId: cs.id, count: files.length }, runId);
+  emit(sessionId, 'changes.updated', { changeId: cs.id, count: evidencedFiles.length, files: evidencedFiles }, runId);
   return cs;
 }
 
@@ -54,7 +79,11 @@ export function commit(sessionId: string, project: string, changeId: string, mes
     if (f.action === 'delete') { if (fs.existsSync(target)) fs.rmSync(target); }
     else { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.after ?? ''); }
   }
-  execFileSync('git', ['add', '-A'], { cwd: root, stdio: 'ignore' });
+  const approvedFiles = cs.files.map((file) => file.path);
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root }).toString().split(/\r?\n/).filter(Boolean);
+  const unrelatedStaged = staged.filter((file) => !approvedFiles.includes(file));
+  if (unrelatedStaged.length) throw new Error(`commit blocked by unrelated staged files: ${unrelatedStaged.slice(0, 8).join(', ')}`);
+  for (const file of approvedFiles) execFileSync('git', ['add', '--', file], { cwd: root, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', message || 'Orlynx update', '--allow-empty'], { cwd: root, stdio: 'ignore' });
   const sha = headSha(project);
   cs.reviewState = 'committed'; cs.commitSha = sha; cs.currentHead = sha;

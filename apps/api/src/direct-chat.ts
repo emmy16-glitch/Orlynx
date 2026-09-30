@@ -37,6 +37,19 @@ export function instantReplyFor(input: {
 
 export type PublishIntent = 'direct' | 'pull-request';
 
+export function publishTargetBranchFor(text: string, branch = 'main'): string | null {
+  const normalized = String(text || '')
+    .replace(/\b(?:puhs|pussh|psuh)\b/gi, 'push')
+    .replace(/\bpubish\b/gi, 'publish')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const named = normalized.match(/\b(?:push|publish)\b[\s\S]{0,45}?\b(?:to|into|on)\s+(?:(?:the\s+)?branch\s+)?(?:origin\/)?([A-Za-z0-9][A-Za-z0-9._/-]*)\b/i);
+  if (named?.[1] && !/^(?:a|the|current|branch)$/i.test(named[1])) return named[1];
+  if (/\b(?:main|master)\b/i.test(normalized)) return /\bmaster\b/i.test(normalized) ? 'master' : 'main';
+  if (/\bcurrent\s+branch\b|\b(?:to|on)\s+(?:the\s+)?branch\b/i.test(normalized)) return branch;
+  return null;
+}
+
 export function publishIntentFor(text: string, branch = 'main'): PublishIntent | null {
   const normalized = String(text || '')
     .toLowerCase()
@@ -50,19 +63,15 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
     return 'pull-request';
   }
 
-  const target = branch.toLowerCase();
-  const explicitDefaultTarget = /\b(?:origin\/)?(main|master)\b/.exec(normalized)?.[1];
-  // Never translate an explicit branch target into "whatever branch this
-  // conversation currently uses". If the target differs, let the model/workspace
-  // lane reason about switching branches or ask for clarification.
-  if (explicitDefaultTarget && explicitDefaultTarget !== target) return null;
-  const direct = /^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?(?:\s+(?:to|into|on))?(?:\s+(?:origin\/)?(?:main|master|current\s+branch|branch))?[.!?\s]*$/.test(normalized);
+  const explicitTarget = publishTargetBranchFor(normalized, branch);
+  const direct = /^(?:git\s+)?(?:push|publish)\b/.test(normalized)
+    && !/\b(?:don't|do not|dont|never)\s+(?:push|publish)\b/.test(normalized);
   if (!direct) return null;
-
-  if (/\b(?:main|master)\b/.test(normalized)) return 'direct';
-  if (/\bcurrent\s+branch\b|\bbranch\b/.test(normalized)) return 'direct';
-  if (target === 'main' || target === 'master') return 'direct';
-  return 'direct';
+  // A named branch is first-class publication intent. The control plane will
+  // validate/create it; do not silently collapse it back to the session branch.
+  if (explicitTarget) return 'direct';
+  if (/^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?[.!?\s]*$/.test(normalized)) return 'direct';
+  return null;
 }
 
 export function executionPlaneFor(text: string, mode: AgentMode): ExecutionPlane {

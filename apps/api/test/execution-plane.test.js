@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { executionPlaneFor, executionPlaneForSession, publishIntentFor } from '../src/direct-chat.ts';
+import { executionPlaneFor, executionPlaneForSession, publishIntentFor, publishTargetBranchFor } from '../src/direct-chat.ts';
 import { chooseNextQueuedTask, workspaceCanAcceptTask, delayedWorkspaceTaskExpired, instructionForModeAccess, buildPresentationInstruction } from '../src/agents.ts';
 import { getAgentAdapter } from '../src/agent-runtime.ts';
 import { classifyError } from '../src/ai.ts';
@@ -95,14 +95,20 @@ test('plain conversation does not start a development environment', () => {
   assert.equal(executionPlaneFor('Review this architecture and suggest improvements', 'ask'), 'direct');
 });
 
-test('explicit publish language is typo-tolerant and bypasses AI ambiguity', () => {
+test('explicit publish language is typo-tolerant and preserves named branch targets', () => {
   assert.equal(publishIntentFor('push to main', 'main'), 'direct');
   assert.equal(publishIntentFor('puhs to main', 'main'), 'direct');
-  assert.equal(publishIntentFor('push to main', 'feature/demo'), null);
-  assert.equal(publishIntentFor('push to master', 'main'), null);
+  assert.equal(publishIntentFor('push to main', 'feature/demo'), 'direct');
+  assert.equal(publishIntentFor('push to master', 'main'), 'direct');
+  assert.equal(publishIntentFor('push to branch fix/foo', 'main'), 'direct');
   assert.equal(publishIntentFor('publish it', 'main'), 'direct');
   assert.equal(publishIntentFor('create a PR', 'main'), 'pull-request');
   assert.equal(publishIntentFor('explain how git push works', 'main'), null);
+  assert.equal(publishIntentFor("don't push until I approve", 'main'), null);
+  assert.equal(publishTargetBranchFor('push to branch fix/foo', 'main'), 'fix/foo');
+  assert.equal(publishTargetBranchFor('push to origin/release/v2', 'main'), 'release/v2');
+  assert.equal(publishTargetBranchFor('push to main', 'feature/demo'), 'main');
+  assert.equal(publishTargetBranchFor('publish it', 'feature/demo'), null);
   assert.equal(executionPlaneFor('puhs to main', 'build'), 'workspace');
 });
 

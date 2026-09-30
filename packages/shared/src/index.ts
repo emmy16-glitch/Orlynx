@@ -73,6 +73,10 @@ export interface ChangedFile {
   before?: string;
   after?: string;
   diff?: string;
+  additions?: number;
+  deletions?: number;
+  /** SHA-256 of the observed post-edit file contents. Used to reject stale publication. */
+  afterHash?: string;
 }
 
 export interface AgentRun {
@@ -203,6 +207,11 @@ export interface HarnessCheckpoint {
   modelReviewCompletedAt?: string;
   /** Explicit user intent: wait behind all currently active work, not merely this execution lane. */
   queueAfterActive?: boolean;
+  /** Latest durable workspace assistant delta already folded into TaskRecord.partialText. */
+  lastPartialSequence?: number;
+  partialUpdatedAt?: string;
+  /** Workspace HEAD against which the latest complete verification was performed. */
+  verifiedWorkspaceHead?: string;
   updatedAt: string;
 }
 

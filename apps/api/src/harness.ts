@@ -206,6 +206,7 @@ export function steeringActionFor(text: string): SteeringAction {
   if (/^(?:please\s+)?(?:stop|cancel|abort|halt|never\s*mind|nevermind)(?:\s+(?:it|this|that|the\s+task|current\s+task|the\s+current\s+task|current\s+job|the\s+current\s+job|job))?[.!?\s]*$/.test(value)) return 'stop';
   if (/\b(?:forget|ignore)\s+(?:that|the\s+(?:previous|original)|what\s+i\s+said)|\binstead\b|\bchange\s+(?:the\s+)?request\b|\bonly\s+(?:do|check|fix|work)\b/.test(value)) return 'replace';
   if (/^(?:also|and\s+also|additionally|plus)\b|\bmake\s+sure\b|\bdon't\s+forget\b|\bwhile\s+you(?:'re|\s+are)\b/.test(value)) return 'append';
+  if (/^(?:please\s+)?(?:git\s+)?(?:push|publish|commit)\b|^(?:please\s+)?(?:create|open|make)\s+(?:a\s+)?(?:pr|pull request)\b/.test(value)) return 'append';
   // Referential status/follow-up language continues the active task. An
   // unrelated new imperative (for example "start localhost" while a status
   // check is still running) remains "ignore" so admission creates the next
@@ -254,14 +255,28 @@ export function applySteering(
   } as const;
 
   const prompt = action === 'replace' ? message.text : task.prompt;
+  const replacementRequired = action === 'replace' ? verificationRequirementsFor(prompt) : [];
+  const appendedRequired = action === 'append'
+    ? [...new Set([...harness.verification.required, ...verificationRequirementsFor(message.text)])]
+    : [];
   const verification = action === 'replace'
     ? {
-        required: verificationRequirementsFor(prompt),
+        required: replacementRequired,
         satisfied: [],
-        missing: verificationRequirementsFor(prompt),
-        status: verificationRequirementsFor(prompt).length ? 'pending' as const : 'passed' as const,
+        missing: [...replacementRequired],
+        status: replacementRequired.length ? 'pending' as const : 'passed' as const,
       }
-    : harness.verification;
+    : action === 'append'
+      ? {
+          ...harness.verification,
+          required: appendedRequired,
+          satisfied: harness.verification.satisfied.filter((item) => appendedRequired.includes(item)),
+          missing: appendedRequired.filter((item) => !harness.verification.satisfied.includes(item)),
+          status: appendedRequired.some((item) => !harness.verification.satisfied.includes(item))
+            ? 'pending' as const
+            : harness.verification.status,
+        }
+      : harness.verification;
 
   return {
     ...task,
@@ -280,19 +295,39 @@ export function applySteering(
 
 function evidenceKeys(events: OrlynxEvent[]): Set<string> {
   const found = new Set<string>();
-  for (const event of events) {
+  // Verification evidence is temporal. A later failing test/build invalidates an
+  // earlier passing observation; a later successful rerun can satisfy it again.
+  const latestOutcome = new Map<'tests' | 'build', boolean>();
+  const setOutcome = (key: 'tests' | 'build', ok: boolean) => latestOutcome.set(key, ok);
+
+  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     const payload = event.payload || {};
-    if (event.type === 'file.changed' || event.type === 'files.changed' || event.type === 'changes.updated') found.add('changes');
+    if (event.type === 'file.changed' || event.type === 'files.changed') {
+      found.add('changes');
+      // An edit after a passing check makes that check stale. The next real
+      // test/build observation may satisfy it again.
+      if (latestOutcome.has('tests')) setOutcome('tests', false);
+      if (latestOutcome.has('build')) setOutcome('build', false);
+    } else if (event.type === 'changes.updated') {
+      // End-of-run diff snapshots describe edits that may already have been
+      // verified, so they do not by themselves invalidate test/build evidence.
+      found.add('changes');
+    }
 
     if (event.type === 'test.result') {
-      const failed = Number(payload.failed || 0);
-      if (!Number.isFinite(failed) || failed <= 0) found.add('tests');
+      const failed = Number(payload.failed);
+      const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : typeof payload.code === 'number' ? payload.code : undefined;
+      const explicitOk = payload.ok === true || payload.success === true;
+      const explicitFail = payload.ok === false || payload.success === false;
+      setOutcome('tests', explicitFail ? false : Number.isFinite(failed) ? failed <= 0 : exitCode !== undefined ? exitCode === 0 : explicitOk);
     }
 
     if (event.type === 'build.result') {
       const state = String(payload.state || payload.status || '').toLowerCase();
-      const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : undefined;
-      if (state === 'success' || state === 'passed' || exitCode === 0) found.add('build');
+      const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : typeof payload.code === 'number' ? payload.code : undefined;
+      const passed = state === 'success' || state === 'passed' || payload.ok === true || payload.success === true || exitCode === 0;
+      const failed = state === 'failed' || state === 'error' || payload.ok === false || payload.success === false || (exitCode !== undefined && exitCode !== 0);
+      if (passed || failed) setOutcome('build', passed && !failed);
     }
 
     if (event.type === 'preview.ready') found.add('preview');
@@ -303,25 +338,34 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
       if (payload.deploymentUrl || payload.deployed === true) found.add('deployment');
     }
 
-    if (event.type === 'tool.completed' || event.type === 'terminal.exited') {
-      const command = String(payload.command || '').toLowerCase();
+    if (event.type === 'tool.completed' || event.type === 'tool.failed' || event.type === 'terminal.exited') {
+      const command = String(payload.command || payload.cmd || '').trim().toLowerCase();
       const semanticType = String(payload.semanticType || '').toLowerCase();
-      const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : 0;
-      if (exitCode === 0 && /\bgit\s+commit\b/.test(command)) found.add('commit');
-      if (exitCode === 0 && /\bgit\s+push\b/.test(command)) found.add('publish');
-      if (exitCode === 0 && (
-        semanticType === 'build-result'
-        || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b/.test(command)
-        || /\btsc\b/.test(command)
-      )) found.add('build');
+      const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : typeof payload.code === 'number' ? payload.code : undefined;
+      const ok = event.type === 'tool.completed'
+        ? (exitCode === undefined || exitCode === 0)
+        : event.type === 'tool.failed'
+          ? false
+          : (exitCode ?? 0) === 0;
+      if (ok && /\bgit\s+commit\b/.test(command)) found.add('commit');
+      if (ok && /\bgit\s+push\b/.test(command)) found.add('publish');
+
+      const isBuild = semanticType === 'build-result'
+        || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(command);
+      if (isBuild) setOutcome('build', ok);
+
       const tool = String(payload.tool || payload.toolName || '').toLowerCase();
-      if (exitCode === 0 && ['webfetch', 'websearch'].includes(tool)) found.add('browser');
-      if (exitCode === 0 && (
-        semanticType === 'test-result'
-        || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b/.test(command)
-        || /\bnode\s+--test\b|\bpytest\b|\bplaywright\b|\bvitest\b|\bjest\b/.test(command)
-      )) found.add('tests');
+      if (ok && ['webfetch', 'websearch'].includes(tool)) found.add('browser');
+
+      const isTest = semanticType === 'test-result'
+        || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\b|:)|node\s+--test\b|pytest\b|python(?:3)?\s+-m\s+pytest\b|(?:npx\s+)?playwright\s+test\b|(?:npx\s+)?(?:vitest|jest|mocha)\b)/i.test(command);
+      if (isTest) setOutcome('tests', ok);
     }
+  }
+
+  for (const [key, ok] of latestOutcome) {
+    if (ok) found.add(key);
+    else found.delete(key);
   }
   return found;
 }

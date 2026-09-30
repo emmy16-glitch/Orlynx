@@ -12,10 +12,13 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
+import { addChangeEvidence } from './changes.js';
+import { publishVerifiedChangeSet, type PublicationStrategy } from './publisher.js';
+import { publishIntentFor, publishTargetBranchFor } from './direct-chat.js';
 import type { EventType } from '@orlynx/shared';
 
 async function persistLiveEvent(event: {
@@ -36,38 +39,21 @@ async function persistLiveEvent(event: {
   });
 }
 
-async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
-  const repository = controlPlaneRepository();
-  const session = await repository.getSession(sessionId);
-  if (!session) throw new Error('Session is unavailable for controlled publishing.');
-
-  await bridgeRequest(workspaceId, 'git.fetch', { approved: true }, 120_000);
-  const status = await bridgeRequest<{
-    branch?: string;
-    head?: string;
-    remoteHead?: string;
-    porcelain?: string;
-    ahead?: number;
-    behind?: number;
-  }>(workspaceId, 'git.status', {}, 30_000);
-
-  const branch = String(status.branch || '');
-  const head = String(status.head || '');
-  const porcelain = String(status.porcelain || '');
-  if (!branch || !head) throw new Error('Orlynx could not determine the Git branch and commit.');
-  if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
-  if (porcelain.trim()) throw new Error('Workspace still has uncommitted changes. Commit them before publishing.');
-  if (Number(status.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
-
-  if (status.remoteHead && status.remoteHead === head && Number(status.ahead || 0) === 0) {
-    return { branch, head, alreadyPublished: true };
-  }
-
-  const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspaceId, 'git.push', {
-    approved: true,
-    allowDefaultBranch: branch === 'main' || branch === 'master',
-  }, 120_000);
-  return { branch: String(pushed.branch || branch), head: String(pushed.head || head), alreadyPublished: false };
+async function controlledDefaultBranchPublish(
+  workspaceId: string,
+  sessionId: string,
+  runId?: string,
+  strategy: PublicationStrategy = 'direct',
+  targetBranch?: string,
+) {
+  return publishVerifiedChangeSet({
+    sessionId,
+    workspaceId,
+    runId,
+    strategy,
+    targetBranch,
+    commitMessage: 'Orlynx verified changes',
+  });
 }
 
 function continuationPayload(
@@ -442,13 +428,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const files = rawDiff.flatMap((item) => {
             const file = String(item.file || item.path || '');
             if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
-            return [{
+            return [addChangeEvidence({
               path: file,
               action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const,
               before: typeof item.before === 'string' ? item.before : undefined,
               after: typeof item.after === 'string' ? item.after : undefined,
               diff: typeof item.diff === 'string' ? item.diff : undefined,
-            }];
+            })];
           });
 
           if (files.length) {
@@ -468,7 +454,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               const source = file.diff || file.after || file.before || '';
               const diff = source && remainingDiffChars > 0 ? source.slice(0, Math.min(remainingDiffChars, 8_000)) : '';
               remainingDiffChars -= diff.length;
-              return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
+              return {
+                path: file.path,
+                action: file.action,
+                ...(typeof file.additions === 'number' ? { additions: file.additions } : {}),
+                ...(typeof file.deletions === 'number' ? { deletions: file.deletions } : {}),
+                ...(file.afterHash ? { afterHash: file.afterHash } : {}),
+                ...(diff ? { diff } : {}),
+              };
             });
 
             await persistLiveEvent({
@@ -593,6 +586,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
+          // Once every requirement except publication is satisfied, bind that
+          // evidence to the exact workspace HEAD. Publication will refuse stale
+          // evidence if a later commit changes HEAD.
+          if (task.harness.verification.missing.every((item) => item === 'publish')) {
+            const verifiedStatus = await bridgeRequest<{ head?: string }>(claims.workspaceId, 'git.status', {}, 30_000).catch(() => null);
+            if (verifiedStatus?.head) task.harness.verifiedWorkspaceHead = String(verifiedStatus.head);
+          }
           await repository.putTask(task);
 
           let publishError = '';
@@ -650,7 +650,21 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           if (onlyPublishMissing && effectivePermission === 'full') {
             try {
-              const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId);
+              const publishSession = await repository.getSession(claims.sessionId);
+              const publishMessages = [
+                task.prompt,
+                ...(task.harness?.inbox || []).map((item) => item.text),
+              ].filter((value) => verificationRequirementsFor(String(value)).includes('publish'));
+              const publishText = String(publishMessages.at(-1) || task.prompt);
+              const publishStrategy = publishIntentFor(publishText, publishSession?.branch || '') || 'direct';
+              const publishTarget = publishTargetBranchFor(publishText, publishSession?.branch || '') || publishSession?.branch;
+              const published = await controlledDefaultBranchPublish(
+                claims.workspaceId,
+                claims.sessionId,
+                runId,
+                publishStrategy,
+                publishTarget,
+              );
               const publishedAt = new Date().toISOString();
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
@@ -1274,7 +1288,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           payload,
           message.event.eventId,
         );
-        await persistLiveEvent({
+        const persisted = await persistLiveEvent({
           eventId,
           sessionId: claims.sessionId,
           workspaceId: claims.workspaceId,
@@ -1284,6 +1298,42 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           timestamp: new Date().toISOString(),
           payload,
         });
+
+        // Workspace text is not merely transport telemetry. Checkpoint each
+        // canonical delta into the durable task so refresh/API restart can
+        // reconstruct the visible partial answer without waiting for finalization.
+        if (eventTaskId && type === 'message.delta' && typeof payload.delta === 'string' && payload.delta) {
+          const deltaTask = await repository.getTask(eventTaskId);
+          if (deltaTask) {
+            deltaTask.harness ||= createHarnessCheckpoint({
+              prompt: deltaTask.prompt,
+              mode: deltaTask.mode || 'build',
+              permission: deltaTask.tempPermission || deltaTask.permission || 'full',
+              plane: deltaTask.plane || 'workspace',
+            });
+            const lastSequence = Number(deltaTask.harness.lastPartialSequence || 0);
+            if (persisted.sequence > lastSequence) {
+              const delta = String(payload.delta);
+              const offset = Number(payload.offset);
+              let partial = String(deltaTask.partialText || '');
+              if (Number.isInteger(offset) && offset >= 0 && offset <= partial.length) {
+                if (partial.slice(offset, offset + delta.length) !== delta) {
+                  partial = partial.slice(0, offset) + delta;
+                }
+              } else if (!partial.endsWith(delta)) {
+                partial += delta;
+              }
+              deltaTask.partialText = partial;
+              deltaTask.harness = {
+                ...deltaTask.harness,
+                lastPartialSequence: persisted.sequence,
+                partialUpdatedAt: persisted.timestamp,
+              };
+              deltaTask.updatedAt = persisted.timestamp;
+              await repository.putTask(deltaTask);
+            }
+          }
+        }
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });

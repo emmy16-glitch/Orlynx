@@ -20,12 +20,13 @@ import { safeName, type ChatMessage } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, type PublishIntent } from './direct-chat.js';
+import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, publishTargetBranchFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
 import { selectWorkspaceProvider } from './compute-broker.js';
+import { publishVerifiedChangeSet } from './publisher.js';
 
 export const router = Router();
 
@@ -151,7 +152,7 @@ type WorkspacePublishResult = {
   pullRequestNumber?: number;
 };
 
-async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent): Promise<WorkspacePublishResult> {
+async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent, targetBranch?: string): Promise<WorkspacePublishResult> {
   const gate = canPerform(session.id, 'git.push');
   if (!gate.allowed) throw new Error(gate.reason || 'Publishing is blocked by the current project access level.');
   if (!durableStorageConfigured()) throw new Error('Controlled chat publishing requires the hosted Orlynx workspace.');
@@ -165,78 +166,27 @@ async function publishCommittedWorkspaceHead(req: Request, session: any, strateg
     throw new Error('The development environment must be ready before publishing.');
   }
 
-  await bridgeRequest(workspace.id, 'git.fetch', { approved: true });
-  let status = await bridgeRequest<{
-    branch?: string;
-    head?: string;
-    porcelain?: string;
-    upstream?: string;
-    remoteHead?: string;
-    ahead?: number;
-    behind?: number;
-  }>(workspace.id, 'git.status');
-
-  const branch = String(status.branch || '');
-  const head = String(status.head || '');
-  const porcelain = String(status.porcelain || '');
-  if (!branch || !head) throw new Error('Orlynx could not determine the current Git branch and commit.');
-  if (porcelain.trim()) throw new Error('There are uncommitted workspace changes. Commit them before publishing.');
-  if (Number(status.behind || 0) > 0) {
-    throw new Error(`origin/${branch} has ${Number(status.behind)} newer commit(s). Pull/rebase before publishing.`);
-  }
-
-  if (strategy === 'direct') {
-    if (branch !== session.branch) {
-      throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}. Switch back before publishing directly.`);
-    }
-    if (status.remoteHead && status.remoteHead === head && Number(status.ahead || 0) === 0) {
-      return { branch, head, alreadyPublished: true };
-    }
-    const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', {
-      approved: true,
-      allowDefaultBranch: branch === 'main' || branch === 'master',
-    });
-    const publishedBranch = String(pushed.branch || branch);
-    const publishedHead = String(pushed.head || head);
-    await recordAudit(req, session.id, 'git.push', 'completed', { branch: publishedBranch, commitSha: publishedHead, source: 'chat' });
-    return { branch: publishedBranch, head: publishedHead };
-  }
-
-  const baseBranch = session.branch;
-  let publishBranch = branch;
-  if (!/^orlynx\/[a-zA-Z0-9._-]+$/.test(publishBranch)) {
-    publishBranch = `orlynx/publish-${Date.now().toString(36)}`;
-    await bridgeRequest(workspace.id, 'git.branch.create', { branch: publishBranch });
-    status = await bridgeRequest(workspace.id, 'git.status');
-  }
-  const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', { approved: true });
-  const pullRequest = await createGitHubPullRequest(
-    session.project,
-    baseBranch,
-    publishBranch,
-    'Orlynx changes',
-    `Changes prepared in Orlynx.\n\nCommit: ${String(pushed.head || head)}`,
-    requestInstallationId(req),
-  );
-
-  session.branch = publishBranch;
-  session.updatedAt = new Date().toISOString();
-  store.save();
-  const durableSession = await repository.getSession(session.id);
-  if (durableSession) await repository.putSession({ ...session, userId: durableSession.userId, projectId: durableSession.projectId });
-  await recordAudit(req, session.id, 'git.pull_request', 'completed', {
-    branch: publishBranch,
-    baseBranch,
-    commitSha: String(pushed.head || head),
-    pullRequestNumber: pullRequest.number,
-    source: 'chat',
+  const published = await publishVerifiedChangeSet({
+    sessionId: session.id,
+    workspaceId: workspace.id,
+    strategy,
+    targetBranch: targetBranch || session.branch,
+    commitMessage: 'Orlynx verified changes',
   });
-  return {
-    branch: publishBranch,
-    head: String(pushed.head || head),
-    pullRequestUrl: pullRequest.url,
-    pullRequestNumber: pullRequest.number,
-  };
+  await recordAudit(
+    req,
+    session.id,
+    published.pullRequestUrl ? 'git.pull_request' : 'git.push',
+    'completed',
+    {
+      branch: published.branch,
+      commitSha: published.head,
+      pullRequestNumber: published.pullRequestNumber,
+      protectedBranchFallback: published.protectedBranchFallback,
+      source: 'chat-control-plane',
+    },
+  );
+  return published;
 }
 
 async function persistRecoveredBranch(session: any, branch: string): Promise<void> {
@@ -453,6 +403,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
           mode: task.mode,
           permission: task.permission,
           partialText: task.partialText,
+          partialUpdatedAt: task.partialText ? (task.harness?.partialUpdatedAt || task.updatedAt) : undefined,
           activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state,
           startedAt: task.createdAt,
           finishedAt: ['completed','failed','cancelled'].includes(task.state) ? task.updatedAt : undefined,
@@ -475,6 +426,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
   const selectedModel = modelId ? String(modelId) : prefs.modelId;
   const publishIntent = effectiveMode === 'build' ? publishIntentFor(String(text), s.branch) : null;
+  const publishTargetBranch = publishIntent ? publishTargetBranchFor(String(text), s.branch) : null;
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
   if (!selectedModel && !instantReply && !publishIntent) return res.status(409).json({ error: 'Choose a model before sending a message.', code: 'MODEL_REQUIRED' });
 
@@ -716,10 +668,10 @@ router.post('/sessions/:id/messages', async (req, res) => {
     };
 
     emit(s.id, 'run.started', { taskId, messageId: msg.id, plane: 'workspace', engine: selectedAdapterId, mode: effectiveMode, permission: prefs.permission }, runId);
-    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
+    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${publishTargetBranch || s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
 
     try {
-      const published = await publishCommittedWorkspaceHead(req, s, publishIntent);
+      const published = await publishCommittedWorkspaceHead(req, s, publishIntent, publishTargetBranch || undefined);
       const shortSha = published.head.slice(0, 7);
       const reply = published.pullRequestUrl
         ? `Published \`${shortSha}\` as pull request #${published.pullRequestNumber}: ${published.pullRequestUrl}`
@@ -1308,32 +1260,14 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     }
 
     try {
-      await bridgeRequest(workspace.id, 'git.fetch', { approved: true }, 120_000);
-      const gitStatus = await bridgeRequest<{
-        branch?: string;
-        head?: string;
-        remoteHead?: string;
-        porcelain?: string;
-        ahead?: number;
-        behind?: number;
-      }>(workspace.id, 'git.status', {}, 30_000);
-
-      const branch = String(gitStatus.branch || '');
-      const head = String(gitStatus.head || '');
-      if (!branch || !head) throw new Error('Orlynx could not determine the current Git commit.');
-      if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
-      if (String(gitStatus.porcelain || '').trim()) throw new Error('The workspace still has uncommitted changes.');
-      if (Number(gitStatus.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
-
-      let publishedHead = head;
-      let alreadyPublished = Boolean(gitStatus.remoteHead && gitStatus.remoteHead === head && Number(gitStatus.ahead || 0) === 0);
-      if (!alreadyPublished) {
-        const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', {
-          approved: true,
-          allowDefaultBranch: branch === 'main' || branch === 'master',
-        }, 120_000);
-        publishedHead = String(pushed.head || head);
-      }
+      const published = await publishVerifiedChangeSet({
+        sessionId: session.id,
+        workspaceId: workspace.id,
+        strategy: 'direct',
+        targetBranch: session.branch,
+        runId: task.runId,
+        commitMessage: 'Orlynx verified changes',
+      });
 
       const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
       await repository.putApproval(approvedRecord);
@@ -1344,11 +1278,14 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
         detail: 'Approved once.',
       }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
       await emitPersisted(session.id, 'receipt.created', {
-        command: 'git push',
+        command: published.pullRequestUrl ? 'github pull request' : 'github publish',
         publish: true,
-        pushedBranch: branch,
-        commitSha: publishedHead,
-        alreadyPublished,
+        pushedBranch: published.branch,
+        commitSha: published.head,
+        alreadyPublished: published.alreadyPublished,
+        pullRequestUrl: published.pullRequestUrl,
+        pullRequestNumber: published.pullRequestNumber,
+        protectedBranchFallback: published.protectedBranchFallback,
       }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
 
       const permission = task.tempPermission || task.permission || 'ask-first';
@@ -1381,7 +1318,10 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
       }
 
       task.harness = advanceHarnessPhase(task.harness, 'finalizing', { mode: task.mode || 'build', permission, now });
-      const finalText = [task.partialText || '', `Published \`${publishedHead.slice(0, 7)}\` to \`${branch}\`.`].filter(Boolean).join('\n\n');
+      const publishSummary = published.pullRequestUrl
+        ? `Published verified commit \`${published.head.slice(0, 7)}\` on \`${published.branch}\` and opened PR #${published.pullRequestNumber}.`
+        : `Published verified commit \`${published.head.slice(0, 7)}\` to \`${published.branch}\`.`;
+      const finalText = [task.partialText || '', publishSummary].filter(Boolean).join('\n\n');
       if (finalText) await repository.putMessage({
         id: `msg_${task.runId || uuid()}`,
         sessionId: session.id,
@@ -1410,11 +1350,13 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
       await recordAudit(req, session.id, 'approval.resolve', 'approved_once', {
         approvalId: approval.id,
         action: approval.action,
-        branch,
-        commitSha: publishedHead,
+        branch: published.branch,
+        commitSha: published.head,
+        pullRequestNumber: published.pullRequestNumber,
+        protectedBranchFallback: published.protectedBranchFallback,
       });
       await promoteNextQueuedRun(session.id).catch(() => null);
-      return res.json({ approval: approvedRecord, published: { branch, head: publishedHead, alreadyPublished }, verification: task.harness.verification });
+      return res.json({ approval: approvedRecord, published, verification: task.harness.verification });
     } catch (error) {
       return res.status(502).json({ error: error instanceof Error ? error.message : 'The approved publish could not be completed.' });
     }
@@ -1669,7 +1611,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
         },
       } : undefined,
       partialText: task.partialText,
-      partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
+      partialUpdatedAt: task.partialText ? (task.harness?.partialUpdatedAt || task.updatedAt) : undefined,
       updatedAt: task.updatedAt,
       activity: task.state === 'running'
         ? (task.plane === 'direct' ? 'Streaming response' : 'Working')
@@ -1834,7 +1776,10 @@ router.post('/changes/:changeId/commit', async (req, res) => {
       const c = currentChanges(sid).find((item) => item.id === req.params.changeId);
       if (!c || c.reviewState !== 'approved') return res.status(409).json({ error: 'approve before commit (safe-by-default)' });
       const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-      const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', { message: String(req.body?.message || 'Orlynx update') });
+      const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', {
+        message: String(req.body?.message || 'Orlynx update'),
+        files: c.files.map((file) => file.path),
+      });
       c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: result.sha }); return res.json(c);
     }
     const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));

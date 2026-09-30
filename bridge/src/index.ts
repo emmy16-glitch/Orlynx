@@ -1371,7 +1371,26 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
-    case 'git.commit': { const message = String(payload.message || '').trim().slice(0, 240); if (!message) throw new Error('Commit message is required.'); git(['add', '--all']); git(['commit', '-m', message], 60_000); return { sha: git(['rev-parse', 'HEAD']).trim() }; }
+    case 'git.commit': {
+      const message = String(payload.message || '').trim().slice(0, 240);
+      if (!message) throw new Error('Commit message is required.');
+      const files = Array.isArray(payload.files)
+        ? [...new Set(payload.files.map(String).map((value) => value.trim()).filter(Boolean))]
+        : [];
+      if (!files.length) throw new Error('Commit requires an approved file allowlist.');
+      for (const file of files) {
+        if (file.startsWith('/') || file.startsWith('-') || file.split('/').includes('..')) throw new Error('Commit file path is invalid.');
+        safePath(file);
+      }
+      const staged = git(['diff', '--cached', '--name-only']).split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      const unrelatedStaged = staged.filter((file) => !files.includes(file));
+      if (unrelatedStaged.length) {
+        throw new Error(`Commit blocked by unrelated staged files: ${unrelatedStaged.slice(0, 8).join(', ')}`);
+      }
+      for (const file of files) git(['add', '--', file]);
+      git(['commit', '-m', message], 60_000);
+      return { sha: git(['rev-parse', 'HEAD']).trim(), files };
+    }
     case 'git.push': {
       if (payload.approved !== true) throw new Error('Push requires an approved command.');
       const branch = git(['branch', '--show-current']).trim();

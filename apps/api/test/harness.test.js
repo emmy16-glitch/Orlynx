@@ -160,6 +160,36 @@ test('active-turn steering classifies source-style APPEND REPLACE STOP behavior'
   assert.equal(steeringActionFor('why are you changing that file?'), 'ignore');
 });
 
+test('publication follow-ups stay on the active task and expand acceptance criteria', () => {
+  assert.equal(steeringActionFor('push it now'), 'append');
+  assert.equal(steeringActionFor('push to branch fix/foo'), 'append');
+  const base = {
+    id: 'task-publish',
+    sessionId: 'session-1',
+    workspaceId: 'workspace-1',
+    plane: 'workspace',
+    runId: 'run-publish',
+    state: 'running',
+    prompt: 'fix streaming and run tests',
+    mode: 'build',
+    permission: 'full',
+    harness: createHarnessCheckpoint({
+      prompt: 'fix streaming and run tests',
+      mode: 'build',
+      permission: 'full',
+      plane: 'workspace',
+    }),
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const steered = applySteering(base, 'push to branch fix/foo', 'append', '2026-10-01T00:01:00.000Z');
+  assert.ok(steered.harness?.verification.required.includes('publish'));
+  assert.ok(steered.harness?.verification.required.includes('tests'));
+  assert.ok(steered.harness?.verification.missing.includes('publish'));
+  assert.equal(steered.id, base.id);
+  assert.equal(steered.runId, base.runId);
+});
+
 test('APPEND and REPLACE stay on the same durable task while STOP cancels it', () => {
   const base = {
     id: 'task-1',
@@ -212,6 +242,49 @@ test('result verifier uses durable canonical evidence instead of trusting final 
   assert.equal(cp.verification.status, 'passed');
   assert.deepEqual(cp.verification.missing, []);
   assert.deepEqual(cp.verification.satisfied, ['changes', 'tests', 'build', 'commit', 'publish']);
+});
+
+test('later test/build failures invalidate earlier passing verification', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'fix it, run tests and build',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, [
+    evt(1, 'changes.updated', { files: [{ path: 'src/a.ts' }] }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'tool.failed', { command: 'npm test', semanticType: 'test-result', exitCode: 1 }),
+    evt(5, 'tool.failed', { command: 'npm run build', semanticType: 'build-result', exitCode: 1 }),
+  ]);
+  assert.equal(cp.verification.status, 'needs_more_work');
+  assert.deepEqual(cp.verification.satisfied, ['changes']);
+  assert.deepEqual(cp.verification.missing, ['tests', 'build']);
+});
+
+test('later source edits make earlier test/build evidence stale until rerun', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'fix it, run tests and build',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, [
+    evt(1, 'file.changed', { path: 'src/a.ts' }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'file.changed', { path: 'src/a.ts' }),
+  ]);
+  assert.deepEqual(cp.verification.missing, ['tests', 'build']);
+
+  cp = verifyHarness(cp, [
+    evt(1, 'file.changed', { path: 'src/a.ts' }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'changes.updated', { files: [{ path: 'src/a.ts' }] }),
+  ]);
+  assert.equal(cp.verification.status, 'passed');
 });
 
 test('browser research verification requires real web tool evidence', () => {
