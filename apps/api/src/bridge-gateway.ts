@@ -16,6 +16,7 @@ import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evide
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
+import { addChangeEvidence } from './changes.js';
 import type { EventType } from '@orlynx/shared';
 
 async function persistLiveEvent(event: {
@@ -442,13 +443,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const files = rawDiff.flatMap((item) => {
             const file = String(item.file || item.path || '');
             if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
-            return [{
+            return [addChangeEvidence({
               path: file,
               action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const,
               before: typeof item.before === 'string' ? item.before : undefined,
               after: typeof item.after === 'string' ? item.after : undefined,
               diff: typeof item.diff === 'string' ? item.diff : undefined,
-            }];
+            })];
           });
 
           if (files.length) {
@@ -468,7 +469,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               const source = file.diff || file.after || file.before || '';
               const diff = source && remainingDiffChars > 0 ? source.slice(0, Math.min(remainingDiffChars, 8_000)) : '';
               remainingDiffChars -= diff.length;
-              return { path: file.path, action: file.action, ...(diff ? { diff } : {}) };
+              return {
+                path: file.path,
+                action: file.action,
+                ...(typeof file.additions === 'number' ? { additions: file.additions } : {}),
+                ...(typeof file.deletions === 'number' ? { deletions: file.deletions } : {}),
+                ...(file.afterHash ? { afterHash: file.afterHash } : {}),
+                ...(diff ? { diff } : {}),
+              };
             });
 
             await persistLiveEvent({
@@ -1274,7 +1282,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           payload,
           message.event.eventId,
         );
-        await persistLiveEvent({
+        const persisted = await persistLiveEvent({
           eventId,
           sessionId: claims.sessionId,
           workspaceId: claims.workspaceId,
@@ -1284,6 +1292,42 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           timestamp: new Date().toISOString(),
           payload,
         });
+
+        // Workspace text is not merely transport telemetry. Checkpoint each
+        // canonical delta into the durable task so refresh/API restart can
+        // reconstruct the visible partial answer without waiting for finalization.
+        if (eventTaskId && type === 'message.delta' && typeof payload.delta === 'string' && payload.delta) {
+          const deltaTask = await repository.getTask(eventTaskId);
+          if (deltaTask) {
+            deltaTask.harness ||= createHarnessCheckpoint({
+              prompt: deltaTask.prompt,
+              mode: deltaTask.mode || 'build',
+              permission: deltaTask.tempPermission || deltaTask.permission || 'full',
+              plane: deltaTask.plane || 'workspace',
+            });
+            const lastSequence = Number(deltaTask.harness.lastPartialSequence || 0);
+            if (persisted.sequence > lastSequence) {
+              const delta = String(payload.delta);
+              const offset = Number(payload.offset);
+              let partial = String(deltaTask.partialText || '');
+              if (Number.isInteger(offset) && offset >= 0 && offset <= partial.length) {
+                if (partial.slice(offset, offset + delta.length) !== delta) {
+                  partial = partial.slice(0, offset) + delta;
+                }
+              } else if (!partial.endsWith(delta)) {
+                partial += delta;
+              }
+              deltaTask.partialText = partial;
+              deltaTask.harness = {
+                ...deltaTask.harness,
+                lastPartialSequence: persisted.sequence,
+                partialUpdatedAt: persisted.timestamp,
+              };
+              deltaTask.updatedAt = persisted.timestamp;
+              await repository.putTask(deltaTask);
+            }
+          }
+        }
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
   });
