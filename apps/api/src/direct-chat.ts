@@ -5,7 +5,7 @@ import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
 const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 3 * 60_000));
-const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 60_000));
+const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 30_000));
 
 export type ExecutionPlane = 'direct' | 'workspace';
 
