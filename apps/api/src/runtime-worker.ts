@@ -114,7 +114,7 @@ if test "$gh_safe" -ne 1; then
     rm -f "$archive"
   fi
 fi
-repo_root="${ORLYNX_REPO_ROOT_HINT:-}"
+repo_root="\${ORLYNX_REPO_ROOT_HINT:-}"
 if test -z "$repo_root"; then
   repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
 fi
