@@ -69,9 +69,11 @@ Queued work remains durable across browser disconnects and API restarts.
 
 The session remains stable even when compute changes underneath it.
 
-Stopping, replacing or falling back between an Orlynx runner and GitHub Codespaces does not delete chat history.
+Stopping, replacing, or migrating among Orlynx runners, E2B, and GitHub Codespaces does not delete chat history or create a new logical task.
 
 Agent-adapter health is also separate from session existence. An unavailable OpenCode runtime must not make the conversation disappear.
+
+A transient direct-runtime outage can move the same durable turn onto broker-selected workspace compute. The run/message identity remains stable across that migration.
 
 ## GitHub disconnect
 
