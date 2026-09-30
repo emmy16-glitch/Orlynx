@@ -70,6 +70,33 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(row.evidence?.files, [{ path: 'src/auth.ts', action: 'modify', diff: '@@ -1 +1 @@\n-old\n+new' }]);
   });
 
+  it('groups consecutive repository reads and keeps paths as expandable evidence', () => {
+    const rows = toActivities([
+      event(1, 'tool.started', { tool: 'read', semanticType: 'file-read', path: 'src/a.ts', toolCallId: 'read-a' }),
+      event(2, 'tool.completed', { tool: 'read', semanticType: 'file-read', path: 'src/a.ts', toolCallId: 'read-a' }),
+      event(3, 'tool.started', { tool: 'read', semanticType: 'file-read', path: 'src/b.ts', toolCallId: 'read-b' }),
+      event(4, 'tool.completed', { tool: 'read', semanticType: 'file-read', path: 'src/b.ts', toolCallId: 'read-b' }),
+      event(5, 'tool.started', { tool: 'read', semanticType: 'file-read', path: 'src/c.ts', toolCallId: 'read-c' }),
+      event(6, 'tool.completed', { tool: 'read', semanticType: 'file-read', path: 'src/c.ts', toolCallId: 'read-c' }),
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Inspecting repository');
+    assert.equal(rows[0].summary, '3 files');
+    assert.deepEqual(rows[0].evidence?.files, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    assert.equal(rows[0].collapsible, true);
+  });
+
+  it('shows observed additions and deletions for file changes', () => {
+    const [row] = toActivities([event(1, 'changes.updated', {
+      changeId: 'chg-lines',
+      count: 1,
+      files: [{ path: 'src/auth.ts', action: 'modify', additions: 12, deletions: 4, diff: '@@' }],
+    })]);
+    assert.equal(row.title, 'Updated src/auth.ts');
+    assert.equal(row.summary, '+12 −4');
+    assert.equal(row.evidence?.files?.[0]?.additions, 12);
+  });
+
   it('turns test receipts into counts and human-first failures', () => {
     const raw = '4 failed\n22 passed\n0 skipped\n✕ Duplicate message created';
     const [result] = toActivities([event(1, 'receipt.created', { cmd: 'npm test', code: 1, out: raw })]);
