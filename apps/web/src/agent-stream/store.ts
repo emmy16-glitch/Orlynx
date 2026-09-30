@@ -384,7 +384,7 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       const prior = state.activities[event.activityId];
 
       if (event.sourceType === 'agent.memory') {
-        const count = Number(/(\d+)\s+(?:verified\s+|reusable\s+)?lessons?/i.exec(String(event.text || ''))?.[1] || 0);
+        const count = Number(/(\d+)\s+(?:(?:verified\s+)?project\s+|verified\s+|reusable\s+)?lessons?/i.exec(String(event.text || ''))?.[1] || 0);
         putActivity(state, {
           id: event.activityId,
           runId: event.runId,
