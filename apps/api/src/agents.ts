@@ -18,6 +18,7 @@ import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
 import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 import { GitHubActionsUnavailableError, githubActionsVerificationEligible, runGitHubActionsVerification, selectDispatchableVerificationWorkflow } from './github-actions.js';
+import { noteComputeFailure, selectWorkspaceProvider } from './compute-broker.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
@@ -535,12 +536,19 @@ async function failoverDirectTaskToWorkspace(
   const project = await repository.getProject(session.projectId);
   if (!project || !Number.isFinite(project.repositoryId)) return false;
 
+  noteComputeFailure('direct-runtime', detail);
+  const preferredProvider = await selectWorkspaceProvider({ taskText: task.prompt });
+  if (!preferredProvider) return false;
   const workspace = await ensureWorkspaceRecord({
     sessionId: session.id,
     userId: session.userId,
     projectId: session.projectId,
     repositoryId: project.repositoryId,
     branch: session.branch,
+  }, {
+    preferredProvider,
+    taskText: task.prompt,
+    preserveHealthyExisting: true,
   });
 
   const now = new Date().toISOString();
@@ -574,15 +582,14 @@ async function failoverDirectTaskToWorkspace(
     state: 'queued',
     plane: 'workspace',
     failover: true,
-    message: 'The fast AI runtime is unavailable. Orlynx is continuing this same turn on resilient workspace compute.',
+    message: 'Switching compute…',
   }, run.id);
   emit(session.id, 'activity.progress', {
     taskId: task.id,
     sourceType: 'agent.runtime.failover',
     from: 'direct',
     to: workspace.provider,
-    text: 'Fast AI runtime unavailable · switching compute automatically…',
-    detail: detail.slice(0, 300),
+    text: 'Switching compute…',
   }, run.id);
 
   await scheduleWorkspacePreparation({
