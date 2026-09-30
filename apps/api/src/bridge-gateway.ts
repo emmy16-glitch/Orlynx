@@ -1153,12 +1153,26 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             capabilities,
             agentHeartbeatAt: now,
           });
-          const tasks = await repository.listTasks(claims.sessionId);
-          for (const task of tasks) {
-            if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'running') continue;
-            task.updatedAt = now;
-            await repository.putTask(task);
-            await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
+
+          const activeTaskIds = new Set(
+            Array.isArray(heartbeatPayload.activeTaskIds)
+              ? heartbeatPayload.activeTaskIds.map(String).filter(Boolean)
+              : [],
+          );
+          if (activeTaskIds.size) {
+            const tasks = await repository.listTasks(claims.sessionId);
+            let touchedTask = false;
+            for (const task of tasks) {
+              if (
+                (task.plane || 'workspace') !== 'workspace'
+                || task.state !== 'running'
+                || !activeTaskIds.has(task.id)
+              ) continue;
+              task.updatedAt = now;
+              await repository.putTask(task);
+              touchedTask = true;
+            }
+            if (touchedTask) await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
           }
           return;
         }
