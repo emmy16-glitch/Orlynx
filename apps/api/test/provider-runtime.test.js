@@ -499,7 +499,7 @@ test('runtime prewarm waits through a transient Render 502 and becomes ready', a
 
 test('direct runtime recovery has a bounded default wait and progressive status copy', () => {
   const source = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
-  assert.match(source, /DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 75_000/);
+  assert.match(source, /DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 12_000/);
   assert.match(source, /Checking AI runtime…/);
   assert.match(source, /AI runtime is waking · retrying connection/);
   assert.match(source, /AI runtime is taking longer than expected · recovery continues/);
