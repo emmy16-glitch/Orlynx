@@ -6,6 +6,7 @@ import { bridgeRuntimeRevision } from './runtime-worker.js';
 import { defaultWorkspaceProviderId, fallbackWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled } from './workspace-providers.js';
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
+import { noteComputeFailure, noteComputeSuccess, selectWorkspaceProvider } from './compute-broker.js';
 
 type PreparationContext = { allowFallback: boolean; runnerRecoveryAttempted?: boolean; attemptedProviders: Set<WorkspaceProviderId>; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
@@ -123,12 +124,20 @@ export async function migrateRunnerWorkspaceToCodespacesForCapability(
   return migrated;
 }
 
-export async function ensureWorkspaceRecord(input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string }): Promise<WorkspaceRecord> {
+export async function ensureWorkspaceRecord(
+  input: { sessionId: string; userId: string; projectId: string; repositoryId: number; branch: string },
+  options: { preferredProvider?: WorkspaceProviderId; taskText?: string; preserveHealthyExisting?: boolean } = {},
+): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
   const existing = await repository.getWorkspaceBySession(input.sessionId);
   if (existing) {
     const adapterState = await repository.getWorkspaceAgentAdapter(existing.id, 'opencode');
-    const preferredProvider = defaultWorkspaceProviderId();
+    if (
+      options.preserveHealthyExisting
+      && workspaceFullyReady(existing)
+      && (adapterState?.state === 'ready' || adapterState?.state === 'busy')
+    ) return existing;
+    const preferredProvider = options.preferredProvider || defaultWorkspaceProviderId();
     if (!workspaceShouldAdoptPreferredProvider(existing, preferredProvider, adapterState?.state)) return existing;
 
     const now = new Date().toISOString();
@@ -167,12 +176,15 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
     return migrated;
   }
   const now = new Date().toISOString();
+  const brokerProvider = options.preferredProvider
+    || await selectWorkspaceProvider({ taskText: options.taskText }).catch(() => null)
+    || defaultWorkspaceProviderId();
   const workspace: WorkspaceRecord = {
     id: `ws_${uuid()}`,
     sessionId: input.sessionId,
     userId: input.userId,
     projectId: input.projectId,
-    provider: defaultWorkspaceProviderId(),
+    provider: brokerProvider,
     repositoryId: input.repositoryId,
     branch: input.branch,
     state: 'creating',
@@ -211,6 +223,7 @@ async function prepareWorkspaceOnce(
   context: PreparationContext = { allowFallback: true, runnerRecoveryAttempted: false, attemptedProviders: new Set<WorkspaceProviderId>(), promise: Promise.resolve(null as unknown as WorkspaceRecord) },
 ): Promise<WorkspaceRecord> {
   const repository = controlPlaneRepository();
+  const preparationStartedAt = Date.now();
   let workspace = await ensureWorkspaceRecord(input);
   let provider = providerForWorkspace(workspace);
   void runnerFallbackEnabled;
@@ -451,6 +464,7 @@ async function prepareWorkspaceOnce(
       }
     }
     if (workspaceFullyReady(finalWorkspace)) {
+      noteComputeSuccess(finalWorkspace.provider, Date.now() - preparationStartedAt);
       emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Workspace ready.' });
       return finalWorkspace;
     }
@@ -461,6 +475,7 @@ async function prepareWorkspaceOnce(
   } catch (error) {
     if (workspace) {
       const detail = error instanceof Error ? error.message : 'workspace_start_failed';
+      noteComputeFailure(workspace.provider, detail, Date.now() - preparationStartedAt);
 
       // A bridge refresh is best-effort while a previously authenticated
       // workspace is still healthy. If gh codespace ssh cannot see the
@@ -555,7 +570,10 @@ async function prepareWorkspaceOnce(
       const permanentProviderFailure = !providerLocalFailure
         && /permission|forbidden|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
       const fallbackProvider = context.allowFallback && !permanentProviderFailure
-        ? fallbackWorkspaceProviderId(workspace.provider, context.attemptedProviders)
+        ? await selectWorkspaceProvider({
+            attempted: context.attemptedProviders,
+            preferredProvider: workspace.provider,
+          }).catch(() => fallbackWorkspaceProviderId(workspace.provider, context.attemptedProviders))
         : null;
       if (fallbackProvider) {
         console.warn(`[workspace] provider failover session=${input.sessionId} from=${workspace.provider} to=${fallbackProvider}: ${detail}`);
@@ -583,11 +601,7 @@ async function prepareWorkspaceOnce(
         emit(input.sessionId, 'workspace.preparing', {
           stage: 'workspace.fallback',
           provider: fallbackProvider,
-          message: fallbackProvider === 'e2b'
-            ? 'GitHub workspace is unavailable · switching to an isolated E2B workspace…'
-            : fallbackProvider === 'github-codespaces'
-              ? 'Alternate workspace unavailable · returning to GitHub Codespaces…'
-              : 'Cloud workspace unavailable · switching to the warm Orlynx runner pool…',
+          message: 'Switching compute…',
         });
         return prepareWorkspaceOnce(input, replacementDepth, context);
       }
