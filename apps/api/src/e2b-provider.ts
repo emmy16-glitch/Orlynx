@@ -1,7 +1,7 @@
 import { Sandbox } from 'e2b';
 import type { WorkspaceRecord } from '@orlynx/shared';
 import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider, WorkspaceProviderHealth } from './workspace-provider.js';
-import { githubRepositoryById, githubUserAccessToken } from './github.js';
+import { githubRepositoryInstallationAccess } from './github.js';
 import { buildWorkspaceBootstrapScript } from './runtime-worker.js';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
@@ -51,10 +51,7 @@ export class E2BWorkspaceProvider implements WorkspaceProvider {
 
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const key = requireConfigured();
-    const [repository, githubToken] = await Promise.all([
-      githubRepositoryById(input.userId, input.repositoryId),
-      githubUserAccessToken(input.userId),
-    ]);
+    const { repository, token: githubToken } = await githubRepositoryInstallationAccess(input.userId, input.repositoryId);
     const sandbox = await Sandbox.create(template(), {
       apiKey: key,
       timeoutMs: timeoutMs(),
@@ -69,16 +66,20 @@ export class E2BWorkspaceProvider implements WorkspaceProvider {
     });
 
     const basic = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
-    const clone = await sandbox.commands.run(
-      `mkdir -p /workspace && rm -rf /workspace/repo && git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $ORLYNX_GIT_BASIC" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/${repository.fullName}.git" /workspace/repo`,
-      {
-        timeoutMs: Math.max(120_000, Number(process.env.ORLYNX_E2B_CLONE_TIMEOUT_MS || 180_000)),
-        envs: { ORLYNX_GIT_BASIC: basic, ORLYNX_BRANCH: input.branch },
-      },
-    );
-    if (clone.exitCode !== 0) {
+    try {
+      await sandbox.commands.run(
+        `mkdir -p /workspace && rm -rf /workspace/repo && git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $ORLYNX_GIT_BASIC" clone --filter=blob:none --single-branch --branch "$ORLYNX_BRANCH" "https://github.com/${repository.fullName}.git" /workspace/repo`,
+        {
+          timeoutMs: Math.max(120_000, Number(process.env.ORLYNX_E2B_CLONE_TIMEOUT_MS || 180_000)),
+          envs: { ORLYNX_GIT_BASIC: basic, ORLYNX_BRANCH: input.branch },
+        },
+      );
+    } catch (error) {
       await sandbox.kill().catch(() => undefined);
-      throw new Error(`E2B could not clone the repository: ${String(clone.stderr || clone.stdout || '').slice(-1200)}`);
+      const detail = error && typeof error === 'object' && 'stderr' in error
+        ? String((error as { stderr?: string }).stderr || '')
+        : error instanceof Error ? error.message : 'clone failed';
+      throw new Error(`E2B could not clone the repository: ${detail.slice(-1200)}`);
     }
 
     const now = new Date().toISOString();
@@ -170,7 +171,7 @@ export class E2BWorkspaceProvider implements WorkspaceProvider {
 
   async connect(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void> {
     const sandbox = await connectSandbox(workspace);
-    const githubToken = await githubUserAccessToken(workspace.userId);
+    const { token: githubToken } = await githubRepositoryInstallationAccess(workspace.userId, workspace.repositoryId);
     const connection = await controlPlaneRepository().getProviderConnection(workspace.userId, 'opencode');
     const openCodeApiKey = connection?.state === 'connected' && connection.credential
       ? decryptCredential(connection.credential)
