@@ -841,9 +841,9 @@ router.post('/sessions/:id/messages', async (req, res) => {
   if (durableStorageConfigured()) {
     const repository = controlPlaneRepository();
 
-    // Keep repository continuity on an existing workspace. Build follow-ups
-    // stay with the same OpenCode session, while Ask/Plan reuse only an already
-    // ready workspace and never cold-start one just for conversation.
+    // Active Build follow-ups were already attached to their running task
+    // above. For a new turn, a merely warm workspace must not make ordinary
+    // conversation pay cloud/runtime recovery latency.
     let workspace = await repository.getWorkspaceBySession(s.id);
     plane = executionPlaneForSession(String(text), effectiveMode, workspace);
 
