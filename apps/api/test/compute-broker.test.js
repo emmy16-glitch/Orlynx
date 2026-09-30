@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -72,8 +73,6 @@ test('direct runtime uses the same quarantine mechanism as workspace providers',
   resetComputeBrokerForTests();
 
   noteComputeFailure('direct-runtime', 'HTTP 502');
-  assert.equal(computeTargetQuarantined('direct-runtime'), false);
-  noteComputeFailure('direct-runtime', 'HTTP 502');
   assert.equal(computeTargetQuarantined('direct-runtime'), true);
 
   noteComputeSuccess('direct-runtime', 100);
@@ -94,4 +93,12 @@ test('broker scores keep healthy existing preference sticky without making it ab
   noteComputeFailure('e2b', 'failed');
   const afterFailure = workspaceProviderScores({ preferredProvider: 'e2b' });
   assert.ok(afterFailure.find((item) => item.id === 'github-codespaces').score > afterFailure.find((item) => item.id === 'e2b').score);
+});
+
+
+test('Build admission keeps healthy workspaces sticky while consulting the broker', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(routes, /selectWorkspaceProvider\(\{[\s\S]*taskText: String\(text\)/);
+  assert.match(routes, /preserveHealthyExisting: true/);
+  assert.doesNotMatch(routes, /workspaceShouldAdoptPreferredRunner\(workspace/);
 });

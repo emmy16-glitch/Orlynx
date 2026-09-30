@@ -224,13 +224,14 @@ test('broken Codespace recovery escapes to the preferred warm runner before repl
   assert.match(workspaces, /runnerRecoveryAttempted/);
 });
 
-test('workspace message admission adopts legacy runners before reconnect mutation', () => {
+test('workspace message admission consults the broker before reconnect mutation', () => {
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  const adopt = routes.indexOf('workspaceShouldAdoptPreferredRunner(workspace, undefined, workspaceAdapter?.state)');
-  const refresh = routes.indexOf('workspaceNeedsRuntimeRefresh(workspace)', adopt);
-  assert.ok(adopt >= 0, 'workspace admission must check legacy-provider adoption');
-  assert.ok(refresh > adopt, 'legacy provider adoption must happen before runtime refresh/reconnect mutation');
-  assert.match(routes, /getWorkspaceAgentAdapter\(workspace\.id, selectedAdapterId \|\| 'opencode'\)/);
+  const broker = routes.indexOf('selectWorkspaceProvider({');
+  const refresh = routes.indexOf('workspaceNeedsRuntimeRefresh(workspace)', broker);
+  assert.ok(broker >= 0, 'workspace admission must consult the compute broker');
+  assert.ok(refresh > broker, 'broker selection must happen before runtime refresh/reconnect mutation');
+  assert.match(routes, /preserveHealthyExisting: true/);
+  assert.match(routes, /preferredProvider: workspace\.provider/);
   assert.match(routes, /repositoryId = workspace\?\.repositoryId/);
 });
 

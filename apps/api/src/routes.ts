@@ -6,7 +6,7 @@ import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscrib
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
-import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, resumeWaitingInputTask, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
 import { warmOpenCodeRuntime } from './opencode-local.js';
@@ -25,6 +25,7 @@ import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
+import { selectWorkspaceProvider } from './compute-broker.js';
 
 export const router = Router();
 
@@ -848,29 +849,31 @@ router.post('/sessions/:id/messages', async (req, res) => {
     plane = executionPlaneForSession(String(text), effectiveMode, workspace);
 
     if (plane === 'workspace') {
-      // Existing saved sessions may still point at a legacy Codespace even
-      // after production switched to the warm runner. Adopt the preferred
-      // runner BEFORE runtime-refresh/reconnect logic mutates the old row into
-      // "connecting"; otherwise a stopped legacy Codespace can accidentally
-      // keep bypassing the fast architecture forever.
-      const workspaceAdapter = workspace
-        ? await repository.getWorkspaceAgentAdapter(workspace.id, selectedAdapterId || 'opencode')
-        : null;
-      if (!workspace || workspaceShouldAdoptPreferredRunner(workspace, undefined, workspaceAdapter?.state)) {
-        let repositoryId = workspace?.repositoryId;
-        if (!repositoryId) {
-          const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
-          if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
-          repositoryId = githubRepo.id;
-        }
-        workspace = await ensureWorkspaceRecord({
-          sessionId: s.id,
-          userId: durableSession.userId,
-          projectId: durableSession.projectId,
-          repositoryId,
-          branch: s.branch,
-        });
+      // The compute broker is authoritative for new/recovering Build work, but
+      // an already healthy workspace stays sticky. This prevents provider
+      // thrashing between Render runners, E2B, and Codespaces on successive
+      // turns while still allowing degraded workspaces to migrate.
+      let repositoryId = workspace?.repositoryId;
+      if (!repositoryId) {
+        const githubRepo = (await githubListRepos(requestInstallationId(req))).find((item) => item.full.toLowerCase() === s.project.toLowerCase());
+        if (!githubRepo) return res.status(403).json({ error: 'Repository authorization could not be verified.' });
+        repositoryId = githubRepo.id;
       }
+      const brokerPreferred = await selectWorkspaceProvider({
+        taskText: String(text),
+        ...(workspace?.provider ? { preferredProvider: workspace.provider } : {}),
+      }).catch(() => workspace?.provider || null);
+      workspace = await ensureWorkspaceRecord({
+        sessionId: s.id,
+        userId: durableSession.userId,
+        projectId: durableSession.projectId,
+        repositoryId,
+        branch: s.branch,
+      }, {
+        ...(brokerPreferred ? { preferredProvider: brokerPreferred } : {}),
+        taskText: String(text),
+        preserveHealthyExisting: true,
+      });
 
       // Durable workspace state can outlive a dropped WebSocket. Verify the
       // actual bridge transport before admitting work so a stale "ready" row

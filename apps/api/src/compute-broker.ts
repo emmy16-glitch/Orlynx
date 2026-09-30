@@ -60,7 +60,9 @@ export function noteComputeFailure(id: ComputeTargetId, detail = 'compute failur
   state.lastFailure = String(detail || 'compute failure').replace(/\s+/g, ' ').slice(0, 220);
   updateLatency(state, latencyMs);
 
-  const threshold = Math.max(1, Number(process.env.ORLYNX_COMPUTE_QUARANTINE_FAILURES || 2));
+  const threshold = id === 'direct-runtime'
+    ? Math.max(1, Number(process.env.ORLYNX_DIRECT_RUNTIME_QUARANTINE_FAILURES || 1))
+    : Math.max(1, Number(process.env.ORLYNX_COMPUTE_QUARANTINE_FAILURES || 2));
   if (state.consecutiveFailures >= threshold) {
     const baseCooldown = Math.max(15_000, Number(process.env.ORLYNX_COMPUTE_QUARANTINE_MS || 90_000));
     const multiplier = Math.min(4, state.consecutiveFailures - threshold + 1);
