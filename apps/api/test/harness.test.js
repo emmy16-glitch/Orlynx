@@ -6,6 +6,7 @@ import {
   applySteering,
   consumeHarnessStep,
   createHarnessCheckpoint,
+  classifyVerificationFailure,
   harnessBudgetStatus,
   harnessSystemInstruction,
   detectEvidenceContradictions,
@@ -428,4 +429,97 @@ test('direct Ask and Plan continue the same task inbox before finalizing', () =>
   assert.match(agents, /latestContinuation/);
   assert.match(agents, /runId: run\.id/);
   assert.match(agents, /agent\.dialogue\.orlynx/);
+});
+
+
+test('verification failure classifier distinguishes infrastructure, test and build failures', () => {
+  assert.equal(classifyVerificationFailure([
+    evt(1, 'tool.failed', {
+      command: 'npx playwright test',
+      semanticType: 'test-result',
+      error: 'browser executable does not exist; run playwright install chromium',
+      out: '1 failed',
+    }),
+  ], ['tests']), 'infrastructure');
+
+  assert.equal(classifyVerificationFailure([
+    evt(1, 'tool.failed', {
+      command: 'npx playwright test tests/login.spec.ts',
+      semanticType: 'test-result',
+      error: 'AssertionError: expect(locator).toBeVisible() failed',
+      out: '1 failed',
+    }),
+  ], ['tests']), 'test');
+
+  assert.equal(classifyVerificationFailure([
+    evt(1, 'tool.failed', {
+      command: 'npm run typecheck',
+      semanticType: 'build-result',
+      error: "error TS2322: Type 'string' is not assignable to type 'number'.",
+    }),
+  ], ['build']), 'build');
+});
+
+test('reflection includes bounded Playwright artifact evidence and focused rerun guidance', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'run the Playwright tests',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const events = [
+    evt(1, 'tool.failed', {
+      command: 'npx playwright test frontend/e2e/login.spec.ts',
+      semanticType: 'test-result',
+      error: 'AssertionError: expected visible',
+      exitCode: 1,
+    }),
+    evt(2, 'state.delta', {
+      scope: 'verification-artifacts',
+      sourceType: 'verification.artifacts',
+      summary: 'Verification artifacts found: 3. Paths: context: test-results/login/error-context.md | screenshot: test-results/login/test-failed-1.png | trace: test-results/login/trace.zip',
+      artifacts: [
+        {
+          path: 'test-results/login/error-context.md',
+          kind: 'context',
+          size: 1200,
+          excerpt: 'Expected the Sign in button to be visible, but locator resolved to hidden.',
+        },
+        { path: 'test-results/login/test-failed-1.png', kind: 'screenshot', size: 24000 },
+        { path: 'test-results/login/trace.zip', kind: 'trace', size: 51000 },
+      ],
+    }),
+  ];
+  cp = verifyHarness(cp, events);
+  cp = prepareReflection(cp, events);
+  assert.equal(cp.verificationFailureClass, 'test');
+  assert.ok(cp.artifactEvidence?.some((item) => item.includes('error-context.md')));
+  assert.ok(cp.artifactEvidence?.some((item) => item.includes('trace.zip')));
+
+  const instruction = reflectionInstruction(cp);
+  assert.match(instruction, /Failure classification: test/);
+  assert.match(instruction, /error-context\.md/);
+  assert.match(instruction, /rerun the narrow failing test\/spec/i);
+  assert.match(instruction, /wider relevant suite/i);
+});
+
+test('infrastructure-classified verification tells the model not to edit app code first', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'run browser tests',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const events = [
+    evt(1, 'tool.failed', {
+      command: 'npx playwright test',
+      semanticType: 'test-result',
+      error: 'Host system is missing dependencies to run browsers: libatk-1.0.so.0 not found',
+      exitCode: 1,
+    }),
+  ];
+  cp = verifyHarness(cp, events);
+  cp = prepareReflection(cp, events);
+  assert.equal(cp.verificationFailureClass, 'infrastructure');
+  assert.match(reflectionInstruction(cp), /before editing application code/i);
 });
