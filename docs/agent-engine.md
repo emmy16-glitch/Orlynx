@@ -1,86 +1,105 @@
-# Agent adapters
+# Agent engine and adapter architecture
 
-Orlynx owns the workspace, task ledger, permissions, events, verification, memory, review flow and UI.
+## Principle
 
-Coding agents plug into that product through an adapter contract.
+A coding agent is replaceable.
 
-An adapter is not the workspace.
+Orlynx owns the product-level contracts. OpenCode is **Agent Adapter #1**, not the definition of Orlynx.
 
-OpenCode is **Agent Adapter #1**.
+## Orlynx owns
 
-## Adapter boundary
+- user/project/session identity
+- durable task/run identity
+- Ask / Plan / Build
+- permission profile
+- continuation and queue order
+- Compute Broker routing
+- workspace lifecycle
+- harness / verification
+- canonical events / replay
+- memory
+- approvals / publication
+- UI projection
 
-Each registered adapter can describe:
+## Adapter owns
 
-- stable ID/display name;
-- capabilities;
-- readiness;
-- model parsing/discovery;
-- session lifecycle;
-- streaming;
-- prompt/cancel;
-- tool/change/diff support;
-- bridge command mapping.
+- adapter readiness
+- engine session
+- selected-model invocation
+- agent tool lifecycle
+- streaming
+- cancel/resume integration
+- engine-specific event translation
 
-The task orchestrator resolves the adapter from durable task/session state.
+An adapter does not redefine authorization, queue semantics, or publication authority.
 
-## Durable identity
+## OpenCode deployment forms
 
-Adapter selection is persisted per session and snapshotted on admitted tasks.
+### Direct OpenCode runtime
 
-Changing the picker during an active task applies to the appropriate future work rather than silently rewriting an already-admitted run.
+A lightweight remote OpenCode server handles conversational Ask/Plan without waking a full workspace.
 
-## Workspace versus adapter
+Orlynx remains authoritative for durable history. If an OpenCode runtime session disappears, Orlynx can recreate it and supply bounded recent durable conversation context.
 
-Workspace lifecycle and agent lifecycle are independent.
+The direct runtime is tracked by the Compute Broker and can be temporarily quarantined after a confirmed infrastructure outage.
 
-Workspace providers currently include:
+### Workspace OpenCode
 
-- Orlynx runner;
-- GitHub Codespaces fallback.
+Each Build workspace can run OpenCode under Bridge control with repository/tool access bounded by Orlynx policy.
 
-Adapter lifecycle can include:
+## Selected model
 
-~~~text
-not_installed → installing → starting → ready → busy
-                                  ↘ unavailable / failed
-~~~
+The selected model is stored by Orlynx and passed to the adapter for the run.
 
-A workspace can remain healthy while OpenCode is unavailable.
+Changing compute provider must not silently change the selected model.
 
-Files, Git and shell capability should not disappear merely because one coding-agent runtime failed.
+## Adapter lifecycle
 
-## OpenCode binary recovery
+Adapter state may include:
 
-Before declaring OpenCode binary_unavailable, the bridge:
+- starting
+- ready
+- busy
+- unavailable
+- failed
 
-1. probes the configured binary;
-2. probes known Orlynx runner/workspace locations;
-3. checks native packages already installed in the private runtime;
-4. if needed, installs the pinned CPU-compatible native package in a private self-heal directory;
-5. probes again;
-6. starts the OpenCode server when healthy.
+Workspace state and adapter state are intentionally independent.
 
-Runner images and Codespaces bootstrap also smoke-test the pinned native binary before normal use.
+## Direct-runtime failover
 
-This reduces stale-workspace/path failures.
+Transient direct-runtime failure before useful output can trigger:
 
-It cannot guarantee availability during a genuine package/network/provider outage; in that case the adapter can be unavailable while the workspace remains intact.
+1. broker failure record
+2. direct-runtime quarantine
+3. `Switching compute...`
+4. same durable task moves to workspace plane
+5. broker selects runner/E2B/Codespaces
+6. conversation continues without resend
 
-## Adding another adapter
+## Workspace adapter recovery
 
-A new production adapter should require:
+The Bridge probes the OpenCode binary and can repair the pinned native package into an Orlynx-private runtime path.
 
-1. implement/register the adapter;
-2. provision its private runtime;
-3. map observable events into Orlynx canonical events;
-4. define capabilities/model/session behavior;
-5. add failure/recovery tests.
+Health checks are bounded so a transient miss does not immediately become a permanent adapter failure.
 
-It must not create a second session system, queue, permission model or chat UI.
+## Engine sessions
 
-## UI contract
+Orlynx maps durable conversation/session identity to adapter engine-session identity. Engine sessions are replaceable implementation details beneath the project conversation.
 
-Agent selection is separate from model selection.
+## Events
 
-Infrastructure failure copy should identify the failed capability accurately. “AI runtime unavailable” must not imply repository/workspace loss when only the adapter is unhealthy.
+Agent-specific events are normalized into Orlynx canonical events before the UI depends on them.
+
+The frontend should not become coupled to raw OpenCode payloads.
+
+## Permissions and secrets
+
+The model/adapter does not receive unrestricted control-plane credentials.
+
+Workspace tools are exposed through the Bridge/harness according to task permission. Consequential GitHub publication remains in Orlynx-controlled paths.
+
+## Future adapters
+
+A future coding agent should implement the same high-level contract for readiness, engine session, model selection, streaming, tools, cancellation, and evidence.
+
+Adding another agent must not require rebuilding Postgres state, Compute Broker, workspace providers, queue, publication, memory, or frontend conversation architecture.
