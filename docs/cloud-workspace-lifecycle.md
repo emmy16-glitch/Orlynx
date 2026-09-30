@@ -6,72 +6,107 @@ Workspace creation/preparation is asynchronous and persisted. A browser request 
 
 ## Providers
 
-Orlynx supports a provider boundary.
+Current workspace providers are:
 
-### Orlynx runner
+- Orlynx runner pool;
+- E2B;
+- GitHub Codespaces.
 
-Preferred when configured.
+The Compute Broker chooses among configured providers using health, failure history, latency, quarantine, capability, capacity/load, and healthy-workspace stickiness.
 
-A runner workspace can be prewarmed when the repository session opens.
-
-### GitHub Codespaces
-
-Supported fallback/recovery provider.
-
-Codespaces are normally created/started when execution is needed rather than prewarmed by default.
+See [compute-broker.md](compute-broker.md).
 
 ## Workspace states
 
-Representative states are:
+Representative lifecycle:
 
 ~~~text
 not_created
 → creating
 → starting
 → bootstrapping
-→ connecting
-→ ready
-
-ready → stopping → stopped
-
-any preparation stage → failed
+→ bridge connecting
+→ workspace ready
+→ adapter starting
+→ adapter ready
+→ task execution
 ~~~
 
-The authenticated bridge has its own state.
+Workspace readiness, Bridge readiness, and agent-adapter readiness are separate concerns.
 
-Agent adapters have another independent lifecycle.
-
-A workspace can therefore be ready while OpenCode is starting, repairing or unavailable.
+A workspace may remain usable for shell/files/Git while OpenCode is repairing or restarting.
 
 ## Durable preparation
 
-Workspace preparation is represented by durable workspace jobs.
+Workspace preparation is stored as a durable job.
 
-A worker can lease/retry work after process restart.
+The orchestrator:
 
-Transient infrastructure failure should be retried/recovered without duplicating the user's project conversation.
+1. claims the job with a lease;
+2. renews ownership while preparation is active;
+3. creates/starts the selected provider;
+4. connects the Bridge;
+5. waits for runtime readiness;
+6. retries transient failure with bounded backoff;
+7. records completion/failure durably.
 
-## Provider fallback
+If the worker dies, the lease expires so recovery can continue.
 
-When the preferred runner fails and policy permits fallback:
+## Provider migration
+
+Infrastructure failure should preserve the same task/session.
 
 ~~~text
-runner failure
-→ clean failed runner best-effort
-→ preserve durable task/session
-→ switch workspace provider
-→ Codespaces preparation
-→ bridge reconnect
-→ continue queued Build
+selected provider fails
+        |
+        v
+broker records failure
+        |
+        v
+provider may be quarantined
+        |
+        v
+rank remaining configured providers
+        |
+        v
+prepare replacement workspace
+        |
+        v
+bridge reconnect
+        |
+        v
+continue same durable Build
 ~~~
+
+Providers already attempted in the current preparation are excluded so failover cannot loop indefinitely.
+
+## Healthy workspace stickiness
+
+A healthy existing workspace is preserved where practical. Orlynx does not migrate merely because another provider has a slightly higher baseline score.
+
+Migration is for real need: degraded health, missing capability, provider failure, or recovery.
+
+## Direct-runtime promotion
+
+The conversational direct OpenCode runtime is not a workspace provider, but the broker also tracks its health.
+
+If it fails transiently before useful output, Orlynx can promote the same durable turn to workspace execution without requiring a resend.
+
+## Repository freshness
+
+Before Build execution, Orlynx checks the selected checkout against the remote branch.
+
+Safe behind-only state can fast-forward.
+
+Local source edits/divergence block unsafe automatic reset.
+
+Isolated incidental `package-lock.json` drift has a narrow recovery path that preserves the exact patch before restore/fast-forward.
 
 ## OpenCode repair
 
-The bridge does not treat one broken OpenCode path as permanent adapter failure.
+The Bridge treats a broken/missing OpenCode binary as adapter recovery, not automatic workspace death.
 
-It probes known locations and can install the pinned native package into a private repair directory before returning binary_unavailable.
-
-This keeps adapter recovery separate from workspace recovery.
+It probes known locations and can install the pinned native package into an Orlynx-private runtime path.
 
 ## Stop / reconnect
 
@@ -80,15 +115,16 @@ Stopping compute does not delete:
 - session;
 - messages;
 - tasks;
+- queue;
 - event history;
 - changes;
 - approvals;
 - learned lessons.
 
-Reconnect rotates/refreshes the bridge connection as required while preserving the conversation.
+Reconnect rotates/refreshes Bridge connection identity as required while preserving the project conversation.
 
 ## Cross-device
 
 Workspace state is server-owned.
 
-A user can open the same durable project session from another authenticated device and observe the current workspace/task state rather than creating a new local project copy.
+A user can open the same durable project session from another authenticated device and observe the current task/workspace state rather than creating a local duplicate.
