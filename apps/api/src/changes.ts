@@ -19,7 +19,7 @@ export function createChangeSet(sessionId: string, project: string, files: Chang
   (store.db.changes[sessionId] ||= []).push(cs);
   store.save();
   if (durableStorageConfigured()) void controlPlaneRepository().putChangeSet(cs);
-  emit(sessionId, 'changes.updated', { changeId: cs.id, count: files.length }, runId);
+  emit(sessionId, 'changes.updated', { changeId: cs.id, count: files.length, files }, runId);
   return cs;
 }
 
