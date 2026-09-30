@@ -2,7 +2,7 @@ import http from 'node:http';
 import { app } from './app.js';
 import { githubAppConfigured, githubPlatformHealth } from './github.js';
 import { attachBridgeGateway } from './bridge-gateway.js';
-import { warmOpenCodeProviderLayer } from './opencode-local.js';
+import { warmOpenCodeProviderLayer, warmOpenCodeRuntime } from './opencode-local.js';
 import { defaultWorkspaceProviderId, runnerFallbackEnabled, shouldPrewarmWorkspace } from './workspace-providers.js';
 import { runnerGlobalMaxWorkspaces, runnerHosts } from './runner-pool.js';
 import { e2bConfigured, e2bPlatformHealth } from './e2b-provider.js';
@@ -32,6 +32,14 @@ if (githubAppConfigured()) {
 }
 
 await warmOpenCodeProviderLayer();
+
+// The free-model runtime lives on a separate service and may sleep. Wake it as
+// soon as the API itself wakes so the user's first chat message does not pay
+// the full downstream cold-start cost. This is background-only and never
+// delays API availability.
+void warmOpenCodeRuntime()
+  .then((ready) => console.log(`[startup-smoke] direct-runtime warm=${ready}`))
+  .catch(() => console.warn('[startup-smoke] direct-runtime warmup failed'));
 
 try {
   console.log(`[orlynx-api] workspace provider=${defaultWorkspaceProviderId()} prewarm=${shouldPrewarmWorkspace()} codespacesFallback=${runnerFallbackEnabled()} e2bConfigured=${e2bConfigured()} runnerHosts=${runnerHosts().length} runnerGlobalMax=${runnerGlobalMaxWorkspaces()}`);
