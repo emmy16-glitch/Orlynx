@@ -562,16 +562,44 @@ router.post('/sessions/:id/messages', async (req, res) => {
           });
         }
 
-        // If the model/provider is temporarily unavailable while the workspace
-        // transport itself is healthy, preserve the same waiting task. This is
-        // the only case that should reject immediate resume; transport failure
-        // must never make Send look broken.
+        // The user's reply is already durable. Never make them resend it
+        // merely because the model/runtime was briefly unavailable. Requeue the
+        // same task and let the normal workspace/provider recovery path decide
+        // whether it can resume or must surface a real terminal provider error.
+        steered.state = 'queued';
+        if (steered.harness) {
+          steered.harness = advanceHarnessPhase(steered.harness, 'routing', {
+            mode: steered.mode || 'build',
+            permission: steered.tempPermission || steered.permission || 'full',
+            now,
+          });
+        }
+        steered.updatedAt = now;
         await repository.putTask(steered);
-        return res.status(503).json({
+        if (waitingWorkspace) {
+          void scheduleWorkspacePreparation({
+            sessionId: waitingWorkspace.sessionId,
+            userId: waitingWorkspace.userId,
+            projectId: waitingWorkspace.projectId,
+            repositoryId: waitingWorkspace.repositoryId,
+            branch: waitingWorkspace.branch,
+          }, { allowFallback: true, reason: 'waiting_input_provider_recovery' }).catch((repairError) => {
+            console.warn(`[harness] waiting-input provider recovery failed session=${s.id}: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+          });
+        }
+        emit(s.id, 'run.state', {
+          taskId: steered.id,
+          state: 'queued',
+          message: 'Your reply was saved. Orlynx is recovering the AI runtime and will continue this same task automatically.',
+        }, steered.runId);
+        return res.status(202).json({
           message: msg,
-          error: detail,
-          waitingForSameTask: true,
+          run: { id: steered.runId, sessionId: s.id, plane: 'workspace', state: 'queued' },
+          plane: 'workspace',
+          resumed: false,
           continued: true,
+          queued: true,
+          recoveringRuntime: true,
           targetRunId: steered.runId,
         });
       }
