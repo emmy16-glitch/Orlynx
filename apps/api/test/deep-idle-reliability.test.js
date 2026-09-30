@@ -47,3 +47,34 @@ test('long-idle GitHub refresh is single-flight and can salvage a token rotated 
   assert.match(github, /for \(const delay of \[0, 150, 350, 700\]\)/);
   assert.match(github, /latestExpiresAt > Date\.now\(\) \+ 5 \* 60_000/);
 });
+
+
+test('verification evidence is queried by exact run instead of a truncated conversation window', () => {
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const events = fs.readFileSync(new URL('../src/events.ts', import.meta.url), 'utf8');
+
+  assert.match(storage, /listRunEvents\(sessionId: string, runId: string, limit = 1000\)/);
+  assert.match(storage, /WHERE session_id=\$1 AND run_id=\$2 ORDER BY sequence DESC LIMIT \$3/);
+  assert.match(storage, /Math\.min\(Number\(limit\) \|\| 1000, 2000\)/);
+  assert.match(gateway, /repository\.listRunEvents\(claims\.sessionId, runId, 1000\)/);
+  assert.match(routes, /repository\.listRunEvents\(session\.id, task\.runId \|\| '', 1000\)/);
+  assert.doesNotMatch(gateway, /listRecentEvents\(claims\.sessionId, 1000\)/);
+
+  // Browser history remains intentionally bounded; the larger run-scoped
+  // window is internal verification evidence, not an unbounded UI replay.
+  assert.match(events, /Math\.min\(Number\(limit\) \|\| 300, 500\)/);
+});
+
+test('old approvals wake the workspace and the web client retries the same pending approval', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+
+  assert.match(routes, /reason: 'approval_resume'/);
+  assert.match(routes, /recoveringWorkspace: true/);
+  assert.match(routes, /retryAfterMs: 1500/);
+  assert.match(app, /result\?\.recoveringWorkspace/);
+  assert.match(app, /Date\.now\(\) \+ 3 \* 60_000/);
+  assert.match(app, /Your approval is preserved/);
+});
