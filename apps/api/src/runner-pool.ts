@@ -233,6 +233,32 @@ export async function runnerPoolSnapshot(force = false): Promise<Array<{ host: R
   return Promise.all(hosts.map(async (host) => ({ host, health: await probeRunnerHost(host, force) })));
 }
 
+export function runnerPoolHealthSummary(): {
+  totalHosts: number;
+  knownHosts: number;
+  healthyHosts: number;
+  capacity: number;
+  running: number;
+  available: number;
+  bestLatencyMs: number;
+  browserE2eAvailable: boolean;
+} {
+  const hosts = runnerHosts();
+  const rows = hosts.map((host) => healthCache.get(host.id)).filter((value): value is RunnerHostHealth => Boolean(value));
+  const healthy = rows.filter((row) => row.ok && !row.draining);
+  const latencies = healthy.map((row) => row.latencyMs).filter((value) => value > 0);
+  return {
+    totalHosts: hosts.length,
+    knownHosts: rows.length,
+    healthyHosts: healthy.length,
+    capacity: healthy.reduce((sum, row) => sum + row.capacity, 0),
+    running: healthy.reduce((sum, row) => sum + row.running, 0),
+    available: healthy.reduce((sum, row) => sum + row.available, 0),
+    bestLatencyMs: latencies.length ? Math.min(...latencies) : 0,
+    browserE2eAvailable: healthy.some((row) => row.available > 0 && row.capabilities?.browserE2e === true),
+  };
+}
+
 export function taskRequiresBrowserE2e(text: string): boolean {
   return /\b(?:playwright|end[- ]to[- ]end|e2e|browser\s+(?:test|testing|automation)|visual\s+regression|screenshot\s+test|axe\s+(?:test|audit)|lighthouse)\b/i.test(String(text || ''));
 }
