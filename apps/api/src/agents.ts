@@ -728,6 +728,7 @@ async function executeDirectTask(
     // round. Keep the same task/run identity and let the durable promoter resume
     // it again; never finalize while unapplied human input is still in the inbox.
     const latestBeforeFinalize = await repository.getTask(task.id);
+    const finalSteeringRevision = latestBeforeFinalize?.harness?.steeringRevision ?? task.harness?.steeringRevision ?? 0;
     const unappliedBeforeFinalize = latestBeforeFinalize?.harness?.inbox.some((item) => !item.appliedAt) || false;
     if (latestBeforeFinalize && unappliedBeforeFinalize) {
       const queuedAt = new Date().toISOString();
@@ -804,7 +805,29 @@ async function executeDirectTask(
       now,
     });
     task.updatedAt = now;
-    await repository.putTask(task);
+    const completedWithoutLateSteering = await repository.completeDirectTaskIfUnchanged(task, finalSteeringRevision);
+    if (!completedWithoutLateSteering) {
+      const racedTask = await repository.getTask(task.id);
+      if (racedTask?.state === 'running') {
+        const queuedAt = new Date().toISOString();
+        racedTask.state = 'queued';
+        racedTask.updatedAt = queuedAt;
+        await repository.putTask(racedTask);
+        Object.assign(task, racedTask);
+        run.state = 'queued';
+        run.activity = 'Continuing with your latest message';
+        run.finishedAt = undefined;
+        run.errorKind = undefined;
+        store.save();
+        emit(session.id, 'run.state', {
+          taskId: task.id,
+          state: 'queued',
+          continued: true,
+          message: 'A follow-up arrived while the response was finalizing. Continuing the same conversation.',
+        }, run.id);
+      }
+      return;
+    }
     await repository.putMessage({ id: `msg_${run.id}`, sessionId: session.id, role: 'assistant', text: responseText, runId: run.id, createdAt: now });
 
     run.state = 'completed';

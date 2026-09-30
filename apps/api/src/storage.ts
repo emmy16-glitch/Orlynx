@@ -98,6 +98,7 @@ export interface ControlPlaneRepository {
   deleteMessage(id: string, sessionId: string): Promise<void>;
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
+  completeDirectTaskIfUnchanged(value: TaskRecord, expectedSteeringRevision: number): Promise<boolean>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
   /** Durable sessions with executable queued/running work. Human-wait states are intentionally excluded so they cannot starve recovery sweeps. */
   listActiveTaskSessionIds?(limit?: number): Promise<string[]>;
@@ -436,6 +437,22 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,verification_backend,verification_run_id,verification_url,verification_workflow,harness_state,created_at,updated_at)
       VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.verificationBackend || null},${v.verificationRunId || null},${v.verificationUrl || null},${v.verificationWorkflow || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
       ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
+  }
+  async completeDirectTaskIfUnchanged(v: TaskRecord, expectedSteeringRevision: number) {
+    await this.initialize();
+    const row = rows<Record<string, unknown>>(await this.sql`
+      UPDATE tasks
+      SET state=${v.state},
+          partial_text=${v.partialText || null},
+          harness_state=${JSON.stringify(v.harness || null)},
+          updated_at=${v.updatedAt}
+      WHERE id=${v.id}
+        AND session_id=${v.sessionId}
+        AND state='running'
+        AND COALESCE((harness_state->>'steeringRevision')::int, 0)=${expectedSteeringRevision}
+      RETURNING id
+    `)[0];
+    return Boolean(row);
   }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
   async listActiveTaskSessionIds(limit = 100) {
