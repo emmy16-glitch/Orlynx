@@ -8,9 +8,12 @@ test('direct chat has bounded silence, first-token and stale-task deadlines', ()
 
   assert.match(direct, /ORLYNX_DIRECT_TURN_TIMEOUT_MS \|\| 3 \* 60_000/);
   assert.match(direct, /ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS \|\| 30_000/);
+  assert.match(direct, /ORLYNX_DIRECT_STREAM_SILENCE_TIMEOUT_MS \|\| 45_000/);
   assert.match(direct, /stage === 'modelRequestStartedMs'\) armFirstTokenTimer\(\)/);
   assert.match(direct, /firstTokenSeen = true;\s*clearFirstTokenTimer\(\)/);
   assert.match(direct, /The model did not start streaming in time/);
+  assert.match(direct, /The model stopped streaming for too long/);
+  assert.match(direct, /armStreamSilenceTimer\(\)/);
 
   assert.match(agents, /ORLYNX_DIRECT_TASK_TIMEOUT_MS \|\| 4 \* 60_000/);
   assert.match(agents, /const taskTimeoutMs = \(task\.plane \|\| 'workspace'\) === 'direct' \? directTaskTimeoutMs : timeoutMs/);
@@ -82,4 +85,15 @@ test('waiting-input reply is durably queued instead of returning a retryable 503
   assert.match(routes, /recoveringRuntime: true/);
   assert.match(routes, /Your reply was saved\. Orlynx is recovering the AI runtime/);
   assert.doesNotMatch(routes, /waitingForSameTask: true/);
+});
+
+
+test('project open and mobile resume proactively wake the direct AI runtime', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+
+  assert.match(routes, /router\.post\('\/ai\/runtime\/prewarm'/);
+  assert.match(routes, /void warmOpenCodeRuntime\(\)\.catch/);
+  const calls = app.match(/fetch\('\/v1\/ai\/runtime\/prewarm', \{ method: 'POST' \}\)/g) || [];
+  assert.ok(calls.length >= 2, 'runtime is warmed on project open and visible resume');
 });
