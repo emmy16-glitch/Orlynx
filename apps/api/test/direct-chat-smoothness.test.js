@@ -78,7 +78,7 @@ test('pre-model GitHub repository context reads are network-bounded', () => {
   assert.match(github, /function githubApiFetch/);
   assert.match(github, /AbortSignal\.timeout\(GITHUB_API_TIMEOUT_MS\)/);
   assert.match(github, /githubApiFetch\(\`\$\{API\}\/repos\/\$\{owner\}\/\$\{name\}\/git\/trees/);
-  assert.match(github, /githubApiFetch\(\`$\{API\}\/repos\/\$\{encodeURIComponent\(repo\.owner\)\}\/\$\{encodeURIComponent\(repo\.name\)\}\/contents/);
+  assert.match(github, /githubApiFetch\(\`\$\{API\}\/repos\/\$\{encodeURIComponent\(repo\.owner\)\}\/\$\{encodeURIComponent\(repo\.name\)\}\/contents/);
 });
 
 test('waiting-input reply is durably queued instead of returning a retryable 503', () => {
