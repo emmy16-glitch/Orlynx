@@ -195,13 +195,14 @@ test('workspace OpenCode health accepts both generic adapter and legacy health s
 });
 
 
-test('new sessions do not inherit another session\'s Codespace runtime', () => {
+test('new sessions may reuse only an idle Codespace for the same repository and branch', () => {
   const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
   const createStart = source.indexOf('async create(');
   const createEnd = source.indexOf('async replace(', createStart);
   const createBlock = source.slice(createStart, createEnd);
-  assert.match(createBlock, /const existing = await this\.reusableForSession\(input\)/);
-  assert.doesNotMatch(createBlock, /reusableForProject\(input\)/);
+  assert.match(createBlock, /reusableForSession\(input\) \|\| await this\.reusableForProject\(input\)/);
+  assert.match(source, /codespaceMatchesProject\(item, input\.repositoryId, input\.branch\)/);
+  assert.match(source, /sessionHasActiveWork\(previousSessionId\)/);
 });
 
 test('SSH replacement recovery is automatic but bounded to one replacement per preparation', () => {
