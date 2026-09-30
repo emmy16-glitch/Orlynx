@@ -160,14 +160,14 @@ async function waitForRunIdentity(
   throw new Error('GitHub accepted the workflow dispatch but Orlynx could not identify the new run.');
 }
 
-async function getRun(userId: string, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
+async function getRun(installationId: number, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
   return githubInstallationApiRequest<WorkflowRun>(
     installationId,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`,
   );
 }
 
-async function waitForCompletion(userId: string, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
+async function waitForCompletion(installationId: number, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
   const deadline = Date.now() + Math.max(2 * 60_000, Number(process.env.ORLYNX_GITHUB_ACTIONS_TIMEOUT_MS || 20 * 60_000));
   let run = await getRun(installationId, owner, repo, runId);
   while (run.status !== 'completed' && Date.now() < deadline) {
