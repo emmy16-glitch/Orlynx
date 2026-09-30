@@ -22,7 +22,9 @@ The production Render service may require values such as:
 - GITHUB_APP_CLIENT_SECRET;
 - GITHUB_APP_PRIVATE_KEY;
 - GITHUB_WEBHOOK_SECRET;
-- runner URL/token configuration when a warm runner is used.
+- runner host URL/token configuration when the Orlynx runner pool is configured;
+- E2B API key when E2B is enabled;
+- direct OpenCode runtime URL/credentials when the fast conversational runtime is enabled.
 
 The exact active set is documented in .env.example.
 
@@ -37,6 +39,14 @@ Bridge credentials are short-lived and scoped to user/session/workspace/connecti
 The agent shell does not receive unrestricted GitHub publication credentials.
 
 Connected OpenCode account credentials are delivered only through the protected workspace/runtime path when required.
+
+### Runner authentication
+
+`ORLYNX_RUNNER_TOKEN` is an internal infrastructure credential shared by the control plane and authorized runner hosts. It must never be exposed to the browser, checked into the repository, embedded in Preview URLs, or forwarded into ordinary repository child-process environments.
+
+### Compute-provider health configuration
+
+Compute Broker thresholds and timeouts are operational configuration, not secrets. Provider credentials remain separate from broker scoring. Quarantine must never be used to bypass an authorization failure.
 
 ## Event redaction
 
