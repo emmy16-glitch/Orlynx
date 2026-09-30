@@ -1258,32 +1258,14 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     }
 
     try {
-      await bridgeRequest(workspace.id, 'git.fetch', { approved: true }, 120_000);
-      const gitStatus = await bridgeRequest<{
-        branch?: string;
-        head?: string;
-        remoteHead?: string;
-        porcelain?: string;
-        ahead?: number;
-        behind?: number;
-      }>(workspace.id, 'git.status', {}, 30_000);
-
-      const branch = String(gitStatus.branch || '');
-      const head = String(gitStatus.head || '');
-      if (!branch || !head) throw new Error('Orlynx could not determine the current Git commit.');
-      if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
-      if (String(gitStatus.porcelain || '').trim()) throw new Error('The workspace still has uncommitted changes.');
-      if (Number(gitStatus.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
-
-      let publishedHead = head;
-      let alreadyPublished = Boolean(gitStatus.remoteHead && gitStatus.remoteHead === head && Number(gitStatus.ahead || 0) === 0);
-      if (!alreadyPublished) {
-        const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.push', {
-          approved: true,
-          allowDefaultBranch: branch === 'main' || branch === 'master',
-        }, 120_000);
-        publishedHead = String(pushed.head || head);
-      }
+      const published = await publishVerifiedChangeSet({
+        sessionId: session.id,
+        workspaceId: workspace.id,
+        strategy: 'direct',
+        targetBranch: session.branch,
+        runId: task.runId,
+        commitMessage: 'Orlynx verified changes',
+      });
 
       const approvedRecord = { ...approval, state: 'approved', resolvedAt: now };
       await repository.putApproval(approvedRecord);
@@ -1294,11 +1276,14 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
         detail: 'Approved once.',
       }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
       await emitPersisted(session.id, 'receipt.created', {
-        command: 'git push',
+        command: published.pullRequestUrl ? 'github pull request' : 'github publish',
         publish: true,
-        pushedBranch: branch,
-        commitSha: publishedHead,
-        alreadyPublished,
+        pushedBranch: published.branch,
+        commitSha: published.head,
+        alreadyPublished: published.alreadyPublished,
+        pullRequestUrl: published.pullRequestUrl,
+        pullRequestNumber: published.pullRequestNumber,
+        protectedBranchFallback: published.protectedBranchFallback,
       }, task.runId, { taskId: task.id, workspaceId: workspace.id, timestamp: now });
 
       const permission = task.tempPermission || task.permission || 'ask-first';
@@ -1331,7 +1316,10 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
       }
 
       task.harness = advanceHarnessPhase(task.harness, 'finalizing', { mode: task.mode || 'build', permission, now });
-      const finalText = [task.partialText || '', `Published \`${publishedHead.slice(0, 7)}\` to \`${branch}\`.`].filter(Boolean).join('\n\n');
+      const publishSummary = published.pullRequestUrl
+        ? `Published verified commit \`${published.head.slice(0, 7)}\` on \`${published.branch}\` and opened PR #${published.pullRequestNumber}.`
+        : `Published verified commit \`${published.head.slice(0, 7)}\` to \`${published.branch}\`.`;
+      const finalText = [task.partialText || '', publishSummary].filter(Boolean).join('\n\n');
       if (finalText) await repository.putMessage({
         id: `msg_${task.runId || uuid()}`,
         sessionId: session.id,
@@ -1360,11 +1348,13 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
       await recordAudit(req, session.id, 'approval.resolve', 'approved_once', {
         approvalId: approval.id,
         action: approval.action,
-        branch,
-        commitSha: publishedHead,
+        branch: published.branch,
+        commitSha: published.head,
+        pullRequestNumber: published.pullRequestNumber,
+        protectedBranchFallback: published.protectedBranchFallback,
       });
       await promoteNextQueuedRun(session.id).catch(() => null);
-      return res.json({ approval: approvedRecord, published: { branch, head: publishedHead, alreadyPublished }, verification: task.harness.verification });
+      return res.json({ approval: approvedRecord, published, verification: task.harness.verification });
     } catch (error) {
       return res.status(502).json({ error: error instanceof Error ? error.message : 'The approved publish could not be completed.' });
     }
