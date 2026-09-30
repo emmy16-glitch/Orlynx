@@ -4,6 +4,8 @@ import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEn
 import { streamWithOfficialOpenCode } from './opencode-local.js';
 
 const active = new Map<string, AbortController>();
+const DIRECT_TURN_TIMEOUT_MS = Math.max(60_000, Number(process.env.ORLYNX_DIRECT_TURN_TIMEOUT_MS || 3 * 60_000));
+const DIRECT_FIRST_TOKEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.ORLYNX_DIRECT_FIRST_TOKEN_TIMEOUT_MS || 60_000));
 
 export type ExecutionPlane = 'direct' | 'workspace';
 
@@ -411,6 +413,24 @@ export async function streamDirectRepositoryChat(input: {
 }): Promise<string> {
   const controller = new AbortController();
   active.set(input.runId, controller);
+  const turnTimer = setTimeout(() => {
+    controller.abort(new Error('Direct chat exceeded the response deadline before completing.'));
+  }, DIRECT_TURN_TIMEOUT_MS);
+  turnTimer.unref?.();
+  let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstTokenSeen = false;
+  const clearFirstTokenTimer = () => {
+    if (!firstTokenTimer) return;
+    clearTimeout(firstTokenTimer);
+    firstTokenTimer = undefined;
+  };
+  const armFirstTokenTimer = () => {
+    if (firstTokenSeen || firstTokenTimer) return;
+    firstTokenTimer = setTimeout(() => {
+      controller.abort(new Error('The model did not start streaming in time.'));
+    }, DIRECT_FIRST_TOKEN_TIMEOUT_MS);
+    firstTokenTimer.unref?.();
+  };
   const started = performance.now();
   const initialMemory = process.memoryUsage().rss;
   const initialCpu = process.cpuUsage();
@@ -457,13 +477,24 @@ export async function streamDirectRepositoryChat(input: {
       system,
       messages: turns,
       requestId: input.messageId || input.runId,
-      onTiming: (stage, ms) => { timings[stage] = Math.round(ms); },
+      onTiming: (stage, ms) => {
+        timings[stage] = Math.round(ms);
+        if (stage === 'modelRequestStartedMs') armFirstTokenTimer();
+      },
       signal: controller.signal,
-      onDelta: input.onDelta,
+      onDelta: (delta) => {
+        if (!firstTokenSeen) {
+          firstTokenSeen = true;
+          clearFirstTokenTimer();
+        }
+        input.onDelta(delta);
+      },
       onStatus: input.onStatus,
     });
     return cleanAssistantText(raw, input.prompt);
   } finally {
+    clearTimeout(turnTimer);
+    clearFirstTokenTimer();
     timings.totalMs = Math.round(performance.now() - started);
     const cpu = process.cpuUsage(initialCpu);
     console.info('[direct-chat] ' + JSON.stringify({ session: input.session.id, run: input.runId,
