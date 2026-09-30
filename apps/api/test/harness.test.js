@@ -214,6 +214,49 @@ test('result verifier uses durable canonical evidence instead of trusting final 
   assert.deepEqual(cp.verification.satisfied, ['changes', 'tests', 'build', 'commit', 'publish']);
 });
 
+test('later test/build failures invalidate earlier passing verification', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'fix it, run tests and build',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, [
+    evt(1, 'changes.updated', { files: [{ path: 'src/a.ts' }] }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'tool.failed', { command: 'npm test', semanticType: 'test-result', exitCode: 1 }),
+    evt(5, 'tool.failed', { command: 'npm run build', semanticType: 'build-result', exitCode: 1 }),
+  ]);
+  assert.equal(cp.verification.status, 'needs_more_work');
+  assert.deepEqual(cp.verification.satisfied, ['changes']);
+  assert.deepEqual(cp.verification.missing, ['tests', 'build']);
+});
+
+test('later source edits make earlier test/build evidence stale until rerun', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'fix it, run tests and build',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, [
+    evt(1, 'file.changed', { path: 'src/a.ts' }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'file.changed', { path: 'src/a.ts' }),
+  ]);
+  assert.deepEqual(cp.verification.missing, ['tests', 'build']);
+
+  cp = verifyHarness(cp, [
+    evt(1, 'file.changed', { path: 'src/a.ts' }),
+    evt(2, 'tool.completed', { command: 'npm test', semanticType: 'test-result', exitCode: 0 }),
+    evt(3, 'tool.completed', { command: 'npm run build', semanticType: 'build-result', exitCode: 0 }),
+    evt(4, 'changes.updated', { files: [{ path: 'src/a.ts' }] }),
+  ]);
+  assert.equal(cp.verification.status, 'passed');
+});
+
 test('browser research verification requires real web tool evidence', () => {
   let cp = createHarnessCheckpoint({
     prompt: 'search the web for the latest official docs',
