@@ -7,6 +7,7 @@ import { defaultWorkspaceProviderId, providerForWorkspace, runnerFallbackEnabled
 import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 import { computeTargetQuarantined, noteComputeFailure, noteComputeSuccess, selectWorkspaceProvider } from './compute-broker.js';
+import { classifyWorkspaceFailure } from './workspace-failure.js';
 
 type PreparationContext = { allowFallback: boolean; attemptedProviders: Set<WorkspaceProviderId>; onProviderAttempt?: (provider: WorkspaceProviderId) => Promise<void>; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
@@ -545,7 +546,7 @@ async function prepareWorkspaceOnce(
         }
       }
 
-      const permanentProviderFailure = /permission|forbidden|unauthorized|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
+      const permanentProviderFailure = classifyWorkspaceFailure(error) !== 'transient';
       const fallbackProvider = context.allowFallback && !permanentProviderFailure
         ? await selectWorkspaceProvider({
             attempted: context.attemptedProviders,

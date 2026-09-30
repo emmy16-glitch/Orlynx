@@ -4,6 +4,7 @@ import type { WorkspaceRecord } from '@orlynx/shared';
 import { emit } from './events.js';
 import { controlPlaneRepository, durableStorageConfigured, type WorkspaceJobRecord } from './storage.js';
 import { ensureWorkspaceRecord, prepareWorkspace } from './workspaces.js';
+import { classifyWorkspaceFailure } from './workspace-failure.js';
 
 export interface WorkspacePreparationInput {
   sessionId: string;
@@ -27,8 +28,7 @@ function workerId(prefix = 'worker'): string {
 }
 
 function retryable(error: unknown): boolean {
-  const detail = error instanceof Error ? error.message : String(error || '');
-  return !/(?:HTTP\s*(?:401|403)|forbidden|permission.*(?:required|denied)|authorization expired|not configured|invalid .*configuration)/i.test(detail);
+  return classifyWorkspaceFailure(error) === 'transient';
 }
 
 async function promoteSession(sessionId: string): Promise<void> {
