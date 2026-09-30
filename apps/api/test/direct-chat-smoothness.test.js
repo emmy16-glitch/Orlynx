@@ -110,3 +110,17 @@ test('temporary GitHub context failure degrades chat instead of failing the whol
   assert.match(direct, /Do not invent repository file contents or claim they were inspected/);
   assert.match(direct, /timings\.repoContextFallback = 1/);
 });
+
+test('direct completion uses an atomic steering revision guard so late follow-ups cannot be overwritten', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+
+  assert.match(agents, /finalSteeringRevision/);
+  assert.match(agents, /completeDirectTaskIfUnchanged\(task, finalSteeringRevision\)/);
+  assert.match(agents, /A follow-up arrived while the response was finalizing/);
+  assert.match(storage, /completeDirectTaskIfUnchanged/);
+  assert.match(storage, /harness_state->>'steeringRevision'/);
+  assert.match(storage, /AND state='running'/);
+  assert.match(storage, /RETURNING id/);
+});
+
