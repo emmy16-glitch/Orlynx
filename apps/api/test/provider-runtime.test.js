@@ -441,16 +441,25 @@ test('Hello streams without repository/workspace requests and reload does not ca
 
 
 
-test('production keeps the main API lightweight and status reads do not wake the external OpenCode runtime', () => {
+test('production co-locates and supervises the free-model OpenCode runtime', () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const buildScript = fs.readFileSync(new URL('../../../scripts/render-build.sh', import.meta.url), 'utf8');
+  const productionStart = fs.readFileSync(new URL('../scripts/production-start.mjs', import.meta.url), 'utf8');
   const providerSource = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
   const routesSource = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
 
   assert.equal(packageJson.scripts.start, 'node scripts/production-start.mjs');
   assert.equal(packageJson.scripts['start:api'], 'node dist/index.js');
   assert.match(buildScript, /^npm ci --include=dev$/m);
-  assert.doesNotMatch(buildScript, /Installing local OpenCode sidecar|apps\/api\/\.opencode-runtime/);
+  assert.match(buildScript, /npm install --prefix \.render-opencode[\s\S]*opencode-ai@/);
+  assert.match(buildScript, /\.render-opencode\/node_modules\/\.bin\/opencode --version/);
+
+  assert.match(productionStart, /ORLYNX_LOCAL_OPENCODE_RUNTIME !== '0'/);
+  assert.match(productionStart, /ORLYNX_OPENCODE_RUNTIME_URL = 'http:\/\/127\.0\.0\.1:4096'/);
+  assert.match(productionStart, /launch\('opencode-runtime'[\s\S]*\{ restart: true \}\)/);
+  assert.match(productionStart, /restarting in \$\{delay\}ms/);
+  assert.match(productionStart, /using configured external runtime/);
+
   assert.match(providerSource, /if \(resolved\.free\) \{[\s\S]*streamFreeModelThroughOpenCodeRuntime/);
   assert.match(providerSource, /ORLYNX_OPENCODE_RUNTIME_USERNAME \|\| 'opencode'/);
   assert.match(providerSource, /export function warmOpenCodeRuntime/);
