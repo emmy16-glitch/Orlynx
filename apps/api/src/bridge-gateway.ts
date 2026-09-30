@@ -96,6 +96,16 @@ function continuationPayload(
 type BridgeAdapterState = { state?: string; reason?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
+type VerificationArtifact = {
+  path?: string;
+  kind?: string;
+  size?: number;
+  excerpt?: string;
+};
+interface VerificationArtifactsResult extends Record<string, unknown> {
+  artifacts?: VerificationArtifact[];
+}
+
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
   return header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -712,6 +722,77 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 payload: { waitingInput: true },
               });
               return;
+            }
+
+            if (
+              engineSessionId
+              && task.harness.verification.missing.some((item) => item === 'tests' || item === 'build')
+            ) {
+              try {
+                const artifactResult = await bridgeRequest<VerificationArtifactsResult>(
+                  claims.workspaceId,
+                  'verification.artifacts',
+                  {},
+                  15_000,
+                );
+                const artifacts = Array.isArray(artifactResult.artifacts)
+                  ? artifactResult.artifacts
+                    .filter((artifact) => artifact && typeof artifact === 'object' && String(artifact.path || '').trim())
+                    .slice(0, 16)
+                    .map((artifact) => ({
+                      path: String(artifact.path || '').slice(0, 1_200),
+                      kind: String(artifact.kind || 'artifact').slice(0, 80),
+                      size: Number.isFinite(Number(artifact.size)) ? Number(artifact.size) : 0,
+                      ...(artifact.excerpt ? { excerpt: String(artifact.excerpt).slice(0, 1_600) } : {}),
+                    }))
+                  : [];
+
+                if (artifacts.length) {
+                  const signature = artifacts.map((artifact) => `${artifact.kind}:${artifact.path}:${artifact.size}`).join('|').slice(0, 8_000);
+                  const alreadyRecorded = recent.some((event) =>
+                    event.type === 'state.delta'
+                    && String(event.payload?.scope || '') === 'verification-artifacts'
+                    && String(event.payload?.signature || '') === signature
+                  );
+                  if (!alreadyRecorded) {
+                    const contextCount = artifacts.filter((artifact) => artifact.kind === 'context').length;
+                    const screenshotCount = artifacts.filter((artifact) => artifact.kind === 'screenshot').length;
+                    const traceCount = artifacts.filter((artifact) => artifact.kind === 'trace').length;
+                    const reportCount = artifacts.filter((artifact) => artifact.kind === 'report').length;
+                    const paths = artifacts.slice(0, 8).map((artifact) => `${artifact.kind}: ${artifact.path}`);
+                    const summary = [
+                      `Verification artifacts found: ${artifacts.length}.`,
+                      contextCount ? `${contextCount} error context` : '',
+                      screenshotCount ? `${screenshotCount} screenshot${screenshotCount === 1 ? '' : 's'}` : '',
+                      traceCount ? `${traceCount} trace${traceCount === 1 ? '' : 's'}` : '',
+                      reportCount ? `${reportCount} report${reportCount === 1 ? '' : 's'}` : '',
+                      paths.length ? `Paths: ${paths.join(' | ')}` : '',
+                    ].filter(Boolean).join(' ');
+
+                    await persistLiveEvent({
+                      eventId: `evt_${uuid()}`,
+                      sessionId: claims.sessionId,
+                      taskId,
+                      runId,
+                      workspaceId: claims.workspaceId,
+                      type: 'state.delta',
+                      timestamp: new Date().toISOString(),
+                      payload: {
+                        scope: 'verification-artifacts',
+                        sourceType: 'verification.artifacts',
+                        signature,
+                        summary,
+                        artifacts,
+                      },
+                    });
+                    recent = (await repository.listRecentEvents(claims.sessionId, 1000))
+                      .filter((event) => event.runId === runId)
+                      .map(sanitizeEvent);
+                  }
+                }
+              } catch (artifactError) {
+                console.info(`[harness] verification artifact discovery unavailable run=${runId}: ${artifactError instanceof Error ? artifactError.message : 'unknown error'}`);
+              }
             }
 
             if (shouldReflect(task.harness, responseText) && engineSessionId) {
