@@ -382,6 +382,9 @@ export async function githubUserAccessToken(userId: string): Promise<string> {
         const latestExpiresAt = latest.accessTokenExpiresAt ? Date.parse(latest.accessTokenExpiresAt) : Number.POSITIVE_INFINITY;
         if (latestExpiresAt > Date.now() + 5 * 60_000) return decryptCredential(latest.accessToken);
       }
+      if (!response || response.status >= 500) {
+        throw new Error('GitHub authorization refresh is temporarily unavailable. Orlynx can retry without reconnecting your account.');
+      }
       throw new Error('GitHub user authorization expired. Reconnect GitHub.');
     }
     const now = new Date();
