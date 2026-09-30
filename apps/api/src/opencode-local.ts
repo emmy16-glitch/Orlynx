@@ -420,6 +420,11 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     ).catch(() => undefined);
   };
   input.signal.addEventListener('abort', abortRemote, { once: true });
+  // Cancellation can land in the tiny gap after prompt admission but before
+  // this listener is attached. AbortSignal does not replay old abort events,
+  // so explicitly catch up here; otherwise the remote OpenCode generation can
+  // keep running after Orlynx believes it was cancelled.
+  if (input.signal.aborted) abortRemote();
 
   const reader = eventResponse.body.getReader();
   const decoder = new TextDecoder();
