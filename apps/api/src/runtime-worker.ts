@@ -22,11 +22,10 @@ function sandboxCredentials() {
     ? { token: process.env.VERCEL_TOKEN, teamId: process.env.VERCEL_TEAM_ID, projectId: process.env.VERCEL_PROJECT_ID }
     : {};
 }
-export function buildWorkspaceBootstrapScript(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, bridgeUrl: string, openCodeApiKey = '', githubToken = ''): string {
+export function buildWorkspaceBootstrapScript(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, bridgeUrl: string, openCodeApiKey = ''): string {
   const bridge = fs.readFileSync(bridgeBundle, 'utf8');
   const envValues = [`ORLYNX_CONTROL=${bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${values.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${workspace.id}`, `ORLYNX_SESSION_ID=${workspace.sessionId}`, `ORLYNX_USER_ID=${workspace.userId}`, `ORLYNX_CONNECTION_ID=${values.connectionId}`, `OPENCODE_SERVER_PASSWORD=${values.openCodePassword}`];
   if (openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${openCodeApiKey}`);
-  if (githubToken) envValues.push(`ORLYNX_GITHUB_TOKEN=${githubToken}`);
   const env = envValues.map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
