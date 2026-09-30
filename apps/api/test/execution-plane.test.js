@@ -176,7 +176,7 @@ test('workspace Build queue survives normal recovery windows and running work ne
   const now = Date.parse('2026-09-25T19:00:00Z');
   const abandonedQueued = {
     id: 'old-queued', sessionId: 's', workspaceId: 'w', plane: 'workspace',
-    state: 'queued', prompt: 'install execution', createdAt: '2026-09-24T18:30:00Z', updatedAt: '2026-09-24T18:30:00Z'
+    state: 'queued', prompt: 'install execution', createdAt: '2026-09-17T18:30:00Z', updatedAt: '2026-09-17T18:30:00Z'
   };
   const recoveringQueued = { ...abandonedQueued, id: 'recovering', createdAt: '2026-09-25T18:30:00Z', updatedAt: '2026-09-25T18:30:00Z' };
   const longRunning = { ...recoveringQueued, id: 'long-running', state: 'running', updatedAt: '2026-09-25T18:59:00Z' };

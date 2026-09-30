@@ -99,6 +99,8 @@ export interface ControlPlaneRepository {
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
+  /** Durable sessions that still contain queued/running work. Used by cold-start recovery. */
+  listActiveTaskSessionIds?(limit?: number): Promise<string[]>;
   getTask(id: string): Promise<TaskRecord | null>;
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
   claimQueuedTask(sessionId: string, taskId: string): Promise<TaskRecord | null>;
@@ -435,6 +437,19 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       ON CONFLICT (id) DO UPDATE SET adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
   }
   async listTasks(sessionId: string) { await this.initialize(); return rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE session_id=${sessionId} ORDER BY created_at,id`).map(mapTask); }
+  async listActiveTaskSessionIds(limit = 100) {
+    await this.initialize();
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+    return rows<{ session_id: string }>(await this.sql.query(
+      `SELECT session_id
+         FROM tasks
+        WHERE state IN ('queued','running','waiting_input','waiting_approval')
+        GROUP BY session_id
+        ORDER BY MIN(updated_at), session_id
+        LIMIT $1`,
+      [safeLimit],
+    )).map((row) => String(row.session_id));
+  }
   async getTask(id: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM tasks WHERE id=${id}`)[0]; return r ? mapTask(r) : null; }
   async claimNextQueuedTask(sessionId: string) {
     await this.initialize();

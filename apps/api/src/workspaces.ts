@@ -550,7 +550,10 @@ async function prepareWorkspaceOnce(
         }
       }
 
-      const permanentProviderFailure = /permission|forbidden|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
+      const providerLocalFailure = workspace.provider === 'e2b'
+        && /E2B|sandbox|API key|unauthorized|HTTP\s+(?:401|403)/i.test(detail);
+      const permanentProviderFailure = !providerLocalFailure
+        && /permission|forbidden|authorization expired|not configured|invalid .*configuration|HTTP\s+(?:401|403)/i.test(detail);
       const fallbackProvider = context.allowFallback && !permanentProviderFailure
         ? fallbackWorkspaceProviderId(workspace.provider, context.attemptedProviders)
         : null;
@@ -584,7 +587,7 @@ async function prepareWorkspaceOnce(
             ? 'GitHub workspace is unavailable · switching to an isolated E2B workspace…'
             : fallbackProvider === 'github-codespaces'
               ? 'Alternate workspace unavailable · returning to GitHub Codespaces…'
-              : 'Switching execution providers automatically…',
+              : 'Cloud workspace unavailable · switching to the warm Orlynx runner pool…',
         });
         return prepareWorkspaceOnce(input, replacementDepth, context);
       }

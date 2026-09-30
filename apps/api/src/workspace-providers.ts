@@ -38,16 +38,27 @@ export function fallbackWorkspaceProviderId(
   const used = new Set(attempted);
   used.add(current);
 
-  // Codespaces is primary. E2B is the first independent interactive fallback
-  // when explicitly configured; it never becomes a hidden dependency.
-  if (current === 'github-codespaces' && e2bConfigured() && !used.has('e2b')) return 'e2b';
+  // Provider order is deliberate:
+  // persistent GitHub Codespaces -> isolated E2B -> warm Render runner pool.
+  // Explicit E2B/runner deployments still prefer returning to Codespaces when
+  // it has not already been attempted. Never revisit an attempted provider.
+  if (current === 'github-codespaces') {
+    if (e2bConfigured() && !used.has('e2b')) return 'e2b';
+    if (orlynxRunnerConfigured() && !used.has('orlynx-runner')) return 'orlynx-runner';
+    return null;
+  }
 
-  // Explicit E2B or legacy runner deployments may fall back to Codespaces.
-  if ((current === 'e2b' || current === 'orlynx-runner') && !used.has('github-codespaces')) return 'github-codespaces';
+  if (current === 'e2b') {
+    if (!used.has('github-codespaces')) return 'github-codespaces';
+    if (orlynxRunnerConfigured() && !used.has('orlynx-runner')) return 'orlynx-runner';
+    return null;
+  }
 
-  // An explicit runner can fall through Codespaces to E2B when both are
-  // available and Codespaces was already attempted.
-  if (current === 'orlynx-runner' && e2bConfigured() && !used.has('e2b')) return 'e2b';
+  if (current === 'orlynx-runner') {
+    if (!used.has('github-codespaces')) return 'github-codespaces';
+    if (e2bConfigured() && !used.has('e2b')) return 'e2b';
+    return null;
+  }
 
   return null;
 }
