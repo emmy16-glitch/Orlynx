@@ -9,6 +9,7 @@ import { saveAttachment } from './attachments.js';
 import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { cancelRun, currentRuns, promoteNextQueuedRun, recoverInterruptedDirectRuns, resumeWaitingInputTask, startRun } from './agents.js';
 import { getOpenCodeSessionId, openCodeStatus, runOpenCodeShell } from './opencode.js';
+import { warmOpenCodeRuntime } from './opencode-local.js';
 import { aiStatus, canPerform, connectProviderKey, disconnectProvider, getSessionPrefs, hydrateSessionPrefs, listProviderConnections, setProjectDefaults, setSessionPrefs } from './ai.js';
 import { MANIFEST_APP_FALLBACKS, MANIFEST_APP_NAME, buildManifest, exchangeManifestCode, persistCredentialsToVercel, setupAccess, setupAuthorized, signManifestState, verifyManifestState } from './manifest.js';
 import { publicSiteUrl } from './site.js';
@@ -1917,6 +1918,14 @@ router.post('/changes/:changeId/push', async (req, res) => {
 });
 
 // unified AI layer (engine underneath, one experience on top)
+router.post('/ai/runtime/prewarm', async (_req, res) => {
+  // Authenticated hint only. Do not block navigation or chat on a cold
+  // downstream free-model runtime; wake it in the background so the next turn
+  // is more likely to stream immediately.
+  void warmOpenCodeRuntime().catch(() => false);
+  return res.status(202).json({ warming: true });
+});
+
 router.get('/ai/catalog', async (_req, res) => {
   try {
     const { models } = await listProviderConnections('', undefined, undefined);
