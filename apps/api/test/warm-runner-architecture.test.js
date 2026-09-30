@@ -153,6 +153,14 @@ test('runner image bakes and verifies Chromium E2E runtime', () => {
   assert.match(manager, /browserE2e: process\.env\.ORLYNX_RUNNER_BROWSER_E2E/);
 });
 
+test('runner pool force-wakes circuit-open scale-to-zero hosts before declaring zero capacity', () => {
+  const pool = fs.readFileSync(new URL('../src/runner-pool.ts', import.meta.url), 'utf8');
+  assert.match(pool, /circuitOpen\(host\) && !force/);
+  assert.match(pool, /no immediately healthy hosts; forcing wake probe/);
+  assert.match(pool, /probeRunnerHost\(host, true\)/);
+  assert.match(pool, /forced wake recovered/);
+});
+
 test('runner pool carries browser capability and detects E2E task intent', () => {
   const pool = fs.readFileSync(new URL('../src/runner-pool.ts', import.meta.url), 'utf8');
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
