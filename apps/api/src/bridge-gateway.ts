@@ -17,6 +17,7 @@ import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } 
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import { addChangeEvidence } from './changes.js';
+import { publishVerifiedChangeSet } from './publisher.js';
 import type { EventType } from '@orlynx/shared';
 
 async function persistLiveEvent(event: {
@@ -37,38 +38,14 @@ async function persistLiveEvent(event: {
   });
 }
 
-async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string) {
-  const repository = controlPlaneRepository();
-  const session = await repository.getSession(sessionId);
-  if (!session) throw new Error('Session is unavailable for controlled publishing.');
-
-  await bridgeRequest(workspaceId, 'git.fetch', { approved: true }, 120_000);
-  const status = await bridgeRequest<{
-    branch?: string;
-    head?: string;
-    remoteHead?: string;
-    porcelain?: string;
-    ahead?: number;
-    behind?: number;
-  }>(workspaceId, 'git.status', {}, 30_000);
-
-  const branch = String(status.branch || '');
-  const head = String(status.head || '');
-  const porcelain = String(status.porcelain || '');
-  if (!branch || !head) throw new Error('Orlynx could not determine the Git branch and commit.');
-  if (branch !== session.branch) throw new Error(`Workspace is on ${branch}, but this conversation targets ${session.branch}.`);
-  if (porcelain.trim()) throw new Error('Workspace still has uncommitted changes. Commit them before publishing.');
-  if (Number(status.behind || 0) > 0) throw new Error(`origin/${branch} has newer commits. Pull or rebase before publishing.`);
-
-  if (status.remoteHead && status.remoteHead === head && Number(status.ahead || 0) === 0) {
-    return { branch, head, alreadyPublished: true };
-  }
-
-  const pushed = await bridgeRequest<{ branch?: string; head?: string }>(workspaceId, 'git.push', {
-    approved: true,
-    allowDefaultBranch: branch === 'main' || branch === 'master',
-  }, 120_000);
-  return { branch: String(pushed.branch || branch), head: String(pushed.head || head), alreadyPublished: false };
+async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string, runId?: string) {
+  return publishVerifiedChangeSet({
+    sessionId,
+    workspaceId,
+    runId,
+    strategy: 'direct',
+    commitMessage: 'Orlynx verified changes',
+  });
 }
 
 function continuationPayload(
@@ -601,6 +578,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
           task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
+          // Once every requirement except publication is satisfied, bind that
+          // evidence to the exact workspace HEAD. Publication will refuse stale
+          // evidence if a later commit changes HEAD.
+          if (task.harness.verification.missing.every((item) => item === 'publish')) {
+            const verifiedStatus = await bridgeRequest<{ head?: string }>(claims.workspaceId, 'git.status', {}, 30_000).catch(() => null);
+            if (verifiedStatus?.head) task.harness.verifiedWorkspaceHead = String(verifiedStatus.head);
+          }
           await repository.putTask(task);
 
           let publishError = '';
@@ -658,7 +642,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           if (onlyPublishMissing && effectivePermission === 'full') {
             try {
-              const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId);
+              const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId, runId);
               const publishedAt = new Date().toISOString();
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
