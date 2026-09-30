@@ -182,13 +182,11 @@ export async function selectWorkspaceProvider(input: {
   preferredProvider?: WorkspaceProviderId;
 } = {}): Promise<WorkspaceProviderId | null> {
   const ranked = workspaceProviderScores(input);
-  const usable = ranked.find((item) => item.configured && item.score > -400 && !item.quarantined);
-  if (usable) return usable.id;
-
-  // If every configured provider is quarantined, prefer degraded service over
-  // a hard stop. The attempted set still prevents loops within one preparation.
-  const degraded = ranked.find((item) => item.configured && item.score > -400);
-  return degraded?.id || null;
+  // Eligibility is a hard constraint, not a scoring penalty. A successful
+  // provider's bonus can otherwise lift an attempted target above the cutoff.
+  const attempted = new Set(input.attempted || []);
+  const usable = ranked.find((item) => item.configured && !attempted.has(item.id) && !item.quarantined);
+  return usable?.id || null;
 }
 
 export function computeBrokerSnapshot(): Array<{

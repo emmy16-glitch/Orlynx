@@ -664,7 +664,7 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
     budget.instruction || '',
     steeringText,
     checkpoint.verification.required.includes('preview')
-      ? 'For a cloud-workspace development server, bind the app to 0.0.0.0 (for example Vite --host 0.0.0.0) unless the framework has a verified equivalent. Do not treat a loopback-only 127.0.0.1 listener as remotely previewable. Let Orlynx verify provider forwarding separately.'
+      ? 'For a cloud-workspace development server, bind the app to 0.0.0.0 (for example Vite --host 0.0.0.0) unless the framework has a verified equivalent. Do not treat a loopback-only 127.0.0.1 listener as remotely previewable. Let Orlynx verify provider forwarding separately. An IPv4 HTTP listener and healthy provider URL are sufficient; failure at IPv6 ::1 does not invalidate them. Do not repeat equivalent localhost probes. If the local application is healthy but external forwarding remains unavailable, conclude with that precise limitation within the reflection budget.'
       : '',
     'When an observation is unexpected, ambiguous, unknown, or conflicts with another signal, Orlynx must not invent an explanation. Treat the connected model as the reasoning partner: ask it to interpret the evidence and choose the next check, then verify that hypothesis with tools.',
     'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools or the connected model can determine. Escalate only for genuinely human-only input or permission.',

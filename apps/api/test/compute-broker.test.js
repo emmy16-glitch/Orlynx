@@ -79,6 +79,22 @@ test('direct runtime uses the same quarantine mechanism as workspace providers',
   assert.equal(computeTargetQuarantined('direct-runtime'), false);
 });
 
+test('success and sticky bonuses never make an attempted provider eligible again', async (t) => {
+  withEnv(t, { E2B_API_KEY: 'test-key', ORLYNX_RUNNER_URL: undefined, ORLYNX_RUNNER_HOSTS: undefined, ORLYNX_RUNNER_TOKEN: undefined });
+  resetComputeBrokerForTests();
+  noteComputeSuccess('github-codespaces', 1);
+  noteComputeSuccess('e2b', 1);
+  assert.equal(await selectWorkspaceProvider({ attempted: ['github-codespaces', 'e2b'], preferredProvider: 'github-codespaces' }), null);
+});
+
+test('all targets quarantined produces no provider instead of an unhealthy fallback loop', async (t) => {
+  withEnv(t, { E2B_API_KEY: 'test-key', ORLYNX_RUNNER_URL: undefined, ORLYNX_RUNNER_HOSTS: undefined, ORLYNX_RUNNER_TOKEN: undefined, ORLYNX_COMPUTE_QUARANTINE_FAILURES: '1' });
+  resetComputeBrokerForTests();
+  noteComputeFailure('github-codespaces', '502');
+  noteComputeFailure('e2b', '502');
+  assert.equal(await selectWorkspaceProvider(), null);
+});
+
 test('broker scores keep healthy existing preference sticky without making it absolute', (t) => {
   withEnv(t, { E2B_API_KEY: 'test-key' });
   resetComputeBrokerForTests();

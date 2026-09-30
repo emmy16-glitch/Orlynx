@@ -252,6 +252,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         ws.send(JSON.stringify({ kind: 'AUTHENTICATED', token: createBridgeToken({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, userId: claims.userId, connectionId: claims.connectionId }) }));
         return;
       }
+      const scopedWorkspace = await repository.getWorkspace(claims.workspaceId);
+      if (!scopedWorkspace || scopedWorkspace.connectionId !== claims.connectionId) {
+        ws.close(1008, 'superseded workspace connection');
+        return;
+      }
       if (message.kind === 'ADAPTER_STATUS' && message.adapterId && message.adapter) {
         await persistAdapterState(claims, String(message.adapterId), message.adapter);
         console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}`);

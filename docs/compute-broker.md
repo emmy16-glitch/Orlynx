@@ -250,3 +250,7 @@ Future broker changes must preserve these invariants:
 8. the browser must not own provider truth;
 9. raw provider errors should not become the normal user experience;
 10. broker routing must remain covered by deterministic regression tests.
+
+## Recovery hardening, 2026-09-30
+
+Attempted providers and quarantined providers are hard exclusions, independent of score bonuses. When none is eligible, selection returns no provider. A cold/unready quarantined workspace is rerouted through the broker; an already-ready workspace stays sticky. Preparation records at most 36 provider attempts per durable job and has a bounded lease-attempt budget. No hard-coded warm-runner escape bypasses these constraints.

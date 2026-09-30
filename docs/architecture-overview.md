@@ -403,3 +403,7 @@ Future refactors should preserve:
 8. no unrestricted secret exposure to repository code;
 9. no Preview readiness based on a guessed URL;
 10. no new agent/provider that forks the product architecture.
+
+## Recovery hardening, 2026-09-30
+
+Task promotion locks the session in a READ COMMITTED transaction, then checks running work across execution lanes and human-waiting workspace work. Workspace jobs fence terminal writes by worker, attempt generation and unexpired lease. Event sequence allocation and insertion commit in one statement. See [the reliability audit](reliability-audit-2026-09-30.md).

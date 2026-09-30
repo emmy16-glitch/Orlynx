@@ -445,8 +445,8 @@ export function classifyError(message: string): 'rate_limit' | 'quota' | 'auth' 
   if (/429|rate.?limit|too many requests/.test(text)) return 'rate_limit';
   if (/quota|insufficient|credit|balance|billing|payment|usage\s+(?:limit\s+)?exceeded|free\s+usage\s+exceeded|subscribe\s+to\s+go/.test(text)) return 'quota';
   if (/model.*(not found|unavailable|unknown)|unknown model|free model.*not available|choose another free model/.test(text)) return 'model';
-  if (/401|unauthorized|invalid.*(key|token)|expired|forbidden|decrypt|unable to authenticate data/.test(text)) return 'auth';
-  if (/could not reach|unavailable|offline|econn|timeout|timed out/.test(text)) return 'engine';
+  if (/401|403|unauthorized|invalid.*(key|token)|expired|forbidden|decrypt|unable to authenticate data/.test(text)) return 'auth';
+  if (/\b50[234]\b|could not reach|unavailable|offline|econn|timeout|timed out/.test(text)) return 'engine';
   if (/read only|permission|denied|approval/.test(text)) return 'permission';
   return 'unknown';
 }

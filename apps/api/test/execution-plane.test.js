@@ -324,8 +324,10 @@ test('repository preflight transport interruptions requeue Build instead of repo
   assert.match(agents, /GitHub check paused · reconnecting workspace/);
 });
 
-test('durable scheduler permits one direct conversation beside one workspace Build run', () => {
+test('durable scheduler serializes active work and permits direct chat only past a human wait', () => {
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
-  assert.match(storage, /COALESCE\(active\.execution_plane, 'workspace'\) = COALESCE\(queued\.execution_plane, 'workspace'\)/);
+  assert.match(storage, /SELECT id FROM sessions WHERE id=\$\{sessionId\} FOR UPDATE/);
+  assert.match(storage, /active\.state IN \('waiting_input','waiting_approval'\)/);
+  assert.match(storage, /COALESCE\(queued\.execution_plane, 'workspace'\) <> 'direct'/);
   assert.match(storage, /ORDER BY CASE WHEN queued\.execution_plane='direct' THEN 0 ELSE 1 END/);
 });

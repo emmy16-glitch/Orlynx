@@ -55,6 +55,8 @@ export interface AgentStreamRun {
   finishedAt?: string;
   error?: string;
   errorKind?: string;
+  lastStateSequence?: number;
+  stateUpdatedAt?: number;
 }
 
 export interface AgentStreamMessage {

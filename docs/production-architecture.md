@@ -216,3 +216,7 @@ CI verifies:
 A production claim should identify the deployed commit and live Render deploy, not only the latest GitHub commit.
 
 For operational procedure see [render-production.md](render-production.md).
+
+## Recovery hardening, 2026-09-30
+
+Workspace recovery uses bounded job attempts, durable provider-attempt history, and generation-fenced terminal writes. Failed provider resources are retained in workspace_recovery_resources instead of being destroyed during broker fallback. This preserves recovery metadata; automatic transfer of uncommitted edits between providers is not implemented. See [the reliability audit](reliability-audit-2026-09-30.md).

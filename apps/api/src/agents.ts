@@ -71,6 +71,28 @@ export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?
   return Boolean(workspace && workspace.state === 'ready' && workspace.bridgeState === 'ready');
 }
 
+export async function reconcileTaskWorkspace(task: TaskRecord): Promise<WorkspaceRecord | null> {
+  const repository = controlPlaneRepository();
+  const session = await repository.getSession(task.sessionId);
+  if (!session) return null;
+  const project = await repository.getProject(session.projectId);
+  if (!project) return null;
+  const valid = (workspace: WorkspaceRecord | null) => workspace
+    && workspace.sessionId === session.id && workspace.userId === session.userId
+    && workspace.projectId === session.projectId && workspace.repositoryId === project.repositoryId
+    && workspace.branch === session.branch;
+  const bound = await repository.getWorkspace(task.workspaceId);
+  if (valid(bound)) return bound;
+  // Repair tasks admitted before workspace_id was included in the upsert.
+  // Never adopt a workspace from another user, repository, branch or session.
+  const current = await repository.getWorkspaceBySession(session.id);
+  if (!valid(current)) return null;
+  task.workspaceId = current!.id;
+  task.updatedAt = new Date().toISOString();
+  await repository.putTask(task);
+  return current;
+}
+
 export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()): boolean {
   if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'queued') return false;
   const created = Date.parse(task.createdAt);
@@ -1026,8 +1048,28 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   if (!nextQueued) return null;
 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
-    const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
+    const readyWorkspace = await reconcileTaskWorkspace(nextQueued);
     if (!readyWorkspace) return null;
+
+    // A terminal preparation job is a terminal result for the work that was
+    // waiting on it. Sweeps must not manufacture a fresh job and reset its
+    // retry budget indefinitely. A newly submitted task may retry later.
+    const preparation = await repository.getLatestWorkspaceJob(readyWorkspace.id);
+    const preparationExhausted = preparation?.state === 'failed' && Date.parse(preparation.updatedAt) >= Date.parse(nextQueued.createdAt);
+    const adapterRecovered = preparationExhausted && (await repository.getWorkspaceAgentAdapter(readyWorkspace.id, nextQueued.adapterId || 'opencode'))?.state === 'ready';
+    if (preparationExhausted && (!workspaceCanAcceptTask(readyWorkspace) || !adapterRecovered)) {
+      const now = new Date().toISOString();
+      nextQueued.state = 'failed';
+      nextQueued.updatedAt = now;
+      await repository.putTask(nextQueued);
+      const failedRun = (store.db.runs[sessionId] || []).find(item => item.id === nextQueued.runId);
+      if (failedRun) { failedRun.state = 'failed'; failedRun.activity = 'Workspace recovery needs attention'; failedRun.finishedAt = now; failedRun.errorKind = 'engine'; }
+      store.save();
+      const error = 'Workspace recovery exhausted its retry budget. Your request is saved; continue to retry when compute is available.';
+      await repository.putMessage({ id: `msg_recovery_${nextQueued.id}`, sessionId, role: 'assistant', runId: nextQueued.runId, text: error, createdAt: now });
+      emit(sessionId, 'run.failed', { taskId: nextQueued.id, error, errorKind: 'engine', recoverable: true, preparationJobId: preparation!.id }, nextQueued.runId);
+      return promoteNextQueuedRunInner(sessionId);
+    }
 
     // Verification-only work can use an independent CI execution plane while
     // the interactive workspace is cold, degraded, or being repaired.

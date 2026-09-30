@@ -86,3 +86,7 @@ The user must reconnect before protected repository operations continue.
 Operational dedupe/transport tables may be pruned according to their documented policies.
 
 Conversation/session history and audit data are not silently expired merely because a workspace stopped or the user changed devices. A future user-facing deletion/retention feature must make destructive retention explicit.
+
+## Recovery hardening, 2026-09-30
+
+The task workspace_id is updated with execution_plane during failover. Recovery repairs legacy bindings using full ownership/repository/branch checks. Queued workspace claims cannot bypass running work in another lane or tasks waiting for input/approval; direct read-only chat can still pass a human wait.

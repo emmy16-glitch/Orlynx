@@ -1670,6 +1670,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
       } : undefined,
       partialText: task.partialText,
       partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
+      updatedAt: task.updatedAt,
       activity: task.state === 'running'
         ? (task.plane === 'direct' ? 'Streaming response' : 'Working')
         : task.state === 'queued'

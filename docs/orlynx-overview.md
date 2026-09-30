@@ -352,3 +352,7 @@ Current architecture should be described honestly:
 - **Future:** additional agent adapters, organization-owned compute, advanced team memory, policy-driven autonomous maintenance.
 
 See [product-vision-and-roadmap.md](product-vision-and-roadmap.md).
+
+## Recovery hardening, 2026-09-30
+
+Recovery preserves the durable task-to-workspace binding. Exhausted preparation stops with a saved recoverable result rather than endlessly resetting the job budget. The selected model is retained during the one safe pre-output adapter retry. See [the reliability audit](reliability-audit-2026-09-30.md).
