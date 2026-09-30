@@ -707,7 +707,7 @@ async function executeDirectTask(
       emit(session.id, 'activity.progress', {
         taskId: task.id,
         sourceType: 'agent.memory',
-        text: `Orlynx memory → Model: using ${directLessons.length} verified lesson${directLessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        text: `Applied ${directLessons.length} verified project lesson${directLessons.length === 1 ? '' : 's'}.`,
         lessonIds: directLessons.map((lesson) => lesson.id),
       }, run.id);
     }
@@ -1561,7 +1561,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       emit(sessionId, 'activity.progress', {
         taskId: task.id,
         sourceType: 'agent.memory',
-        text: `Orlynx memory → Model: using ${lessons.length} verified lesson${lessons.length === 1 ? '' : 's'} from earlier successful work.`,
+        text: `Applied ${lessons.length} verified project lesson${lessons.length === 1 ? '' : 's'}.`,
         lessonIds: lessons.map((lesson) => lesson.id),
       }, run.id);
     }
