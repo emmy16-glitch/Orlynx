@@ -55,6 +55,16 @@ test('API wake proactively warms the separate free-model runtime without delayin
 });
 
 
+test('background runtime prewarm can outlive the interactive failover window', () => {
+  const runtime = fs.readFileSync(new URL('../src/opencode-local.ts', import.meta.url), 'utf8');
+
+  assert.match(runtime, /timeoutOverrideMs\?: number/);
+  assert.match(runtime, /const configuredTimeout = timeoutOverrideMs \?\? Number\(process\.env\.ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS/);
+  assert.match(runtime, /waitForRuntimeReady\(controller\.signal, undefined, undefined, timeoutMs\)/);
+  assert.match(runtime, /waitForRuntimeReady\(controller\.signal, undefined, undefined, 90_000\)/);
+  assert.match(runtime, /await waitForRuntimeReady\(input\.signal, input\.onStatus, input\.onTiming\);/);
+});
+
 test('browser retries message admission with the same client id across transient cold-start failures', () => {
   const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
