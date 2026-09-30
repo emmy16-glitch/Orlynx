@@ -1,105 +1,161 @@
 # Workspace runtime
 
-Orlynx separates the user-facing control plane from mutable repository execution.
+## Purpose
 
-- Render hosts the control plane.
-- Postgres is product truth.
-- WorkspaceProvider owns mutable compute.
-- the authenticated Orlynx bridge exposes execution primitives.
-- OpenCode is Agent Adapter #1.
+A workspace is the mutable execution environment for repository work. The browser and Render control plane do not execute arbitrary project code directly.
 
-## Providers
+Current workspace providers are:
 
-### Orlynx Runner
+- `orlynx-runner`
+- `e2b`
+- `github-codespaces`
 
-Preferred when configured.
+The Compute Broker selects among them.
 
-The runner uses a prebuilt runtime image containing the bridge and pinned native OpenCode package.
+## Lifecycle
 
-Workspaces can prewarm after repository open.
+~~~text
+requested
+  -> provisioning
+  -> starting
+  -> bridge connecting
+  -> workspace ready
+  -> agent adapter starting
+  -> agent ready
+  -> task execution
+~~~
 
-### GitHub Codespaces
+Workspace readiness and agent-adapter readiness are separate states.
 
-Supported fallback/recovery provider.
+## Provider-neutral task identity
 
-Codespaces bootstrap a private Orlynx runtime and install/smoke-test the CPU-compatible native OpenCode package.
+A task remains an Orlynx task regardless of compute:
 
-When the deployment prefers the warm runner, a legacy Codespace may remain in use while its workspace and OpenCode adapter are healthy. If the bridge is healthy but the legacy Codespace adapter becomes unavailable/failed, the next Build admission migrates that session to the preferred warm runner instead of repeatedly paying adapter reconnect churn.
+~~~text
+session -> task -> run
+                 |
+                 +-- runner
+                 +-- E2B
+                 +-- Codespaces
+~~~
 
-## Bridge
+Provider changes must not create a new logical conversation.
 
-The bridge connects outbound to the Orlynx control plane with a short-lived scoped credential.
+## Provider selection
 
-It exposes constrained repository operations including:
+Build admission consults the Compute Broker using:
 
-- filesystem;
-- PTY/shell;
-- Git;
-- tests/builds;
-- Preview discovery/forwarding;
-- registered agent adapters.
+- provider health/history
+- temporary quarantine
+- runner capacity/load
+- browser/E2E capability
+- providers already attempted
+- current healthy-workspace stickiness
 
-Commands are persisted before relying on the WebSocket fast path.
+Healthy existing workspaces are preserved where practical.
 
-## Readiness
+See [compute-broker.md](compute-broker.md).
 
-Workspace readiness and agent readiness are separate.
+## Orlynx runner provider
 
-A workspace is ready when the provider environment and authenticated bridge are ready.
+Current production has five direct Render runner services exposed as one logical pool.
 
-OpenCode may still be starting/repairing/unavailable.
+Each direct runner can:
 
-Heartbeat readiness is intentionally debounced: one transient OpenCode health-probe miss does not flip a previously ready adapter to unavailable. Consecutive failures are required before durable readiness changes, preventing normal short latency spikes from making Build appear to restart.
+- resolve an authorized GitHub repository
+- clone the requested branch
+- start the Orlynx Bridge
+- start/probe OpenCode
+- report health/capacity
+- expose signed Preview forwarding
 
-This separation is intentional.
+## E2B
 
-## Repository freshness before Build
+E2B is an independent isolated sandbox provider. When configured and healthy, the broker can select it for new or recovering work.
 
-A ready runtime is not enough. Before a queued Build task is promoted to model/tool execution, Orlynx asks the bridge to reconcile the workspace branch with GitHub.
+## GitHub Codespaces
 
-The preflight contract is:
+Codespaces is a GitHub-managed durable workspace provider. Orlynx can create, reuse, repair, or replace a Codespace, bootstrap the Bridge/OpenCode runtime, and wait for readiness.
 
-- verify the workspace is on the conversation branch;
-- fetch the latest target branch from `origin`;
-- if the checkout is clean and only behind, fast-forward it automatically with `--ff-only`;
-- if it is already current, continue immediately;
-- if it is dirty while behind, diverged, or on the wrong branch, stop before model execution and preserve the local working tree exactly as-is.
+## Durable preparation
 
-This prevents a healthy-but-stale Codespace or runner from executing against old source code. Repository freshness is a Build admission requirement, not merely a publish-time check.
+Workspace startup is not tied to one HTTP request.
 
-Dependency hydration should also avoid creating fake dirtiness: when `package-lock.json` already exists and dependencies are not intentionally changing, Build guidance prefers `npm ci` and does not leave lockfile churn behind.
+The control plane writes a durable workspace job and the orchestrator worker claims it using a lease. Long preparation renews the lease. Transient failures retry with bounded backoff.
 
-## OpenCode self-healing
+## Bridge connection
 
-The bridge resolves the OpenCode executable through multiple known locations.
+The workspace Bridge connects outbound to the control plane using scoped credentials for workspace/session/user/connection identity.
 
-If none passes a version probe, it installs the pinned native package appropriate for the workspace CPU/libc into a private Orlynx repair directory.
+The Bridge exposes repository-scoped capabilities such as:
 
-The repaired binary is probed again before server startup.
+- filesystem
+- shell / PTY
+- Git
+- tests / builds
+- ports / Preview discovery
+- browser verification artifacts
+- agent adapter lifecycle
 
-This protects long-lived/stale workspaces from path drift or missing runtime packages.
+## Command durability
+
+Commands are persisted before relying on WebSocket delivery. The Bridge records completed command results and avoids duplicate execution for the same command ID across reconnects.
+
+## OpenCode lifecycle
+
+OpenCode is Adapter #1.
+
+A workspace can remain healthy while OpenCode is starting, repairing, or restarting. This prevents an adapter problem from being misclassified as a dead workspace.
+
+The Bridge can repair the pinned native OpenCode package into an Orlynx-private runtime directory.
+
+## Git freshness
+
+Before Build work relies on the checkout, Orlynx checks local/remote branch state.
+
+Safe behind-only state can fast-forward.
+
+Unsafe local source edits or divergence block rather than being discarded.
+
+A narrow recovery path handles isolated incidental `package-lock.json` drift by preserving its patch outside the repository before restore/fast-forward.
 
 ## Preview
 
-Workspace Preview is provider-aware.
+Preview requires more than a listening port.
 
-Warm runner Preview uses the signed runner gateway.
+Orlynx verifies:
 
-Codespaces Preview uses verified port forwarding and browser-resolvable URLs.
+1. local listener
+2. HTTP/browser suitability
+3. provider forwarding
+4. browser-reachable URL
 
-API-only HTTP roots are not accepted as browser Preview.
+Direct runners use signed proxying. Codespaces uses provider forwarding. Browser-capable environments can provide Playwright evidence.
 
-## Prewarming
+## Failure rules
 
-- runner: may prepare asynchronously when repository session opens;
-- Codespaces: normally starts only when execution requires it.
+Infrastructure failure should normally preserve task identity:
 
-Chat should remain usable while prewarming occurs.
+- lost Bridge -> reconnect/repair
+- stale OpenCode -> repair/restart adapter
+- unavailable provider -> broker reroute
+- provisioning delay -> durable retry
+- browser disconnect -> task continues server-side
 
-## Session independence
+Authorization/security failures fail closed.
 
-Stopping/replacing compute must not delete the project conversation.
+## Implementation map
 
-A different device can reconnect to the same durable session and recover current workspace/task state.
-
-See cloud-workspace-lifecycle.md and warm-runner-architecture.md.
+| Concern | Code |
+| --- | --- |
+| Provider contract | `apps/api/src/workspace-provider.ts` |
+| Provider registry | `apps/api/src/workspace-providers.ts` |
+| Workspace lifecycle | `apps/api/src/workspaces.ts` |
+| Durable preparation | `apps/api/src/workspace-jobs.ts` |
+| Compute Broker | `apps/api/src/compute-broker.ts` |
+| Runner pool | `apps/api/src/runner-pool.ts` |
+| Runner client | `apps/api/src/orlynx-runner.ts` |
+| E2B | `apps/api/src/e2b-provider.ts` |
+| Codespaces | `apps/api/src/github.ts` |
+| Bridge gateway | `apps/api/src/bridge-gateway.ts` |
+| Workspace Bridge | `bridge/src/index.ts` |
