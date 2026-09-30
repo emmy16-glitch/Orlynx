@@ -256,3 +256,16 @@ test('slow Codespace provisioning remains queued instead of becoming a failed wo
   assert.match(jobs, /Codespace provisioning is still pending/);
   assert.match(jobs, /orchestrator\.provisioning/);
 });
+
+test('queue promoter preserves running and human-wait guards from the full durable task set', () => {
+  const source = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const promoterStart = source.indexOf('async function promoteNextQueuedRunInner');
+  const promoterEnd = source.indexOf('export async function resumeWaitingInputTask', promoterStart);
+  assert.ok(promoterStart >= 0 && promoterEnd > promoterStart);
+  const promoter = source.slice(promoterStart, promoterEnd);
+
+  assert.match(promoter, /const nextQueued = chooseNextQueuedTask\(tasks\)/);
+  assert.doesNotMatch(promoter, /chooseNextQueuedTask\(queued\)/);
+  assert.match(promoter, /if \(!nextQueued\) return null/);
+});
+

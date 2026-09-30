@@ -902,9 +902,12 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   const queued = tasks.filter((item) => item.state === 'queued');
   if (!queued.length) return null;
 
-  // Conversational work does not depend on the development environment. Let it
-  // bypass a queued Build task while GitHub Codespaces is still starting.
-  const nextQueued = chooseNextQueuedTask(queued)!;
+  // The selector must see the full durable task set, not just queued rows.
+  // Otherwise waiting_input / waiting_approval state disappears here and a
+  // second workspace Build can be promoted beside the task that is waiting for
+  // the user. Direct read-only chat may still bypass a human wait by design.
+  const nextQueued = chooseNextQueuedTask(tasks);
+  if (!nextQueued) return null;
 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
