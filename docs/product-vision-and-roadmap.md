@@ -65,7 +65,7 @@ A serious development workspace should tolerate:
 - API restart;
 - workspace reconnect;
 - agent runtime restart;
-- provider fallback.
+- compute-provider failover and quarantine.
 
 without losing the user's durable project state.
 
@@ -108,8 +108,11 @@ The present architecture already contains the foundation for that direction:
 - durable GitHub-linked project sessions;
 - direct Ask/Plan lane;
 - Build workspace lane;
-- warm-runner preference;
-- Codespaces fallback;
+- adaptive Compute Broker;
+- five-host direct Orlynx runner pool;
+- E2B workspace provider;
+- GitHub Codespaces workspace provider;
+- provider quarantine and healthy-workspace stickiness;
 - authenticated bridge;
 - OpenCode adapter boundary;
 - durable task ledger;
@@ -138,7 +141,9 @@ Goals:
 
 - make every supported task lifecycle deterministic;
 - expand regression coverage around continuation and queue races;
+- strengthen broker telemetry and longer-lived provider health history;
 - strengthen runner capacity/reclamation behavior;
+- graduate Docker runner-manager/runtime from CI-proven foundation to production where appropriate;
 - improve workspace resume after deploy/restart;
 - tighten Preview diagnostics across more frameworks;
 - improve publication receipts and Git state verification;
