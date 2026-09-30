@@ -55,12 +55,15 @@ function sha256(value: string): string {
 }
 
 function safeBranch(value: string): string {
-  const cleaned = String(value || '')
+  const raw = String(value || '').trim();
+  if (!raw || raw.includes('..') || raw.startsWith('/') || raw.endsWith('/') || raw.startsWith('-')) {
+    throw new Error('Publication branch is invalid.');
+  }
+  const cleaned = raw
     .replace(/[^A-Za-z0-9._/-]+/g, '-')
-    .replace(/\.{2,}/g, '.')
     .replace(/^[-/.]+|[-/.]+$/g, '')
     .slice(0, 100);
-  if (!cleaned || cleaned.startsWith('-')) throw new Error('Publication branch is invalid.');
+  if (!cleaned || cleaned.includes('..') || cleaned.startsWith('-')) throw new Error('Publication branch is invalid.');
   return cleaned;
 }
 
