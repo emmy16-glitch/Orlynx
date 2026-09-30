@@ -155,11 +155,17 @@ test('direct chat bypasses a blocked workspace task in the queue', () => {
   assert.equal(chooseNextQueuedTask([first, second])?.id, 'chat-task');
 });
 
-test('queued work never starts concurrently with unresolved active work', () => {
-  const queued = { id: 'queued', state: 'queued', plane: 'direct', prompt: 'next', createdAt: '', updatedAt: '' };
-  for (const state of ['running', 'waiting_input', 'waiting_approval']) {
-    const active = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
-    assert.equal(chooseNextQueuedTask([active, queued]), undefined, state);
+test('direct chat remains available while Build waits for human input, but not while work is actively running', () => {
+  const direct = { id: 'direct-chat', state: 'queued', plane: 'direct', prompt: 'Explain this', createdAt: '', updatedAt: '' };
+  const workspace = { id: 'workspace-next', state: 'queued', plane: 'workspace', prompt: 'Change the code', createdAt: '', updatedAt: '' };
+
+  const running = { id: 'active-running', state: 'running', plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+  assert.equal(chooseNextQueuedTask([running, direct]), undefined);
+
+  for (const state of ['waiting_input', 'waiting_approval']) {
+    const waiting = { id: `active-${state}`, state, plane: 'workspace', prompt: 'current', createdAt: '', updatedAt: '' };
+    assert.equal(chooseNextQueuedTask([waiting, direct])?.id, 'direct-chat', state);
+    assert.equal(chooseNextQueuedTask([waiting, workspace]), undefined, `${state}-workspace`);
   }
 });
 
