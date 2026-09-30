@@ -34,6 +34,31 @@ jobs:
       - name: Check production supervisor syntax
         run: node --check apps/api/scripts/production-start.mjs
 
+      - name: Verify main-service OpenCode sidecar can launch
+        run: |
+          rm -rf .ci-opencode
+          npm install --prefix .ci-opencode --omit=dev --no-audit --no-fund opencode-ai@1.18.32
+          OPENCODE_SERVER_PASSWORD=ci-runtime-secret \
+            .ci-opencode/node_modules/.bin/opencode serve --hostname 127.0.0.1 --port 4096 \
+            >/tmp/orlynx-opencode-ci.log 2>&1 &
+          runtime_pid=$!
+          cleanup() { kill "$runtime_pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS -u opencode:ci-runtime-secret \
+              http://127.0.0.1:4096/global/health >/tmp/orlynx-opencode-health.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/orlynx-opencode-ci.log
+            exit 1
+          fi
+          grep -q '"healthy":true' /tmp/orlynx-opencode-health.json
+
       - name: Typecheck
         run: npm run typecheck
 
