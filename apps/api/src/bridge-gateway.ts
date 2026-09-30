@@ -12,12 +12,13 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import { addChangeEvidence } from './changes.js';
-import { publishVerifiedChangeSet } from './publisher.js';
+import { publishVerifiedChangeSet, type PublicationStrategy } from './publisher.js';
+import { publishIntentFor, publishTargetBranchFor } from './direct-chat.js';
 import type { EventType } from '@orlynx/shared';
 
 async function persistLiveEvent(event: {
@@ -38,12 +39,19 @@ async function persistLiveEvent(event: {
   });
 }
 
-async function controlledDefaultBranchPublish(workspaceId: string, sessionId: string, runId?: string) {
+async function controlledDefaultBranchPublish(
+  workspaceId: string,
+  sessionId: string,
+  runId?: string,
+  strategy: PublicationStrategy = 'direct',
+  targetBranch?: string,
+) {
   return publishVerifiedChangeSet({
     sessionId,
     workspaceId,
     runId,
-    strategy: 'direct',
+    strategy,
+    targetBranch,
     commitMessage: 'Orlynx verified changes',
   });
 }
@@ -642,7 +650,21 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           if (onlyPublishMissing && effectivePermission === 'full') {
             try {
-              const published = await controlledDefaultBranchPublish(claims.workspaceId, claims.sessionId, runId);
+              const publishSession = await repository.getSession(claims.sessionId);
+              const publishMessages = [
+                task.prompt,
+                ...(task.harness?.inbox || []).map((item) => item.text),
+              ].filter((value) => verificationRequirementsFor(String(value)).includes('publish'));
+              const publishText = String(publishMessages.at(-1) || task.prompt);
+              const publishStrategy = publishIntentFor(publishText, publishSession?.branch || '') || 'direct';
+              const publishTarget = publishTargetBranchFor(publishText, publishSession?.branch || '') || publishSession?.branch;
+              const published = await controlledDefaultBranchPublish(
+                claims.workspaceId,
+                claims.sessionId,
+                runId,
+                publishStrategy,
+                publishTarget,
+              );
               const publishedAt = new Date().toISOString();
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
