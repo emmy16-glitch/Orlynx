@@ -1,5 +1,5 @@
 import type { TaskRecord, WorkspaceRecord } from '@orlynx/shared';
-import { githubRepositoryById, githubUserApiRequest } from './github.js';
+import { githubInstallationApiRequest, githubRepositoryById } from './github.js';
 import { verificationRequirementsFor } from './harness.js';
 import { controlPlaneRepository } from './storage.js';
 
@@ -89,9 +89,9 @@ export function githubActionsVerificationEligible(task: Pick<TaskRecord, 'prompt
   return true;
 }
 
-async function workflowSource(userId: string, owner: string, repo: string, workflow: Workflow, branch: string): Promise<string> {
-  const result = await githubUserApiRequest<{ content?: string; encoding?: string }>(
-    userId,
+async function workflowSource(installationId: number, owner: string, repo: string, workflow: Workflow, branch: string): Promise<string> {
+  const result = await githubInstallationApiRequest<{ content?: string; encoding?: string }>(
+    installationId,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath(workflow.path)}?ref=${encodeURIComponent(branch)}`,
   );
   if (result.encoding !== 'base64' || !result.content) return '';
@@ -103,8 +103,8 @@ export async function selectDispatchableVerificationWorkflow(
 ): Promise<{ repository: { fullName: string }; workflow: Workflow }> {
   const repository = await githubRepositoryById(workspace.userId, workspace.repositoryId);
   const { owner, repo } = repoParts(repository.fullName);
-  const result = await githubUserApiRequest<{ workflows?: Workflow[] }>(
-    workspace.userId,
+  const result = await githubInstallationApiRequest<{ workflows?: Workflow[] }>(
+    repository.installationId,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows?per_page=100`,
   );
   const candidates = (result.workflows || [])
@@ -113,7 +113,7 @@ export async function selectDispatchableVerificationWorkflow(
 
   for (const workflow of candidates) {
     try {
-      const source = await workflowSource(workspace.userId, owner, repo, workflow, workspace.branch);
+      const source = await workflowSource(repository.installationId, owner, repo, workflow, workspace.branch);
       if (workflowDispatchEnabled(source)) return { repository, workflow };
     } catch (error) {
       const status = (error as Error & { status?: number }).status;
@@ -126,15 +126,15 @@ export async function selectDispatchableVerificationWorkflow(
 }
 
 async function findDispatchedRun(
-  userId: string,
+  installationId: number,
   owner: string,
   repo: string,
   workflowId: number,
   branch: string,
   dispatchedAt: number,
 ): Promise<WorkflowRun | null> {
-  const result = await githubUserApiRequest<{ workflow_runs?: WorkflowRun[] }>(
-    userId,
+  const result = await githubInstallationApiRequest<{ workflow_runs?: WorkflowRun[] }>(
+    installationId,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${workflowId}/runs?event=workflow_dispatch&branch=${encodeURIComponent(branch)}&per_page=20`,
   );
   const floor = dispatchedAt - 15_000;
@@ -144,7 +144,7 @@ async function findDispatchedRun(
 }
 
 async function waitForRunIdentity(
-  userId: string,
+  installationId: number,
   owner: string,
   repo: string,
   workflowId: number,
@@ -153,7 +153,7 @@ async function waitForRunIdentity(
 ): Promise<WorkflowRun> {
   const deadline = Date.now() + Math.max(30_000, Number(process.env.ORLYNX_GITHUB_ACTIONS_DISCOVERY_TIMEOUT_MS || 90_000));
   while (Date.now() < deadline) {
-    const run = await findDispatchedRun(userId, owner, repo, workflowId, branch, dispatchedAt);
+    const run = await findDispatchedRun(installationId, owner, repo, workflowId, branch, dispatchedAt);
     if (run) return run;
     await new Promise((resolve) => setTimeout(resolve, 3_000));
   }
@@ -161,18 +161,18 @@ async function waitForRunIdentity(
 }
 
 async function getRun(userId: string, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
-  return githubUserApiRequest<WorkflowRun>(
-    userId,
+  return githubInstallationApiRequest<WorkflowRun>(
+    installationId,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`,
   );
 }
 
 async function waitForCompletion(userId: string, owner: string, repo: string, runId: number): Promise<WorkflowRun> {
   const deadline = Date.now() + Math.max(2 * 60_000, Number(process.env.ORLYNX_GITHUB_ACTIONS_TIMEOUT_MS || 20 * 60_000));
-  let run = await getRun(userId, owner, repo, runId);
+  let run = await getRun(installationId, owner, repo, runId);
   while (run.status !== 'completed' && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 5_000));
-    run = await getRun(userId, owner, repo, runId);
+    run = await getRun(installationId, owner, repo, runId);
   }
   if (run.status !== 'completed') throw new Error('GitHub Actions verification did not finish before the Orlynx verification timeout.');
   return run;
@@ -211,14 +211,14 @@ export async function runGitHubActionsVerification(
       path: task.verificationWorkflow || '',
       state: 'active',
     };
-    run = await getRun(workspace.userId, owner, repo, task.verificationRunId);
+    run = await getRun(repository.installationId, owner, repo, task.verificationRunId);
   } else {
     const selected = await selectDispatchableVerificationWorkflow(workspace);
     workflow = selected.workflow;
     const dispatchedAt = Date.now();
     try {
-      await githubUserApiRequest<void>(
-        workspace.userId,
+      await githubInstallationApiRequest<void>(
+        repository.installationId,
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${workflow.id}/dispatches`,
         { method: 'POST', body: JSON.stringify({ ref: workspace.branch }) },
       );
@@ -233,7 +233,7 @@ export async function runGitHubActionsVerification(
       throw error;
     }
 
-    run = await waitForRunIdentity(workspace.userId, owner, repo, workflow.id, workspace.branch, dispatchedAt);
+    run = await waitForRunIdentity(repository.installationId, owner, repo, workflow.id, workspace.branch, dispatchedAt);
     task.verificationBackend = 'github-actions';
     task.verificationRunId = run.id;
     task.verificationUrl = run.html_url;
@@ -242,14 +242,14 @@ export async function runGitHubActionsVerification(
     await repositoryState.putTask(task);
   }
 
-  run = await waitForCompletion(workspace.userId, owner, repo, run.id);
+  run = await waitForCompletion(repository.installationId, owner, repo, run.id);
   const [jobData, artifactData] = await Promise.all([
-    githubUserApiRequest<{ jobs?: WorkflowJob[] }>(
-      workspace.userId,
+    githubInstallationApiRequest<{ jobs?: WorkflowJob[] }>(
+      repository.installationId,
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${run.id}/jobs?per_page=100`,
     ),
-    githubUserApiRequest<{ artifacts?: WorkflowArtifact[] }>(
-      workspace.userId,
+    githubInstallationApiRequest<{ artifacts?: WorkflowArtifact[] }>(
+      repository.installationId,
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${run.id}/artifacts?per_page=100`,
     ).catch(() => ({ artifacts: [] })),
   ]);
