@@ -798,10 +798,19 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
     if (!readyWorkspace) return null;
+
+    // Verification-only work can use an independent CI execution plane while
+    // the interactive workspace is cold, degraded, or being repaired.
+    if (!workspaceCanAcceptTask(readyWorkspace) && githubActionsVerificationEligible(nextQueued)) {
+      const actionsRun = await tryStartGitHubActionsVerification(sessionId, nextQueued, readyWorkspace);
+      if (actionsRun) return actionsRun;
+    }
+
     if (readyWorkspace.state === 'failed') {
       const permanentWorkspaceFailure = /permission|forbidden|authorization expired|not configured|invalid .*configuration/i.test(readyWorkspace.failureCode || '');
       const recoverableWorkspaceFailure = !permanentWorkspaceFailure && (
         readyWorkspace.provider === 'github-codespaces'
+        || readyWorkspace.provider === 'e2b'
         || readyWorkspace.provider === 'orlynx-runner'
         || workspaceShouldAdoptPreferredRunner(readyWorkspace)
         || workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode)
