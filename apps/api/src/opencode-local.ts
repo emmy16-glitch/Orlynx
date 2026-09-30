@@ -143,7 +143,6 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       await waitForRuntimeReady(controller.signal);
       runtimePrewarmAt = Date.now();
       runtimePrewarmRetryAt = 0;
-      runtimeCircuitUntil = 0;
       console.info('[ai-runtime] prewarm ready');
       return true;
     } catch (error) {
