@@ -574,21 +574,27 @@ export async function githubInstallationPermissionStatus(installationId: number)
   granted: Record<string, string>;
   missingWorkspace: string[];
   missingPublish: string[];
+  missingVerification: string[];
   workspaceReady: boolean;
   publishReady: boolean;
+  verificationReady: boolean;
 }> {
   await installationToken(installationId);
   const granted = tokenCache.get(installationId)?.permissions || {};
   const requiredWorkspace = ['contents', 'codespaces', 'codespaces_lifecycle_admin'];
   const requiredPublish = ['contents', 'pull_requests'];
+  const requiredVerification = ['actions'];
   const missingWorkspace = requiredWorkspace.filter((permission) => granted[permission] !== 'write');
   const missingPublish = requiredPublish.filter((permission) => granted[permission] !== 'write');
+  const missingVerification = requiredVerification.filter((permission) => granted[permission] !== 'write');
   return {
     granted,
     missingWorkspace,
     missingPublish,
+    missingVerification,
     workspaceReady: missingWorkspace.length === 0,
     publishReady: missingPublish.length === 0,
+    verificationReady: missingVerification.length === 0,
   };
 }
 
