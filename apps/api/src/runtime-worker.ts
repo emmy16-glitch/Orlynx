@@ -8,7 +8,7 @@ import { decryptCredential } from './credentials.js';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
-type Values = { bridgeToken: string; connectionId: string; openCodePassword: string };
+export type WorkspaceBootstrapValues = { bridgeToken: string; connectionId: string; openCodePassword: string };
 const bridgeBundle = fileURLToPath(new URL('../../../bridge/dist/index.js', import.meta.url));
 const OPENCODE_VERSION = '1.18.32';
 let cachedBridgeRevision = '';
@@ -22,7 +22,7 @@ function sandboxCredentials() {
     ? { token: process.env.VERCEL_TOKEN, teamId: process.env.VERCEL_TEAM_ID, projectId: process.env.VERCEL_PROJECT_ID }
     : {};
 }
-function bootstrapScript(workspace: WorkspaceRecord, values: Values, bridgeUrl: string, openCodeApiKey = ''): string {
+export function buildWorkspaceBootstrapScript(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, bridgeUrl: string, openCodeApiKey = ''): string {
   const bridge = fs.readFileSync(bridgeBundle, 'utf8');
   const envValues = [`ORLYNX_CONTROL=${bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${values.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${workspace.id}`, `ORLYNX_SESSION_ID=${workspace.sessionId}`, `ORLYNX_USER_ID=${workspace.userId}`, `ORLYNX_CONNECTION_ID=${values.connectionId}`, `OPENCODE_SERVER_PASSWORD=${values.openCodePassword}`];
   if (openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${openCodeApiKey}`);
@@ -113,8 +113,11 @@ if test "$gh_safe" -ne 1; then
     rm -f "$archive"
   fi
 fi
-repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
-test -n "$repo_root"
+repo_root="${ORLYNX_REPO_ROOT_HINT:-}"
+if test -z "$repo_root"; then
+  repo_root="$(find /workspaces -mindepth 2 -maxdepth 3 -type d -name .git -printf '%h\\n' | head -n1)"
+fi
+test -n "$repo_root" && test -d "$repo_root/.git"
 
 # Browser/E2E preparation belongs to workspace bootstrap, not the first test.
 # Only Playwright repositories pay this cost, and each Playwright version is
@@ -175,7 +178,7 @@ kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null || { echo "Orlynx bridge exit
 `;
 }
 
-async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
+async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
   const sandbox = await Sandbox.create({ ...sandboxCredentials(), runtime: 'node24', timeout: 5 * 60_000, resources: { vcpus: 2 } });
   try {
     const version = '2.80.0';
@@ -184,15 +187,15 @@ async function bootstrapWithSandbox(workspace: WorkspaceRecord, values: Values, 
     const archive = `gh_${version}_linux_${arch}`;
     const install = await sandbox.runCommand('sh', ['-c', `curl -fsSL https://github.com/cli/cli/releases/download/v${version}/${archive}.tar.gz -o /tmp/gh.tgz && tar -xzf /tmp/gh.tgz -C /tmp`]);
     if (install.exitCode !== 0) throw new Error('Could not install the GitHub CLI in the bootstrap sandbox.');
-    await sandbox.writeFiles([{ path: '/tmp/orlynx-bootstrap.sh', content: bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey), mode: 0o600 }]);
+    await sandbox.writeFiles([{ path: '/tmp/orlynx-bootstrap.sh', content: buildWorkspaceBootstrapScript(workspace, values, bridgeUrl, openCodeApiKey), mode: 0o600 }]);
     const result = await sandbox.runCommand({ cmd: 'sh', args: ['-c', `cat /tmp/orlynx-bootstrap.sh | /tmp/${archive}/bin/gh codespace ssh -c "$ORLYNX_CODESPACE" -- bash -s`], env: { GH_TOKEN: githubUserToken, ORLYNX_CODESPACE: workspace.codespaceName || '' } });
     if (result.exitCode !== 0) throw new Error(`Codespace bootstrap failed: ${(await result.stderr()).slice(-1000)}`);
   } finally { await sandbox.stop().catch(() => {}); }
 }
 
 
-async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
-  const script = bootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
+async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, githubUserToken: string, bridgeUrl: string, openCodeApiKey: string): Promise<void> {
+  const script = buildWorkspaceBootstrapScript(workspace, values, bridgeUrl, openCodeApiKey);
   const totalTimeoutMs = Math.max(120_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 5 * 60_000));
   const attemptTimeoutMs = Math.min(
     180_000,
@@ -283,7 +286,7 @@ async function bootstrapWithLocalGh(workspace: WorkspaceRecord, values: Values, 
   );
 }
 
-export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Values): Promise<void> {
+export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues): Promise<void> {
   const base = (process.env.ORLYNX_RUNTIME_WORKER_URL || '').replace(/\/$/, '');
   const workerToken = process.env.ORLYNX_RUNTIME_WORKER_TOKEN || '';
   const publicUrl = (process.env.ORLYNX_PUBLIC_URL || '').replace(/\/$/, '');
