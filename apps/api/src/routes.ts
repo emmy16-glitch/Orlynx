@@ -1774,7 +1774,10 @@ router.post('/changes/:changeId/commit', async (req, res) => {
       const c = currentChanges(sid).find((item) => item.id === req.params.changeId);
       if (!c || c.reviewState !== 'approved') return res.status(409).json({ error: 'approve before commit (safe-by-default)' });
       const workspace = await getWorkspace(sid); if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-      const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', { message: String(req.body?.message || 'Orlynx update') });
+      const result = await bridgeRequest<{ sha: string }>(workspace.id, 'git.commit', {
+        message: String(req.body?.message || 'Orlynx update'),
+        files: c.files.map((file) => file.path),
+      });
       c.reviewState = 'committed'; c.commitSha = result.sha; c.currentHead = result.sha; store.save(); await controlPlaneRepository().putChangeSet(c); emit(sid, 'receipt.created', { changeId: c.id, commitSha: result.sha }); await recordAudit(req, sid, 'git.commit', 'completed', { changeId: c.id, commitSha: result.sha }); return res.json(c);
     }
     const c = commit(sid, s.project, req.params.changeId, String(req.body?.message || 'Orlynx update'));
