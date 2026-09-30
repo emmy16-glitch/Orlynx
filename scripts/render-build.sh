@@ -5,6 +5,15 @@ npm ci --include=dev
 
 npm run build
 
+# Direct free-model chat runs beside the API in production. Keeping this
+# runtime in the same Render instance removes a second free-service cold start
+# and a public-network/DNS hop from every ordinary conversation.
+OPENCODE_RUNTIME_VERSION="${ORLYNX_OPENCODE_RUNTIME_VERSION:-1.18.32}"
+rm -rf .render-opencode
+npm install --prefix .render-opencode --omit=dev --no-audit --no-fund "opencode-ai@${OPENCODE_RUNTIME_VERSION}"
+test -x .render-opencode/node_modules/.bin/opencode
+.render-opencode/node_modules/.bin/opencode --version
+
 GH_VERSION="${GH_VERSION:-2.80.0}"
 case "$(uname -m)" in
   x86_64|amd64) GH_ARCH="amd64" ;;
