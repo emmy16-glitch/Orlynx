@@ -8,7 +8,7 @@ import { classifyError } from './ai.js';
 import { promoteNextQueuedRun } from './agents.js';
 import { store } from './store.js';
 import { markWorkspaceConnectionLost, shouldRecoverTransientBridgeClose, workspaceNeedsRuntimeRefresh } from './workspaces.js';
-import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket } from './bridge-live.js';
+import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publishLiveBridgeResult, registerBridgeSocket, sendBridgeCommandNow, unregisterBridgeSocket , releaseBridgeCommandDelivery } from './bridge-live.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
@@ -316,6 +316,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             result: priorResult,
             error: command.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
           });
+          releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
           console.info(`[bridge] ignored duplicate terminal result command=${message.commandId} status=${command.status}`);
           return;
         }
@@ -329,10 +330,12 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             result: priorResult,
             error: latest?.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
           });
+          releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
           console.info(`[bridge] ignored raced late result command=${message.commandId} status=${latest?.status || 'unknown'}`);
           return;
         }
 
+        releaseBridgeCommandDelivery(claims.workspaceId, message.commandId);
         publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || '');
