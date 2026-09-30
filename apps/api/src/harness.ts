@@ -206,6 +206,7 @@ export function steeringActionFor(text: string): SteeringAction {
   if (/^(?:please\s+)?(?:stop|cancel|abort|halt|never\s*mind|nevermind)(?:\s+(?:it|this|that|the\s+task|current\s+task|the\s+current\s+task|current\s+job|the\s+current\s+job|job))?[.!?\s]*$/.test(value)) return 'stop';
   if (/\b(?:forget|ignore)\s+(?:that|the\s+(?:previous|original)|what\s+i\s+said)|\binstead\b|\bchange\s+(?:the\s+)?request\b|\bonly\s+(?:do|check|fix|work)\b/.test(value)) return 'replace';
   if (/^(?:also|and\s+also|additionally|plus)\b|\bmake\s+sure\b|\bdon't\s+forget\b|\bwhile\s+you(?:'re|\s+are)\b/.test(value)) return 'append';
+  if (/^(?:please\s+)?(?:git\s+)?(?:push|publish|commit)\b|^(?:please\s+)?(?:create|open|make)\s+(?:a\s+)?(?:pr|pull request)\b/.test(value)) return 'append';
   // Referential status/follow-up language continues the active task. An
   // unrelated new imperative (for example "start localhost" while a status
   // check is still running) remains "ignore" so admission creates the next
@@ -254,14 +255,28 @@ export function applySteering(
   } as const;
 
   const prompt = action === 'replace' ? message.text : task.prompt;
+  const replacementRequired = action === 'replace' ? verificationRequirementsFor(prompt) : [];
+  const appendedRequired = action === 'append'
+    ? [...new Set([...harness.verification.required, ...verificationRequirementsFor(message.text)])]
+    : [];
   const verification = action === 'replace'
     ? {
-        required: verificationRequirementsFor(prompt),
+        required: replacementRequired,
         satisfied: [],
-        missing: verificationRequirementsFor(prompt),
-        status: verificationRequirementsFor(prompt).length ? 'pending' as const : 'passed' as const,
+        missing: [...replacementRequired],
+        status: replacementRequired.length ? 'pending' as const : 'passed' as const,
       }
-    : harness.verification;
+    : action === 'append'
+      ? {
+          ...harness.verification,
+          required: appendedRequired,
+          satisfied: harness.verification.satisfied.filter((item) => appendedRequired.includes(item)),
+          missing: appendedRequired.filter((item) => !harness.verification.satisfied.includes(item)),
+          status: appendedRequired.some((item) => !harness.verification.satisfied.includes(item))
+            ? 'pending' as const
+            : harness.verification.status,
+        }
+      : harness.verification;
 
   return {
     ...task,
