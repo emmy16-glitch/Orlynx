@@ -166,6 +166,8 @@ export interface HarnessVerification {
   checkedAt?: string;
 }
 
+export type VerificationFailureClass = 'test' | 'build' | 'infrastructure' | 'unknown';
+
 export interface HarnessCheckpoint {
   phase: HarnessPhase;
   step: number;
@@ -186,6 +188,10 @@ export interface HarnessCheckpoint {
   contradictions?: string[];
   /** Compact observable evidence supplied back to the reasoning model. */
   reflectionEvidence?: string[];
+  /** Deterministic failure classification used to choose the next diagnostic path. */
+  verificationFailureClass?: VerificationFailureClass;
+  /** Bounded test/build artifact paths and excerpts discovered after verification failure. */
+  artifactEvidence?: string[];
   /** Used to tell the model when the same unresolved state repeats. */
   lastReflectionSignature?: string;
   stagnantReflections?: number;
