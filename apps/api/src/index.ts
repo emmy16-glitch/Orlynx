@@ -4,8 +4,9 @@ import { githubAppConfigured, githubPlatformHealth } from './github.js';
 import { attachBridgeGateway } from './bridge-gateway.js';
 import { warmOpenCodeProviderLayer, warmOpenCodeRuntime } from './opencode-local.js';
 import { defaultWorkspaceProviderId, runnerFallbackEnabled, shouldPrewarmWorkspace } from './workspace-providers.js';
-import { runnerGlobalMaxWorkspaces, runnerHosts } from './runner-pool.js';
+import { runnerGlobalMaxWorkspaces, runnerHosts, runnerPoolSnapshot } from './runner-pool.js';
 import { e2bConfigured, e2bPlatformHealth } from './e2b-provider.js';
+import { noteComputeFailure, noteComputeSuccess } from './compute-broker.js';
 
 const PORT = Number(process.env.PORT || 4000);
 
@@ -22,11 +23,14 @@ if (githubAppConfigured()) {
   void githubPlatformHealth()
     .then((platform) => {
       const permissions = platform.permissions || {};
+      if (platform.healthy) noteComputeSuccess('github-codespaces');
+      else noteComputeFailure('github-codespaces', platform.message || 'GitHub platform unhealthy');
       console.log(
         `[startup-smoke] github-app healthy=${platform.healthy} contents=${permissions.contents || 'none'} codespaces=${permissions.codespaces || 'none'} actions=${permissions.actions || 'none'}`,
       );
     })
     .catch((error) => {
+      noteComputeFailure('github-codespaces', error instanceof Error ? error.message : 'GitHub platform health check failed');
       console.warn(`[startup-smoke] github-app capability check failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     });
 }
@@ -49,8 +53,33 @@ try {
 
 if (e2bConfigured()) {
   void e2bPlatformHealth()
-    .then((health) => console.log(`[startup-smoke] e2b configured=${health.configured} healthy=${health.healthy}`))
-    .catch(() => console.warn('[startup-smoke] e2b capability check failed'));
+    .then((health) => {
+      if (health.healthy) noteComputeSuccess('e2b');
+      else noteComputeFailure('e2b', 'E2B platform health check failed');
+      console.log(`[startup-smoke] e2b configured=${health.configured} healthy=${health.healthy}`);
+    })
+    .catch((error) => {
+      noteComputeFailure('e2b', error instanceof Error ? error.message : 'E2B platform health check failed');
+      console.warn('[startup-smoke] e2b capability check failed');
+    });
+}
+
+if (runnerHosts().length) {
+  void runnerPoolSnapshot()
+    .then((snapshot) => {
+      const healthy = snapshot.filter((item) => item.health.ok && !item.health.draining && item.health.available > 0);
+      if (healthy.length) {
+        noteComputeSuccess('orlynx-runner', Math.min(...healthy.map((item) => item.health.latencyMs || 1)));
+        console.log(`[startup-smoke] runner-pool healthy=${healthy.length}/${snapshot.length}`);
+      } else {
+        noteComputeFailure('orlynx-runner', 'No runner host was immediately healthy.');
+        console.warn(`[startup-smoke] runner-pool healthy=0/${snapshot.length}`);
+      }
+    })
+    .catch((error) => {
+      noteComputeFailure('orlynx-runner', error instanceof Error ? error.message : 'Runner pool health check failed');
+      console.warn('[startup-smoke] runner-pool capability check failed');
+    });
 }
 
 const server = http.createServer(app);
