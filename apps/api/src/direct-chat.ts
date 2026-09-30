@@ -464,8 +464,25 @@ export async function streamDirectRepositoryChat(input: {
     const contextStarted = performance.now();
     const projectName = input.session.project.split('/').pop() || '';
     const needsContext = shouldLoadRepositoryContext(input.prompt, input.mode, projectName);
-    const context = needsContext ? await repositoryContext(input.session, input.prompt, input.onActivity)
-      : `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    let context = `Repository: ${input.session.project}\nBranch: ${input.session.branch}`;
+    if (needsContext) {
+      try {
+        context = await repositoryContext(input.session, input.prompt, input.onActivity);
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        timings.repoContextFallback = 1;
+        input.onActivity?.('activity.progress', {
+          text: 'Repository context is temporarily unavailable · continuing without blocking chat…',
+          sourceType: 'repository.context.fallback',
+        });
+        context = [
+          `Repository: ${input.session.project}`,
+          `Branch: ${input.session.branch}`,
+          'The live GitHub repository map/source excerpts could not be loaded for this turn.',
+          'Do not invent repository file contents or claim they were inspected. Use durable conversation context and general knowledge; explicitly say when a repository-specific detail needs inspection.',
+        ].join('\n');
+      }
+    }
     controller.signal.throwIfAborted();
     timings.repoContextMs = performance.now() - contextStarted;
     const modeInstruction = input.mode === 'plan'
