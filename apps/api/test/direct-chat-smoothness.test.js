@@ -77,7 +77,7 @@ test('pre-model GitHub repository context reads are network-bounded', () => {
   assert.match(github, /ORLYNX_GITHUB_API_TIMEOUT_MS \|\| 15_000/);
   assert.match(github, /function githubApiFetch/);
   assert.match(github, /AbortSignal\.timeout\(GITHUB_API_TIMEOUT_MS\)/);
-  assert.match(github, /githubApiFetch\(\`$\{API\}\/repos\/\$\{owner\}\/\$\{name\}\/git\/trees/);
+  assert.match(github, /githubApiFetch\(\`\$\{API\}\/repos\/\$\{owner\}\/\$\{name\}\/git\/trees/);
   assert.match(github, /githubApiFetch\(\`$\{API\}\/repos\/\$\{encodeURIComponent\(repo\.owner\)\}\/\$\{encodeURIComponent\(repo\.name\)\}\/contents/);
 });
 
