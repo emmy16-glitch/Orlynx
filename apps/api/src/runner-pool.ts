@@ -124,7 +124,7 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
   const ttl = Math.max(1_000, Number(process.env.ORLYNX_RUNNER_HEALTH_CACHE_MS || 5_000));
   if (!force && cached && cached.checkedAt + ttl > Date.now()) return cached;
 
-  if (circuitOpen(host)) {
+  if (circuitOpen(host) && !force) {
     const result: RunnerHostHealth = {
       id: host.id,
       ok: false,
@@ -244,13 +244,10 @@ export async function runnerHostSupportsBrowserE2e(hostId?: string): Promise<boo
   return health.capabilities?.browserE2e;
 }
 
-export async function rankedRunnerHosts(exclude = new Set<string>()): Promise<RunnerHostConfig[]> {
-  const snapshot = await runnerPoolSnapshot();
-  const totalRunning = snapshot.reduce((sum, item) => sum + (item.health.ok ? item.health.running : 0), 0);
-  if (totalRunning >= runnerGlobalMaxWorkspaces()) {
-    throw new Error(`Orlynx runner pool reached the global workspace limit (${totalRunning}/${runnerGlobalMaxWorkspaces()}).`);
-  }
-
+function rankAvailableHosts(
+  snapshot: Array<{ host: RunnerHostConfig; health: RunnerHostHealth }>,
+  exclude: Set<string>,
+): RunnerHostConfig[] {
   return snapshot
     .filter(({ host, health }) => !exclude.has(host.id) && health.ok && !health.draining && health.available > 0)
     .sort((a, b) => {
@@ -261,4 +258,40 @@ export async function rankedRunnerHosts(exclude = new Set<string>()): Promise<Ru
       return a.health.latencyMs - b.health.latencyMs;
     })
     .map(({ host }) => host);
+}
+
+export async function rankedRunnerHosts(exclude = new Set<string>()): Promise<RunnerHostConfig[]> {
+  let snapshot = await runnerPoolSnapshot();
+  let totalRunning = snapshot.reduce((sum, item) => sum + (item.health.ok ? item.health.running : 0), 0);
+  if (totalRunning >= runnerGlobalMaxWorkspaces()) {
+    throw new Error(`Orlynx runner pool reached the global workspace limit (${totalRunning}/${runnerGlobalMaxWorkspaces()}).`);
+  }
+
+  let ranked = rankAvailableHosts(snapshot, exclude);
+  if (ranked.length > 0) return ranked;
+
+  // Free/scale-to-zero hosts can all be asleep at once. A normal health pass
+  // may cache timeouts or temporarily open the circuit, which must not make
+  // configured capacity look permanently unavailable. Before falling back to
+  // Codespaces, perform one bounded forced wake pass that bypasses the circuit
+  // and gives each host the configured cold-start window.
+  const wakeableHosts = runnerHosts().filter((host) => !exclude.has(host.id));
+  if (!wakeableHosts.length) return [];
+
+  console.warn(`[runner-pool] no immediately healthy hosts; forcing wake probe across ${wakeableHosts.length} configured runner host(s)`);
+  snapshot = await Promise.all(wakeableHosts.map(async (host) => ({
+    host,
+    health: await probeRunnerHost(host, true),
+  })));
+
+  totalRunning = snapshot.reduce((sum, item) => sum + (item.health.ok ? item.health.running : 0), 0);
+  if (totalRunning >= runnerGlobalMaxWorkspaces()) {
+    throw new Error(`Orlynx runner pool reached the global workspace limit (${totalRunning}/${runnerGlobalMaxWorkspaces()}).`);
+  }
+
+  ranked = rankAvailableHosts(snapshot, exclude);
+  if (ranked.length > 0) {
+    console.info(`[runner-pool] forced wake recovered ${ranked.length} usable runner host(s)`);
+  }
+  return ranked;
 }
