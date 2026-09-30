@@ -43,7 +43,7 @@ const staleTaskGraceMs = 15_000;
 // abandoned queued work; running work is governed by heartbeat/staleness below.
 const queuedTaskRetentionMs = Math.max(
   60 * 60_000,
-  Number(process.env.ORLYNX_QUEUED_TASK_RETENTION_MS || 24 * 60 * 60_000),
+  Number(process.env.ORLYNX_QUEUED_TASK_RETENTION_MS || 7 * 24 * 60 * 60_000),
 );
 const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
@@ -847,7 +847,27 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       }, nextQueued.runId);
       return promoteNextQueuedRunInner(sessionId);
     }
-    if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') return null;
+    if (readyWorkspace.state !== 'ready' || readyWorkspace.bridgeState !== 'ready') {
+      // A durable queued Build must be able to wake its own environment after
+      // Render/API sleep, Codespace shutdown, E2B pause, or a lost bridge.
+      // enqueueWorkspaceJob is idempotent, so recovery sweeps can safely call
+      // this without creating duplicate preparation jobs.
+      await scheduleWorkspacePreparation({
+        sessionId,
+        userId: readyWorkspace.userId,
+        projectId: readyWorkspace.projectId,
+        repositoryId: readyWorkspace.repositoryId,
+        branch: readyWorkspace.branch,
+      }, { allowFallback: true, reason: 'queue_wake' });
+      emit(sessionId, 'activity.progress', {
+        taskId: nextQueued.id,
+        sourceType: 'workspace.recovery',
+        state: readyWorkspace.state,
+        bridgeState: readyWorkspace.bridgeState,
+        text: 'Development environment is sleeping or disconnected · waking it automatically…',
+      }, nextQueued.runId);
+      return null;
+    }
 
     if (readyWorkspace.provider === 'orlynx-runner' && taskRequiresBrowserE2e(nextQueued.prompt)) {
       const browserReady = await runnerHostSupportsBrowserE2e(readyWorkspace.runnerHostId).catch(() => undefined);
@@ -887,6 +907,22 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
         state,
         text,
       }, nextQueued.runId);
+
+      const adapterTouched = adapterState?.updatedAt ? Date.parse(adapterState.updatedAt) : 0;
+      const adapterStale = !Number.isFinite(adapterTouched) || Date.now() - adapterTouched > 90_000;
+      const shouldRepairAdapter = !adapterState
+        || adapterState.state === 'not_installed'
+        || adapterState.state === 'unavailable'
+        || (adapterStale && ['installing', 'starting'].includes(adapterState.state));
+      if (shouldRepairAdapter) {
+        await scheduleWorkspacePreparation({
+          sessionId,
+          userId: readyWorkspace.userId,
+          projectId: readyWorkspace.projectId,
+          repositoryId: readyWorkspace.repositoryId,
+          branch: readyWorkspace.branch,
+        }, { allowFallback: true, reason: 'adapter_recovery' });
+      }
       return null;
     }
     if (adapterState.state === 'failed') {
