@@ -17,7 +17,8 @@ export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
 export function workspaceNeedsCodespaceReplacement(failureCode?: string): boolean {
   const detail = failureCode || '';
   return workspaceNeedsSshRebuild(detail)
-    || /getting full codespace details[\s\S]*404|GitHub Codespaces request failed \(HTTP 404|api\.github\.com\/user\/codespaces\//i.test(detail);
+    || /getting full codespace details[\s\S]*404|GitHub Codespaces request failed \(HTTP 404|api\.github\.com\/user\/codespaces\//i.test(detail)
+    || /GitHub Codespace did not become ready before the startup timeout/i.test(detail);
 }
 
 export function workspaceConnectionMatchesRevision(connectionId: string | undefined, revision: string): boolean {
