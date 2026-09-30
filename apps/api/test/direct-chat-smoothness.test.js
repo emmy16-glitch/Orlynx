@@ -47,3 +47,19 @@ test('API wake proactively warms the separate free-model runtime without delayin
   assert.match(source, /\[startup-smoke\] direct-runtime warm=/);
   assert.doesNotMatch(source, /await warmOpenCodeRuntime\(\)/);
 });
+
+
+test('browser retries message admission with the same client id across transient cold-start failures', () => {
+  const app = fs.readFileSync(new URL('../../web/src/ProductionApp.tsx', import.meta.url), 'utf8');
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+
+  assert.match(app, /const clientId = uid\(\)/);
+  assert.match(app, /const messageBody = JSON\.stringify\(\{[\s\S]*clientId/);
+  assert.match(app, /const delays = \[0, 750, 1_500\]/);
+  assert.match(app, /controller\.abort\(new Error\('message admission timeout'\)\)/);
+  assert.match(app, /\[502, 503, 504\]\.includes\(status\)/);
+  assert.match(app, /Orlynx is waking · reconnecting your message automatically/);
+
+  assert.match(routes, /existingMessages\.find\(\(m: \{ id: string \}\) => m\.id === clientId\)/);
+  assert.match(routes, /deduplicated: true/);
+});
