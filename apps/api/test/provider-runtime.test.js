@@ -518,3 +518,61 @@ test('runtime default username matches the OpenCode server default', async (t) =
 
   assert.equal(await warmOpenCodeRuntime(), true);
 });
+
+
+test('direct runtime waits for remote abort acknowledgement before a stalled turn settles', async (t) => {
+  configureRuntime(t);
+  const abort = new AbortController();
+  let eventController;
+  let promptSubmittedResolve;
+  const promptSubmitted = new Promise((resolve) => { promptSubmittedResolve = resolve; });
+  let abortCalledResolve;
+  const abortCalled = new Promise((resolve) => { abortCalledResolve = resolve; });
+  let releaseAbortResolve;
+  const releaseAbort = new Promise((resolve) => { releaseAbortResolve = resolve; });
+  const encoder = new TextEncoder();
+
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'abort-ack-session' });
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({
+        start(controller) {
+          eventController = controller;
+          controller.enqueue(encoder.encode(runtimeFrame('message.updated', {
+            sessionID: 'abort-ack-session',
+            info: { id: 'assistant-message', sessionID: 'abort-ack-session', role: 'assistant' },
+          })));
+        },
+      }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/abort-ack-session/prompt_async') {
+      promptSubmittedResolve();
+      return new Response(null, { status: 204 });
+    }
+    if (value === 'https://runtime.test/session/abort-ack-session/abort') {
+      abortCalledResolve();
+      try { eventController?.close(); } catch {}
+      await releaseAbort;
+      return Response.json(true);
+    }
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  let settled = false;
+  const response = streamWithOfficialOpenCode({
+    ...input(),
+    signal: abort.signal,
+  }).finally(() => { settled = true; });
+
+  await promptSubmitted;
+  abort.abort(new Error('first-token watchdog'));
+  await abortCalled;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false, 'turn must not settle before the remote abort request finishes');
+
+  releaseAbortResolve();
+  await assert.rejects(response, /first-token watchdog/);
+  assert.equal(settled, true);
+});
