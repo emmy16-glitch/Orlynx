@@ -127,8 +127,10 @@ test('only authoritative local facts bypass the connected model', () => {
 });
 
 test('explicit publish targets never silently push a different branch', () => {
-  assert.equal(publishIntentFor('push to main', 'feature/demo'), null);
+  assert.equal(publishIntentFor('push to main', 'feature/demo'), 'direct');
+  assert.equal(publishTargetBranchFor('push to main', 'feature/demo'), 'main');
   assert.equal(publishIntentFor('push to current branch', 'feature/demo'), 'direct');
+  assert.equal(publishTargetBranchFor('push to current branch', 'feature/demo'), 'feature/demo');
   assert.equal(publishIntentFor('push to main', 'main'), 'direct');
 });
 
