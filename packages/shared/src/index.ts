@@ -92,7 +92,10 @@ export interface AgentRun {
   errorKind?: 'rate_limit' | 'quota' | 'auth' | 'engine' | 'model' | 'permission' | 'repository' | 'verification' | 'input' | 'unknown';
 }
 
-export type WorkspaceProviderId = 'github-codespaces' | 'orlynx-runner';
+export type WorkspaceProviderId = 'github-codespaces' | 'e2b' | 'orlynx-runner';
+
+export type RuntimeAgentState = 'disconnected' | 'connecting' | 'ready' | 'degraded' | 'recovering' | 'unreachable';
+export type VerificationBackendId = 'workspace' | 'github-actions';
 
 export interface WorkspaceRecord {
   id: string;
@@ -104,6 +107,8 @@ export interface WorkspaceRecord {
   runnerId?: string;
   /** Stable runner-pool host identity. Omitted for legacy single-runner workspaces. */
   runnerHostId?: string;
+  /** Generic provider resource handle (for example an E2B sandbox id). */
+  providerResourceId?: string;
   repositoryId: number;
   branch: string;
   state: WorkspaceState;
@@ -111,6 +116,11 @@ export interface WorkspaceRecord {
   connectionId?: string;
   repoRoot?: string;
   failureCode?: string;
+  runtimeState?: RuntimeAgentState;
+  capabilities?: string[];
+  providerHeartbeatAt?: string;
+  agentHeartbeatAt?: string;
+  taskHeartbeatAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -156,6 +166,8 @@ export interface HarnessVerification {
   checkedAt?: string;
 }
 
+export type VerificationFailureClass = 'test' | 'build' | 'infrastructure' | 'unknown';
+
 export interface HarnessCheckpoint {
   phase: HarnessPhase;
   step: number;
@@ -176,6 +188,10 @@ export interface HarnessCheckpoint {
   contradictions?: string[];
   /** Compact observable evidence supplied back to the reasoning model. */
   reflectionEvidence?: string[];
+  /** Deterministic failure classification used to choose the next diagnostic path. */
+  verificationFailureClass?: VerificationFailureClass;
+  /** Bounded test/build artifact paths and excerpts discovered after verification failure. */
+  artifactEvidence?: string[];
   /** Used to tell the model when the same unresolved state repeats. */
   lastReflectionSignature?: string;
   stagnantReflections?: number;
@@ -205,6 +221,10 @@ export interface TaskRecord {
   permission?: PermissionProfile;
   tempPermission?: PermissionProfile;
   partialText?: string;
+  verificationBackend?: VerificationBackendId;
+  verificationRunId?: number;
+  verificationUrl?: string;
+  verificationWorkflow?: string;
   harness?: HarnessCheckpoint;
   createdAt: string;
   updatedAt: string;

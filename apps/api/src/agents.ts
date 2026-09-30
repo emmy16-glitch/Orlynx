@@ -1,6 +1,6 @@
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
-import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord } from '@orlynx/shared';
+import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
 import { store } from './store.js';
 import { emit } from './events.js';
 import { createChangeSet } from './changes.js';
@@ -17,9 +17,11 @@ import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
 import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
+import { GitHubActionsUnavailableError, githubActionsVerificationEligible, runGitHubActionsVerification, selectDispatchableVerificationWorkflow } from './github-actions.js';
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
+const executingActionsVerifications = new Set<string>();
 const activeAgentSessions = new Map<string, { adapterId: AgentAdapterId; project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
 
@@ -63,6 +65,295 @@ export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()):
   return created + queuedTaskRetentionMs <= now;
 }
 
+
+async function executeGitHubActionsVerificationTask(
+  sessionId: string,
+  taskId: string,
+  workspace: WorkspaceRecord,
+  runId: string,
+): Promise<void> {
+  if (executingActionsVerifications.has(taskId)) return;
+  executingActionsVerifications.add(taskId);
+  const repository = controlPlaneRepository();
+  try {
+    const task = await repository.getTask(taskId);
+    if (!task || task.state === 'cancelled' || task.state === 'completed' || task.state === 'failed') return;
+
+    let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === runId);
+    if (!run) {
+      run = {
+        id: runId,
+        sessionId,
+        engine: 'github-actions',
+        plane: 'workspace',
+        provider: 'github-actions',
+        model: task.modelId,
+        mode: task.mode || 'build',
+        permission: task.tempPermission || task.permission || 'full',
+        state: 'running',
+        activity: 'Running GitHub Actions verification',
+        startedAt: new Date().toISOString(),
+      };
+      (store.db.runs[sessionId] ||= []).push(run);
+      store.save();
+    }
+
+    const result = await runGitHubActionsVerification(task, workspace);
+    const now = new Date().toISOString();
+    const requirements = task.harness?.verification.required || [];
+    task.harness ||= createHarnessCheckpoint({
+      prompt: task.prompt,
+      mode: task.mode || 'build',
+      permission: task.tempPermission || task.permission || 'full',
+      plane: 'workspace',
+      now,
+    });
+    task.harness = advanceHarnessPhase(task.harness, 'verifying', {
+      mode: task.mode || 'build',
+      permission: task.tempPermission || task.permission || 'full',
+      now,
+    });
+
+    for (const requirement of requirements) {
+      if (requirement === 'tests') {
+        emit(sessionId, 'test.result', {
+          taskId: task.id,
+          backend: 'github-actions',
+          workflow: task.verificationWorkflow,
+          runId: task.verificationRunId,
+          runUrl: task.verificationUrl,
+          exitCode: result.success ? 0 : 1,
+          summary: result.summary,
+          jobs: result.jobs,
+          artifacts: result.artifacts,
+        }, runId);
+      } else if (requirement === 'build') {
+        emit(sessionId, 'build.result', {
+          taskId: task.id,
+          backend: 'github-actions',
+          workflow: task.verificationWorkflow,
+          runId: task.verificationRunId,
+          runUrl: task.verificationUrl,
+          exitCode: result.success ? 0 : 1,
+          summary: result.summary,
+          jobs: result.jobs,
+          artifacts: result.artifacts,
+        }, runId);
+      }
+    }
+
+    if (result.success) {
+      task.harness = {
+        ...task.harness,
+        verification: {
+          ...task.harness.verification,
+          satisfied: [...task.harness.verification.required],
+          missing: [],
+          status: 'passed',
+          checkedAt: now,
+        },
+      };
+      task.harness = advanceHarnessPhase(task.harness, 'completed', {
+        mode: task.mode || 'build',
+        permission: task.tempPermission || task.permission || 'full',
+        now,
+      });
+      task.state = 'completed';
+      task.partialText = result.summary;
+      task.updatedAt = now;
+      await repository.putTask(task);
+
+      const responseText = [
+        result.summary,
+        task.verificationUrl ? `GitHub Actions run: ${task.verificationUrl}` : '',
+      ].filter(Boolean).join('\n');
+      await repository.putMessage({
+        id: `msg_${runId}`,
+        sessionId,
+        role: 'assistant',
+        text: responseText,
+        runId,
+        createdAt: now,
+      });
+
+      run.state = 'completed';
+      run.activity = 'Verified by GitHub Actions';
+      run.finishedAt = now;
+      run.errorKind = undefined;
+      store.save();
+      emit(sessionId, 'message.delta', { delta: responseText }, runId);
+      emit(sessionId, 'message.end', { taskId: task.id }, runId);
+      emit(sessionId, 'run.completed', {
+        taskId: task.id,
+        summary: result.summary,
+        verificationBackend: 'github-actions',
+        runUrl: task.verificationUrl,
+      }, runId);
+      emit(sessionId, 'activity.completed', {
+        taskId: task.id,
+        text: 'GitHub Actions verification completed',
+        runUrl: task.verificationUrl,
+      }, runId);
+      return;
+    }
+
+    task.state = 'failed';
+    task.harness = {
+      ...advanceHarnessPhase(task.harness, 'failed', {
+        mode: task.mode || 'build',
+        permission: task.tempPermission || task.permission || 'full',
+        now,
+      }),
+      verification: {
+        ...task.harness.verification,
+        status: 'failed',
+        checkedAt: now,
+      },
+    };
+    task.updatedAt = now;
+    await repository.putTask(task);
+    run.state = 'failed';
+    run.activity = 'GitHub Actions verification failed';
+    run.finishedAt = now;
+    run.errorKind = 'verification';
+    store.save();
+    emit(sessionId, 'run.failed', {
+      taskId: task.id,
+      error: result.summary,
+      errorKind: 'verification',
+      recoverable: true,
+      verificationBackend: 'github-actions',
+      runUrl: task.verificationUrl,
+      jobs: result.jobs,
+      artifacts: result.artifacts,
+    }, runId);
+  } catch (error) {
+    const task = await repository.getTask(taskId);
+    if (!task || task.state === 'cancelled') return;
+    const now = new Date().toISOString();
+    const run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === runId);
+    const unavailable = error instanceof GitHubActionsUnavailableError;
+    task.state = 'queued';
+    task.updatedAt = now;
+    await repository.putTask(task);
+    if (run) {
+      run.state = 'queued';
+      run.activity = unavailable ? 'GitHub Actions unavailable · waiting for workspace' : 'Resuming GitHub Actions verification';
+      run.finishedAt = undefined;
+      run.errorKind = undefined;
+    }
+    store.save();
+    emit(sessionId, 'run.state', {
+      taskId: task.id,
+      state: 'queued',
+      verificationBackend: 'github-actions',
+      message: unavailable
+        ? 'GitHub Actions cannot verify this repository automatically yet. Orlynx will keep the task queued and recover the interactive workspace instead.'
+        : 'GitHub Actions verification was interrupted. Orlynx kept the run identity and will resume it automatically.',
+    }, runId);
+
+    void scheduleWorkspacePreparation({
+      sessionId: workspace.sessionId,
+      userId: workspace.userId,
+      projectId: workspace.projectId,
+      repositoryId: workspace.repositoryId,
+      branch: workspace.branch,
+    }, { allowFallback: true, reason: unavailable ? 'actions_unavailable' : 'actions_resume' }).catch(() => {});
+  } finally {
+    executingActionsVerifications.delete(taskId);
+    void promoteNextQueuedRun(sessionId).catch(() => null);
+  }
+}
+
+async function tryStartGitHubActionsVerification(
+  sessionId: string,
+  queuedTask: TaskRecord,
+  workspace: WorkspaceRecord,
+): Promise<AgentRun | null> {
+  if (!githubActionsVerificationEligible(queuedTask)) return null;
+  if (!queuedTask.verificationRunId) {
+    try {
+      await selectDispatchableVerificationWorkflow(workspace);
+    } catch (error) {
+      if (error instanceof GitHubActionsUnavailableError) return null;
+      console.warn(`[actions] verification preflight failed session=${sessionId} task=${queuedTask.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      return null;
+    }
+  }
+
+  const repository = controlPlaneRepository();
+  const task = await repository.claimQueuedTask(sessionId, queuedTask.id);
+  if (!task) return null;
+  const startedAt = new Date().toISOString();
+  const runId = task.runId || `run_${uuid().slice(0, 8)}`;
+  task.runId = runId;
+  task.verificationBackend = 'github-actions';
+  task.harness ||= createHarnessCheckpoint({
+    prompt: task.prompt,
+    mode: task.mode || 'build',
+    permission: task.tempPermission || task.permission || 'full',
+    plane: 'workspace',
+    now: startedAt,
+  });
+  task.harness = advanceHarnessPhase(task.harness, 'verifying', {
+    mode: task.mode || 'build',
+    permission: task.tempPermission || task.permission || 'full',
+    now: startedAt,
+  });
+  task.updatedAt = startedAt;
+  await repository.putTask(task);
+
+  let run = (store.db.runs[sessionId] || []).find((candidate) => candidate.id === runId);
+  if (!run) {
+    run = {
+      id: runId,
+      sessionId,
+      engine: 'github-actions',
+      plane: 'workspace',
+      provider: 'github-actions',
+      model: task.modelId,
+      mode: task.mode || 'build',
+      permission: task.tempPermission || task.permission || 'full',
+      state: 'running',
+      activity: 'Starting GitHub Actions verification',
+      startedAt,
+    };
+    (store.db.runs[sessionId] ||= []).push(run);
+  } else {
+    run.engine = 'github-actions';
+    run.plane = 'workspace';
+    run.provider = 'github-actions';
+    run.state = 'running';
+    run.activity = 'Starting GitHub Actions verification';
+    run.startedAt = startedAt;
+    run.finishedAt = undefined;
+    run.errorKind = undefined;
+  }
+  store.save();
+
+  emit(sessionId, 'run.started', {
+    taskId: task.id,
+    messageId: task.messageId,
+    plane: 'workspace',
+    engine: 'github-actions',
+    provider: 'github-actions',
+    mode: task.mode || 'build',
+    permission: task.tempPermission || task.permission || 'full',
+    verificationOnly: true,
+  }, runId);
+  emit(sessionId, 'message.start', { taskId: task.id, plane: 'workspace' }, runId);
+  emit(sessionId, 'activity.started', {
+    taskId: task.id,
+    sourceType: 'verification.github-actions',
+    text: task.verificationRunId
+      ? 'Resuming GitHub Actions verification…'
+      : 'Starting independent GitHub Actions verification…',
+  }, runId);
+
+  void executeGitHubActionsVerificationTask(sessionId, task.id, workspace, runId);
+  return run;
+}
+
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
   const repository = controlPlaneRepository();
   const tasks = await repository.listTasks(sessionId);
@@ -103,6 +394,17 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
     }
 
     if (task.state !== 'running') continue;
+    if (task.verificationBackend === 'github-actions' && task.verificationRunId) {
+      const workspace = await repository.getWorkspace(task.workspaceId);
+      if (workspace) {
+        const runId = task.runId || `run_${uuid().slice(0, 8)}`;
+        task.runId = runId;
+        task.updatedAt = nowIso;
+        await repository.putTask(task);
+        void executeGitHubActionsVerificationTask(sessionId, task.id, workspace, runId);
+      }
+      continue;
+    }
     const touched = Date.parse(task.updatedAt || task.createdAt);
     if (!Number.isFinite(touched) || touched + timeoutMs + staleTaskGraceMs > now) continue;
 
@@ -496,10 +798,19 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
   if ((nextQueued.plane || 'workspace') === 'workspace') {
     const readyWorkspace = await repository.getWorkspace(nextQueued.workspaceId);
     if (!readyWorkspace) return null;
+
+    // Verification-only work can use an independent CI execution plane while
+    // the interactive workspace is cold, degraded, or being repaired.
+    if (!workspaceCanAcceptTask(readyWorkspace) && githubActionsVerificationEligible(nextQueued)) {
+      const actionsRun = await tryStartGitHubActionsVerification(sessionId, nextQueued, readyWorkspace);
+      if (actionsRun) return actionsRun;
+    }
+
     if (readyWorkspace.state === 'failed') {
       const permanentWorkspaceFailure = /permission|forbidden|authorization expired|not configured|invalid .*configuration/i.test(readyWorkspace.failureCode || '');
       const recoverableWorkspaceFailure = !permanentWorkspaceFailure && (
         readyWorkspace.provider === 'github-codespaces'
+        || readyWorkspace.provider === 'e2b'
         || readyWorkspace.provider === 'orlynx-runner'
         || workspaceShouldAdoptPreferredRunner(readyWorkspace)
         || workspaceNeedsCodespaceReplacement(readyWorkspace.failureCode)

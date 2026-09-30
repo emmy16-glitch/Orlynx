@@ -15,13 +15,22 @@ export interface WorkspaceConnectionValues {
   openCodePassword: string;
 }
 
+export interface WorkspaceProviderHealth {
+  reachable: boolean;
+  state: WorkspaceState;
+  capabilities?: string[];
+  detail?: string;
+}
+
 export interface WorkspaceProvider {
   readonly id: WorkspaceProviderId;
+  readonly capabilities?: readonly string[];
   create(input: CreateWorkspaceInput): Promise<WorkspaceRecord>;
   start(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   stop(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   get(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   getStatus(workspace: WorkspaceRecord): Promise<WorkspaceState>;
+  health?(workspace: WorkspaceRecord): Promise<WorkspaceProviderHealth>;
   destroy(workspace: WorkspaceRecord): Promise<void>;
   replace?(input: CreateWorkspaceInput, workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   connect?(workspace: WorkspaceRecord, values: WorkspaceConnectionValues): Promise<void>;

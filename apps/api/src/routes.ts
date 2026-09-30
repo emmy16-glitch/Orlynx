@@ -2079,8 +2079,9 @@ router.get('/github/status', async (req, res) => {
       pullRequests: platform.permissions.pull_requests === 'write',
       codespaces: platform.permissions.codespaces === 'write',
       codespacesLifecycle: platform.permissions.codespaces_lifecycle_admin === 'write',
+      actions: platform.permissions.actions === 'write',
       leastPrivilege: Object.entries(platform.permissions).every(([permission, level]) =>
-        ['contents', 'metadata', 'pull_requests', 'codespaces', 'codespaces_lifecycle_admin'].includes(permission)
+        ['contents', 'metadata', 'pull_requests', 'codespaces', 'codespaces_lifecycle_admin', 'actions'].includes(permission)
           ? ['read', 'write'].includes(level)
           : level === 'none'
       ),

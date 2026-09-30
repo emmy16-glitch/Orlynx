@@ -64,7 +64,9 @@ export function verifyManifestState(state: string): void {
 // - metadata:read → required companion permission for repository access.
 // - pull_requests:write → safe branch + PR publishing when the target branch
 //   should not be pushed directly.
-// Everything else is intentionally NOT requested.
+// - actions:write → dispatch and inspect an existing repository CI workflow
+//   when Orlynx uses GitHub Actions as an independent verification backend.
+// Orlynx never creates or edits a user's CI workflow merely to make verification available.
 //
 // NOTE: no `default_events` is sent. GitHub's manifest flow rejects
 // `installation` / `installation_repositories` as default events, and Orlynx
@@ -86,7 +88,7 @@ export function buildManifest(appName: string): Record<string, unknown> {
     setup_on_update: true,
     description: 'Orlynx — GitHub-native AI development workspace.',
     public: false,
-    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', codespaces: 'write', codespaces_lifecycle_admin: 'write' },
+    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', codespaces: 'write', codespaces_lifecycle_admin: 'write', actions: 'write' },
   };
 }
 

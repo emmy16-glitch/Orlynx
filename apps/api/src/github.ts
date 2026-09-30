@@ -353,6 +353,61 @@ export async function githubUserAccessToken(userId: string): Promise<string> {
   return body.access_token;
 }
 
+
+export async function githubUserApiRequest<T>(
+  userId: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = await githubUserAccessToken(userId);
+  const response = await fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      ...((init.headers as Record<string, string> | undefined) || {}),
+    },
+    signal: init.signal || AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { message?: string };
+    const error = new Error(`GitHub API request failed (HTTP ${response.status})${body.message ? `: ${body.message.slice(0, 220)}` : ''}.`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return undefined as T;
+  return await response.json() as T;
+}
+
+export async function githubRepositoryById(userId: string, repositoryId: number): Promise<{ id: number; fullName: string; defaultBranch: string; private: boolean; installationId: number }> {
+  const repository = controlPlaneRepository();
+  const connection = await repository.getGitHubConnectionByUser(userId);
+  if (!connection) throw new Error('GitHub user authorization is required.');
+  const match = (await githubListRepos(connection.installationId)).find((item) => item.id === repositoryId);
+  if (!match) throw new Error('This repository is not available through the connected Orlynx GitHub App installation.');
+  return {
+    id: match.id,
+    fullName: match.full,
+    defaultBranch: match.defaultBranch,
+    private: match.private,
+    installationId: match.installationId,
+  };
+}
+
+export async function githubRepositoryInstallationAccess(
+  userId: string,
+  repositoryId: number,
+): Promise<{
+  repository: Awaited<ReturnType<typeof githubRepositoryById>>;
+  token: string;
+}> {
+  const repository = await githubRepositoryById(userId, repositoryId);
+  const token = await installationToken(repository.installationId);
+  return { repository, token };
+}
+
 export function githubCallbackErrorUrl(reason: string): string {
   return `${publicUrl() || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
 }
@@ -529,25 +584,57 @@ async function installationToken(installationId: number): Promise<string> {
   return token.token;
 }
 
+export async function githubInstallationApiRequest<T>(
+  installationId: number,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = await installationToken(installationId);
+  const response = await fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      ...githubHeaders(token),
+      'Content-Type': 'application/json',
+      ...((init.headers as Record<string, string> | undefined) || {}),
+    },
+    signal: init.signal || AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { message?: string };
+    const error = new Error(`GitHub installation API request failed (HTTP ${response.status})${body.message ? `: ${body.message.slice(0, 220)}` : ''}.`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return undefined as T;
+  return await response.json() as T;
+}
+
+
 export async function githubInstallationPermissionStatus(installationId: number): Promise<{
   granted: Record<string, string>;
   missingWorkspace: string[];
   missingPublish: string[];
+  missingVerification: string[];
   workspaceReady: boolean;
   publishReady: boolean;
+  verificationReady: boolean;
 }> {
   await installationToken(installationId);
   const granted = tokenCache.get(installationId)?.permissions || {};
   const requiredWorkspace = ['contents', 'codespaces', 'codespaces_lifecycle_admin'];
   const requiredPublish = ['contents', 'pull_requests'];
+  const requiredVerification = ['actions'];
   const missingWorkspace = requiredWorkspace.filter((permission) => granted[permission] !== 'write');
   const missingPublish = requiredPublish.filter((permission) => granted[permission] !== 'write');
+  const missingVerification = requiredVerification.filter((permission) => granted[permission] !== 'write');
   return {
     granted,
     missingWorkspace,
     missingPublish,
+    missingVerification,
     workspaceReady: missingWorkspace.length === 0,
     publishReady: missingPublish.length === 0,
+    verificationReady: missingVerification.length === 0,
   };
 }
 

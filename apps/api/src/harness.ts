@@ -7,6 +7,7 @@ import type {
   SteeringAction,
   TaskRecord,
   ToolFamily,
+  VerificationFailureClass,
 } from '@orlynx/shared';
 
 export type BudgetStage = 'normal' | 'warn' | 'finalize' | 'force-final';
@@ -363,16 +364,81 @@ function eventText(event: OrlynxEvent): string {
   ].filter(Boolean).join(' ').slice(0, 2_000);
 }
 
+function artifactEvidence(events: OrlynxEvent[]): string[] {
+  const evidence: string[] = [];
+  for (const event of events.slice(-120)) {
+    const artifactEvent = (event.type === 'extension.event' && String(event.payload?.sourceType || '') === 'verification.artifacts')
+      || (event.type === 'state.delta' && String(event.payload?.scope || '') === 'verification-artifacts');
+    if (!artifactEvent) continue;
+    const summary = String(event.payload?.summary || '').replace(/\s+/g, ' ').trim();
+    if (summary) evidence.push(summary.slice(0, 1_200));
+    const artifacts = Array.isArray(event.payload?.artifacts) ? event.payload.artifacts : [];
+    for (const raw of artifacts.slice(0, 12)) {
+      if (!raw || typeof raw !== 'object') continue;
+      const artifact = raw as Record<string, unknown>;
+      const path = String(artifact.path || '').trim();
+      if (!path) continue;
+      const kind = String(artifact.kind || 'artifact');
+      const excerpt = String(artifact.excerpt || '').replace(/\s+/g, ' ').trim();
+      evidence.push(
+        excerpt
+          ? `${kind}: ${path} — ${excerpt.slice(0, 900)}`
+          : `${kind}: ${path}`,
+      );
+    }
+  }
+  return [...new Set(evidence)].slice(-12);
+}
+
+export function classifyVerificationFailure(
+  events: OrlynxEvent[],
+  missing: string[] = [],
+): VerificationFailureClass {
+  const text = events.map(eventText).join('\n').toLowerCase();
+
+  // Infrastructure wins over application/test signatures because Playwright,
+  // package managers and compilers can all emit secondary assertion/build
+  // failures after the underlying runtime/provider has already failed.
+  if (
+    /(?:codespace|workspace|runner|sandbox|bridge)[^\n]{0,100}(?:unavailable|failed|timeout|timed out|disconnected|not ready|404)/.test(text)
+    || /(?:econnreset|econnrefused|enotfound|eai_again|etimedout|network timeout|tls|certificate|socket hang up)/.test(text)
+    || /(?:no space left on device|enospc|out of memory|enomem|killed process)/.test(text)
+    || /(?:browser executable|chromium executable|playwright.*install|install-deps|host system is missing dependencies|shared librar|\.so(?:\.|:).*not found)/.test(text)
+    || /(?:docker daemon|cannot connect to the docker|spawn [^\n]+ enoent)/.test(text)
+  ) return 'infrastructure';
+
+  if (
+    /(?:assertionerror|strict mode violation|locator\(|expect\(|expected .{0,120}received|to(?:be|have)[a-z]+\()/i.test(text)
+    || /(?:\bplaywright\b|\bvitest\b|\bjest\b|\bpytest\b|\bmocha\b)[^\n]{0,180}(?:failed|failure|error)/.test(text)
+    || /(?:\b[1-9]\d* failed\b|tests? failed|failing tests?)/.test(text)
+  ) return 'test';
+
+  if (
+    /\berror ts\d{4}\b/.test(text)
+    || /(?:typecheck|compilation|compile|build)[^\n]{0,160}(?:failed|failure|error)/.test(text)
+    || /(?:syntaxerror|module not found|cannot find module|cannot find name|type .* is not assignable)/.test(text)
+  ) return 'build';
+
+  if (missing.includes('tests') && !missing.includes('build')) return 'test';
+  if (missing.includes('build') && !missing.includes('tests')) return 'build';
+  return 'unknown';
+}
+
 export function evidenceSummary(events: OrlynxEvent[]): string[] {
-  return events.slice(-80).flatMap((event) => {
-    if (![
+  const eventEvidence = events.slice(-100).flatMap((event) => {
+    const artifactEvent = (event.type === 'extension.event'
+      && String(event.payload?.sourceType || '') === 'verification.artifacts')
+      || (event.type === 'state.delta'
+        && String(event.payload?.scope || '') === 'verification-artifacts');
+    if (!artifactEvent && ![
       'tool.completed','tool.failed','tool.output','terminal.exited',
       'test.result','build.result','preview.ready','workspace.ready',
       'workspace.state','receipt.created',
     ].includes(event.type)) return [];
     const text = eventText(event).replace(/\s+/g, ' ').trim();
-    return text ? [text.slice(0, 420)] : [];
-  }).slice(-10);
+    return text ? [text.slice(0, artifactEvent ? 1_200 : 420)] : [];
+  });
+  return [...eventEvidence, ...artifactEvidence(events)].slice(-14);
 }
 
 export function detectEvidenceContradictions(events: OrlynxEvent[], missing: string[] = []): string[] {
@@ -426,10 +492,14 @@ export function prepareReflection(
 ): HarnessCheckpoint {
   const attempts = (checkpoint.reflectionAttempts ?? checkpoint.salvageAttempts ?? 0) + 1;
   const contradictions = detectEvidenceContradictions(events, checkpoint.verification.missing);
+  const artifacts = artifactEvidence(events);
+  const failureClass = classifyVerificationFailure(events, checkpoint.verification.missing);
   const evidence = evidenceSummary(events);
   const signature = JSON.stringify({
     missing: checkpoint.verification.missing.slice().sort(),
+    failureClass,
     contradictions,
+    artifacts: artifacts.slice(-4),
     evidence: evidence.slice(-4),
   });
   const stagnant = checkpoint.lastReflectionSignature === signature
@@ -445,6 +515,8 @@ export function prepareReflection(
       : [...checkpoint.verification.missing],
     contradictions,
     reflectionEvidence: evidence,
+    verificationFailureClass: failureClass,
+    artifactEvidence: artifacts,
     lastReflectionSignature: signature,
     stagnantReflections: stagnant,
     phase: 'executing',
@@ -465,6 +537,17 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
   const lessonText = lessons.length
     ? `Verified lessons from earlier successful work: ${lessons.join(' | ')}`
     : '';
+  const failureClass = checkpoint.verificationFailureClass || 'unknown';
+  const artifactText = checkpoint.artifactEvidence?.length
+    ? `Verification artifacts: ${checkpoint.artifactEvidence.join(' | ')}`
+    : '';
+  const failureGuidance = failureClass === 'infrastructure'
+    ? 'Failure classification: infrastructure. Repair or rule out the runtime/provider/browser/dependency problem before editing application code.'
+    : failureClass === 'test'
+      ? 'Failure classification: test. Inspect the failing assertion plus artifact evidence first. After a code fix, rerun the narrow failing test/spec before rerunning the wider relevant suite.'
+      : failureClass === 'build'
+        ? 'Failure classification: build. Fix the compiler/type/build evidence first, then rerun the narrow build/typecheck command before broader verification.'
+        : 'Failure classification: unknown. Gather one more discriminating check before choosing a code or infrastructure fix.';
   const stagnant = (checkpoint.stagnantReflections || 0) > 0
     ? 'The unresolved evidence is substantially the same as the previous reflection. Do not repeat the same failed command or hypothesis without gathering new evidence; choose a different diagnostic path.'
     : 'Do not repeat the same failed command or hypothesis without new evidence. Inspect first, then choose the next action.';
@@ -473,6 +556,8 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     `Reflection cycle ${attempts}/${MAX_REFLECTION_ATTEMPTS}. Orlynx still cannot verify: ${missing}.`,
     contradictionText,
     evidenceText,
+    artifactText,
+    failureGuidance,
     lessonText,
     stagnant,
     'You are the connected reasoning layer; Orlynx is the control and evidence layer. When Orlynx asks because the evidence does not explain something, answer the specific Orlynx question instead of making Orlynx guess. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',

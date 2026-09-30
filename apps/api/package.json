@@ -29,7 +29,8 @@
     "@ai-sdk/openai": "3.0.88",
     "@ai-sdk/openai-compatible": "2.0.41",
     "@ai-sdk/anthropic": "3.0.111",
-    "@ai-sdk/google": "3.0.73"
+    "@ai-sdk/google": "3.0.73",
+    "e2b": "2.51.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

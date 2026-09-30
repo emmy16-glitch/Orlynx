@@ -1,9 +1,11 @@
 import type { WorkspaceProviderId, WorkspaceRecord } from '@orlynx/shared';
 import { GitHubCodespacesProvider } from './github-codespaces.js';
 import { OrlynxRunnerProvider, orlynxRunnerConfigured } from './orlynx-runner.js';
+import { E2BWorkspaceProvider, e2bConfigured } from './e2b-provider.js';
 import type { WorkspaceProvider } from './workspace-provider.js';
 
 const codespaces = new GitHubCodespacesProvider();
+const e2b = new E2BWorkspaceProvider();
 const runner = new OrlynxRunnerProvider();
 
 export function defaultWorkspaceProviderId(): WorkspaceProviderId {
@@ -12,6 +14,10 @@ export function defaultWorkspaceProviderId(): WorkspaceProviderId {
   // credentials happen to be configured in production.
   const configured = String(process.env.ORLYNX_WORKSPACE_PROVIDER || 'github-codespaces').toLowerCase();
   if (configured === 'github-codespaces' || configured === 'auto') return 'github-codespaces';
+  if (configured === 'e2b') {
+    if (!e2bConfigured()) throw new Error('ORLYNX_WORKSPACE_PROVIDER=e2b is not configured: set E2B_API_KEY.');
+    return 'e2b';
+  }
   if (configured === 'orlynx-runner') {
     if (!orlynxRunnerConfigured()) throw new Error('ORLYNX_WORKSPACE_PROVIDER=orlynx-runner is not configured: set ORLYNX_RUNNER_HOSTS or ORLYNX_RUNNER_URL together with ORLYNX_RUNNER_TOKEN.');
     return 'orlynx-runner';
@@ -20,7 +26,30 @@ export function defaultWorkspaceProviderId(): WorkspaceProviderId {
 }
 
 export function workspaceProvider(id: WorkspaceProviderId): WorkspaceProvider {
-  return id === 'orlynx-runner' ? runner : codespaces;
+  if (id === 'orlynx-runner') return runner;
+  if (id === 'e2b') return e2b;
+  return codespaces;
+}
+
+export function fallbackWorkspaceProviderId(
+  current: WorkspaceProviderId,
+  attempted: Iterable<WorkspaceProviderId> = [],
+): WorkspaceProviderId | null {
+  const used = new Set(attempted);
+  used.add(current);
+
+  // Codespaces is primary. E2B is the first independent interactive fallback
+  // when explicitly configured; it never becomes a hidden dependency.
+  if (current === 'github-codespaces' && e2bConfigured() && !used.has('e2b')) return 'e2b';
+
+  // Explicit E2B or legacy runner deployments may fall back to Codespaces.
+  if ((current === 'e2b' || current === 'orlynx-runner') && !used.has('github-codespaces')) return 'github-codespaces';
+
+  // An explicit runner can fall through Codespaces to E2B when both are
+  // available and Codespaces was already attempted.
+  if (current === 'orlynx-runner' && e2bConfigured() && !used.has('e2b')) return 'e2b';
+
+  return null;
 }
 
 export function providerForWorkspace(workspace: Pick<WorkspaceRecord, 'provider'>): WorkspaceProvider {
@@ -38,7 +67,9 @@ export function runnerFallbackEnabled(): boolean {
 
 export function workspaceInfrastructureConfigured(): boolean {
   try {
-    if (defaultWorkspaceProviderId() === 'orlynx-runner') return orlynxRunnerConfigured();
+    const provider = defaultWorkspaceProviderId();
+    if (provider === 'orlynx-runner') return orlynxRunnerConfigured();
+    if (provider === 'e2b') return e2bConfigured();
     return process.env.VERCEL === '1'
       || process.env.ORLYNX_HOSTED_PRODUCTION === '1'
       || process.env.RENDER === 'true'

@@ -94,7 +94,17 @@ function continuationPayload(
 }
 
 type BridgeAdapterState = { state?: string; reason?: string };
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+
+type VerificationArtifact = {
+  path?: string;
+  kind?: string;
+  size?: number;
+  excerpt?: string;
+};
+interface VerificationArtifactsResult extends Record<string, unknown> {
+  artifacts?: VerificationArtifact[];
+}
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
@@ -145,6 +155,9 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
     state: nextWorkspaceState,
     failureCode: workspaceReady ? undefined : current.failureCode,
     repoRoot: detail.repoRoot || current.repoRoot,
+    runtimeState: workspaceReady ? 'ready' : state === 'disconnected' ? 'recovering' : 'connecting',
+    capabilities: detail.capabilities || current.capabilities,
+    agentHeartbeatAt: state === 'disconnected' ? current.agentHeartbeatAt : now,
     updatedAt: now,
   });
 
@@ -170,7 +183,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
       workspaceId: claims.workspaceId,
       type: 'workspace.ready',
       timestamp: now,
-      payload: { provider: current.provider, adapters },
+      payload: { provider: current.provider, adapters, capabilities: detail.capabilities || current.capabilities || [] },
     });
   }
 }
@@ -711,6 +724,77 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               return;
             }
 
+            if (
+              engineSessionId
+              && task.harness.verification.missing.some((item) => item === 'tests' || item === 'build')
+            ) {
+              try {
+                const artifactResult = await bridgeRequest<VerificationArtifactsResult>(
+                  claims.workspaceId,
+                  'verification.artifacts',
+                  {},
+                  15_000,
+                );
+                const artifacts = Array.isArray(artifactResult.artifacts)
+                  ? artifactResult.artifacts
+                    .filter((artifact) => artifact && typeof artifact === 'object' && String(artifact.path || '').trim())
+                    .slice(0, 16)
+                    .map((artifact) => ({
+                      path: String(artifact.path || '').slice(0, 1_200),
+                      kind: String(artifact.kind || 'artifact').slice(0, 80),
+                      size: Number.isFinite(Number(artifact.size)) ? Number(artifact.size) : 0,
+                      ...(artifact.excerpt ? { excerpt: String(artifact.excerpt).slice(0, 1_600) } : {}),
+                    }))
+                  : [];
+
+                if (artifacts.length) {
+                  const signature = artifacts.map((artifact) => `${artifact.kind}:${artifact.path}:${artifact.size}`).join('|').slice(0, 8_000);
+                  const alreadyRecorded = recent.some((event) =>
+                    event.type === 'state.delta'
+                    && String(event.payload?.scope || '') === 'verification-artifacts'
+                    && String(event.payload?.signature || '') === signature
+                  );
+                  if (!alreadyRecorded) {
+                    const contextCount = artifacts.filter((artifact) => artifact.kind === 'context').length;
+                    const screenshotCount = artifacts.filter((artifact) => artifact.kind === 'screenshot').length;
+                    const traceCount = artifacts.filter((artifact) => artifact.kind === 'trace').length;
+                    const reportCount = artifacts.filter((artifact) => artifact.kind === 'report').length;
+                    const paths = artifacts.slice(0, 8).map((artifact) => `${artifact.kind}: ${artifact.path}`);
+                    const summary = [
+                      `Verification artifacts found: ${artifacts.length}.`,
+                      contextCount ? `${contextCount} error context` : '',
+                      screenshotCount ? `${screenshotCount} screenshot${screenshotCount === 1 ? '' : 's'}` : '',
+                      traceCount ? `${traceCount} trace${traceCount === 1 ? '' : 's'}` : '',
+                      reportCount ? `${reportCount} report${reportCount === 1 ? '' : 's'}` : '',
+                      paths.length ? `Paths: ${paths.join(' | ')}` : '',
+                    ].filter(Boolean).join(' ');
+
+                    await persistLiveEvent({
+                      eventId: `evt_${uuid()}`,
+                      sessionId: claims.sessionId,
+                      taskId,
+                      runId,
+                      workspaceId: claims.workspaceId,
+                      type: 'state.delta',
+                      timestamp: new Date().toISOString(),
+                      payload: {
+                        scope: 'verification-artifacts',
+                        sourceType: 'verification.artifacts',
+                        signature,
+                        summary,
+                        artifacts,
+                      },
+                    });
+                    recent = (await repository.listRecentEvents(claims.sessionId, 1000))
+                      .filter((event) => event.runId === runId)
+                      .map(sanitizeEvent);
+                  }
+                }
+              } catch (artifactError) {
+                console.info(`[harness] verification artifact discovery unavailable run=${runId}: ${artifactError instanceof Error ? artifactError.message : 'unknown error'}`);
+              }
+            }
+
             if (shouldReflect(task.harness, responseText) && engineSessionId) {
               const reflectionNow = new Date().toISOString();
               task.harness = prepareReflection(task.harness, recent, reflectionNow);
@@ -1031,7 +1115,24 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         // event names.
         const runId = message.event.runId;
         const normalized = normalizeBridgeEvent(String(message.event.type), message.event.payload || {});
-        if (normalized.heartbeat) return;
+        if (normalized.heartbeat) {
+          const now = new Date().toISOString();
+          const heartbeatPayload = message.event.payload || {};
+          const capabilities = Array.isArray(heartbeatPayload.capabilities) ? heartbeatPayload.capabilities.map(String) : undefined;
+          await repository.touchWorkspaceRuntime(claims.workspaceId, {
+            runtimeState: 'ready',
+            capabilities,
+            agentHeartbeatAt: now,
+          });
+          const tasks = await repository.listTasks(claims.sessionId);
+          for (const task of tasks) {
+            if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'running') continue;
+            task.updatedAt = now;
+            await repository.putTask(task);
+            await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
+          }
+          return;
+        }
 
         const payload: Record<string, unknown> = { ...normalized.payload };
         const type = normalized.type;
@@ -1184,7 +1285,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       recovery.unref?.();
       return;
     }
-    try { await persistBridgeState(claims, 'disconnected'); } catch {}
+    try {
+      await persistBridgeState(claims, 'disconnected');
+      await repository.touchWorkspaceRuntime(claims.workspaceId, { runtimeState: 'recovering' });
+    } catch {}
   });
   ws.on('error', (error) => { console.warn(`[bridge] socket error: ${error.message}`); ws.close(); });
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
