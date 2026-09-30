@@ -2,7 +2,7 @@
 
 This is the production release contract for Orlynx.
 
-Passing unit tests is necessary but does not by itself prove that live GitHub, model, runner, Codespaces or Render integrations are healthy.
+Passing unit tests is necessary but does not by itself prove that live GitHub, model, direct runtime, runner pool, E2B, Codespaces, or Render integrations are healthy.
 
 ## Automated repository verification
 
@@ -80,37 +80,58 @@ The test proves that localStorage is only a convenience pointer.
 9. switch Plan → Build and send immediately, before preference persistence finishes;
 10. confirm the message admission payload carries Build, not the previous Plan mode.
 
-## Warm Build continuation scenario
+## Build continuation and broker scenario
 
-1. start or reuse a Build workspace and complete one model/tool turn;
+1. start or reuse a healthy Build workspace and complete one model/tool turn;
 2. immediately send an explanatory Build follow-up such as “how can we improve this architecture?”;
-3. confirm the follow-up remains on the same workspace execution plane and same durable conversation;
-4. confirm Orlynx does not cold-start the separate direct OpenCode runtime;
-5. if the workspace adapter is recovering, confirm one live status explains whether OpenCode is starting, reconnecting or busy;
-6. for a legacy Codespace with an unavailable/failed adapter and warm-runner preference enabled, confirm the next Build admission migrates to the runner.
+3. confirm the follow-up remains on the same durable conversation and does not become a fake acknowledgement run;
+4. confirm a healthy existing workspace remains sticky rather than changing providers unnecessarily;
+5. if the workspace adapter is recovering, confirm one concise live status explains recovery without declaring the whole workspace dead;
+6. force the current workspace provider to become unhealthy and confirm the broker selects another configured provider without changing task identity.
 
-For the direct lane, simulate transient runtime 502/503/504 responses and confirm the status updates through checking/waking/retrying/recovery rather than remaining frozen on one startup label. Confirm the bounded wake timeout fails cleanly if the runtime never recovers.
+For the direct lane:
 
-## Workspace and adapter scenario
+1. simulate a transient 502/503/504 before useful output;
+2. confirm the direct target is recorded unhealthy/quarantined;
+3. confirm the user-facing state becomes `Switching compute...`;
+4. confirm the same durable task moves to workspace execution;
+5. confirm model/mode/permissions remain unchanged;
+6. confirm no user resend is required;
+7. confirm a later successful direct-runtime probe can clear quarantine.
 
-### Warm runner
+## Workspace provider and adapter scenario
+
+### Orlynx runner pool
 
 When configured:
 
-1. opening a repository schedules background prewarm;
-2. the browser remains usable while compute warms;
-3. runner workspace becomes bridge-ready;
-4. OpenCode adapter reaches ready independently.
+1. health probes report host capacity/load/capability;
+2. the broker can select a healthy available runner;
+3. the selected runner becomes Bridge-ready;
+4. OpenCode adapter reaches ready independently;
+5. a healthy existing runner workspace remains sticky on the next Build turn;
+6. a failed/circuit-open runner host is not selected for new work.
 
-### Codespaces fallback
+### E2B
 
-When runner preparation fails and fallback is enabled:
+When configured:
 
-1. preserve the durable task/session;
-2. switch execution provider;
-3. create/connect Codespaces;
-4. attach the same bridge contract;
-5. continue the task without creating a new conversation.
+1. broker scoring can select E2B;
+2. sandbox preparation preserves the same task/session;
+3. Bridge/OpenCode readiness is reported independently;
+4. provider failure can reroute without creating a second conversation.
+
+### GitHub Codespaces
+
+1. broker scoring can select Codespaces;
+2. existing healthy Codespaces can be reused;
+3. stale/missing runtime can be repaired or the Codespace replaced;
+4. Bridge/OpenCode readiness uses the same product contract;
+5. switching to/from Codespaces preserves task/session identity.
+
+### Provider loop prevention
+
+Force sequential provider failures and confirm a provider already attempted in the current preparation is not selected again, preventing cycles such as Codespaces → E2B → Codespaces.
 
 ## OpenCode runtime recovery scenario
 
