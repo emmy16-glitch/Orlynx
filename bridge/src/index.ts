@@ -1263,16 +1263,58 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       if (behind === 0) {
         return { state: 'current', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
       }
-      if (porcelainBefore.trim()) {
-        return { state: 'blocked_dirty', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+
+      // Old persistent workspaces can carry package-lock drift from a previous
+      // dependency install even though no dependency change was intended. Do
+      // not let that one generated file strand Build on a stale default branch.
+      // Preserve the exact patch outside the repository before restoring it.
+      // Any source edit, untracked file, second dirty path, or local commit still
+      // blocks sync and requires normal reconciliation.
+      let porcelain = porcelainBefore;
+      let recoveredGeneratedLockfile = false;
+      let recoveryPatch: string | undefined;
+      if (ahead === 0 && porcelain.trim()) {
+        const dirty = porcelain.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+        const packageLockOnly = dirty.length > 0 && dirty.every((line) => {
+          if (line.startsWith('??')) return false;
+          return line.slice(3).trim().replace(/^"|"$/g, '') === 'package-lock.json';
+        });
+        if (packageLockOnly) {
+          const patch = git(['diff', 'HEAD', '--binary', '--', 'package-lock.json']);
+          if (patch.trim()) {
+            const recoveryRoot = path.join(os.homedir(), '.orlynx', 'recovery');
+            fs.mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 });
+            const recoveryName = `package-lock-${Date.now()}-${headBefore.slice(0, 8)}.patch`;
+            fs.writeFileSync(path.join(recoveryRoot, recoveryName), patch, { mode: 0o600 });
+            recoveryPatch = path.join('~', '.orlynx', 'recovery', recoveryName);
+          }
+          git(['restore', '--source=HEAD', '--staged', '--worktree', '--', 'package-lock.json']);
+          porcelain = git(['status', '--porcelain=v1']);
+          recoveredGeneratedLockfile = !porcelain.trim();
+        }
+      }
+
+      if (porcelain.trim()) {
+        return { state: 'blocked_dirty', branch, head: headBefore, remoteHead, ahead, behind, porcelain };
       }
       if (ahead > 0) {
-        return { state: 'blocked_diverged', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+        return { state: 'blocked_diverged', branch, head: headBefore, remoteHead, ahead, behind, porcelain };
       }
 
       git(['merge', '--ff-only', remoteRef], 120_000);
       const head = git(['rev-parse', 'HEAD']).trim();
-      return { state: 'synced', branch, head, previousHead: headBefore, remoteHead, ahead: 0, behind: 0, updatedBy: behind };
+      return {
+        state: 'synced',
+        branch,
+        head,
+        previousHead: headBefore,
+        remoteHead,
+        ahead: 0,
+        behind: 0,
+        updatedBy: behind,
+        recoveredGeneratedLockfile,
+        recoveryPatch,
+      };
     }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }

@@ -269,3 +269,17 @@ test('queue promoter preserves running and human-wait guards from the full durab
   assert.match(promoter, /if \(!nextQueued\) return null/);
 });
 
+test('stale workspace sync preserves isolated package-lock drift before fast-forwarding', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+
+  assert.match(bridge, /packageLockOnly/);
+  assert.match(bridge, /git\(\['diff', 'HEAD', '--binary', '--', 'package-lock\.json'\]\)/);
+  assert.match(bridge, /\.orlynx', 'recovery'/);
+  assert.match(bridge, /git\(\['restore', '--source=HEAD', '--staged', '--worktree', '--', 'package-lock\.json'\]\)/);
+  assert.match(bridge, /recoveredGeneratedLockfile/);
+  assert.match(bridge, /line\.startsWith\('\?\?'\)/);
+  assert.match(agents, /preserved incidental package-lock drift/);
+  assert.match(agents, /recoveryPatch/);
+});
+

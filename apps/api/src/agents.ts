@@ -1124,6 +1124,8 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       behind?: number;
       porcelain?: string;
       updatedBy?: number;
+      recoveredGeneratedLockfile?: boolean;
+      recoveryPatch?: string;
     };
     try {
       gitSync = await bridgeRequest(readyWorkspace.id, 'git.sync', {
@@ -1213,10 +1215,13 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       emit(sessionId, 'activity.progress', {
         taskId: nextQueued.id,
         sourceType: 'repository.sync',
-        text: `Workspace updated to latest ${session.branch} · ${gitSync.updatedBy || 0} commit${Number(gitSync.updatedBy || 0) === 1 ? '' : 's'} fast-forwarded.`,
+        text: gitSync.recoveredGeneratedLockfile
+          ? `Workspace updated to latest ${session.branch} · preserved incidental package-lock drift, then fast-forwarded ${gitSync.updatedBy || 0} commit${Number(gitSync.updatedBy || 0) === 1 ? '' : 's'}.`
+          : `Workspace updated to latest ${session.branch} · ${gitSync.updatedBy || 0} commit${Number(gitSync.updatedBy || 0) === 1 ? '' : 's'} fast-forwarded.`,
         branch: session.branch,
         head: gitSync.head,
         previousHead: gitSync.previousHead,
+        ...(gitSync.recoveryPatch ? { recoveryPatch: gitSync.recoveryPatch } : {}),
       }, nextQueued.runId);
     }
 
