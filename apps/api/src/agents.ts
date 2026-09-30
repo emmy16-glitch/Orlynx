@@ -34,7 +34,15 @@ export interface TaskOptions {
 }
 
 const staleTaskGraceMs = 15_000;
-const queuedTaskTimeoutMs = Math.max(60_000, Number(process.env.ORLYNX_QUEUED_TASK_TIMEOUT_MS || 15 * 60_000));
+// Workspace preparation can legitimately take longer than a single provider
+// startup window (cold Render runners, Codespaces provisioning, deploys, etc.).
+// Queued Build work is durable and must not be cancelled just because recovery
+// crosses the old 15-minute wall clock. Keep a long retention guard for truly
+// abandoned queued work; running work is governed by heartbeat/staleness below.
+const queuedTaskRetentionMs = Math.max(
+  60 * 60_000,
+  Number(process.env.ORLYNX_QUEUED_TASK_RETENTION_MS || 24 * 60 * 60_000),
+);
 const maxQueuedTasks = Math.max(1, Number(process.env.ORLYNX_MAX_QUEUED_TASKS || 8));
 
 export function chooseNextQueuedTask(tasks: TaskRecord[]): TaskRecord | undefined {
@@ -49,13 +57,10 @@ export function workspaceCanAcceptTask(workspace: { state?: string; bridgeState?
 }
 
 export function delayedWorkspaceTaskExpired(task: TaskRecord, now = Date.now()): boolean {
-  if ((task.plane || 'workspace') !== 'workspace') return false;
+  if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'queued') return false;
   const created = Date.parse(task.createdAt);
   if (!Number.isFinite(created)) return false;
-  if (task.state === 'queued') return created + queuedTaskTimeoutMs <= now;
-  if (task.state !== 'running') return false;
-  const updated = Date.parse(task.updatedAt);
-  return Number.isFinite(updated) && updated - created >= queuedTaskTimeoutMs;
+  return created + queuedTaskRetentionMs <= now;
 }
 
 async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
