@@ -1310,7 +1310,7 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
         plane: task.plane || 'workspace',
         now,
       });
-      const events = (await repository.listRecentEvents(session.id, 1000)).filter((event) => event.runId === task.runId);
+      const events = await repository.listRunEvents(session.id, task.runId || '', 1000);
       task.harness = verifyHarness(task.harness, events, now);
 
       if (task.harness.verification.status !== 'passed') {
