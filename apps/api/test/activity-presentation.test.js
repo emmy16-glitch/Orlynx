@@ -184,7 +184,7 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
-  it('streams one reflection cycle into one stable ordered Investigation object', () => {
+  it('keeps internal Orlynx/model reasoning out of the user activity stream', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -197,18 +197,8 @@ describe('canonical agent activity presentation', () => {
         text: 'Model → Orlynx: check the provider forwarding layer instead of restarting the app.',
       }),
     ]);
-    const parts = toThreadParts(rows);
-    assert.equal(rows.length, 1);
-    assert.equal(parts.length, 1);
-    assert.equal(parts[0].kind, 'status');
-    assert.equal(parts[0].title, 'Investigation');
-    assert.equal(parts[0].item.evidence?.sourceType, 'agent.reflection');
-    assert.deepEqual(
-      parts[0].item.evidence?.dialogue?.map((line) => [line.reflectionId, line.side]),
-      [[2, 'orlynx'], [2, 'model']],
-    );
-    assert.match(String(parts[0].item.evidence?.orlynxText), /browser Preview is still unverified/);
-    assert.match(String(parts[0].item.evidence?.modelText), /provider forwarding layer/);
+    assert.deepEqual(rows, []);
+    assert.deepEqual(toThreadParts(rows), []);
   });
 
   it('sanitizes historical event payloads before replay or reflection reuse', () => {
@@ -228,7 +218,7 @@ describe('canonical agent activity presentation', () => {
     assert.equal(redactEventString('Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456'), 'Authorization: Bearer [redacted-github-token]');
   });
 
-  it('coalesces multiple Orlynx ↔ model cycles immediately instead of reorganizing later', () => {
+  it('dedupes verified-memory activity while keeping private dialogue hidden', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -241,28 +231,38 @@ describe('canonical agent activity presentation', () => {
         text: 'Model → Orlynx: inspect forwarding and authentication instead of restarting Vite.',
       }),
       event(3, 'activity.progress', {
-        sourceType: 'agent.dialogue.orlynx',
-        reflectionId: 2,
-        text: 'Orlynx → Model: forwarding now responds but browser embedding is still unverified.',
+        sourceType: 'agent.memory',
+        text: 'Applied 2 verified project lessons.',
       }),
       event(4, 'activity.progress', {
-        sourceType: 'agent.dialogue.model',
-        reflectionId: 2,
-        text: 'Model → Orlynx: verify the signed preview URL in the browser surface.',
-      }),
-      event(5, 'activity.progress', {
         sourceType: 'agent.memory',
-        text: 'Orlynx learned from this verified recovery · saved 2 reusable lessons.',
+        text: 'Applied 3 verified project lessons.',
       }),
     ]);
-    assert.equal(rows.length, 2);
-    assert.equal(rows[0].title, 'Investigation');
-    assert.equal(rows[0].item?.evidence, undefined);
-    assert.deepEqual(
-      rows[0].evidence?.dialogue?.map((line) => [line.reflectionId, line.side, line.sequence]),
-      [[1, 'orlynx', 1], [1, 'model', 2], [2, 'orlynx', 3], [2, 'model', 4]],
-    );
-    assert.match(rows[1].title, /^Orlynx learned/);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Applied verified project lessons');
+    assert.equal(rows[0].summary, '3 lessons');
+    assert.equal(rows[0].evidence?.sourceType, 'agent.memory');
+  });
+
+  it('does not mislabel arbitrary build/curl prose as Build or health checks', () => {
+    const rows = toActivities([
+      event(1, 'tool.started', { tool: 'bash', command: 'echo build health', toolCallId: 'plain' }),
+      event(2, 'tool.completed', { tool: 'bash', command: 'echo build health', toolCallId: 'plain', exitCode: 0 }),
+      event(3, 'tool.started', { tool: 'bash', command: 'curl https://example.com/api', toolCallId: 'curl-plain' }),
+      event(4, 'tool.completed', { tool: 'bash', command: 'curl https://example.com/api', toolCallId: 'curl-plain', exitCode: 0 }),
+      event(5, 'tool.started', { tool: 'bash', command: 'npm run build', toolCallId: 'real-build' }),
+      event(6, 'tool.completed', { tool: 'bash', command: 'npm run build', toolCallId: 'real-build', exitCode: 0 }),
+      event(7, 'tool.started', { tool: 'bash', command: 'curl http://127.0.0.1:3001/health', toolCallId: 'real-health' }),
+      event(8, 'tool.completed', { tool: 'bash', command: 'curl http://127.0.0.1:3001/health', toolCallId: 'real-health', exitCode: 0 }),
+    ]);
+    assert.equal(rows[0].category, 'command');
+    assert.equal(rows[0].title, 'Ran echo build health');
+    assert.equal(rows[1].category, 'command');
+    assert.equal(rows[1].title, 'Ran curl https://example.com/api');
+    assert.equal(rows[2].category, 'build');
+    assert.equal(rows[2].title, 'Build passed');
+    assert.equal(rows[3].title, 'Service health check passed');
   });
 
   it('workspace tool streaming preserves exit code and suppresses transient error flashes', () => {
