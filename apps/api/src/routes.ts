@@ -1255,7 +1255,24 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
     const workspaceId = String(approval.context.workspaceId || task.workspaceId || '');
     const workspace = workspaceId ? await repository.getWorkspace(workspaceId) : await getWorkspace(session.id);
     if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
-      return res.status(503).json({ error: 'The project workspace is not ready yet.' });
+      if (workspace) {
+        await scheduleWorkspacePreparation({
+          sessionId: workspace.sessionId,
+          userId: workspace.userId,
+          projectId: workspace.projectId,
+          repositoryId: workspace.repositoryId,
+          branch: workspace.branch,
+        }, { allowFallback: true, reason: 'approval_resume' }).catch((error) => {
+          console.warn(`[approval] workspace wake scheduling failed session=${session.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        });
+        return res.status(202).json({
+          approval,
+          recoveringWorkspace: true,
+          retryAfterMs: 1500,
+          message: 'Waking the development environment before completing this approval.',
+        });
+      }
+      return res.status(503).json({ error: 'The project workspace is not available for this approval.' });
     }
 
     try {
@@ -1377,7 +1394,24 @@ router.post('/sessions/:id/approvals/:approvalId/resolve', async (req, res) => {
 
   const workspace = await getWorkspace(session.id);
   if (!workspace || workspace.state !== 'ready' || workspace.bridgeState !== 'ready') {
-    return res.status(503).json({ error: 'The project workspace is not ready yet.' });
+    if (workspace) {
+      await scheduleWorkspacePreparation({
+        sessionId: workspace.sessionId,
+        userId: workspace.userId,
+        projectId: workspace.projectId,
+        repositoryId: workspace.repositoryId,
+        branch: workspace.branch,
+      }, { allowFallback: true, reason: 'approval_resume' }).catch((error) => {
+        console.warn(`[approval] terminal workspace wake scheduling failed session=${session.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      });
+      return res.status(202).json({
+        approval,
+        recoveringWorkspace: true,
+        retryAfterMs: 1500,
+        message: 'Waking the development environment before running the approved command.',
+      });
+    }
+    return res.status(503).json({ error: 'The project workspace is not available for this approval.' });
   }
 
   const command = String(approval.context.cmd || '');
