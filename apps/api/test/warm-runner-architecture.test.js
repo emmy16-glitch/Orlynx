@@ -30,7 +30,7 @@ function withEnv(values, fn) {
   }
 }
 
-test('workspace provider prefers configured warm runner and otherwise preserves Codespaces', () => {
+test('workspace provider keeps Codespaces primary unless runner mode is explicitly selected', () => {
   withEnv({
     ORLYNX_WORKSPACE_PROVIDER: null,
     ORLYNX_RUNNER_URL: null,
@@ -47,8 +47,8 @@ test('workspace provider prefers configured warm runner and otherwise preserves 
     ORLYNX_RUNNER_TOKEN: 'test-token',
     ORLYNX_PREWARM_WORKSPACES: null,
   }, () => {
-    assert.equal(defaultWorkspaceProviderId(), 'orlynx-runner');
-    assert.equal(shouldPrewarmWorkspace(), true);
+    assert.equal(defaultWorkspaceProviderId(), 'github-codespaces');
+    assert.equal(shouldPrewarmWorkspace(), false);
   });
 
   withEnv({
@@ -209,6 +209,9 @@ test('legacy idle/broken Codespaces migrate to the preferred warm runner without
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'connecting-space', state: 'connecting', bridgeState: 'connecting', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner({ ...base, codespaceName: 'stopping-space', state: 'stopping', failureCode: undefined }, 'orlynx-runner'), false);
   assert.equal(workspaceShouldAdoptPreferredRunner(base, 'github-codespaces'), false);
+  const legacyRunner = { provider: 'orlynx-runner', state: 'ready', bridgeState: 'ready', codespaceName: undefined, failureCode: undefined };
+  assert.equal(workspaceShouldAdoptPreferredRunner(legacyRunner, 'github-codespaces', 'ready'), true);
+  assert.equal(workspaceShouldAdoptPreferredRunner(legacyRunner, 'github-codespaces', 'busy'), false);
 });
 
 test('broken Codespace recovery escapes to the preferred warm runner before replacing another Codespace', () => {

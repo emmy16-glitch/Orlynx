@@ -16,7 +16,7 @@ test('missing or invisible Codespaces request automatic replacement', () => {
   assert.equal(workspaceNeedsCodespaceReplacement('Codespace bootstrap failed (exit 1): getting full codespace details: HTTP 404: Not Found (https://api.github.com/user/codespaces/orlynx-old)'), true);
   assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespaces request failed (HTTP 404): Not Found.'), true);
   assert.equal(workspaceNeedsCodespaceReplacement('Codespace bootstrap failed: failed to start SSH server'), true);
-  assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespace did not become ready before the startup timeout.'), true);
+  assert.equal(workspaceNeedsCodespaceReplacement('GitHub Codespace did not become ready before the startup timeout.'), false);
   assert.equal(workspaceNeedsCodespaceReplacement('Codespace SSH server is unavailable after 3 attempts.'), true);
 });
 
@@ -143,8 +143,9 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
   const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
   assert.match(source, /waitUntilStopped/);
   assert.doesNotMatch(source, /setTimeout\(resolve, 1_500\)/);
-  assert.match(source, /reusableForProject/);
+  assert.match(source, /reusableForSession\(input\) \|\| await this\.reusableForProject\(input\)/);
   assert.match(source, /sessionHasActiveWork/);
+  assert.match(source, /ORLYNX_CODESPACE_RETENTION_MINUTES \|\| 7 \* 24 \* 60/);
   assert.match(source, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]\.includes\(task\.state\)/);
 });
 
@@ -194,13 +195,14 @@ test('workspace OpenCode health accepts both generic adapter and legacy health s
 });
 
 
-test('new sessions do not inherit another session\'s Codespace runtime', () => {
+test('new sessions may reuse only an idle Codespace for the same repository and branch', () => {
   const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
   const createStart = source.indexOf('async create(');
   const createEnd = source.indexOf('async replace(', createStart);
   const createBlock = source.slice(createStart, createEnd);
-  assert.match(createBlock, /const existing = await this\.reusableForSession\(input\)/);
-  assert.doesNotMatch(createBlock, /reusableForProject\(input\)/);
+  assert.match(createBlock, /reusableForSession\(input\) \|\| await this\.reusableForProject\(input\)/);
+  assert.match(source, /codespaceMatchesProject\(item, input\.repositoryId, input\.branch\)/);
+  assert.match(source, /sessionHasActiveWork\(previousSessionId\)/);
 });
 
 test('SSH replacement recovery is automatic but bounded to one replacement per preparation', () => {
@@ -243,4 +245,13 @@ test('waiting-for-user replies stay attached to the same task across workspace r
   assert.match(routes, /reason: 'waiting_input_resume'/);
   assert.match(routes, /waitingForSameTask: true/);
   assert.match(routes, /task\.state === 'waiting_input'/);
+});
+
+
+test('slow Codespace provisioning remains queued instead of becoming a failed workspace', () => {
+  const workspaces = fs.readFileSync(new URL('../src/workspaces.ts', import.meta.url), 'utf8');
+  const jobs = fs.readFileSync(new URL('../src/workspace-jobs.ts', import.meta.url), 'utf8');
+  assert.match(workspaces, /Build remains queued and will continue automatically/);
+  assert.match(jobs, /Codespace provisioning is still pending/);
+  assert.match(jobs, /orchestrator\.provisioning/);
 });

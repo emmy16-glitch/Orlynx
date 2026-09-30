@@ -7,13 +7,16 @@ const codespaces = new GitHubCodespacesProvider();
 const runner = new OrlynxRunnerProvider();
 
 export function defaultWorkspaceProviderId(): WorkspaceProviderId {
-  const configured = String(process.env.ORLYNX_WORKSPACE_PROVIDER || 'auto').toLowerCase();
-  if (configured === 'github-codespaces') return 'github-codespaces';
+  // Codespaces is the stable, persistent Build environment. Render runners are
+  // now opt-in only and never become the critical path merely because runner
+  // credentials happen to be configured in production.
+  const configured = String(process.env.ORLYNX_WORKSPACE_PROVIDER || 'github-codespaces').toLowerCase();
+  if (configured === 'github-codespaces' || configured === 'auto') return 'github-codespaces';
   if (configured === 'orlynx-runner') {
     if (!orlynxRunnerConfigured()) throw new Error('ORLYNX_WORKSPACE_PROVIDER=orlynx-runner is not configured: set ORLYNX_RUNNER_HOSTS or ORLYNX_RUNNER_URL together with ORLYNX_RUNNER_TOKEN.');
     return 'orlynx-runner';
   }
-  return orlynxRunnerConfigured() ? 'orlynx-runner' : 'github-codespaces';
+  return 'github-codespaces';
 }
 
 export function workspaceProvider(id: WorkspaceProviderId): WorkspaceProvider {
@@ -37,6 +40,9 @@ export function workspaceInfrastructureConfigured(): boolean {
   try {
     if (defaultWorkspaceProviderId() === 'orlynx-runner') return orlynxRunnerConfigured();
     return process.env.VERCEL === '1'
+      || process.env.ORLYNX_HOSTED_PRODUCTION === '1'
+      || process.env.RENDER === 'true'
+      || Boolean(process.env.RENDER_SERVICE_ID)
       || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox'
       || process.env.ORLYNX_BOOTSTRAP_MODE === 'local'
       || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN);

@@ -17,8 +17,7 @@ export function workspaceNeedsSshRebuild(failureCode?: string): boolean {
 export function workspaceNeedsCodespaceReplacement(failureCode?: string): boolean {
   const detail = failureCode || '';
   return workspaceNeedsSshRebuild(detail)
-    || /getting full codespace details[\s\S]*404|GitHub Codespaces request failed \(HTTP 404|api\.github\.com\/user\/codespaces\//i.test(detail)
-    || /GitHub Codespace did not become ready before the startup timeout/i.test(detail);
+    || /getting full codespace details[\s\S]*404|GitHub Codespaces request failed \(HTTP 404|api\.github\.com\/user\/codespaces\//i.test(detail);
 }
 
 export function workspaceConnectionMatchesRevision(connectionId: string | undefined, revision: string): boolean {
@@ -53,22 +52,22 @@ export function workspaceShouldAdoptPreferredRunner(
   preferredProvider: 'orlynx-runner' | 'github-codespaces' = defaultWorkspaceProviderId(),
   adapterState?: 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed',
 ): boolean {
+  if (workspace.provider === preferredProvider) return false;
+
+  // Never migrate an environment while it is provisioning, stopping, or while
+  // the coding adapter is actively executing work.
+  if (workspace.state === 'stopping' || workspaceStartupPending(workspace) || adapterState === 'busy') return false;
+
+  // Codespaces is now the normal persistent Build environment. Any idle legacy
+  // runner workspace should move there on the next Build admission.
+  if (preferredProvider === 'github-codespaces' && workspace.provider === 'orlynx-runner') return true;
+
   if (preferredProvider !== 'orlynx-runner' || workspace.provider !== 'github-codespaces') return false;
 
-  // Never interrupt a Codespace that is actively coming online.
-  if (workspace.state === 'stopping' || workspaceStartupPending(workspace)) return false;
-
-  // A workspace/bridge can look healthy while the coding adapter repeatedly
-  // drops. When production prefers the warm runner, a legacy Codespace with a
-  // persistently non-ready adapter should migrate instead of making each Build
-  // turn wait through another OpenCode reconnect cycle.
+  // Explicit runner deployments retain the old opt-in migration behavior.
   if (workspaceFullyReady(workspace)) {
     return adapterState === 'unavailable' || adapterState === 'failed';
   }
-
-  // Once the deployment prefers the warm runner, any legacy Codespace that is
-  // stopped, failed, missing its provider handle, or claims "ready" without a
-  // live bridge should adopt the runner on the next Build request.
   return true;
 }
 
@@ -125,13 +124,15 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
   const existing = await repository.getWorkspaceBySession(input.sessionId);
   if (existing) {
     const adapterState = await repository.getWorkspaceAgentAdapter(existing.id, 'opencode');
-    if (!workspaceShouldAdoptPreferredRunner(existing, defaultWorkspaceProviderId(), adapterState?.state)) return existing;
+    const preferredProvider = defaultWorkspaceProviderId();
+    if (!workspaceShouldAdoptPreferredRunner(existing, preferredProvider, adapterState?.state)) return existing;
 
     const now = new Date().toISOString();
     const migrated: WorkspaceRecord = {
       ...existing,
-      provider: 'orlynx-runner',
+      provider: preferredProvider,
       runnerId: undefined,
+      runnerHostId: undefined,
       codespaceName: undefined,
       state: 'creating',
       bridgeState: 'disconnected',
@@ -146,11 +147,13 @@ export async function ensureWorkspaceRecord(input: { sessionId: string; userId: 
       state: 'not_installed',
       updatedAt: now,
     });
-    console.info(`[workspace] migrated legacy Codespaces workspace to preferred runner session=${migrated.sessionId} workspace=${migrated.id}`);
+    console.info(`[workspace] migrated workspace to preferred provider session=${migrated.sessionId} workspace=${migrated.id} provider=${preferredProvider}`);
     emit(input.sessionId, 'workspace.preparing', {
       stage: 'workspace.migrate',
-      provider: 'orlynx-runner',
-      message: 'Switching to the warm Orlynx runner…',
+      provider: preferredProvider,
+      message: preferredProvider === 'github-codespaces'
+        ? 'Moving this project to its persistent GitHub Codespace…'
+        : 'Switching to the warm Orlynx runner…',
     });
     return migrated;
   }
@@ -334,7 +337,17 @@ async function prepareWorkspaceOnce(
         await new Promise((resolve) => setTimeout(resolve, 1_500));
       }
       if (['creating', 'starting'].includes(workspace.state)) {
-        throw new Error(workspace.provider === 'orlynx-runner' ? 'Orlynx runner did not become ready before the startup timeout.' : 'GitHub Codespace did not become ready before the startup timeout.');
+        if (workspace.provider === 'github-codespaces') {
+          await repository.putWorkspace(workspace);
+          emit(input.sessionId, 'workspace.preparing', {
+            stage: 'workspace.provisioning',
+            provider: 'github-codespaces',
+            state: workspace.state,
+            message: 'GitHub is still starting this Codespace · your Build remains queued and will continue automatically.',
+          });
+          return workspace;
+        }
+        throw new Error('Orlynx runner did not become ready before the startup timeout.');
       }
     }
     const connectionAge = Date.now() - Date.parse(workspace.updatedAt);

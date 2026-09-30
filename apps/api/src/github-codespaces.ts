@@ -171,12 +171,11 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRecord> {
     const now = new Date().toISOString();
 
-    // Recover only the exact Codespace created for this session. Cross-session
-    // reuse looked efficient, but an old Codespace can remain visible through
-    // GitHub's REST API while its SSH/runtime transport is no longer usable.
-    // When quota is tight we reclaim an idle Orlynx Codespace and create a
-    // fresh environment instead of inheriting stale runtime state.
-    const existing = await this.reusableForSession(input);
+    // Prefer the exact session workspace, then reuse an idle Orlynx Codespace
+    // for the same repository + branch. Project sessions are deduplicated by
+    // Orlynx, and reusableForProject refuses to steal an environment from a
+    // session with active Build work.
+    const existing = await this.reusableForSession(input) || await this.reusableForProject(input);
     if (existing) {
       const recovered: WorkspaceRecord = {
         id: input.workspaceId,
@@ -202,7 +201,9 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
         ref: input.branch,
         display_name: `Orlynx ${input.sessionId}`,
         idle_timeout_minutes: Number(process.env.ORLYNX_CODESPACE_IDLE_MINUTES || 30),
-        retention_period_minutes: Number(process.env.ORLYNX_CODESPACE_RETENTION_MINUTES || 60),
+        // Keep stopped workspaces long enough to make resume/reuse meaningful.
+        // GitHub retains the persistent disk while compute is stopped.
+        retention_period_minutes: Number(process.env.ORLYNX_CODESPACE_RETENTION_MINUTES || 7 * 24 * 60),
       }),
     });
 
