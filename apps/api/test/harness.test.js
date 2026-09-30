@@ -160,6 +160,36 @@ test('active-turn steering classifies source-style APPEND REPLACE STOP behavior'
   assert.equal(steeringActionFor('why are you changing that file?'), 'ignore');
 });
 
+test('publication follow-ups stay on the active task and expand acceptance criteria', () => {
+  assert.equal(steeringActionFor('push it now'), 'append');
+  assert.equal(steeringActionFor('push to branch fix/foo'), 'append');
+  const base = {
+    id: 'task-publish',
+    sessionId: 'session-1',
+    workspaceId: 'workspace-1',
+    plane: 'workspace',
+    runId: 'run-publish',
+    state: 'running',
+    prompt: 'fix streaming and run tests',
+    mode: 'build',
+    permission: 'full',
+    harness: createHarnessCheckpoint({
+      prompt: 'fix streaming and run tests',
+      mode: 'build',
+      permission: 'full',
+      plane: 'workspace',
+    }),
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const steered = applySteering(base, 'push to branch fix/foo', 'append', '2026-10-01T00:01:00.000Z');
+  assert.ok(steered.harness?.verification.required.includes('publish'));
+  assert.ok(steered.harness?.verification.required.includes('tests'));
+  assert.ok(steered.harness?.verification.missing.includes('publish'));
+  assert.equal(steered.id, base.id);
+  assert.equal(steered.runId, base.runId);
+});
+
 test('APPEND and REPLACE stay on the same durable task while STOP cancels it', () => {
   const base = {
     id: 'task-1',
