@@ -1946,14 +1946,26 @@ async function monitorRun(sessionId: string, project: string, engineSessionId: s
 }
 
 function toolSemanticType(toolName: string, command: string, filePath: string): string {
-  const text = `${toolName} ${command}`.toLowerCase();
-  if (/vitest|jest|pytest|mocha|playwright|(^|\s)test(\s|$)|npm test|pnpm test|yarn test/.test(text)) return 'test-result';
-  if (/build|compile|tsc|webpack|vite build|next build/.test(text)) return 'build-result';
-  if (/git\b|commit|checkout|branch|merge|rebase|push|pull/.test(text)) return 'git';
-  if (filePath && /read|cat|view|inspect|open|grep|search/.test(text)) return 'file-read';
-  if (filePath && /write|edit|patch|apply|create|delete|remove|replace/.test(text)) return 'file-change';
-  if (/vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|serve|preview/.test(text)) return 'preview';
-  if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
+  const tool = toolName.trim().toLowerCase();
+  const cmd = command.trim().toLowerCase();
+
+  if (filePath && /^(?:read|cat|view|inspect|open|grep|search|glob)$/i.test(tool)) return 'file-read';
+  if (filePath && /^(?:write|edit|patch|apply|apply_patch|create|delete|remove|replace)$/i.test(tool)) return 'file-change';
+
+  if (
+    /^(?:test|tests|vitest|jest|pytest|mocha|playwright)$/i.test(tool)
+    || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\b|:)|node\s+--test\b|pytest\b|python(?:3)?\s+-m\s+pytest\b|(?:npx\s+)?playwright\s+test\b|(?:npx\s+)?(?:vitest|jest|mocha)\b)/i.test(cmd)
+  ) return 'test-result';
+
+  if (
+    /^(?:build|compile|typecheck|lint)$/i.test(tool)
+    || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(cmd)
+  ) return 'build-result';
+
+  if (/^(?:git|commit|checkout|branch|merge|rebase|push|pull)$/i.test(tool) || /^git\s+/.test(cmd)) return 'git';
+  if (/^(?:vite|next|astro|remix|serve|preview)$/i.test(tool)
+    || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|preview|start)\b|(?:npx\s+)?vite\b|(?:npx\s+)?next\s+(?:dev|start)\b|astro\s+dev\b|remix\s+dev\b)/i.test(cmd)) return 'preview';
+  if (/^(?:bash|shell|exec|terminal|command)$/i.test(tool) || command) return 'terminal';
   return 'generic';
 }
 
