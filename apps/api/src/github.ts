@@ -381,16 +381,18 @@ export async function githubUserApiRequest<T>(
   return await response.json() as T;
 }
 
-export async function githubRepositoryById(userId: string, repositoryId: number): Promise<{ id: number; fullName: string; defaultBranch: string; private: boolean }> {
-  const repository = await githubUserApiRequest<{ id: number; full_name: string; default_branch: string; private: boolean }>(
-    userId,
-    `/repositories/${repositoryId}`,
-  );
+export async function githubRepositoryById(userId: string, repositoryId: number): Promise<{ id: number; fullName: string; defaultBranch: string; private: boolean; installationId: number }> {
+  const repository = controlPlaneRepository();
+  const connection = await repository.getGitHubConnectionByUser(userId);
+  if (!connection) throw new Error('GitHub user authorization is required.');
+  const match = (await githubListRepos(connection.installationId)).find((item) => item.id === repositoryId);
+  if (!match) throw new Error('This repository is not available through the connected Orlynx GitHub App installation.');
   return {
-    id: repository.id,
-    fullName: repository.full_name,
-    defaultBranch: repository.default_branch,
-    private: repository.private,
+    id: match.id,
+    fullName: match.full,
+    defaultBranch: match.defaultBranch,
+    private: match.private,
+    installationId: match.installationId,
   };
 }
 
@@ -569,6 +571,32 @@ async function installationToken(installationId: number): Promise<string> {
   tokenCache.set(installationId, token);
   return token.token;
 }
+
+export async function githubInstallationApiRequest<T>(
+  installationId: number,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = await installationToken(installationId);
+  const response = await fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      ...githubHeaders(token),
+      'Content-Type': 'application/json',
+      ...((init.headers as Record<string, string> | undefined) || {}),
+    },
+    signal: init.signal || AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { message?: string };
+    const error = new Error(`GitHub installation API request failed (HTTP ${response.status})${body.message ? `: ${body.message.slice(0, 220)}` : ''}.`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return undefined as T;
+  return await response.json() as T;
+}
+
 
 export async function githubInstallationPermissionStatus(installationId: number): Promise<{
   granted: Record<string, string>;
