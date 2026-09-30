@@ -11,7 +11,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { ProviderRequestError } from './opencode-local.js';
 import type { ExecutionPlane } from './direct-chat.js';
-import { markWorkspaceConnectionLost, migrateRunnerWorkspaceToCodespacesForCapability, workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
+import { ensureWorkspaceRecord, markWorkspaceConnectionLost, migrateRunnerWorkspaceToCodespacesForCapability, workspaceNeedsCodespaceReplacement, workspaceShouldAdoptPreferredRunner } from './workspaces.js';
 import { runnerHostSupportsBrowserE2e, taskRequiresBrowserE2e } from './runner-pool.js';
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
@@ -525,6 +525,79 @@ export function buildPresentationInstruction(mode: AgentMode): string {
   ].join(' ');
 }
 
+async function failoverDirectTaskToWorkspace(
+  session: NonNullable<Awaited<ReturnType<ReturnType<typeof controlPlaneRepository>['getSession']>>>,
+  task: TaskRecord,
+  run: AgentRun,
+  detail: string,
+): Promise<boolean> {
+  const repository = controlPlaneRepository();
+  const project = await repository.getProject(session.projectId);
+  if (!project || !Number.isFinite(project.repositoryId)) return false;
+
+  const workspace = await ensureWorkspaceRecord({
+    sessionId: session.id,
+    userId: session.userId,
+    projectId: session.projectId,
+    repositoryId: project.repositoryId,
+    branch: session.branch,
+  });
+
+  const now = new Date().toISOString();
+  task.plane = 'workspace';
+  task.workspaceId = workspace.id;
+  task.state = 'queued';
+  task.partialText = undefined;
+  task.updatedAt = now;
+  task.harness = advanceHarnessPhase(task.harness || createHarnessCheckpoint({
+    prompt: task.prompt,
+    mode: task.mode || run.mode || 'build',
+    permission: task.tempPermission || task.permission || run.permission || 'full',
+    plane: 'workspace',
+    now,
+  }), 'routing', {
+    mode: task.mode || run.mode || 'build',
+    permission: task.tempPermission || task.permission || run.permission || 'full',
+    now,
+  });
+  await repository.putTask(task);
+
+  run.plane = 'workspace';
+  run.state = 'queued';
+  run.activity = 'Switching to resilient compute';
+  run.finishedAt = undefined;
+  run.errorKind = undefined;
+  store.save();
+
+  emit(session.id, 'run.state', {
+    taskId: task.id,
+    state: 'queued',
+    plane: 'workspace',
+    failover: true,
+    message: 'The fast AI runtime is unavailable. Orlynx is continuing this same turn on resilient workspace compute.',
+  }, run.id);
+  emit(session.id, 'activity.progress', {
+    taskId: task.id,
+    sourceType: 'agent.runtime.failover',
+    from: 'direct',
+    to: workspace.provider,
+    text: 'Fast AI runtime unavailable · switching compute automatically…',
+    detail: detail.slice(0, 300),
+  }, run.id);
+
+  await scheduleWorkspacePreparation({
+    sessionId: workspace.sessionId,
+    userId: workspace.userId,
+    projectId: workspace.projectId,
+    repositoryId: workspace.repositoryId,
+    branch: workspace.branch,
+  }, { allowFallback: true, reason: 'direct_runtime_failover' }).catch((error) => {
+    console.warn(`[direct-chat] workspace failover preparation failed session=${session.id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+  });
+
+  return true;
+}
+
 async function executeDirectTask(
   session: Awaited<ReturnType<ReturnType<typeof controlPlaneRepository>['getSession']>>,
   task: TaskRecord,
@@ -852,6 +925,19 @@ async function executeDirectTask(
             : 'engine'
       : classifiedDetail;
     console.warn(`[direct-chat] failed session=${session.id} run=${run.id} model=${modelId} kind=${errorKind} detail=${detail.slice(0,900)}`);
+
+    const transientRuntimeFailure = !visible.trim() && (
+      (error instanceof ProviderRequestError && [502, 503, 504].includes(error.statusCode || 0))
+      || /runtime .*unavailable|runtime .*recover|fetch failed|ECONNRESET|socket .*closed|connection .*failed|temporarily unavailable/i.test(detail)
+    );
+    if (transientRuntimeFailure) {
+      const failedOver = await failoverDirectTaskToWorkspace(session, task, run, detail).catch((failoverError) => {
+        console.warn(`[direct-chat] compute failover failed session=${session.id} run=${run.id}: ${failoverError instanceof Error ? failoverError.message : 'unknown error'}`);
+        return false;
+      });
+      if (failedOver) return;
+    }
+
     task.state = 'failed';
     task.updatedAt = now;
     if (task.harness) task.harness = advanceHarnessPhase(task.harness, 'failed', { mode: task.mode || 'build', permission: task.permission || 'full', now });
