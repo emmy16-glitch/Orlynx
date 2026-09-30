@@ -353,6 +353,47 @@ export async function githubUserAccessToken(userId: string): Promise<string> {
   return body.access_token;
 }
 
+
+export async function githubUserApiRequest<T>(
+  userId: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = await githubUserAccessToken(userId);
+  const response = await fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      ...((init.headers as Record<string, string> | undefined) || {}),
+    },
+    signal: init.signal || AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { message?: string };
+    const error = new Error(`GitHub API request failed (HTTP ${response.status})${body.message ? `: ${body.message.slice(0, 220)}` : ''}.`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return undefined as T;
+  return await response.json() as T;
+}
+
+export async function githubRepositoryById(userId: string, repositoryId: number): Promise<{ id: number; fullName: string; defaultBranch: string; private: boolean }> {
+  const repository = await githubUserApiRequest<{ id: number; full_name: string; default_branch: string; private: boolean }>(
+    userId,
+    `/repositories/${repositoryId}`,
+  );
+  return {
+    id: repository.id,
+    fullName: repository.full_name,
+    defaultBranch: repository.default_branch,
+    private: repository.private,
+  };
+}
+
 export function githubCallbackErrorUrl(reason: string): string {
   return `${publicUrl() || ''}/?github=error&reason=${encodeURIComponent(reason.slice(0, 160))}`;
 }
