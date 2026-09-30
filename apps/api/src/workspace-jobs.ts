@@ -33,9 +33,21 @@ function retryable(error: unknown): boolean {
 
 async function promoteSession(sessionId: string): Promise<void> {
   // Dynamic import avoids making agents.ts <-> workspace-jobs.ts a static
-  // module cycle while still waking queued Build work after preparation.
-  const { promoteNextQueuedRun } = await import('./agents.js');
+  // module cycle while still recovering durable tasks after a cold process
+  // restart. Direct responses that died with the old process are closed once,
+  // then the next queued task can continue automatically.
+  const { promoteNextQueuedRun, recoverInterruptedDirectRuns } = await import('./agents.js');
+  await recoverInterruptedDirectRuns(sessionId).catch(() => undefined);
   await promoteNextQueuedRun(sessionId).catch(() => null);
+}
+
+export async function recoverDurableTaskSessionsOnce(limit = Number(process.env.ORLYNX_RECOVERY_SWEEP_LIMIT || 100)): Promise<string[]> {
+  if (!durableStorageConfigured()) return [];
+  const repository = controlPlaneRepository();
+  if (!repository.listActiveTaskSessionIds) return [];
+  const sessionIds = await repository.listActiveTaskSessionIds(limit);
+  for (const sessionId of sessionIds) await promoteSession(sessionId);
+  return sessionIds;
 }
 
 let inlineKick: Promise<void> | null = null;
@@ -84,16 +96,18 @@ export async function scheduleWorkspacePreparation(
     createdAt: now,
     updatedAt: now,
   };
-  await repository.enqueueWorkspaceJob(job);
-  emit(input.sessionId, 'workspace.preparing', {
-    stage: 'orchestrator.queued',
-    workspaceId: workspace.id,
-    provider: workspace.provider,
-    reason: options.reason || 'workspace_prepare',
-    message: options.reason === 'prewarm'
-      ? 'Preparing the development environment in the background…'
-      : 'Development environment task queued.',
-  });
+  const inserted = await repository.enqueueWorkspaceJob(job);
+  if (inserted) {
+    emit(input.sessionId, 'workspace.preparing', {
+      stage: 'orchestrator.queued',
+      workspaceId: workspace.id,
+      provider: workspace.provider,
+      reason: options.reason || 'workspace_prepare',
+      message: options.reason === 'prewarm'
+        ? 'Preparing the development environment in the background…'
+        : 'Development environment task queued.',
+    });
+  }
 
   // Inline mode preserves single-service deployments while still writing the
   // durable job first. Production can switch to a dedicated worker by setting
@@ -190,11 +204,27 @@ export async function runWorkspaceOrchestratorLoop(): Promise<never> {
   if (!durableStorageConfigured()) throw new Error('Workspace orchestrator requires durable Postgres storage.');
   const id = workerId();
   const idleMs = Math.max(250, Number(process.env.ORLYNX_ORCHESTRATOR_POLL_MS || 1000));
+  const recoverySweepMs = Math.max(5_000, Number(process.env.ORLYNX_RECOVERY_SWEEP_MS || 30_000));
+  let nextRecoverySweepAt = 0;
   console.log(`[orchestrator] started worker=${id}`);
 
   for (;;) {
     const sessions = await runWorkspaceOrchestratorOnce(id);
     for (const sessionId of sessions) await promoteSession(sessionId);
+
+    const now = Date.now();
+    if (now >= nextRecoverySweepAt) {
+      try {
+        const recoveredSessions = await recoverDurableTaskSessionsOnce();
+        if (recoveredSessions.length) {
+          console.log(`[orchestrator] recovery sweep activeSessions=${recoveredSessions.length}`);
+        }
+      } catch (error) {
+        console.warn(`[orchestrator] recovery sweep failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      }
+      nextRecoverySweepAt = now + recoverySweepMs;
+    }
+
     await new Promise((resolve) => setTimeout(resolve, sessions.length ? 50 : idleMs));
   }
 }
