@@ -303,7 +303,36 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
         const resultPayload = message.result || { error: message.error || 'Workspace command failed.' };
-        await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
+
+        // Durable commands are at-most-once at the state-machine layer. The
+        // workspace deliberately replays a remembered RESULT after reconnect,
+        // and two API instances can race on the same result. Never let a late
+        // duplicate overwrite an expired/failed/completed command or re-run the
+        // associated task finalization.
+        if (command && (command.status === 'completed' || command.status === 'failed')) {
+          const priorResult = command.result || {};
+          publishLiveBridgeResult(message.commandId, {
+            ok: command.status === 'completed',
+            result: priorResult,
+            error: command.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
+          });
+          console.info(`[bridge] ignored duplicate terminal result command=${message.commandId} status=${command.status}`);
+          return;
+        }
+
+        const accepted = await repository.completeCommand(message.commandId, message.ok ? 'completed' : 'failed', resultPayload);
+        if (command && !accepted) {
+          const latest = await repository.getCommand(message.commandId);
+          const priorResult = latest?.result || {};
+          publishLiveBridgeResult(message.commandId, {
+            ok: latest?.status === 'completed',
+            result: priorResult,
+            error: latest?.status === 'failed' ? String(priorResult.error || 'Workspace command failed.') : undefined,
+          });
+          console.info(`[bridge] ignored raced late result command=${message.commandId} status=${latest?.status || 'unknown'}`);
+          return;
+        }
+
         publishLiveBridgeResult(message.commandId, { ok: Boolean(message.ok), result: resultPayload, error: message.error });
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || '');
@@ -312,8 +341,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const now = new Date().toISOString();
           const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
 
-          if (task?.state === 'cancelled') {
-            console.info(`[bridge] ignored late result for cancelled run=${runId}`);
+          if (task && ['cancelled', 'failed', 'completed'].includes(task.state)) {
+            console.info(`[bridge] ignored late result for terminal run=${runId} taskState=${task.state}`);
             void promoteNextQueuedRun(claims.sessionId).catch(() => {});
             return;
           }
