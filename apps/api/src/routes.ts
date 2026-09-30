@@ -403,6 +403,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
           mode: task.mode,
           permission: task.permission,
           partialText: task.partialText,
+          partialUpdatedAt: task.partialText ? (task.harness?.partialUpdatedAt || task.updatedAt) : undefined,
           activity: task.state === 'running' ? 'Working' : task.state === 'queued' ? 'Queued' : task.state,
           startedAt: task.createdAt,
           finishedAt: ['completed','failed','cancelled'].includes(task.state) ? task.updatedAt : undefined,
@@ -1610,7 +1611,7 @@ router.get('/sessions/:id/runs', async (req, res) => {
         },
       } : undefined,
       partialText: task.partialText,
-      partialUpdatedAt: task.partialText ? task.updatedAt : undefined,
+      partialUpdatedAt: task.partialText ? (task.harness?.partialUpdatedAt || task.updatedAt) : undefined,
       updatedAt: task.updatedAt,
       activity: task.state === 'running'
         ? (task.plane === 'direct' ? 'Streaming response' : 'Working')
