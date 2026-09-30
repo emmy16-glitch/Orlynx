@@ -94,7 +94,7 @@ function continuationPayload(
 }
 
 type BridgeAdapterState = { state?: string; reason?: string };
-type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
+type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
 function bearer(request: http.IncomingMessage): string {
   const header = String(request.headers.authorization || '');
@@ -145,6 +145,9 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
     state: nextWorkspaceState,
     failureCode: workspaceReady ? undefined : current.failureCode,
     repoRoot: detail.repoRoot || current.repoRoot,
+    runtimeState: workspaceReady ? 'ready' : state === 'disconnected' ? 'recovering' : 'connecting',
+    capabilities: detail.capabilities || current.capabilities,
+    agentHeartbeatAt: state === 'disconnected' ? current.agentHeartbeatAt : now,
     updatedAt: now,
   });
 
@@ -170,7 +173,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
       workspaceId: claims.workspaceId,
       type: 'workspace.ready',
       timestamp: now,
-      payload: { provider: current.provider, adapters },
+      payload: { provider: current.provider, adapters, capabilities: detail.capabilities || current.capabilities || [] },
     });
   }
 }
@@ -1031,7 +1034,24 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         // event names.
         const runId = message.event.runId;
         const normalized = normalizeBridgeEvent(String(message.event.type), message.event.payload || {});
-        if (normalized.heartbeat) return;
+        if (normalized.heartbeat) {
+          const now = new Date().toISOString();
+          const heartbeatPayload = message.event.payload || {};
+          const capabilities = Array.isArray(heartbeatPayload.capabilities) ? heartbeatPayload.capabilities.map(String) : undefined;
+          await repository.touchWorkspaceRuntime(claims.workspaceId, {
+            runtimeState: 'ready',
+            capabilities,
+            agentHeartbeatAt: now,
+          });
+          const tasks = await repository.listTasks(claims.sessionId);
+          for (const task of tasks) {
+            if ((task.plane || 'workspace') !== 'workspace' || task.state !== 'running') continue;
+            task.updatedAt = now;
+            await repository.putTask(task);
+            await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
+          }
+          return;
+        }
 
         const payload: Record<string, unknown> = { ...normalized.payload };
         const type = normalized.type;
@@ -1184,7 +1204,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       recovery.unref?.();
       return;
     }
-    try { await persistBridgeState(claims, 'disconnected'); } catch {}
+    try {
+      await persistBridgeState(claims, 'disconnected');
+      await repository.touchWorkspaceRuntime(claims.workspaceId, { runtimeState: 'recovering' });
+    } catch {}
   });
   ws.on('error', (error) => { console.warn(`[bridge] socket error: ${error.message}`); ws.close(); });
   ws.send(JSON.stringify({ kind: 'HELLO_REQUEST' }));
