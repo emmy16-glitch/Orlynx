@@ -176,7 +176,7 @@ export class E2BWorkspaceProvider implements WorkspaceProvider {
     const openCodeApiKey = connection?.state === 'connected' && connection.credential
       ? decryptCredential(connection.credential)
       : '';
-    const script = buildWorkspaceBootstrapScript(workspace, values, publicBridgeUrl(), openCodeApiKey, githubToken);
+    const script = buildWorkspaceBootstrapScript(workspace, values, publicBridgeUrl(), openCodeApiKey);
     const encoded = Buffer.from(script).toString('base64');
     const result = await sandbox.commands.run(
       `printf '%s' "$ORLYNX_BOOTSTRAP_B64" | base64 -d > /tmp/orlynx-bootstrap.sh && chmod 700 /tmp/orlynx-bootstrap.sh && /tmp/orlynx-bootstrap.sh`,
@@ -185,6 +185,7 @@ export class E2BWorkspaceProvider implements WorkspaceProvider {
         envs: {
           ORLYNX_BOOTSTRAP_B64: encoded,
           ORLYNX_REPO_ROOT_HINT: '/workspace/repo',
+          GITHUB_TOKEN: githubToken,
         },
       },
     );
