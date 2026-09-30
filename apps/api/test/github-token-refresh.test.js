@@ -145,3 +145,37 @@ test('failed refresh accepts a newer token persisted by another API process', as
   assert.equal(token, 'access-from-other-process');
   assert.ok(reads >= 3);
 });
+
+
+test('temporary GitHub refresh outage does not falsely demand account reconnect', async (t) => {
+  envFixture(t);
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const now = Date.now();
+  const expired = {
+    userId: 'user-4',
+    installationId: 102,
+    login: 'tester',
+    accessToken: encryptCredential('expired-access'),
+    refreshToken: encryptCredential('still-valid-refresh'),
+    accessTokenExpiresAt: new Date(now - 60_000).toISOString(),
+    refreshTokenExpiresAt: new Date(now + 24 * 60 * 60_000).toISOString(),
+    createdAt: new Date(now - 60_000).toISOString(),
+    updatedAt: new Date(now - 60_000).toISOString(),
+  };
+  setControlPlaneRepositoryForTests({
+    getGitHubConnectionByUser: async () => structuredClone(expired),
+    upsertGitHubConnection: async () => { throw new Error('must not write'); },
+  });
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'server_error' }), {
+    status: 503,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  await assert.rejects(
+    () => githubUserAccessToken('user-4'),
+    /temporarily unavailable.*without reconnecting/i,
+  );
+});
