@@ -5,6 +5,7 @@ import { attachBridgeGateway } from './bridge-gateway.js';
 import { warmOpenCodeProviderLayer } from './opencode-local.js';
 import { defaultWorkspaceProviderId, runnerFallbackEnabled, shouldPrewarmWorkspace } from './workspace-providers.js';
 import { runnerGlobalMaxWorkspaces, runnerHosts } from './runner-pool.js';
+import { e2bConfigured } from './e2b-provider.js';
 
 const PORT = Number(process.env.PORT || 4000);
 
@@ -33,7 +34,7 @@ if (githubAppConfigured()) {
 await warmOpenCodeProviderLayer();
 
 try {
-  console.log(`[orlynx-api] workspace provider=${defaultWorkspaceProviderId()} prewarm=${shouldPrewarmWorkspace()} codespacesFallback=${runnerFallbackEnabled()} runnerHosts=${runnerHosts().length} runnerGlobalMax=${runnerGlobalMaxWorkspaces()}`);
+  console.log(`[orlynx-api] workspace provider=${defaultWorkspaceProviderId()} prewarm=${shouldPrewarmWorkspace()} codespacesFallback=${runnerFallbackEnabled()} e2bConfigured=${e2bConfigured()} runnerHosts=${runnerHosts().length} runnerGlobalMax=${runnerGlobalMaxWorkspaces()}`);
 } catch (error) {
   console.warn(`[orlynx-api] workspace provider configuration error: ${error instanceof Error ? error.message : 'unknown error'}`);
 }
