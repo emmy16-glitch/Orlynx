@@ -79,7 +79,11 @@ export function commit(sessionId: string, project: string, changeId: string, mes
     if (f.action === 'delete') { if (fs.existsSync(target)) fs.rmSync(target); }
     else { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.after ?? ''); }
   }
-  execFileSync('git', ['add', '-A'], { cwd: root, stdio: 'ignore' });
+  const approvedFiles = cs.files.map((file) => file.path);
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root }).toString().split(/\r?\n/).filter(Boolean);
+  const unrelatedStaged = staged.filter((file) => !approvedFiles.includes(file));
+  if (unrelatedStaged.length) throw new Error(`commit blocked by unrelated staged files: ${unrelatedStaged.slice(0, 8).join(', ')}`);
+  for (const file of approvedFiles) execFileSync('git', ['add', '--', file], { cwd: root, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', message || 'Orlynx update', '--allow-empty'], { cwd: root, stdio: 'ignore' });
   const sha = headSha(project);
   cs.reviewState = 'committed'; cs.commitSha = sha; cs.currentHead = sha;
