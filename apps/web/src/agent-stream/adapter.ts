@@ -129,7 +129,18 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
       return [{ ...common, type: 'TEXT_START', messageId: assistantMessageId(event), role: 'assistant' }];
     case 'message.delta': {
       const delta = str(payload.delta);
-      return delta ? [{ ...common, type: 'TEXT_CONTENT', messageId: assistantMessageId(event), delta }] : [];
+      if (!delta) return [];
+      const messageId = assistantMessageId(event);
+      const partId = str(payload.messagePartId || payload.partId || payload.textPartId);
+      return [{
+        ...common,
+        type: 'TEXT_CONTENT',
+        messageId,
+        // OpenCode supplies messagePartId. Direct providers that do not expose
+        // text-part identity fall back to one continuous segment per response.
+        segmentId: partId ? `${messageId}:part:${partId}` : `${messageId}:text`,
+        delta,
+      }];
     }
     case 'message.end':
       return [{ ...common, type: 'TEXT_END', messageId: assistantMessageId(event) }];
