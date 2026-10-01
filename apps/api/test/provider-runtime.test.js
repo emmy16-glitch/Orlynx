@@ -5,6 +5,7 @@ import { resetOpenCodeRuntimeSessionsForTests, streamWithOfficialOpenCode, verif
 import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
 import { encryptCredential } from '../src/credentials.ts';
 import { cleanLegacyAssistantText } from '../src/direct-chat.ts';
+import { computeTargetQuarantined } from '../src/compute-broker.ts';
 
 const snapshot = JSON.parse(fs.readFileSync(new URL('../src/opencode-models.json', import.meta.url), 'utf8'));
 const input = () => ({ runtimeKey: 'test-session', userId: 'test-user', modelId: 'opencode/big-pickle', system: 'Be concise.', messages: [{ role: 'user', content: 'Hello' }], signal: new AbortController().signal, onDelta: () => {} });
@@ -637,4 +638,15 @@ test('dedicated runtime never replays an older assistant message when a new turn
     streamWithOfficialOpenCode(input()),
     /OpenCode returned no visible text/,
   );
+});
+
+
+test('background OpenCode prewarm failure never quarantines the interactive direct runtime', async (t) => {
+  configureRuntime(t);
+  mockFetch(t, async (url) => {
+    throw new Error('Unexpected fetch ' + String(url));
+  }, async () => new Response('unauthorized', { status: 401 }));
+
+  assert.equal(await warmOpenCodeRuntime(), false);
+  assert.equal(computeTargetQuarantined('direct-runtime'), false);
 });
