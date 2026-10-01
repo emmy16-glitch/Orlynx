@@ -8,7 +8,7 @@
 // (e.g. "Fix login" + "Also explain JWT") stay visually attached to the
 // request that triggered them.
 
-import type { AgentStreamState } from './protocol';
+import type { AgentStreamState, AgentStreamTextSegment } from './protocol';
 import type { ActivityItem, LiveReplyView } from './view';
 
 export interface PersistedChatMessage {
@@ -19,6 +19,10 @@ export interface PersistedChatMessage {
   /** Explicit server-owned relationship. Legacy rows may still omit this. */
   runId?: string;
 }
+
+export type ThreadTimelineEntry =
+  | { kind: 'text'; key: string; sequence: number; segment: AgentStreamTextSegment }
+  | { kind: 'activity'; key: string; sequence: number; activity: ActivityItem };
 
 export interface ThreadTurn {
   key: string;
@@ -31,6 +35,10 @@ export interface ThreadTurn {
   liveReply?: LiveReplyView;
   /** Work owned by this run, in lifecycle-start order. */
   work: ActivityItem[];
+  /** Model text parts retained separately so narration can sit beside the work it introduced. */
+  textSegments: AgentStreamTextSegment[];
+  /** One chronological assistant surface: text segments + typed work. */
+  timeline: ThreadTimelineEntry[];
   state: 'streaming' | 'completed' | 'failed' | 'cancelled' | 'queued' | 'waiting_input' | 'waiting_approval' | 'paused' | 'interrupted' | 'idle';
 }
 
@@ -52,7 +60,7 @@ export function buildThread(
   const ensureTurn = (key: string, runId?: string): ThreadTurn => {
     let turn = byKey.get(key);
     if (!turn) {
-      turn = { key, runId, userMessages: [], work: [], state: 'idle' };
+      turn = { key, runId, userMessages: [], work: [], textSegments: [], timeline: [], state: 'idle' };
       byKey.set(key, turn);
       turns.push(turn);
     }
@@ -150,6 +158,15 @@ export function buildThread(
     }
   }
 
+  // Preserve provider text-part boundaries. OpenCode emits stable messagePartId
+  // values, so narration before and after a tool call remains independently
+  // placeable in the transcript. Direct providers without part IDs still
+  // produce one continuous segment, which is the correct fallback.
+  for (const segment of Object.values(stream.segments)) {
+    if (!segment.runId || !segment.text) continue;
+    turnForRunAt(segment.runId, segment.timestamp).textSegments.push(segment);
+  }
+
   // Tool/activity work is placed according to when it occurred, not simply
   // under the first prompt that owns the execution run.
   const orphaned: ActivityItem[] = [];
@@ -208,6 +225,21 @@ export function buildThread(
   turns.sort((a, b) => timeOf(a) - timeOf(b) || a.key.localeCompare(b.key));
   for (const turn of turns) {
     turn.work.sort((a, b) => (a.sequence || 0) - (b.sequence || 0) || a.key.localeCompare(b.key));
+    turn.textSegments.sort((a, b) => a.startedSequence - b.startedSequence || a.id.localeCompare(b.id));
+    turn.timeline = [
+      ...turn.work.map((activity) => ({
+        kind: 'activity' as const,
+        key: `activity:${activity.key}`,
+        sequence: activity.sequence || 0,
+        activity,
+      })),
+      ...turn.textSegments.map((segment) => ({
+        kind: 'text' as const,
+        key: `text:${segment.id}`,
+        sequence: segment.startedSequence,
+        segment,
+      })),
+    ].sort((a, b) => a.sequence - b.sequence || a.key.localeCompare(b.key));
   }
   return turns;
 }
