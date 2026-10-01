@@ -52,3 +52,53 @@ test('workspace commit stages only approved files and rejects unrelated staged f
   assert.match(block, /git\(\['add', '--', file\]\)/);
   assert.doesNotMatch(block, /git\(\['add', '--all'\]\)/);
 });
+
+
+test('publication preserves exact bytes, executable/symlink modes, and repairs interrupted remote receipts', () => {
+  const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+
+  assert.match(publisher, /git\.read-publication-file/);
+  assert.match(publisher, /contentBase64/);
+  assert.match(publisher, /mode: item\.mode/);
+  assert.doesNotMatch(publisher, /Buffer\.from\(String\(item\.content/);
+  assert.match(publisher, /existingTargetSha === change\.commitSha/);
+  assert.match(publisher, /change\.pushedAt \|\|=/);
+  assert.match(publisher, /retryPullRequestBranch/);
+  assert.match(publisher, /reconcilePublishedWorkspace/);
+
+  const publicationRead = bridge.slice(
+    bridge.indexOf("case 'git.read-publication-file':"),
+    bridge.indexOf("case 'git.reconcile-published':"),
+  );
+  assert.match(publicationRead, /fs\.lstatSync/);
+  assert.match(publicationRead, /fs\.readlinkSync/);
+  assert.match(publicationRead, /'120000'/);
+  assert.match(publicationRead, /'100755'/);
+  assert.match(publicationRead, /contentBase64/);
+
+  const reconciliation = bridge.slice(
+    bridge.indexOf("case 'git.reconcile-published':"),
+    bridge.indexOf("case 'git.branch.create':"),
+  );
+  assert.match(reconciliation, /currentHead !== expectedHead/);
+  assert.match(reconciliation, /unrelated\.length/);
+  assert.match(reconciliation, /remoteHead !== publishedHead/);
+  assert.match(reconciliation, /git\(\['reset', '--hard', remoteRef\]/);
+});
+
+test('publication hashing is byte-exact rather than UTF-8-only', () => {
+  const binary = Buffer.from([0x00, 0xff, 0x7f, 0x80, 0x41]);
+  const same = Buffer.from([0x00, 0xff, 0x7f, 0x80, 0x41]);
+  const changed = Buffer.from([0x00, 0xfe, 0x7f, 0x80, 0x41]);
+  assert.equal(publicationInternals.sha256(binary), publicationInternals.sha256(same));
+  assert.notEqual(publicationInternals.sha256(binary), publicationInternals.sha256(changed));
+});
+
+test('bridge path containment rejects realpath escapes rather than trusting lexical paths', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  const guard = bridge.slice(bridge.indexOf('function pathInside'), bridge.indexOf('type VerificationArtifact'));
+  assert.match(guard, /fs\.realpathSync\(REPO_ROOT\)/);
+  assert.match(guard, /fs\.realpathSync\(probe\)/);
+  assert.match(guard, /Path resolves outside the workspace repository/);
+});
