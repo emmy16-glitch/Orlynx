@@ -46,11 +46,12 @@ test('verified publication is control-plane GitHub App work, never a workspace p
 
 test('workspace commit stages only approved files and rejects unrelated staged files', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
-  const block = bridge.slice(bridge.indexOf("case 'git.commit':"), bridge.indexOf("case 'git.push':"));
+  const block = bridge.slice(bridge.indexOf("case 'git.commit':"), bridge.indexOf("case 'command.exec':"));
   assert.match(block, /approved file allowlist/);
   assert.match(block, /unrelated staged files/);
   assert.match(block, /git\(\['add', '--', file\]\)/);
   assert.doesNotMatch(block, /git\(\['add', '--all'\]\)/);
+  assert.doesNotMatch(bridge, /case 'git\.push':/);
 });
 
 
