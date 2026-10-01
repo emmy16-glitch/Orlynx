@@ -1476,20 +1476,6 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       git(['commit', '-m', message], 60_000);
       return { sha: git(['rev-parse', 'HEAD']).trim(), files };
     }
-    case 'git.push': {
-      if (payload.approved !== true) throw new Error('Push requires an approved command.');
-      const branch = git(['branch', '--show-current']).trim();
-      const defaultBranch = branch === 'main' || branch === 'master';
-      if (!branch) throw new Error('Current Git branch is unavailable.');
-      if (defaultBranch && payload.allowDefaultBranch !== true) throw new Error('Direct push to the default branch requires explicit Orlynx control-plane approval.');
-      if (!GITHUB_TOKEN) throw new Error('GitHub credentials are unavailable in this workspace.');
-      const authEnv = {
-        GIT_CONFIG_COUNT: '1',
-        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
-      };
-      return { output: git(['push', '--set-upstream', 'origin', branch], 120_000, authEnv), branch, head: git(['rev-parse', 'HEAD']).trim() };
-    }
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: await ports() };
     case 'opencode.request': return opencodeRequest(payload);
