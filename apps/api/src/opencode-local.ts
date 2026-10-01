@@ -381,6 +381,24 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     : input.system;
   input.onTiming?.('providerInitMs', performance.now() - started);
 
+  const recentRuntimeMessages = (targetSessionID: string) => runtimeJson<any[]>(
+    `/session/${encodeURIComponent(targetSessionID)}/message?limit=10`,
+    { signal: input.signal },
+    15_000,
+  ).catch(() => []);
+  const assistantIds = (messages: any[]) => new Set<string>(
+    messages
+      .filter((item) => item?.info?.role === 'assistant' && item?.info?.id)
+      .map((item) => String(item.info.id)),
+  );
+  // The OpenCode event endpoint is session-global and can already contain an
+  // idle frame when a newly admitted turn begins. Remember assistant messages
+  // that existed before this prompt so a stale idle/fallback can never replay
+  // an earlier answer as if it belonged to the new request.
+  let priorAssistantIds = session.fresh
+    ? new Set<string>()
+    : assistantIds(await recentRuntimeMessages(sessionID));
+
   const eventResponse = await runtimeFetch('/event', {
     headers: { Accept: 'text/event-stream' },
     signal: input.signal,
@@ -419,6 +437,9 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
     session = await getOrCreateRuntimeSession(input.runtimeKey, input.signal);
     sessionID = session.id;
     turnSystem = [input.system, recoveryHistory(input.messages)].filter(Boolean).join('\n\n');
+    priorAssistantIds = session.fresh
+      ? new Set<string>()
+      : assistantIds(await recentRuntimeMessages(sessionID));
     await submitPrompt(sessionID, turnSystem);
   }
   input.onTiming?.('modelRequestStartedMs', performance.now() - started);
@@ -552,8 +573,33 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
           (type === 'session.status' && properties.status?.type === 'idle')
           || type === 'session.idle'
         ) {
-          done = true;
-          break;
+          // A session-global stream can deliver an idle frame that predates
+          // this prompt. Reconcile against engine history and only accept idle
+          // when this turn has produced a new assistant message (or text has
+          // already streamed). This removes an intermittent early-finish race.
+          const messages = await recentRuntimeMessages(sessionID);
+          const latest = [...messages].reverse().find((item) =>
+            item?.info?.role === 'assistant'
+            && item?.info?.id
+            && !priorAssistantIds.has(String(item.info.id))
+          );
+          const snapshotText = Array.isArray(latest?.parts)
+            ? latest.parts
+              .filter((part: any) => part?.type === 'text' && part?.ignored !== true && part?.synthetic !== true)
+              .map((part: any) => String(part.text || ''))
+              .join('')
+            : '';
+          if (snapshotText.trim()) {
+            if (!full) append(snapshotText);
+            else if (snapshotText.startsWith(full)) append(snapshotText.slice(full.length));
+            done = true;
+            break;
+          }
+          if (full.trim()) {
+            done = true;
+            break;
+          }
+          continue;
         }
       }
     }
@@ -570,14 +616,17 @@ async function streamFreeModelThroughOpenCodeRuntime(input: {
   if (remoteError) throw new ProviderRequestError(remoteError, undefined, true);
   if (full.trim()) return full;
 
-  const messages = await runtimeJson<any[]>(
-    `/session/${encodeURIComponent(sessionID)}/message?limit=10`,
-    { signal: input.signal },
-    15_000,
-  ).catch(() => []);
-  const latest = [...messages].reverse().find((item) => item?.info?.role === 'assistant');
+  const messages = await recentRuntimeMessages(sessionID);
+  const latest = [...messages].reverse().find((item) =>
+    item?.info?.role === 'assistant'
+    && item?.info?.id
+    && !priorAssistantIds.has(String(item.info.id))
+  );
   const finalText = Array.isArray(latest?.parts)
-    ? latest.parts.filter((part: any) => part?.type === 'text').map((part: any) => String(part.text || '')).join('')
+    ? latest.parts
+      .filter((part: any) => part?.type === 'text' && part?.ignored !== true && part?.synthetic !== true)
+      .map((part: any) => String(part.text || ''))
+      .join('')
     : '';
   if (!finalText.trim()) throw new ProviderRequestError('OpenCode returned no visible text.', 502, true);
   append(finalText);
