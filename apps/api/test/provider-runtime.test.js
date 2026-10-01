@@ -581,3 +581,60 @@ test('direct runtime waits for remote abort acknowledgement before a stalled tur
   await rejected;
   assert.equal(settled, true);
 });
+
+
+test('dedicated runtime ignores a stale idle frame before current-turn output', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  const chunks = [];
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) return Response.json([]);
+    if (value === 'https://runtime.test/session') return Response.json({ id: 'stale-idle-session' });
+    if (value === 'https://runtime.test/session/stale-idle-session/message?limit=10') return Response.json([]);
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(
+          runtimeFrame('session.status', { sessionID: 'stale-idle-session', status: { type: 'idle' } })
+          + runtimeFrame('message.part.delta', { sessionID: 'stale-idle-session', field: 'text', delta: 'Fresh answer' })
+          + runtimeFrame('session.status', { sessionID: 'stale-idle-session', status: { type: 'idle' } })
+        ));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/stale-idle-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  assert.equal(await streamWithOfficialOpenCode({ ...input(), onDelta: (text) => chunks.push(text) }), 'Fresh answer');
+  assert.deepEqual(chunks, ['Fresh answer']);
+});
+
+test('dedicated runtime never replays an older assistant message when a new turn produces no text', async (t) => {
+  configureRuntime(t);
+  const encoder = new TextEncoder();
+  const oldMessage = {
+    info: { id: 'assistant-old', role: 'assistant' },
+    parts: [{ type: 'text', text: 'Old answer that must not be replayed' }],
+  };
+  mockFetch(t, async (url) => {
+    const value = String(url);
+    if (value.startsWith('https://runtime.test/session?')) {
+      return Response.json([{ id: 'reused-session', metadata: { orlynxConversationId: 'test-session' } }]);
+    }
+    if (value === 'https://runtime.test/session/reused-session/message?limit=10') return Response.json([oldMessage]);
+    if (value === 'https://runtime.test/event') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode(runtimeFrame('session.status', { sessionID: 'reused-session', status: { type: 'idle' } })));
+        controller.close();
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (value === 'https://runtime.test/session/reused-session/prompt_async') return new Response(null, { status: 204 });
+    throw new Error('Unexpected fetch ' + value);
+  });
+
+  await assert.rejects(
+    streamWithOfficialOpenCode(input()),
+    /OpenCode returned no visible text/,
+  );
+});
