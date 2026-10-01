@@ -61,3 +61,11 @@ test('E2B startup check validates control-plane credentials without creating a s
   const block = e2b.slice(healthStart, healthEnd);
   assert.doesNotMatch(block, /Sandbox\.create/);
 });
+
+
+test('startup runner smoke performs a cold-start-aware wake before broker failure accounting', () => {
+  const index = fs.readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+  assert.match(index, /runnerPoolSnapshot\(true\)/);
+  assert.match(index, /No runner host recovered through the startup wake probe/);
+  assert.doesNotMatch(index, /void runnerPoolSnapshot\(\)\s*\.then/);
+});
