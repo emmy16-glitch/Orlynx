@@ -96,8 +96,13 @@ function visibleChatText(role: string, text: string, prompt = ''): string {
 
 function isBuildProgressNarration(text: string): boolean {
   const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!cleaned || cleaned.length > 280) return false;
-  return /^(?:i(?:'m| am|'ll| will)\s+)?(?:starting|checking|inspecting|looking|reading|running|testing|building|setting up|opening|preparing|trying|verifying|reviewing|first checking|let me\b)/i.test(cleaned);
+  if (!cleaned || cleaned.length > 360) return false;
+  return /^(?:(?:i(?:'m| am|'ll| will)\s+)?(?:starting|checking|inspecting|looking|reading|running|testing|building|setting up|opening|preparing|trying|verifying|reviewing|first checking|let me\b)|plan is set\b|(?:durable |broker |deploy |snapshot |core |workspace |route |stream |publication )?[^.!?]{0,90}\b(?:done|complete|completed|wired|hooked|in place)\b[^.!?]{0,90}\b(?:now|next)\b|(?:typecheck|tests?|build|ci)\s+(?:shows|found|passed|failed)\b)/i.test(cleaned);
+}
+
+function sameVisibleResponse(a: string, b: string): boolean {
+  const normalize = (value: string) => String(value || '').replace(/\s+/g, ' ').trim();
+  return Boolean(normalize(a)) && normalize(a) === normalize(b);
 }
 
 function safeLinkHref(value: string): string | undefined {
@@ -1627,17 +1632,36 @@ export default function ProductionApp() {
                     : turn.state === 'paused' ? 'Paused'
                     : turn.state === 'queued' ? 'Queued'
                     : 'Working…';
-                  const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, latestTurnUser ? String(latestTurnUser.text || '') : '') : '';
-                  const hideProgressNarration = turnActive && parts.length > 0 && isBuildProgressNarration(liveText);
+                  const promptForTurn = latestTurnUser ? String(latestTurnUser.text || '') : '';
+                  const liveText = turn.liveReply ? visibleChatText('assistant', turn.liveReply.text, promptForTurn) : '';
+                  const durableText = durable ? visibleChatText('assistant', durable.text, priorUserPrompt) : '';
+                  const streamedText = visibleChatText('assistant', turn.textSegments.map((segment) => segment.text).join(''), promptForTurn);
+                  const useInterleavedFlow = turn.textSegments.length > 0
+                    && (!durable || sameVisibleResponse(streamedText, durableText));
+                  const partByActivityKey = new Map(parts.map((part) => [part.item.key, part]));
+                  const firstTextKey = turn.timeline.find((entry) => entry.kind === 'text')?.key;
+                  const lastTextKey = [...turn.timeline].reverse().find((entry) => entry.kind === 'text')?.key;
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
                     {turnUserMessages.map((userMessage: any, userIndex: number) => {
                       const userText = visibleChatText('user', userMessage.text, '');
                       return <article className="message-row user-message" data-continuation={userIndex > 0 ? 'true' : undefined} key={userMessage.id}><div className="user-message-stack"><div className="message-meta user-message-meta">{userIndex > 0 && <span className="continuation-label">Follow-up</span>}<time>{new Date(userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(userMessage.text || ''))} /></div></article>;
                     })}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">{turnStatusLabel}</span>}</div>
-                      {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
-                      {turn.liveReply && liveText && !durable && !hideProgressNarration && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
-                      {durable && <div className="turn-response"><MarkdownText text={visibleChatText('assistant', durable.text, priorUserPrompt)} /></div>}
+                      {useInterleavedFlow ? <div className="turn-flow" role="group" aria-label="Response and work in chronological order">{turn.timeline.map((entry) => {
+                        if (entry.kind === 'activity') {
+                          const part = partByActivityKey.get(entry.activity.key);
+                          if (!part) return null;
+                          return <div className="turn-part" key={entry.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>;
+                        }
+                        const segmentText = visibleChatText('assistant', entry.segment.text, entry.key === firstTextKey ? promptForTurn : '');
+                        if (!segmentText) return null;
+                        const progress = isBuildProgressNarration(segmentText);
+                        return <div className={progress ? 'turn-narration' : 'turn-response turn-response-segment'} data-progress={progress ? 'true' : undefined} key={entry.key}><MarkdownText text={segmentText} />{entry.key === lastTextKey && turn.liveReply?.state === 'streaming' && <span className="stream-caret" />}</div>;
+                      })}</div> : <>
+                        {parts.length > 0 && <div className="turn-work" role="group" aria-label="Work for this response">{parts.map((part) => <div className="turn-part" key={part.key}><PartRow part={part} onResolveApproval={resolveApproval} /><ServerPreviewAction command={typeof part.item.evidence?.command === 'string' ? part.item.evidence.command : ''} output={part.item.rawOutput} isPreview={part.kind === 'preview'} activityState={part.item.state} runActive={runActive} ports={previewPorts} onViewPreview={(port) => openPreview(port)} onOpenExternal={openExternalUrl} /></div>)}</div>}
+                        {turn.liveReply && liveText && !durable && <div className="turn-response"><MarkdownText text={liveText} />{turn.liveReply.state === 'streaming' && <span className="stream-caret" />}</div>}
+                        {durable && <div className="turn-response"><MarkdownText text={durableText} /></div>}
+                      </>}
                       {durable && <AssistantMessageActions text={visibleChatText('assistant', durable.text, priorUserPrompt)} userPrompt={priorUserPrompt} isLatest={isLatestAssistant} runActive={runActive} runFailed={isLatestAssistant && lastRun?.state === 'failed'} runCancelled={isLatestAssistant && lastRun?.state === 'cancelled'} modelIssue={isLatestAssistant && lastModelIssue} resumeLabel={isLatestAssistant && buildWithChanges ? `Resume with ${changesCount} changed file${changesCount === 1 ? '' : 's'} already in the repo?` : null} changesCount={changesCount} retryState={retrying[durable.id] || 'idle'} runDetails={{ model: lastRun?.model || ai.model?.displayName, mode: lastRun?.mode || ai.mode, state: lastRun?.state }} onRetry={() => retryMessage(durable.id, priorUserPrompt)} onOpenChanges={() => setTab('changes')} onOpenModels={() => { setAiPickerView('model'); setShowConnectAI(true); }} />}
                     </div></article>}
                   </div>;
