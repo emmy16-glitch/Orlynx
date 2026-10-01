@@ -105,9 +105,26 @@ export function runCommandOnce(command: Command, ws: WebSocket): void {
   void promise;
 }
 
+function pathInside(root: string, candidate: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
 function safePath(relative = '.'): string {
   const result = path.resolve(REPO_ROOT, relative);
-  if (result !== REPO_ROOT && !result.startsWith(`${REPO_ROOT}${path.sep}`)) throw new Error('Path is outside the workspace repository.');
+  if (!pathInside(REPO_ROOT, result)) throw new Error('Path is outside the workspace repository.');
+
+  // Lexical containment is not enough: a repository symlink can point outside
+  // REPO_ROOT. Validate the existing target, or the nearest existing parent
+  // for a path that is about to be created, against the repository realpath.
+  const realRoot = fs.realpathSync(REPO_ROOT);
+  let probe = result;
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  const realProbe = fs.realpathSync(probe);
+  if (!pathInside(realRoot, realProbe)) throw new Error('Path resolves outside the workspace repository.');
   return result;
 }
 
@@ -670,14 +687,17 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   };
 
 function toolSemanticType(toolName: string, command: string, filePath: string): string {
-  const text = `${toolName} ${command}`.toLowerCase();
-  if (/vitest|jest|pytest|mocha|playwright|(^|\s)test(\s|$)|npm test|pnpm test|yarn test/.test(text)) return 'test-result';
-  if (/build|compile|tsc|webpack|vite build|next build/.test(text)) return 'build-result';
-  if (/git\b|commit|checkout|branch|merge|rebase|push|pull/.test(text)) return 'git';
-  if (filePath && /read|cat|view|inspect|open|grep|search/.test(text)) return 'file-read';
-  if (filePath && /write|edit|patch|apply|create|delete|remove|replace/.test(text)) return 'file-change';
-  if (/vite|next dev|next start|npm run dev|pnpm dev|yarn dev|astro dev|remix dev|serve|preview/.test(text)) return 'preview';
-  if (/bash|shell|exec|terminal|command/.test(text) || command) return 'terminal';
+  const tool = toolName.trim().toLowerCase();
+  const cmd = command.trim().toLowerCase();
+  const testCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\b|:)|(?:npx\s+)?(?:vitest|jest|mocha)\b|pytest\b|python(?:3)?\s+-m\s+pytest\b|(?:npx\s+)?playwright\s+test\b|node\s+--test\b)/i.test(cmd);
+  const buildCommand = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(cmd);
+  if (testCommand || /^(?:test|tests|vitest|jest|pytest|mocha|playwright)$/i.test(tool)) return 'test-result';
+  if (buildCommand || /^(?:build|compile|typecheck|lint)$/i.test(tool)) return 'build-result';
+  if (/^(?:git|commit|push|branch|checkout|merge|rebase)$/i.test(tool) || /^git\s+/.test(cmd)) return 'git';
+  if (filePath && /^(?:read|cat|view|inspect|open|grep|search|find|glob)$/i.test(tool)) return 'file-read';
+  if (filePath && /^(?:write|edit|patch|apply|create|delete|remove|replace|apply_patch)$/i.test(tool)) return 'file-change';
+  if (/^(?:vite|next|astro|remix|serve|preview)$/i.test(tool) || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?dev\b|(?:npx\s+)?vite\b|(?:npx\s+)?next\s+(?:dev|start)\b)/i.test(cmd)) return 'preview';
+  if (/^(?:bash|shell|exec|terminal|command)$/i.test(tool) || command) return 'terminal';
   return 'generic';
 }
 
@@ -685,7 +705,8 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (!delta) return;
     const before = textParts.get(partID) || '';
     const combined = before + delta;
-    bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length }, taskId, runId);
+    const responseOffset = visible.length;
+    bridgeEvent(ws, 'message.delta', { delta, messagePartId: partID, offset: before.length, responseOffset }, taskId, runId);
     textParts.set(partID, combined);
     visible += delta;
 
@@ -833,7 +854,7 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     if (assistant) {
       const text = assistantText(assistant);
       if (text.startsWith(visible) && text.length > visible.length) {
-        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length), messagePartId: 'snapshot', offset: visible.length }, taskId, runId);
+        bridgeEvent(ws, 'message.delta', { delta: text.slice(visible.length), messagePartId: 'snapshot', offset: visible.length, responseOffset: visible.length }, taskId, runId);
         visible = text;
       }
       if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
@@ -1249,11 +1270,24 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'runtime.capabilities': return { capabilities: runtimeCapabilities(), activityAt: activityAt() };
     case 'verification.artifacts': return { artifacts: verificationArtifacts() };
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
-    case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
+    case 'fs.read': {
+      const target = safePath(String(payload.path || ''));
+      const stat = fs.statSync(target);
+      if (stat.size > 1_000_000) throw new Error('File is too large to read.');
+      const bytes = fs.readFileSync(target);
+      const content = bytes.toString('utf8');
+      return {
+        path: path.relative(REPO_ROOT, target),
+        content,
+        contentBase64: bytes.toString('base64'),
+        binary: !Buffer.from(content, 'utf8').equals(bytes),
+        mode: (stat.mode & 0o111) !== 0 ? '100755' : '100644',
+      };
+    }
     case 'fs.write-attachment': {
       const name = String(payload.name || '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180); if (!name) throw new Error('Attachment name is invalid.');
       const data = Buffer.from(String(payload.contentBase64 || ''), 'base64'); if (data.length > 15 * 1024 * 1024) throw new Error('Attachment is too large.');
-      const directory = safePath('.orlynx/attachments'); fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); const target = path.join(directory, name); fs.writeFileSync(target, data, { mode: 0o600 });
+      const directory = safePath('.orlynx/attachments'); fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); const target = safePath(path.join('.orlynx/attachments', name)); fs.writeFileSync(target, data, { mode: 0o600 });
       const exclude = safePath('.git/info/exclude'); const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''; if (!current.split(/\r?\n/).includes('.orlynx/')) fs.appendFileSync(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}.orlynx/\n`);
       return { path: path.relative(REPO_ROOT, target).split(path.sep).join('/') };
     }
