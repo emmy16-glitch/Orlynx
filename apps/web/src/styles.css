@@ -4022,7 +4022,28 @@ html[data-theme="light"] .composer-options-panel {
 }
 
 
-/* Build turns read top-to-bottom: work first, response last. */
+/* One assistant turn can interleave concise narration with evidence. */
+.turn-flow {
+  display: grid;
+  gap: 5px;
+  margin-top: 5px;
+}
+.turn-narration {
+  margin: 7px 0 3px;
+  color: var(--foreground-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.turn-narration p {
+  margin: 0;
+}
+.turn-flow .turn-part {
+  margin: 0;
+}
+.turn-flow .turn-response-segment {
+  margin-top: 6px;
+  padding-top: 0;
+}
 .turn-response {
   margin-top: 12px;
   padding-top: 10px;
