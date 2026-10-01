@@ -251,6 +251,34 @@ async function updateBranch(
   );
 }
 
+async function reconcilePublishedWorkspace(input: {
+  workspaceId: string;
+  branch: string;
+  expectedHead: string;
+  publishedHead: string;
+  files: string[];
+}): Promise<boolean> {
+  try {
+    const reconciled = await bridgeRequest<{ state?: string; head?: string }>(
+      input.workspaceId,
+      'git.reconcile-published',
+      {
+        approved: true,
+        branch: input.branch,
+        expectedHead: input.expectedHead,
+        publishedHead: input.publishedHead,
+        files: input.files,
+      },
+      120_000,
+    );
+    return reconciled.state === 'reconciled' && reconciled.head === input.publishedHead;
+  } catch {
+    // Publication already succeeded remotely. Never turn a safe publication
+    // into a false failure because local work changed after verification.
+    return false;
+  }
+}
+
 export async function publishVerifiedChangeSet(input: {
   sessionId: string;
   workspaceId: string;
@@ -275,7 +303,6 @@ export async function publishVerifiedChangeSet(input: {
     throw new Error(`Verification is incomplete: ${nonPublishMissing.join(', ')}.`);
   }
 
-  const { files, status } = await validatedWorkspaceFiles(input.workspaceId, change, task);
   const githubRepo = await githubRepositoryById(workspace.userId, workspace.repositoryId);
   if (githubRepo.fullName.toLowerCase() !== session.project.toLowerCase()) {
     throw new Error('Connected GitHub authorization does not match this conversation repository.');
@@ -290,31 +317,68 @@ export async function publishVerifiedChangeSet(input: {
   const strategy = input.strategy || 'direct';
   const baseRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
   if (!baseRemoteSha) throw new Error(`GitHub branch ${baseBranch} does not exist.`);
-
   const existingTargetSha = targetBranch === baseBranch
     ? baseRemoteSha
     : await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
 
-  // Crash-safe direct publication: the remote ref may have advanced before the
-  // durable ChangeSet receipt was written. Recognize our exact commit first,
-  // repair the durable receipt, and do not report false divergence.
+  // Recover a remote publication whose durable receipt was interrupted. This
+  // check intentionally happens before workspace dirty/hash validation: after a
+  // successful push the workspace may already be clean/reconciled, and retrying
+  // must not misreport that successful publication as a validation failure.
   if (strategy === 'direct' && change.commitSha && existingTargetSha === change.commitSha) {
     change.pushedAt ||= new Date().toISOString();
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
-    return { branch: targetBranch, head: existingTargetSha, alreadyPublished: true, changeId: change.id };
+    const workspaceReconciled = targetBranch === baseBranch
+      ? await reconcilePublishedWorkspace({
+          workspaceId: input.workspaceId,
+          branch: baseBranch,
+          expectedHead: change.baseSha,
+          publishedHead: change.commitSha,
+          files: change.files.map((file) => file.path),
+        })
+      : false;
+    return { branch: targetBranch, head: existingTargetSha, alreadyPublished: true, workspaceReconciled, changeId: change.id };
   }
 
+  const retryPullRequestBranch = strategy === 'pull-request'
+    ? (targetBranch === baseBranch
+        ? safeBranch(`orlynx/publish-${task.id.replace(/[^A-Za-z0-9._-]+/g, '-').slice(-36)}`)
+        : targetBranch)
+    : '';
+  if (strategy === 'pull-request' && change.commitSha && retryPullRequestBranch) {
+    const retryBranchSha = await refSha(githubRepo.installationId, githubRepo.fullName, retryPullRequestBranch);
+    if (retryBranchSha === change.commitSha) {
+      const pr = await createGitHubPullRequest(
+        githubRepo.fullName,
+        baseBranch,
+        retryPullRequestBranch,
+        input.commitMessage || 'Orlynx verified changes',
+        'Created by Orlynx from a verified change set. Publication credentials remained in the control plane.',
+        githubRepo.installationId,
+      );
+      change.pushedAt ||= new Date().toISOString();
+      change.pushedBranch = retryPullRequestBranch;
+      change.pullRequestUrl = pr.url;
+      change.pullRequestNumber = pr.number;
+      await repository.putChangeSet(change);
+      return {
+        branch: retryPullRequestBranch,
+        head: change.commitSha,
+        alreadyPublished: true,
+        pullRequestUrl: pr.url,
+        pullRequestNumber: pr.number,
+        changeId: change.id,
+      };
+    }
+  }
+
+  const { files } = await validatedWorkspaceFiles(input.workspaceId, change, task);
   if (baseRemoteSha !== change.baseSha) {
     throw new Error(`GitHub ${baseBranch} moved since this work began. Refresh/reconcile before publishing.`);
   }
   if (existingTargetSha && existingTargetSha !== change.baseSha) {
-    // Pull-request publication deliberately continues when its publication
-    // branch already points at our previously-created commit: retry must still
-    // ensure the PR itself exists and persist its receipt.
-    if (!(strategy === 'pull-request' && change.commitSha && existingTargetSha === change.commitSha)) {
-      throw new Error(`GitHub branch ${targetBranch} diverged from the verified base. Refusing a non-fast-forward publication.`);
-    }
+    throw new Error(`GitHub branch ${targetBranch} diverged from the verified base. Refusing a non-fast-forward publication.`);
   }
 
   const commitSha = change.commitSha || await createCommitFromFiles({
@@ -359,28 +423,15 @@ export async function publishVerifiedChangeSet(input: {
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
 
-    let workspaceReconciled = false;
-    if (targetBranch === baseBranch) {
-      try {
-        const reconciled = await bridgeRequest<{ state?: string; head?: string }>(
-          input.workspaceId,
-          'git.reconcile-published',
-          {
-            approved: true,
-            branch: baseBranch,
-            expectedHead: change.baseSha,
-            publishedHead: commitSha,
-            files: change.files.map((file) => file.path),
-          },
-          120_000,
-        );
-        workspaceReconciled = reconciled.state === 'reconciled' && reconciled.head === commitSha;
-      } catch {
-        // Publication already succeeded remotely. Never turn a safe push into a
-        // false failure because the workspace changed concurrently; the next
-        // mutable task will reconcile through normal Git freshness checks.
-      }
-    }
+    const workspaceReconciled = targetBranch === baseBranch
+      ? await reconcilePublishedWorkspace({
+          workspaceId: input.workspaceId,
+          branch: baseBranch,
+          expectedHead: change.baseSha,
+          publishedHead: commitSha,
+          files: change.files.map((file) => file.path),
+        })
+      : false;
     return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
