@@ -6,6 +6,7 @@ import {
   type AgentStreamMessage,
   type AgentStreamRun,
   type AgentStreamState,
+  type AgentStreamTextSegment,
   type AgentStreamTool,
   type StreamProjectionEvent,
 } from './protocol';
@@ -52,6 +53,7 @@ function clone(state: AgentStreamState): AgentStreamState {
     seenEventIds: new Set(state.seenEventIds),
     runs: { ...state.runs },
     messages: { ...state.messages },
+    segments: { ...state.segments },
     tools: { ...state.tools },
     activities: { ...state.activities },
     order: [...state.order],
@@ -196,6 +198,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       const run = state.runs[event.runId];
       updateRun(state, event, { state: 'completed', messageId: run?.messageId || `assistant:${event.runId}`, finishedAt: event.timestamp });
       resolveRunActivities(state, event.runId, 'success');
+      for (const [id, segment] of Object.entries(state.segments)) {
+        if (segment.runId === event.runId) state.segments[id] = { ...segment, state: 'completed' };
+      }
       if (run?.messageId && state.messages[run.messageId]) {
         state.messages[run.messageId] = { ...state.messages[run.messageId], state: 'completed', endedAt: event.timestamp, lastSequence: Math.max(state.messages[run.messageId].lastSequence, event.sequence) };
       }
@@ -214,6 +219,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         errorKind: event.errorKind,
       });
       resolveRunActivities(state, event.runId, event.cancelled ? 'cancelled' : 'failed');
+      for (const [id, segment] of Object.entries(state.segments)) {
+        if (segment.runId === event.runId) state.segments[id] = { ...segment, state: runState };
+      }
       if (run?.messageId && state.messages[run.messageId]) {
         state.messages[run.messageId] = { ...state.messages[run.messageId], state: runState, endedAt: event.timestamp, lastSequence: Math.max(state.messages[run.messageId].lastSequence, event.sequence) };
       }
@@ -286,6 +294,22 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         lastSequence: Math.max(prior.lastSequence, event.sequence),
         lastEventAt: Math.max(prior.lastEventAt, stamp(event.timestamp)),
       };
+
+      // Keep provider text parts separate from the aggregate assistant text.
+      // Tool/activity rows have their own sequence positions, so retaining the
+      // text-part start sequence lets the transcript render the exact order:
+      // narration -> work -> narration -> work -> final response.
+      const segmentPrior: AgentStreamTextSegment | undefined = state.segments[event.segmentId];
+      state.segments[event.segmentId] = {
+        id: event.segmentId,
+        messageId: event.messageId,
+        runId: event.runId,
+        text: `${segmentPrior?.text || ''}${event.delta}`,
+        state: 'streaming',
+        startedSequence: segmentPrior?.startedSequence || event.sequence,
+        lastSequence: Math.max(segmentPrior?.lastSequence || 0, event.sequence),
+        timestamp: segmentPrior?.timestamp || event.timestamp,
+      };
       return;
     }
 
@@ -299,6 +323,14 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         lastSequence: Math.max(prior.lastSequence, event.sequence),
         lastEventAt: Math.max(prior.lastEventAt, stamp(event.timestamp)),
       };
+      for (const [id, segment] of Object.entries(state.segments)) {
+        if (segment.messageId !== event.messageId) continue;
+        state.segments[id] = {
+          ...segment,
+          state: segment.state === 'failed' || segment.state === 'cancelled' ? segment.state : 'completed',
+          lastSequence: Math.max(segment.lastSequence, event.sequence),
+        };
+      }
       return;
     }
 

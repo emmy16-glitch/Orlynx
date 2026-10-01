@@ -532,27 +532,28 @@ describe('live working indicator and composer interaction (sections 60-81)', () 
     assert.match(css(), /\.active-work-pill \{\s*pointer-events: auto;[\s\S]*?min-height: 44px/);
   });
 
-  it('71: streaming keeps a single subtle cue', () => {
-    // The stream caret renders once inside the owning turn's live reply text.
-    const streamLine = app().split('\n').find((line) => line.includes('stream-caret'));
-    assert.ok(streamLine?.includes('liveText'));
-    assert.doesNotMatch(streamLine || '', /Spinner|ox-pulse|bouncing/);
-  });
-
-  it('76: Build work renders before the live or durable response text', () => {
+  it('71: streaming keeps a single subtle cue on the latest text segment', () => {
     const src = app();
-    const work = src.indexOf('className="turn-work"');
-    const response = src.indexOf('className="turn-response"');
-    assert.ok(work >= 0 && response >= 0, 'work/response surfaces are present');
-    assert.ok(work < response, 'Build work must stay above the final response');
-    assert.match(css(), /\.turn-work \+ \.turn-response \{\s*border-top:/);
+    assert.match(src, /entry\.key === lastTextKey && turn\.liveReply\?\.state === 'streaming'/);
+    assert.doesNotMatch(src, /stream-caret[\s\S]{0,120}Spinner|ox-pulse|bouncing/);
   });
 
-  it('77: short Build progress narration is suppressed while typed work is visible', () => {
+  it('76: Build narration and work share one chronological assistant flow', () => {
+    const src = app();
+    assert.match(src, /className="turn-flow"/);
+    assert.match(src, /turn\.timeline\.map/);
+    assert.match(src, /entry\.kind === 'activity'/);
+    assert.match(src, /entry\.kind === 'text'/);
+    assert.match(src, /partByActivityKey/);
+    assert.match(css(), /\.turn-flow \{[\s\S]*?display: grid/);
+  });
+
+  it('77: short Build progress narration stays visible as a quiet inline checkpoint', () => {
     const src = app();
     assert.match(src, /function isBuildProgressNarration\(text: string\)/);
-    assert.match(src, /const hideProgressNarration = turnActive && parts\.length > 0 && isBuildProgressNarration\(liveText\)/);
-    assert.match(src, /turn\.liveReply && liveText && !durable && !hideProgressNarration/);
+    assert.match(src, /className=\{progress \? 'turn-narration' : 'turn-response turn-response-segment'\}/);
+    assert.doesNotMatch(src, /hideProgressNarration/);
+    assert.match(css(), /\.turn-narration \{[\s\S]*?color: var\(--foreground-muted\)/);
   });
 
   it('78: long user prompts stay fully visible and keep their full action text', () => {

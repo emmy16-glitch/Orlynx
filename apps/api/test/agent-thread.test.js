@@ -28,6 +28,49 @@ test('overlapping direct + workspace runs never mix text', () => {
   assert.equal(replies.find((r) => r.runId === 'run-b').text, 'build answer progress');
 });
 
+test('assistant text parts and work interleave by canonical sequence', () => {
+  const state = applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('i1', 1, 'run.started', { messageId: 'user-1', plane: 'workspace' }),
+    runA('i2', 2, 'message.delta', { delta: 'Plan is set — now implementing. ', messagePartId: 'text-a' }),
+    runA('i3', 3, 'tool.started', { tool: 'read', semanticType: 'file-read', toolCallId: 'read-1', path: 'src/a.ts' }),
+    runA('i4', 4, 'tool.completed', { tool: 'read', semanticType: 'file-read', toolCallId: 'read-1', path: 'src/a.ts' }),
+    runA('i5', 5, 'message.delta', { delta: 'Repository mapped. Next I am editing the broker. ', messagePartId: 'text-b' }),
+    runA('i6', 6, 'tool.started', { tool: 'exec', semanticType: 'test-result', toolCallId: 'test-1', command: 'npm test' }),
+    runA('i7', 7, 'tool.completed', { tool: 'exec', semanticType: 'test-result', toolCallId: 'test-1', command: 'npm test', exitCode: 0 }),
+    runA('i8', 8, 'message.delta', { delta: 'The implementation is verified.', messagePartId: 'text-c' }),
+  ]);
+  const messages = [{ id: 'user-1', role: 'user', text: 'Implement it', createdAt: '2026-09-27T10:00:00.000Z' }];
+  const thread = buildThread(messages, selectActivities(state), selectLiveReplies(state), state);
+  assert.equal(thread.length, 1);
+  assert.deepEqual(thread[0].textSegments.map((segment) => segment.text), [
+    'Plan is set — now implementing. ',
+    'Repository mapped. Next I am editing the broker. ',
+    'The implementation is verified.',
+  ]);
+  assert.deepEqual(thread[0].timeline.map((entry) => entry.kind === 'text'
+    ? `text:${entry.segment.text.trim()}`
+    : `activity:${entry.activity.category}`), [
+    'text:Plan is set — now implementing.',
+    'activity:search',
+    'text:Repository mapped. Next I am editing the broker.',
+    'activity:test',
+    'text:The implementation is verified.',
+  ]);
+  assert.equal(selectLiveReplies(state)[0].text, 'Plan is set — now implementing. Repository mapped. Next I am editing the broker. The implementation is verified.');
+});
+
+test('replayed text-part deltas never duplicate a narration segment', () => {
+  const batch = [
+    runA('rp1', 1, 'run.started', { messageId: 'user-1' }),
+    runA('rp2', 2, 'message.delta', { delta: 'Checking repository', messagePartId: 'part-1' }),
+    runA('rp3', 3, 'message.delta', { delta: ' now.', messagePartId: 'part-1' }),
+  ];
+  let state = applyRawAgentEvents(emptyAgentStreamState(), batch);
+  state = applyRawAgentEvents(state, batch);
+  assert.equal(Object.keys(state.segments).length, 1);
+  assert.equal(Object.values(state.segments)[0].text, 'Checking repository now.');
+});
+
 test('tool requested/start/output/end stays one object that mutates in place', () => {
   const state = applyRawAgentEvents(emptyAgentStreamState(), [
     runA('t1', 1, 'run.started', { messageId: 'user-1' }),

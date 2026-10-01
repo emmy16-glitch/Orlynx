@@ -15,7 +15,7 @@ export type StreamProjectionEvent =
   | (Base & { type: 'RUN_ERROR'; error?: string; errorKind?: string; cancelled?: boolean; retryable?: boolean })
   | (Base & { type: 'RUN_STATE'; state: RunState; message?: string })
   | (Base & { type: 'TEXT_START'; messageId: string; role: 'assistant' })
-  | (Base & { type: 'TEXT_CONTENT'; messageId: string; delta: string })
+  | (Base & { type: 'TEXT_CONTENT'; messageId: string; segmentId: string; delta: string })
   | (Base & { type: 'TEXT_END'; messageId: string })
   | (Base & { type: 'TOOL_START'; toolCallId: string; name: string; semanticType?: AgentPartKind; waiting?: boolean; title?: string; command?: string; path?: string; code?: string })
   | (Base & { type: 'TOOL_UPDATE'; toolCallId: string; output?: string; delta?: string; replace?: boolean })
@@ -73,6 +73,17 @@ export interface AgentStreamMessage {
   plane?: string;
 }
 
+export interface AgentStreamTextSegment {
+  id: string;
+  messageId: string;
+  runId: string;
+  text: string;
+  state: 'streaming' | 'completed' | 'failed' | 'cancelled';
+  startedSequence: number;
+  lastSequence: number;
+  timestamp: string;
+}
+
 export interface AgentStreamTool {
   id: string;
   runId?: string;
@@ -115,6 +126,7 @@ export interface AgentStreamState {
   seenEventIds: Set<string>;
   runs: Record<string, AgentStreamRun>;
   messages: Record<string, AgentStreamMessage>;
+  segments: Record<string, AgentStreamTextSegment>;
   tools: Record<string, AgentStreamTool>;
   activities: Record<string, AgentStreamActivity>;
   order: Array<{ kind: 'tool' | 'activity'; id: string; sequence: number }>;
@@ -128,6 +140,7 @@ export function emptyAgentStreamState(): AgentStreamState {
     seenEventIds: new Set(),
     runs: {},
     messages: {},
+    segments: {},
     tools: {},
     activities: {},
     order: [],
