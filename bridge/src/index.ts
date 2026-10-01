@@ -1270,20 +1270,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'runtime.capabilities': return { capabilities: runtimeCapabilities(), activityAt: activityAt() };
     case 'verification.artifacts': return { artifacts: verificationArtifacts() };
     case 'fs.list': return { files: listFiles(String(payload.path || '.')) };
-    case 'fs.read': {
-      const target = safePath(String(payload.path || ''));
-      const stat = fs.statSync(target);
-      if (stat.size > 1_000_000) throw new Error('File is too large to read.');
-      const bytes = fs.readFileSync(target);
-      const content = bytes.toString('utf8');
-      return {
-        path: path.relative(REPO_ROOT, target),
-        content,
-        contentBase64: bytes.toString('base64'),
-        binary: !Buffer.from(content, 'utf8').equals(bytes),
-        mode: (stat.mode & 0o111) !== 0 ? '100755' : '100644',
-      };
-    }
+    case 'fs.read': { const target = safePath(String(payload.path || '')); const stat = fs.statSync(target); if (stat.size > 1_000_000) throw new Error('File is too large to read.'); return { path: path.relative(REPO_ROOT, target), content: fs.readFileSync(target, 'utf8') }; }
     case 'fs.write-attachment': {
       const name = String(payload.name || '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180); if (!name) throw new Error('Attachment name is invalid.');
       const data = Buffer.from(String(payload.contentBase64 || ''), 'base64'); if (data.length > 15 * 1024 * 1024) throw new Error('Attachment is too large.');
@@ -1404,6 +1391,70 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       };
     }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
+    case 'git.read-publication-file': {
+      if (payload.approved !== true) throw new Error('Publication file read requires an approved control-plane command.');
+      const target = safePath(String(payload.path || ''));
+      const stat = fs.lstatSync(target);
+      let bytes: Buffer;
+      let mode: '100644' | '100755' | '120000';
+      if (stat.isSymbolicLink()) {
+        bytes = Buffer.from(fs.readlinkSync(target), 'utf8');
+        mode = '120000';
+      } else {
+        if (!stat.isFile()) throw new Error('Publication path is not a regular file.');
+        if (stat.size > 1_000_000) throw new Error('Publication file is too large for verified transfer.');
+        bytes = fs.readFileSync(target);
+        mode = (stat.mode & 0o111) !== 0 ? '100755' : '100644';
+      }
+      if (bytes.length > 1_000_000) throw new Error('Publication file is too large for verified transfer.');
+      return {
+        path: path.relative(REPO_ROOT, target).split(path.sep).join('/'),
+        contentBase64: bytes.toString('base64'),
+        mode,
+        size: bytes.length,
+      };
+    }
+    case 'git.reconcile-published': {
+      if (payload.approved !== true) throw new Error('Published-work reconciliation requires an approved control-plane command.');
+      const branch = String(payload.branch || '').trim();
+      const expectedHead = String(payload.expectedHead || '').trim();
+      const publishedHead = String(payload.publishedHead || '').trim();
+      const files = Array.isArray(payload.files)
+        ? [...new Set(payload.files.map(String).map((value) => value.trim()).filter(Boolean))]
+        : [];
+      if (!branch || branch.startsWith('-') || branch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(branch)) throw new Error('Published-work branch is invalid.');
+      if (!/^[a-f0-9]{40}$/i.test(expectedHead) || !/^[a-f0-9]{40}$/i.test(publishedHead)) throw new Error('Published-work commit identity is invalid.');
+      if (!files.length) throw new Error('Published-work reconciliation requires an approved file allowlist.');
+      for (const file of files) {
+        if (file.startsWith('/') || file.startsWith('-') || file.split('/').includes('..')) throw new Error('Published-work file path is invalid.');
+        safePath(file);
+      }
+      const currentBranch = git(['branch', '--show-current']).trim();
+      const currentHead = git(['rev-parse', 'HEAD']).trim();
+      if (currentBranch !== branch || currentHead !== expectedHead) throw new Error('Workspace moved before published-work reconciliation.');
+
+      const dirty = git(['status', '--porcelain=v1']).split(/\r?\n/).filter(Boolean).map((line) => {
+        const raw = line.length > 3 ? line.slice(3).trim() : '';
+        return (raw.includes(' -> ') ? raw.split(' -> ').pop() || raw : raw).replace(/^"|"$/g, '');
+      }).filter(Boolean);
+      const allow = new Set(files);
+      const unrelated = dirty.filter((file) => !allow.has(file));
+      if (unrelated.length) throw new Error(`Workspace gained unrelated changes after publication: ${unrelated.slice(0, 8).join(', ')}`);
+
+      const authEnv = GITHUB_TOKEN ? {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString('base64')}`,
+      } : {};
+      git(['fetch', '--prune', 'origin', branch], 120_000, authEnv);
+      const remoteRef = `origin/${branch}`;
+      const remoteHead = git(['rev-parse', remoteRef]).trim();
+      if (remoteHead !== publishedHead) throw new Error('Remote branch changed before workspace reconciliation.');
+      git(['reset', '--hard', remoteRef], 60_000);
+      const head = git(['rev-parse', 'HEAD']).trim();
+      if (head !== publishedHead) throw new Error('Workspace did not reach the published commit.');
+      return { state: 'reconciled', branch, head };
+    }
     case 'git.branch.create': { const branch = String(payload.branch || ''); if (!/^orlynx(?:-e2e)?\/[a-zA-Z0-9._-]+$/.test(branch)) throw new Error('Only an isolated orlynx/* branch may be created through this operation.'); git(['checkout', '-b', branch]); return { branch }; }
     case 'git.commit': {
       const message = String(payload.message || '').trim().slice(0, 240);
