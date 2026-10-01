@@ -375,16 +375,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             if (task) {
               task.state = 'failed';
               task.updatedAt = now;
-              // RESULT carries the engine's authoritative complete assistant text.
-          // Store it with a narrow partial-text update before verification or
-          // reflection begins, so a reconnect cannot leave the durable snapshot
-          // behind the final visible response.
-          if (responseText) {
-            await repository.setTaskPartialText(task.id, responseText, now);
-            task.partialText = responseText;
-          }
-
-          const effectivePermission = task.tempPermission || task.permission || 'full';
+              const effectivePermission = task.tempPermission || task.permission || 'full';
               task.harness ||= createHarnessCheckpoint({
                 prompt: task.prompt,
                 mode: task.mode || 'build',
@@ -427,6 +418,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const responseText = String(message.result?.responseText || '');
+          // RESULT carries the engine's authoritative complete assistant text.
+          // Store it with a narrow partial-text update before verification or
+          // reflection begins, so a reconnect cannot leave the durable snapshot
+          // behind the final visible response.
+          if (task && responseText) {
+            await repository.setTaskPartialText(task.id, responseText, now);
+            task.partialText = responseText;
+          }
           const engineSessionId = String(message.result?.engineSessionId || command.payload.engineSessionId || '');
           if (engineSessionId) {
             const adapterId = String(command.payload.adapterId || 'opencode');
