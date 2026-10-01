@@ -88,7 +88,8 @@ test('controlled Git publish keeps credentials in the control plane and never de
   const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
 
   assert.match(bridge, /case 'git\.fetch'/);
-  assert.match(bridge, /payload\.allowDefaultBranch !== true/);
+  assert.match(bridge, /case 'git\.reconcile-published'/);
+  assert.doesNotMatch(bridge, /case 'git\.push':/);
   assert.match(routes, /publishCommittedWorkspaceHead/);
   assert.match(routes, /publishVerifiedChangeSet/);
   assert.match(publisher, /githubInstallationApiRequest/);
