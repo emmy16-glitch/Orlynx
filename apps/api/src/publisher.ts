@@ -15,6 +15,7 @@ export interface PublicationResult {
   branch: string;
   head: string;
   alreadyPublished?: boolean;
+  workspaceReconciled?: boolean;
   pullRequestUrl?: string;
   pullRequestNumber?: number;
   protectedBranchFallback?: boolean;
@@ -50,7 +51,7 @@ function parsePorcelainPaths(porcelain: string): string[] {
     });
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Buffer): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
@@ -89,7 +90,7 @@ async function validatedWorkspaceFiles(
   workspaceId: string,
   change: ChangeSet,
   task: TaskRecord,
-): Promise<{ files: Array<{ file: ChangedFile; content?: string }>; status: GitStatus }> {
+): Promise<{ files: Array<{ file: ChangedFile; contentBase64?: string; mode?: '100644' | '100755' | '120000' }>; status: GitStatus }> {
   const status = await bridgeRequest<GitStatus>(workspaceId, 'git.status', {}, 30_000);
   const head = String(status.head || '');
   if (!head || !change.baseSha) throw new Error('Publication cannot verify the workspace base commit.');
@@ -107,7 +108,7 @@ async function validatedWorkspaceFiles(
     throw new Error(`Publication blocked because unrelated workspace files are dirty: ${unrelated.slice(0, 8).join(', ')}`);
   }
 
-  const validated: Array<{ file: ChangedFile; content?: string }> = [];
+  const validated: Array<{ file: ChangedFile; contentBase64?: string; mode?: '100644' | '100755' | '120000' }> = [];
   for (const file of change.files) {
     if (!file.path || file.path.startsWith('/') || file.path.split('/').includes('..')) {
       throw new Error('Publication change set contains an invalid path.');
@@ -123,14 +124,24 @@ async function validatedWorkspaceFiles(
       continue;
     }
 
-    const read = await bridgeRequest<{ content?: string }>(workspaceId, 'fs.read', { path: file.path }, 15_000);
-    const content = String(read.content ?? '');
-    const expectedHash = file.afterHash || (typeof file.after === 'string' ? sha256(file.after) : '');
+    const read = await bridgeRequest<{ contentBase64?: string; mode?: string }>(
+      workspaceId,
+      'git.read-publication-file',
+      { path: file.path, approved: true },
+      15_000,
+    );
+    const contentBase64 = String(read.contentBase64 || '');
+    const mode = String(read.mode || '');
+    if (!contentBase64 || !['100644', '100755', '120000'].includes(mode)) {
+      throw new Error(`Publication could not read exact Git bytes for ${file.path}.`);
+    }
+    const bytes = Buffer.from(contentBase64, 'base64');
+    const expectedHash = file.afterHash || (typeof file.after === 'string' ? sha256(Buffer.from(file.after, 'utf8')) : '');
     if (!expectedHash) throw new Error(`Publication lacks observed contents for ${file.path}. Re-run the change capture.`);
-    if (sha256(content) !== expectedHash) {
+    if (sha256(bytes) !== expectedHash) {
       throw new Error(`File changed after verification: ${file.path}. Re-verify before publishing.`);
     }
-    validated.push({ file, content });
+    validated.push({ file, contentBase64, mode: mode as '100644' | '100755' | '120000' });
   }
   return { files: validated, status };
 }
@@ -153,7 +164,7 @@ async function createCommitFromFiles(input: {
   installationId: number;
   project: string;
   parentSha: string;
-  files: Array<{ file: ChangedFile; content?: string }>;
+  files: Array<{ file: ChangedFile; contentBase64?: string; mode?: '100644' | '100755' | '120000' }>;
   message: string;
 }): Promise<string> {
   const parent = await githubInstallationApiRequest<GitCommit>(
@@ -163,25 +174,26 @@ async function createCommitFromFiles(input: {
   const baseTree = String(parent.tree?.sha || '');
   if (!baseTree) throw new Error('GitHub did not return the base tree for publication.');
 
-  const tree: Array<{ path: string; mode: '100644'; type: 'blob'; sha: string | null }> = [];
+  const tree: Array<{ path: string; mode: '100644' | '100755' | '120000'; type: 'blob'; sha: string | null }> = [];
   for (const item of input.files) {
     if (item.file.action === 'delete') {
       tree.push({ path: item.file.path, mode: '100644', type: 'blob', sha: null });
       continue;
     }
+    if (!item.contentBase64 || !item.mode) throw new Error(`Publication bytes are unavailable for ${item.file.path}.`);
     const blob = await githubInstallationApiRequest<GitObject>(
       input.installationId,
       `/repos/${input.project}/git/blobs`,
       {
         method: 'POST',
         body: JSON.stringify({
-          content: Buffer.from(String(item.content ?? ''), 'utf8').toString('base64'),
+          content: item.contentBase64,
           encoding: 'base64',
         }),
       },
     );
     if (!blob.sha) throw new Error(`GitHub did not create a blob for ${item.file.path}.`);
-    tree.push({ path: item.file.path, mode: '100644', type: 'blob', sha: blob.sha });
+    tree.push({ path: item.file.path, mode: item.mode, type: 'blob', sha: blob.sha });
   }
 
   const treeResult = await githubInstallationApiRequest<GitObject>(
@@ -275,18 +287,34 @@ export async function publishVerifiedChangeSet(input: {
 
   const baseBranch = safeBranch(session.branch);
   const targetBranch = safeBranch(input.targetBranch || baseBranch);
+  const strategy = input.strategy || 'direct';
   const baseRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
   if (!baseRemoteSha) throw new Error(`GitHub branch ${baseBranch} does not exist.`);
+
+  const existingTargetSha = targetBranch === baseBranch
+    ? baseRemoteSha
+    : await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
+
+  // Crash-safe direct publication: the remote ref may have advanced before the
+  // durable ChangeSet receipt was written. Recognize our exact commit first,
+  // repair the durable receipt, and do not report false divergence.
+  if (strategy === 'direct' && change.commitSha && existingTargetSha === change.commitSha) {
+    change.pushedAt ||= new Date().toISOString();
+    change.pushedBranch = targetBranch;
+    await repository.putChangeSet(change);
+    return { branch: targetBranch, head: existingTargetSha, alreadyPublished: true, changeId: change.id };
+  }
+
   if (baseRemoteSha !== change.baseSha) {
     throw new Error(`GitHub ${baseBranch} moved since this work began. Refresh/reconcile before publishing.`);
   }
-
-  const existingTargetSha = await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
   if (existingTargetSha && existingTargetSha !== change.baseSha) {
-    if (change.commitSha && existingTargetSha === change.commitSha) {
-      return { branch: targetBranch, head: existingTargetSha, alreadyPublished: true, changeId: change.id };
+    // Pull-request publication deliberately continues when its publication
+    // branch already points at our previously-created commit: retry must still
+    // ensure the PR itself exists and persist its receipt.
+    if (!(strategy === 'pull-request' && change.commitSha && existingTargetSha === change.commitSha)) {
+      throw new Error(`GitHub branch ${targetBranch} diverged from the verified base. Refusing a non-fast-forward publication.`);
     }
-    throw new Error(`GitHub branch ${targetBranch} diverged from the verified base. Refusing a non-fast-forward publication.`);
   }
 
   const commitSha = change.commitSha || await createCommitFromFiles({
@@ -301,7 +329,6 @@ export async function publishVerifiedChangeSet(input: {
   change.currentHead = commitSha;
   await repository.putChangeSet(change);
 
-  const strategy = input.strategy || 'direct';
   if (strategy === 'pull-request') {
     const publishBranch = targetBranch === baseBranch
       ? safeBranch(`orlynx/publish-${task.id.replace(/[^A-Za-z0-9._-]+/g, '-').slice(-36)}`)
@@ -331,7 +358,30 @@ export async function publishVerifiedChangeSet(input: {
     change.pushedAt = new Date().toISOString();
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
-    return { branch: targetBranch, head: commitSha, changeId: change.id };
+
+    let workspaceReconciled = false;
+    if (targetBranch === baseBranch) {
+      try {
+        const reconciled = await bridgeRequest<{ state?: string; head?: string }>(
+          input.workspaceId,
+          'git.reconcile-published',
+          {
+            approved: true,
+            branch: baseBranch,
+            expectedHead: change.baseSha,
+            publishedHead: commitSha,
+            files: change.files.map((file) => file.path),
+          },
+          120_000,
+        );
+        workspaceReconciled = reconciled.state === 'reconciled' && reconciled.head === commitSha;
+      } catch {
+        // Publication already succeeded remotely. Never turn a safe push into a
+        // false failure because the workspace changed concurrently; the next
+        // mutable task will reconcile through normal Git freshness checks.
+      }
+    }
+    return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
     if (targetBranch !== baseBranch || (statusCode !== 403 && statusCode !== 422)) throw error;
