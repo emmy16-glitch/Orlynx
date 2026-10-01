@@ -100,6 +100,10 @@ export interface ControlPlaneRepository {
   deleteMessage(id: string, sessionId: string): Promise<void>;
   listMessages(sessionId: string): Promise<ChatMessage[]>;
   putTask(value: TaskRecord): Promise<void>;
+  /** Fold persisted message.delta events into partial_text in sequence order under a row lock. */
+  checkpointTaskPartialFromEvents(taskId: string, throughSequence: number): Promise<boolean>;
+  /** Replace the transient partial with the engine's authoritative complete response without clobbering harness state. */
+  setTaskPartialText(taskId: string, text: string, updatedAt: string): Promise<boolean>;
   completeDirectTaskIfUnchanged(value: TaskRecord, expectedSteeringRevision: number): Promise<boolean>;
   listTasks(sessionId: string): Promise<TaskRecord[]>;
   /** Durable sessions with executable queued/running work. Human-wait states are intentionally excluded so they cannot starve recovery sweeps. */
@@ -457,6 +461,63 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,verification_backend,verification_run_id,verification_url,verification_workflow,harness_state,created_at,updated_at)
       VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.verificationBackend || null},${v.verificationRunId || null},${v.verificationUrl || null},${v.verificationWorkflow || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
       ON CONFLICT (id) DO UPDATE SET workspace_id=EXCLUDED.workspace_id,adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
+  }
+  async checkpointTaskPartialFromEvents(taskId: string, throughSequence: number) {
+    await this.initialize();
+    const safeSequence = Math.max(0, Math.floor(Number(throughSequence) || 0));
+    if (!safeSequence) return false;
+    // Bridge WebSocket callbacks may overlap. Reconstruct from the authoritative
+    // event ledger while locking this task row, rather than appending a caller's
+    // in-memory delta. A concurrent writer will observe the advanced cursor and
+    // fold only the still-missing events.
+    const updated = rows<Record<string, unknown>>(await this.sql.query(
+      `WITH locked AS MATERIALIZED (
+         SELECT id, COALESCE((harness_state->>'lastPartialSequence')::bigint,0) AS last_sequence
+           FROM tasks
+          WHERE id=$1
+          FOR UPDATE
+       ),
+       pending AS (
+         SELECT e.sequence,e.timestamp,COALESCE(e.payload->>'delta','') AS delta
+           FROM task_events e
+           CROSS JOIN locked l
+          WHERE e.task_id=$1
+            AND e.type='message.delta'
+            AND e.sequence>l.last_sequence
+            AND e.sequence<=$2
+          ORDER BY e.sequence
+       ),
+       aggregated AS (
+         SELECT string_agg(delta,'' ORDER BY sequence) AS chunk,
+                max(sequence) AS max_sequence,
+                (array_agg(timestamp ORDER BY sequence DESC))[1] AS partial_updated_at
+           FROM pending
+       )
+       UPDATE tasks t
+          SET partial_text=COALESCE(t.partial_text,'') || COALESCE(a.chunk,''),
+              harness_state=jsonb_set(
+                jsonb_set(COALESCE(t.harness_state,'{}'::jsonb),'{lastPartialSequence}',to_jsonb(a.max_sequence),true),
+                '{partialUpdatedAt}',to_jsonb(a.partial_updated_at::text),true
+              ),
+              updated_at=GREATEST(t.updated_at,a.partial_updated_at)
+         FROM aggregated a
+        WHERE t.id=$1
+          AND a.max_sequence IS NOT NULL
+       RETURNING t.id`,
+      [taskId, safeSequence],
+    ));
+    return updated.length > 0;
+  }
+  async setTaskPartialText(taskId: string, text: string, updatedAt: string) {
+    await this.initialize();
+    return rows<Record<string, unknown>>(await this.sql`
+      UPDATE tasks
+         SET partial_text=${text},
+             updated_at=GREATEST(updated_at,${updatedAt}::timestamptz)
+       WHERE id=${taskId}
+         AND state NOT IN ('completed','failed','cancelled')
+       RETURNING id
+    `).length > 0;
   }
   async completeDirectTaskIfUnchanged(v: TaskRecord, expectedSteeringRevision: number) {
     await this.initialize();

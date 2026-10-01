@@ -418,6 +418,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const responseText = String(message.result?.responseText || '');
+          // RESULT carries the engine's authoritative complete assistant text.
+          // Store it with a narrow partial-text update before verification or
+          // reflection begins, so a reconnect cannot leave the durable snapshot
+          // behind the final visible response.
+          if (task && responseText) {
+            await repository.setTaskPartialText(task.id, responseText, now);
+            task.partialText = responseText;
+          }
           const engineSessionId = String(message.result?.engineSessionId || command.payload.engineSessionId || '');
           if (engineSessionId) {
             const adapterId = String(command.payload.adapterId || 'opencode');
@@ -1299,40 +1307,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           payload,
         });
 
-        // Workspace text is not merely transport telemetry. Checkpoint each
-        // canonical delta into the durable task so refresh/API restart can
-        // reconstruct the visible partial answer without waiting for finalization.
+        // Workspace text is not merely transport telemetry. Fold persisted
+        // deltas from the authoritative event ledger while locking the task row.
+        // Async WebSocket callbacks can overlap; read/modify/write here used to
+        // lose chunks under bursty streaming. The repository cursor makes replay
+        // and concurrent delivery idempotent and sequence-correct.
         if (eventTaskId && type === 'message.delta' && typeof payload.delta === 'string' && payload.delta) {
-          const deltaTask = await repository.getTask(eventTaskId);
-          if (deltaTask) {
-            deltaTask.harness ||= createHarnessCheckpoint({
-              prompt: deltaTask.prompt,
-              mode: deltaTask.mode || 'build',
-              permission: deltaTask.tempPermission || deltaTask.permission || 'full',
-              plane: deltaTask.plane || 'workspace',
-            });
-            const lastSequence = Number(deltaTask.harness.lastPartialSequence || 0);
-            if (persisted.sequence > lastSequence) {
-              const delta = String(payload.delta);
-              const offset = Number(payload.offset);
-              let partial = String(deltaTask.partialText || '');
-              if (Number.isInteger(offset) && offset >= 0 && offset <= partial.length) {
-                if (partial.slice(offset, offset + delta.length) !== delta) {
-                  partial = partial.slice(0, offset) + delta;
-                }
-              } else if (!partial.endsWith(delta)) {
-                partial += delta;
-              }
-              deltaTask.partialText = partial;
-              deltaTask.harness = {
-                ...deltaTask.harness,
-                lastPartialSequence: persisted.sequence,
-                partialUpdatedAt: persisted.timestamp,
-              };
-              deltaTask.updatedAt = persisted.timestamp;
-              await repository.putTask(deltaTask);
-            }
-          }
+          await repository.checkpointTaskPartialFromEvents(eventTaskId, persisted.sequence);
         }
       }
     } catch { console.warn('[bridge] message persistence failed'); ws.close(1011, 'persistence failed'); }
