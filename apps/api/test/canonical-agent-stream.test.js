@@ -118,13 +118,18 @@ test('refresh restores current failover state and terminal snapshot resolves sta
   assert.equal(selectActivities(terminal).filter(item => item.state === 'running').length, 0);
 });
 
-test('workspace bridge checkpoints streamed partial text by persisted event sequence', () => {
+test('workspace bridge checkpoints streamed partial text atomically from the event ledger', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(gateway, /const persisted = await persistLiveEvent/);
   assert.match(gateway, /type === 'message\.delta'/);
-  assert.match(gateway, /persisted\.sequence > lastSequence/);
-  assert.match(gateway, /lastPartialSequence: persisted\.sequence/);
-  assert.match(gateway, /partialUpdatedAt: persisted\.timestamp/);
+  assert.match(gateway, /checkpointTaskPartialFromEvents\(eventTaskId, persisted\.sequence\)/);
+  assert.doesNotMatch(gateway, /partial\.slice\(offset/);
+  assert.match(storage, /e\.sequence>l\.last_sequence/);
+  assert.match(storage, /string_agg\(delta,'' ORDER BY sequence\)/);
+  assert.match(storage, /FOR UPDATE/);
+  assert.match(bridge, /responseOffset/);
 });
 
 test('React consumes the canonical stream instead of a raw event switchboard', () => {
