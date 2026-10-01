@@ -65,14 +65,18 @@ if (e2bConfigured()) {
 }
 
 if (runnerHosts().length) {
-  void runnerPoolSnapshot()
+  // Free Render runners may all be asleep when the API wakes. This startup
+  // smoke runs in the background, so make it cold-start-aware before recording
+  // a broker failure. Otherwise the normal probe can cache five timeouts and
+  // depress runner scoring before rankedRunnerHosts() gets a chance to wake them.
+  void runnerPoolSnapshot(true)
     .then((snapshot) => {
       const healthy = snapshot.filter((item) => item.health.ok && !item.health.draining && item.health.available > 0);
       if (healthy.length) {
         noteComputeSuccess('orlynx-runner', Math.min(...healthy.map((item) => item.health.latencyMs || 1)));
         console.log(`[startup-smoke] runner-pool healthy=${healthy.length}/${snapshot.length}`);
       } else {
-        noteComputeFailure('orlynx-runner', 'No runner host was immediately healthy.');
+        noteComputeFailure('orlynx-runner', 'No runner host recovered through the startup wake probe.');
         console.warn(`[startup-smoke] runner-pool healthy=0/${snapshot.length}`);
       }
     })
