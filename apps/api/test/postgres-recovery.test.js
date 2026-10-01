@@ -148,6 +148,46 @@ test('completed preparation and ready adapter wake queued work without a browser
   assert.equal(commands[1].payload.taskId, 'wake');
 });
 
+test('concurrent multi-part deltas fold into durable partial text exactly once and in sequence', async t => {
+  const { repository, task, now } = await fixture(t);
+  await repository.putTask({ ...task('stream', 'running'), partialText: '', harness: {} });
+
+  const first = await repository.appendEvent({
+    eventId: 'delta-1',
+    sessionId: 's',
+    taskId: 'stream',
+    runId: 'run-stream',
+    type: 'message.delta',
+    payload: { delta: 'Hello ', messagePartId: 'part-a', offset: 0, responseOffset: 0 },
+    timestamp: now,
+  });
+  const second = await repository.appendEvent({
+    eventId: 'delta-2',
+    sessionId: 's',
+    taskId: 'stream',
+    runId: 'run-stream',
+    type: 'message.delta',
+    payload: { delta: 'world', messagePartId: 'part-b', offset: 0, responseOffset: 6 },
+    timestamp: new Date(Date.parse(now) + 1).toISOString(),
+  });
+
+  await Promise.all([
+    repository.checkpointTaskPartialFromEvents('stream', second.sequence),
+    repository.checkpointTaskPartialFromEvents('stream', first.sequence),
+  ]);
+  let restored = await repository.getTask('stream');
+  assert.equal(restored.partialText, 'Hello world');
+  assert.equal(restored.harness.lastPartialSequence, second.sequence);
+
+  await repository.checkpointTaskPartialFromEvents('stream', second.sequence);
+  restored = await repository.getTask('stream');
+  assert.equal(restored.partialText, 'Hello world');
+
+  await repository.setTaskPartialText('stream', 'Hello world!', new Date(Date.parse(now) + 2).toISOString());
+  restored = await repository.getTask('stream');
+  assert.equal(restored.partialText, 'Hello world!');
+});
+
 test('event sequence and payload commit together; duplicate replay remains idempotent', async t => {
   const { repository, now } = await fixture(t);
   const first = { eventId: 'event-1', sessionId: 's', runId: 'r', type: 'run.state', payload: { state: 'queued' }, timestamp: now };
