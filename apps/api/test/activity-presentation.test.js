@@ -292,6 +292,17 @@ describe('canonical agent activity presentation', () => {
     assert.equal(rows[3].title, 'Service health check passed');
   });
 
+  it('workspace Bridge classifies commands from actual intent rather than incidental words', () => {
+    const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+    const start = bridge.indexOf('function toolSemanticType');
+    const end = bridge.indexOf('  const emitTextDelta', start);
+    const classifier = bridge.slice(start, end);
+    assert.match(classifier, /const testCommand =/);
+    assert.match(classifier, /const buildCommand =/);
+    assert.match(classifier, /npm\|pnpm\|yarn\|bun/);
+    assert.doesNotMatch(classifier, /\/build\|compile\|tsc\|webpack\|vite build\|next build\/\.test\(text\)/);
+  });
+
   it('workspace tool streaming preserves exit code and suppresses transient error flashes', () => {
     const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
     assert.match(bridge, /metadata\.exitCode \?\? metadata\.exit_code \?\? metadata\.code/);
