@@ -64,13 +64,30 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
   }
 
   const explicitTarget = publishTargetBranchFor(normalized, branch);
-  const direct = /^(?:git\s+)?(?:push|publish)\b/.test(normalized)
-    && !/\b(?:don't|do not|dont|never)\s+(?:push|publish)\b/.test(normalized);
-  if (!direct) return null;
-  // A named branch is first-class publication intent. The control plane will
-  // validate/create it; do not silently collapse it back to the session branch.
-  if (explicitTarget) return 'direct';
-  if (/^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?[.!?\s]*$/.test(normalized)) return 'direct';
+  const negated = /\b(?:don't|do not|dont|never)\s+(?:push|publish|commit|merge|deploy)\b/.test(normalized);
+  if (negated) return null;
+  const direct = /^(?:git\s+)?(?:push|publish)\b/.test(normalized);
+  if (direct) {
+    // A named branch is first-class publication intent. The control plane will
+    // validate/create it; do not silently collapse it back to the session branch.
+    if (explicitTarget) return 'direct';
+    if (/^(?:git\s+)?(?:push|publish)(?:\s+(?:it|this|that|the\s+(?:change|changes|commit)))?[.!?\s]*$/.test(normalized)) return 'direct';
+    return null;
+  }
+  // Follow-up publication variants. These are short imperative follow-ups that
+  // refer to the existing session work ("also push this", "fix it and push").
+  // They execute the same verified control-plane publication as "push to main"
+  // instead of being sent to the model as ordinary chat (the model cannot
+  // publish: publication is control-plane-only). Kept intentionally narrow so
+  // longer feature requests still route to the agent.
+  if (normalized.length > 90) return null;
+  if (/^(?:also\s+)?push\s+(?:it|this|that|everything|the\s+changes|my\s+changes|these\s+changes)[.!?\s]*$/.test(normalized)) return 'direct';
+  if (/^(?:put|push)\s+(?:everything|it|this|that|all(?:\s+of\s+this)?)\s+(?:on|onto|to)\s+(?:main|master)[.!?\s]*$/.test(normalized)) return 'direct';
+  if (/^(?:finish|complete)(?:\s+(?:this|it|everything|up))?\s+and\s+(?:put\s+(?:it|everything)\s+on\s+(?:main|master)|push(?:\s+(?:it|this))?|deploy)[.!?\s]*$/.test(normalized)) return 'direct';
+  if (/^fix\s+(?:it|this|that)(?:\s+up)?\s+and\s+push(?:\s+(?:it|this))?[.!?\s]*$/.test(normalized)) return 'direct';
+  if (/^(?:commit|commit\s+(?:this|it|that|these\s+changes|the\s+changes))[.!?\s]*$/.test(normalized)) return 'direct';
+  if (/^(?:merge\s+(?:it|this|that|the\s+(?:pr|pull\s+request)))[.!?\s]*$/.test(normalized)) return 'pull-request';
+  if (/^(?:deploy\s+(?:it|this|that|what\s+you\s+just\s+(?:fixed|built|did))|finish\s+and\s+deploy)[.!?\s]*$/.test(normalized)) return 'direct';
   return null;
 }
 

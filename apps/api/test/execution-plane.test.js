@@ -105,6 +105,20 @@ test('explicit publish language is typo-tolerant and preserves named branch targ
   assert.equal(publishIntentFor('create a PR', 'main'), 'pull-request');
   assert.equal(publishIntentFor('explain how git push works', 'main'), null);
   assert.equal(publishIntentFor("don't push until I approve", 'main'), null);
+  // Follow-up variants bind to the same verified publication path.
+  assert.equal(publishIntentFor('push it', 'main'), 'direct');
+  assert.equal(publishIntentFor('also push this', 'main'), 'direct');
+  assert.equal(publishIntentFor('push the changes', 'main'), 'direct');
+  assert.equal(publishIntentFor('put everything on main', 'main'), 'direct');
+  assert.equal(publishIntentFor('finish and put it on main', 'main'), 'direct');
+  assert.equal(publishIntentFor('fix it and push', 'main'), 'direct');
+  assert.equal(publishIntentFor('commit this', 'main'), 'direct');
+  assert.equal(publishIntentFor('merge it', 'main'), 'pull-request');
+  assert.equal(publishIntentFor('deploy it', 'main'), 'direct');
+  assert.equal(publishIntentFor('finish and deploy', 'main'), 'direct');
+  assert.equal(publishIntentFor('deploy what you just fixed', 'main'), 'direct');
+  assert.equal(publishIntentFor('Implement the login fix with tests', 'main'), null);
+  assert.equal(publishTargetBranchFor('put everything on main', 'feature/demo'), 'main');
   assert.equal(publishTargetBranchFor('push to branch fix/foo', 'main'), 'fix/foo');
   assert.equal(publishTargetBranchFor('push to origin/release/v2', 'main'), 'release/v2');
   assert.equal(publishTargetBranchFor('push to main', 'feature/demo'), 'main');
