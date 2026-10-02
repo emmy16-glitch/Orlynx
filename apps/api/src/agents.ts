@@ -598,7 +598,7 @@ async function failoverDirectTaskToWorkspace(
 
   run.plane = 'workspace';
   run.state = 'queued';
-  run.activity = 'Switching to resilient compute';
+  run.activity = 'Direct AI unavailable · switching to workspace';
   run.finishedAt = undefined;
   run.errorKind = undefined;
   store.save();
@@ -608,14 +608,14 @@ async function failoverDirectTaskToWorkspace(
     state: 'queued',
     plane: 'workspace',
     failover: true,
-    message: 'Switching compute…',
+    message: 'Direct AI runtime unavailable · switching to workspace compute…',
   }, run.id);
   emit(session.id, 'activity.progress', {
     taskId: task.id,
     sourceType: 'agent.runtime.failover',
     from: 'direct',
     to: workspace.provider,
-    text: 'Switching compute…',
+    text: `Direct AI runtime unavailable · switching to ${workspace.provider} workspace…`,
   }, run.id);
 
   await scheduleWorkspacePreparation({
