@@ -247,7 +247,7 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
-  it('keeps internal Orlynx/model reasoning out of the user activity stream', () => {
+  it('shows safe Orlynx/model diagnostic dialogue while keeping private reflection telemetry hidden', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -259,9 +259,15 @@ describe('canonical agent activity presentation', () => {
         reflectionId: 2,
         text: 'Model → Orlynx: check the provider forwarding layer instead of restarting the app.',
       }),
+      event(3, 'activity.progress', {
+        sourceType: 'agent.reflection',
+        text: 'private internal reflection telemetry',
+      }),
     ]);
-    assert.deepEqual(rows, []);
-    assert.deepEqual(toThreadParts(rows), []);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Investigation');
+    assert.deepEqual(rows[0].evidence?.dialogue?.map((line) => line.side), ['orlynx', 'model']);
+    assert.equal(toThreadParts(rows).filter((part) => part.title === 'Investigation').length, 1);
   });
 
   it('sanitizes historical event payloads before replay or reflection reuse', () => {
@@ -281,7 +287,7 @@ describe('canonical agent activity presentation', () => {
     assert.equal(redactEventString('Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456'), 'Authorization: Bearer [redacted-github-token]');
   });
 
-  it('dedupes verified-memory activity while keeping private dialogue hidden', () => {
+  it('dedupes verified-memory activity while preserving one safe Investigation dialogue', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -302,10 +308,14 @@ describe('canonical agent activity presentation', () => {
         text: 'Applied 3 verified project lessons.',
       }),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Applied verified project lessons');
-    assert.equal(rows[0].summary, '3 lessons');
-    assert.equal(rows[0].evidence?.sourceType, 'agent.memory');
+    assert.equal(rows.length, 2);
+    const investigation = rows.find((row) => row.title === 'Investigation');
+    const memory = rows.find((row) => row.title === 'Applied verified project lessons');
+    assert.ok(investigation);
+    assert.deepEqual(investigation.evidence?.dialogue?.map((line) => line.side), ['orlynx', 'model']);
+    assert.ok(memory);
+    assert.equal(memory.summary, '3 lessons');
+    assert.equal(memory.evidence?.sourceType, 'agent.memory');
   });
 
   it('does not mislabel arbitrary build/curl prose as Build or health checks', () => {
@@ -387,6 +397,50 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /Connecting Orlynx bridge…/);
     assert.match(workspaces, /Starting OpenCode…/);
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
+  });
+
+  it('keeps multiple reasoning cycles in one stable Investigation card and preserves the stage', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 1,
+        investigationId: 'investigation-1',
+        investigationStage: 'investigating',
+        text: 'Orlynx → Model: localhost is healthy but Preview is unknown.',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 1,
+        investigationId: 'investigation-1',
+        investigationStage: 'testing',
+        text: 'Model → Orlynx: check forwarding metadata.',
+      }),
+      event(3, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 2,
+        investigationId: 'investigation-1',
+        investigationStage: 'verifying',
+        text: 'Orlynx → Model: forwarding exists; verify the external URL.',
+      }),
+    ]);
+    const parts = toThreadParts(rows);
+    const investigation = parts.filter((part) => part.title === 'Investigation');
+    assert.equal(investigation.length, 1);
+    assert.equal(investigation[0].item.evidence?.investigationId, 'investigation-1');
+    assert.equal(investigation[0].item.evidence?.investigationStage, 'verifying');
+  });
+
+  it('renders detailed safe Investigation evidence without exposing hidden chain-of-thought', () => {
+    const adapter = fs.readFileSync(new URL('../../web/src/agent-stream/adapter.ts', import.meta.url), 'utf8');
+    const store = fs.readFileSync(new URL('../../web/src/agent-stream/store.ts', import.meta.url), 'utf8');
+    const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    assert.doesNotMatch(adapter, /sourceType === 'agent\.dialogue\.orlynx'.*return \[\]/);
+    assert.match(store, /investigationQuestion/);
+    assert.match(store, /investigationEvidence/);
+    assert.match(parts, /Current hypothesis/);
+    assert.match(parts, /Evidence \(/);
+    assert.match(parts, /Outcome/);
+    assert.match(parts, /Reviewing Orlynx’s evidence and choosing the next check/);
   });
 
   it('uses one UI font family and Investigation never creates a nested mobile scroll trap', () => {

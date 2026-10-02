@@ -182,6 +182,32 @@ export interface HarnessPlanItem {
 
 export type VerificationFailureClass = 'test' | 'build' | 'infrastructure' | 'unknown';
 
+export type InvestigationStage =
+  | 'unknown'
+  | 'investigating'
+  | 'hypothesis'
+  | 'testing'
+  | 'repairing'
+  | 'verifying'
+  | 'resolved'
+  | 'blocked';
+
+export interface HarnessInvestigation {
+  /** Stable investigation identity across retries/reconnects for one unresolved issue. */
+  id: string;
+  stage: InvestigationStage;
+  question: string;
+  hypothesis?: string;
+  nextCheck?: string;
+  evidence: string[];
+  repairAction?: string;
+  outcome?: string;
+  attempt: number;
+  startedAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+}
+
 export interface HarnessCheckpoint {
   phase: HarnessPhase;
   step: number;
@@ -196,6 +222,8 @@ export interface HarnessCheckpoint {
   lastProgressAt?: string;
   lastCheckpointAt?: string;
   salvageAttempts: number;
+  /** Durable OpenHands/LangGraph-style Investigation state. */
+  investigation?: HarnessInvestigation;
   /** Model-guided reason/act/observe cycles after an unexpected result. */
   reflectionAttempts?: number;
   finalSynthesisAttempts?: number;

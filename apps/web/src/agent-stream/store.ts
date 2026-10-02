@@ -420,8 +420,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       // Terminal output is already represented by the tool/PTY surfaces. It
       // must not become another generic "Thought" row.
       if (event.sourceType === 'pty.output') return;
-      // Harness/model dialogue is durable diagnostic evidence, not user-facing chat.
-      if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model' || event.sourceType === 'agent.reflection') return;
+      // Private reflection telemetry stays hidden. Safe Orlynx ↔ Model
+      // diagnostic dialogue is handled below as one visible Investigation row.
+      if (event.sourceType === 'agent.reflection') return;
       const prior = state.activities[event.activityId];
 
       if (event.sourceType === 'agent.plan') {
@@ -484,15 +485,26 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           ? event.detail as Record<string, unknown>
           : {};
         const reflectionId = Math.max(1, Number(detail.reflectionId || 1) || 1);
+        const priorEvidenceBase = prior?.evidence && typeof prior.evidence === 'object'
+          ? prior.evidence as Record<string, unknown>
+          : {};
+        const investigationId = String(detail.investigationId || priorEvidenceBase.investigationId || '').trim();
+        const investigationStage = String(detail.investigationStage || priorEvidenceBase.investigationStage || '').trim();
+        const investigationQuestion = String(detail.investigationQuestion || priorEvidenceBase.investigationQuestion || '').trim();
+        const investigationFailureClass = String(detail.investigationFailureClass || priorEvidenceBase.investigationFailureClass || '').trim();
+        const investigationEvidence = Array.isArray(detail.investigationEvidence)
+          ? detail.investigationEvidence.map(String).filter(Boolean).slice(-8)
+          : Array.isArray(priorEvidenceBase.investigationEvidence)
+            ? (priorEvidenceBase.investigationEvidence as unknown[]).map(String).filter(Boolean).slice(-8)
+            : [];
+        const investigationOutcome = String(detail.investigationOutcome || priorEvidenceBase.investigationOutcome || '').trim();
         const side = event.sourceType.endsWith('.model') ? 'model' : 'orlynx';
         const rawText = String(detail.text || event.text || '');
         const text = rawText
           .replace(/^Orlynx\s*[→>-]\s*Model:\s*/i, '')
           .replace(/^Model\s*[→>-]\s*Orlynx:\s*/i, '')
           .trim();
-        const priorEvidence = prior?.evidence && typeof prior.evidence === 'object'
-          ? prior.evidence as Record<string, unknown>
-          : {};
+        const priorEvidence = priorEvidenceBase;
         const priorDialogue = Array.isArray(priorEvidence.dialogue)
           ? priorEvidence.dialogue.filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
           : [];
@@ -518,6 +530,12 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           evidence: {
             sourceType: 'agent.reflection',
             reflectionId,
+            ...(investigationId ? { investigationId } : {}),
+            ...(investigationStage ? { investigationStage } : {}),
+            ...(investigationQuestion ? { investigationQuestion } : {}),
+            ...(investigationFailureClass ? { investigationFailureClass } : {}),
+            ...(investigationEvidence.length ? { investigationEvidence } : {}),
+            ...(investigationOutcome ? { investigationOutcome } : {}),
             dialogue,
             ...(latestOrlynx?.text ? { orlynxText: String(latestOrlynx.text) } : {}),
             ...(latestModel?.text ? { modelText: String(latestModel.text) } : {}),

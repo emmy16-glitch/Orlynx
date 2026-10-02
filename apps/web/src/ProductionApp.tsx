@@ -367,6 +367,7 @@ export default function ProductionApp() {
   const seqRef = useRef(0);
   const seenRef = useRef(new Set<string>());
   const currentSessionRef = useRef<any>(null);
+  const optimisticMessagesRef = useRef(new Map<string, any>());
   const pendingRef = useRef<any[]>([]);
   const rafRef = useRef<number | null>(null);
   const runRef = useRef<any>(null);
@@ -460,7 +461,14 @@ export default function ProductionApp() {
       // Ignore a response for a conversation the user has already left.
       if (currentSessionRef.current?.id && currentSessionRef.current.id !== id) return;
 
-      setMessages(messageData); setChanges(changeData); setAttachments(attachmentData); setRuns(runData); setTasks(taskData);
+      setMessages(() => {
+        const durableIds = new Set(messageData.map((message: any) => String(message.id)));
+        const optimistic = [...optimisticMessagesRef.current.values()]
+          .filter((message: any) => !durableIds.has(String(message.id)));
+        return [...messageData, ...optimistic]
+          .sort((a: any, b: any) => Date.parse(String(a.createdAt || '')) - Date.parse(String(b.createdAt || '')));
+      });
+      setChanges(changeData); setAttachments(attachmentData); setRuns(runData); setTasks(taskData);
       const latestRun = runData.slice(-1)[0] || null;
       setLastRun(latestRun); runRef.current = latestRun;
 
@@ -559,7 +567,7 @@ export default function ProductionApp() {
   const openSession = useCallback(async (record: any) => {
     sourceRef.current?.close();
     seqRef.current = 0;
-    seenRef.current = new Set(); pendingRef.current = []; setAgentStream(emptyAgentStreamState()); setPushReview(null);
+    seenRef.current = new Set(); pendingRef.current = []; optimisticMessagesRef.current.clear(); setAgentStream(emptyAgentStreamState()); setPushReview(null);
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
@@ -1179,6 +1187,19 @@ export default function ProductionApp() {
     setNewActivity(false);
     setSending(true); setError('');
     const clientId = uid();
+    const optimisticMessage = {
+      id: clientId,
+      sessionId: session.id,
+      role: 'user',
+      text,
+      createdAt: new Date().toISOString(),
+      optimistic: true,
+      deliveryState: 'sending',
+    };
+    optimisticMessagesRef.current.set(clientId, optimisticMessage);
+    setMessages((current: any[]) => current.some((message: any) => message.id === clientId)
+      ? current
+      : [...current, optimisticMessage]);
     const messageBody = JSON.stringify({
       text,
       clientId,
@@ -1230,6 +1251,12 @@ export default function ProductionApp() {
 
     try {
       const result = await admitMessage();
+      optimisticMessagesRef.current.delete(clientId);
+      setMessages((current: any[]) => current.map((message: any) =>
+        message.id === clientId
+          ? { ...(result.message || message), optimistic: false, deliveryState: 'sent' }
+          : message
+      ));
       if (!overrideText) { setComposer(''); try { localStorage.removeItem(draftKey(session.id)); } catch {} }
       setTempFullAccess(false);
       setRuns((current: any[]) => [...current.filter((candidate: any) => candidate.id !== result.run?.id), result.run].filter(Boolean));
@@ -1237,7 +1264,13 @@ export default function ProductionApp() {
       if (result.plane === 'direct') setWorkspaceReadNotice('');
       await refreshSession(session.id);
       return true;
-    } catch (error: any) { setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI')); return false; }
+    } catch (error: any) {
+      const failed = { ...(optimisticMessagesRef.current.get(clientId) || optimisticMessage), deliveryState: 'failed' };
+      optimisticMessagesRef.current.set(clientId, failed);
+      setMessages((current: any[]) => current.map((message: any) => message.id === clientId ? failed : message));
+      setError((error.message || 'Orlynx AI could not accept the task. The draft is preserved.').replace(/OpenCode/g, 'Orlynx AI'));
+      return false;
+    }
     finally { submittingRef.current = false; setSending(false); }
   }
 
@@ -1410,6 +1443,22 @@ export default function ProductionApp() {
   const workspaceReady = session?.workspace?.state === 'ready';
   const workspacePreparing = Boolean(session?.workspace && !['ready', 'failed'].includes(session.workspace.state));
   const activities = useMemo(() => selectActivities(agentStream), [agentStream]);
+  const liveChangeFiles = useMemo(() => {
+    const durableIds = new Set(changes.map((change: any) => String(change.id)));
+    const byPath = new Map<string, any>();
+    for (const activity of activities) {
+      if (activity.category !== 'file') continue;
+      const evidence = activity.evidence && typeof activity.evidence === 'object' ? activity.evidence as Record<string, any> : {};
+      const files = Array.isArray(evidence.files) ? evidence.files : [];
+      if (!files.length) continue;
+      if (evidence.changeId && durableIds.has(String(evidence.changeId))) continue;
+      for (const file of files) {
+        if (!file || typeof file !== 'object' || !String(file.path || '').trim()) continue;
+        byPath.set(String(file.path), { ...file, runId: activity.runId });
+      }
+    }
+    return [...byPath.values()];
+  }, [activities, changes]);
   const transcriptActivities = useMemo(() => chatActivities(activities), [activities]);
   const liveReplies = useMemo(() => selectLiveReplies(agentStream, messages), [agentStream, messages]);
   // Thread projection: each run owns its message stream + work parts, so
@@ -1645,7 +1694,7 @@ export default function ProductionApp() {
                   return <div className="thread-turn" data-state={turn.state} key={turn.key}>
                     {turnUserMessages.map((userMessage: any, userIndex: number) => {
                       const userText = visibleChatText('user', userMessage.text, '');
-                      return <article className="message-row user-message" data-continuation={userIndex > 0 ? 'true' : undefined} key={userMessage.id}><div className="user-message-stack"><div className="message-meta user-message-meta">{userIndex > 0 && <span className="continuation-label">Follow-up</span>}<time>{new Date(userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(userMessage.text || ''))} /></div></article>;
+                      return <article className="message-row user-message" data-continuation={userIndex > 0 ? 'true' : undefined} key={userMessage.id}><div className="user-message-stack"><div className="message-meta user-message-meta">{userIndex > 0 && <span className="continuation-label">Follow-up</span>}<time>{new Date(userMessage.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>{userMessage.deliveryState === 'sending' && <span className="message-delivery is-sending">Sending…</span>}{userMessage.deliveryState === 'failed' && <span className="message-delivery is-failed">Not sent</span>}</div><div className="user-message-bubble"><UserMessageText text={userText} /></div><UserMessageActions text={userText} onEdit={() => editAndResend(String(userMessage.text || ''))} /></div></article>;
                     })}
                     {(durable || turn.liveReply || parts.length > 0 || turnActive) && <article className="message-row assistant-message"><div className="message-content"><div className="message-meta assistant-message-meta">{durable && <time>{new Date(durable.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}{!durable && turn.liveReply && <span className="live-reply-indicator">{turn.liveReply.state === 'streaming' ? 'Responding…' : turn.liveReply.state === 'failed' ? 'Partial response · interrupted' : turn.liveReply.state === 'cancelled' ? 'Partial response · stopped' : 'Partial response'}</span>}{!durable && !turn.liveReply && turnActive && <span className="live-reply-indicator">{turnStatusLabel}</span>}</div>
                       {useInterleavedFlow ? <div className="turn-flow" role="group" aria-label="Response and work in chronological order">{turn.timeline.map((entry) => {
@@ -1672,7 +1721,7 @@ export default function ProductionApp() {
               </section>}
               {tab === 'files' && <section className="screen-section files-screen"><div className="screen-heading"><div><p className="eyebrow">REPOSITORY</p><h1>Files</h1><p className="screen-subtitle">Browse {session.project} on {session.branch}.</p></div><label className="search-field"><Icon name="search" /><input value={fileFilter} onChange={(event) => setFileFilter(event.target.value)} placeholder="Filter this folder" /></label></div>{openedFile ? <CodeViewer file={openedFile} onBack={() => setOpenedFile(null)} /> : <><div className="breadcrumbs"><button onClick={() => openFolder('')}>{session.project}</button>{folder.split('/').filter(Boolean).map((part, index, parts) => <React.Fragment key={`${part}-${index}`}><Icon name="chevron" size={12} /><button onClick={() => openFolder(parts.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="file-list">{fileBusy ? <div className="loading-screen"><Spinner /><p>Loading files…</p></div> : files.filter((item: any) => item.name.toLowerCase().includes(fileFilter.toLowerCase())).map((item: any) => <button className="file-row" key={item.name} onClick={() => item.dir ? openFolder([folder, item.name].filter(Boolean).join('/')) : openFile([folder, item.name].filter(Boolean).join('/'))}><span className="file-kind"><Icon name={item.dir ? 'folder' : 'file'} /></span><span>{item.name}{item.dir ? '/' : ''}</span>{item.modified && <span className="modified-indicator">Modified</span>}<Icon name="chevron" size={14} /></button>)}</div></>}</section>}
               {tab === 'changes' && <section className="screen-section changes-screen">
-                {changes.length > 0 && changes.every((change: any) => Boolean(change.pushedAt)) ? <div className="push-success-screen">
+                {changes.length > 0 && liveChangeFiles.length === 0 && changes.every((change: any) => Boolean(change.pushedAt)) ? <div className="push-success-screen">
                   <span className="success-check"><Icon name="check" size={28} /></span>
                   <h1>{changes.some((change: any) => change.pullRequestUrl) ? 'Pull request created!' : 'Changes published!'}</h1>
                   <p>{changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)} files have been published safely to GitHub.</p>
@@ -1681,12 +1730,17 @@ export default function ProductionApp() {
                     : <a className="success-github-link" href={`https://github.com/${session.project}/tree/${encodeURIComponent(session.branch)}`} target="_blank" rel="noreferrer">View on GitHub <Icon name="external" /></a>}
                   <div className="success-next"><b>What's next?</b><button onClick={() => setTab('chat')}><Icon name="inbox" /><span>Continue working</span><Icon name="chevron" /></button>{integration.workspace?.previewAvailable && <button onClick={() => setTab('preview')}><Icon name="preview" /><span>Open preview</span><Icon name="chevron" /></button>}<a href={`https://github.com/${session.project}/compare/${encodeURIComponent(session.branch)}?expand=1`} target="_blank" rel="noreferrer"><Icon name="branch" /><span>Create pull request</span><Icon name="chevron" /></a></div>
                 </div> : <>
-                  <div className="changes-topbar"><button className="icon-button" onClick={() => setTab('chat')} aria-label="Back to chat">‹</button><h1>Changes ({changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0)} files)</h1></div>
-                  {!changes.length && <EmptyState title="No changes to review" hint="Changes will appear here after Orlynx updates the repository." />}
+                  <div className="changes-topbar"><button className="icon-button" onClick={() => setTab('chat')} aria-label="Back to chat">‹</button><h1>Changes ({changes.reduce((sum: number, change: any) => sum + (change.files?.length || 0), 0) + liveChangeFiles.length} files)</h1></div>
+                  {!changes.length && !liveChangeFiles.length && <EmptyState title="No changes yet" hint="Files appear here live as Orlynx edits the repository, then remain as verified change sets." />}
+                  {liveChangeFiles.length > 0 && <section className="change-set live-change-set">
+                    <div className="change-set-heading"><div><b>{liveChangeFiles.length} file{liveChangeFiles.length === 1 ? '' : 's'} changing now</b><span className="small">Streaming from the active run · final verified diff will remain here</span></div><Badge tone="wait">Live</Badge></div>
+                    <DiffSummary files={liveChangeFiles.map((file: any) => ({ path: file.path, action: file.action || 'modify' }))} />
+                    {liveChangeFiles.map((file: any) => <details className="diff-file" key={file.path}><summary><span><Icon name="file" size={14} />{file.path}</span><span className="diff-stats"><i>+{Number(file.additions || 0)}</i><i>−{Number(file.deletions || 0)}</i></span></summary><p className="diff-explanation">Live change evidence</p><pre>{file.diff || file.after || file.before || '(diff will appear when the change is finalized)'}</pre></details>)}
+                  </section>}
                   {changes.map((change: any) => <section className="change-set" key={change.id}>
                     <div className="change-set-heading"><div><b>{change.files.length} changed file{change.files.length === 1 ? '' : 's'}</b><span className="small">Base {change.baseSha?.slice(0, 7)}</span></div><Badge tone={change.pushedAt ? 'ok' : change.reviewState === 'pending' ? 'wait' : 'neutral'}>{change.pushedAt ? 'Pushed' : change.reviewState}</Badge></div>
                     <DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} />
-                    {change.files.map((file: any) => <details className="diff-file" key={file.path}><summary>{file.path}</summary><p className="diff-explanation">Exact diff</p><pre>{file.diff || file.after || file.before || '(binary or empty file)'}</pre></details>)}
+                    {change.files.map((file: any) => <details className="diff-file" key={file.path}><summary><span><Icon name="file" size={14} />{file.path}</span><span className="diff-stats"><i>+{Number(file.additions || 0)}</i><i>−{Number(file.deletions || 0)}</i></span></summary><p className="diff-explanation">Exact diff</p><pre>{file.diff || file.after || file.before || '(binary or empty file)'}</pre></details>)}
                     {change.reviewState === 'pending' && <AgentApprovalCard title="Approve these changes" detail="Review the exact files above before continuing." busy={busyChange === change.id} onApprove={() => reviewChange(change)} />}
                     {change.reviewState === 'approved' && <div className="commit-form premium"><div><h2>Ready to commit changes</h2><p>Write the message that will appear in Git history.</p></div><label>Commit message<input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this change" /></label><div className="commit-branch"><span>Push to branch</span><b><Icon name="branch" />{session.branch}</b></div><Button disabled={!commitMessage.trim() || busyChange === change.id} onClick={() => commitChange(change)}>{busyChange === change.id ? 'Committing…' : 'Create commit'}</Button></div>}
                     {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to publish changes</h2><p>{change.files.length} files are committed and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} /><div className="commit-branch"><span>{['main', 'master'].includes(session.branch) ? 'Review target' : 'Push to branch'}</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review publish</Button></div>}

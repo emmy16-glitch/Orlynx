@@ -56,6 +56,9 @@ export interface AgentLessonRecord {
   tags: string[];
   provider?: string;
   successCount: number;
+  /** Confidence comes only from verified successful reuse; fresh evidence still wins. */
+  confidence?: number;
+  lastVerifiedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
@@ -227,10 +230,14 @@ const migrations = [
     tags jsonb NOT NULL DEFAULT '[]'::jsonb,
     provider text,
     success_count integer NOT NULL DEFAULT 1,
+    confidence real NOT NULL DEFAULT 0.65,
+    last_verified_at timestamptz,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
     last_used_at timestamptz
   )`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS confidence real NOT NULL DEFAULT 0.65`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS last_verified_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS agent_lessons_lookup_idx ON agent_lessons(user_id, project_id, updated_at DESC)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS audit_log_session_idx ON audit_log(session_id, created_at DESC)`,
@@ -363,6 +370,8 @@ function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
     tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
     provider: row.provider ? String(row.provider) : undefined,
     successCount: Number(row.success_count || 1),
+    confidence: Math.max(0, Math.min(1, Number(row.confidence ?? 0.65))),
+    lastVerifiedAt: row.last_verified_at ? iso(row.last_verified_at) : undefined,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     lastUsedAt: row.last_used_at ? iso(row.last_used_at) : undefined,
@@ -873,9 +882,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putAgentLesson(v: AgentLessonRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,title,problem,lesson,evidence,tags,provider,success_count,created_at,updated_at,last_used_at)
-      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
-      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,updated_at=EXCLUDED.updated_at
+    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,title,problem,lesson,evidence,tags,provider,success_count,confidence,last_verified_at,created_at,updated_at,last_used_at)
+      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
+      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
       WHERE agent_lessons.user_id=EXCLUDED.user_id`;
   }
   async listAgentLessons(userId: string, projectId?: string, limit = 40) {

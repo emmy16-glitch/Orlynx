@@ -121,7 +121,7 @@ export function toThreadPart(item: ActivityItem): ThreadPart {
   return { key: item.key, kind: 'generic', item, title: item.title, summary: item.summary, state: item.state, runId: item.runId };
 }
 
-function reflectionMeta(item: ActivityItem): { id: number; side: 'orlynx' | 'model'; text: string } | null {
+function reflectionMeta(item: ActivityItem): { id: number; investigationId?: string; stage?: string; side: 'orlynx' | 'model'; text: string } | null {
   const evidence = asRecord(item.evidence);
   const sourceType = typeof evidence.sourceType === 'string' ? evidence.sourceType : '';
   if (sourceType !== 'agent.dialogue.orlynx' && sourceType !== 'agent.dialogue.model') return null;
@@ -131,7 +131,13 @@ function reflectionMeta(item: ActivityItem): { id: number; side: 'orlynx' | 'mod
     .replace(/^Orlynx\s*[→>-]\s*Model:\s*/i, '')
     .replace(/^Model\s*[→>-]\s*Orlynx:\s*/i, '')
     .trim();
-  return { id: Number.isFinite(id) && id > 0 ? id : 1, side: sourceType.endsWith('.model') ? 'model' : 'orlynx', text };
+  const investigationId = typeof evidence.investigationId === 'string' && evidence.investigationId.trim()
+    ? evidence.investigationId.trim()
+    : undefined;
+  const stage = typeof evidence.investigationStage === 'string' && evidence.investigationStage.trim()
+    ? evidence.investigationStage.trim()
+    : undefined;
+  return { id: Number.isFinite(id) && id > 0 ? id : 1, investigationId, stage, side: sourceType.endsWith('.model') ? 'model' : 'orlynx', text };
 }
 
 export function toThreadParts(items: ActivityItem[]): ThreadPart[] {
@@ -145,12 +151,14 @@ export function toThreadParts(items: ActivityItem[]): ThreadPart[] {
       continue;
     }
 
-    const key = `reflection:${item.runId || 'run'}:${reflection.id}`;
+    const key = `investigation:${item.runId || 'run'}:${reflection.investigationId || reflection.id}`;
     const existingIndex = reflectionIndex.get(key);
     if (existingIndex === undefined) {
       const evidence: Record<string, unknown> = {
         sourceType: 'agent.reflection',
         reflectionId: reflection.id,
+        ...(reflection.investigationId ? { investigationId: reflection.investigationId } : {}),
+        ...(reflection.stage ? { investigationStage: reflection.stage } : {}),
         ...(reflection.side === 'orlynx' ? { orlynxText: reflection.text } : { modelText: reflection.text }),
       };
       const groupedItem: ActivityItem = {
@@ -158,8 +166,10 @@ export function toThreadParts(items: ActivityItem[]): ThreadPart[] {
         key,
         id: key,
         category: 'agent',
-        title: `Investigation ${reflection.id}`,
-        summary: reflection.side === 'model' ? reflection.text : 'Orlynx and the connected model are diagnosing the remaining issue.',
+        title: 'Investigation',
+        summary: reflection.stage
+          ? `${reflection.stage.replace(/_/g, ' ')} · ${reflection.side === 'model' && reflection.text ? reflection.text : 'Orlynx and the connected model are diagnosing the remaining issue.'}`
+          : reflection.side === 'model' ? reflection.text : 'Orlynx and the connected model are diagnosing the remaining issue.',
         evidence,
         rawOutput: undefined,
         collapsible: true,
@@ -181,12 +191,17 @@ export function toThreadParts(items: ActivityItem[]): ThreadPart[] {
     const priorEvidence = asRecord(prior.item.evidence);
     const evidence: Record<string, unknown> = {
       ...priorEvidence,
+      reflectionId: reflection.id,
+      ...(reflection.investigationId ? { investigationId: reflection.investigationId } : {}),
+      ...(reflection.stage ? { investigationStage: reflection.stage } : {}),
       ...(reflection.side === 'orlynx' ? { orlynxText: reflection.text } : { modelText: reflection.text }),
     };
     const groupedItem: ActivityItem = {
       ...prior.item,
       state: item.state === 'failed' ? 'failed' : item.state === 'running' || prior.item.state === 'running' ? 'running' : item.state,
-      summary: reflection.side === 'model' && reflection.text ? reflection.text : prior.item.summary,
+      summary: reflection.stage
+        ? `${reflection.stage.replace(/_/g, ' ')} · ${reflection.side === 'model' && reflection.text ? reflection.text : prior.item.summary || 'continuing diagnosis'}`
+        : reflection.side === 'model' && reflection.text ? reflection.text : prior.item.summary,
       evidence,
     };
     result[existingIndex] = {

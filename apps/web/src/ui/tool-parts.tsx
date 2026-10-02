@@ -324,9 +324,31 @@ function StatusDetail({ part }: { part: ThreadPart }) {
   ];
   const latest = lines[lines.length - 1];
   const awaitingModel = Boolean(latest && latest.side === 'orlynx' && part.item.state === 'running');
+  const investigationStage = str(evidence.investigationStage).replace(/_/g, ' ');
+  const investigationQuestion = str(evidence.investigationQuestion);
+  const investigationFailureClass = str(evidence.investigationFailureClass).replace(/_/g, ' ');
+  const investigationOutcome = str(evidence.investigationOutcome);
+  const investigationEvidence = Array.isArray(evidence.investigationEvidence)
+    ? evidence.investigationEvidence.map(str).filter(Boolean).slice(-6)
+    : [];
+  const latestModel = [...lines].reverse().find((line) => line.side === 'model');
 
   return (
     <div className="ox-investigation" aria-label="Orlynx and model investigation dialogue">
+      <div className="ox-investigation-head">
+        {investigationStage && <div className="ox-investigation-stage" data-stage={investigationStage}>{investigationStage}</div>}
+        {investigationFailureClass && <span className="ox-investigation-class">{investigationFailureClass}</span>}
+      </div>
+      {(investigationQuestion || latestModel?.text || investigationEvidence.length > 0 || investigationOutcome) && <div className="ox-investigation-summary">
+        {investigationQuestion && <div><span>Question</span><p>{investigationQuestion}</p></div>}
+        {latestModel?.text && <div><span>Current hypothesis</span><p>{latestModel.text}</p></div>}
+        {investigationEvidence.length > 0 && <details>
+          <summary>Evidence ({investigationEvidence.length})</summary>
+          <ul>{investigationEvidence.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul>
+        </details>}
+        {investigationOutcome && <div className="ox-investigation-outcome"><span>Outcome</span><p>{investigationOutcome}</p></div>}
+      </div>}
+      <div className="ox-investigation-dialogue">
       {lines.map((line, index) => (
         <div
           className="ox-investigation-line"
@@ -343,6 +365,7 @@ function StatusDetail({ part }: { part: ThreadPart }) {
         <span className="ox-investigation-speaker">Model</span>
         <p>Reviewing Orlynx’s evidence and choosing the next check…</p>
       </div>}
+      </div>
     </div>
   );
 }

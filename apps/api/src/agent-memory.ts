@@ -45,7 +45,15 @@ function lessonScore(lesson: AgentLessonRecord, query: Set<string>, projectId?: 
   else if (lesson.scope === 'environment') score += 1;
   if (provider && lesson.provider === provider) score += 1;
   score += Math.min(3, Math.max(0, lesson.successCount - 1));
-  return score;
+  const confidence = Math.max(0, Math.min(1, lesson.confidence ?? 0.65));
+  score += Math.round(confidence * 3);
+  const verifiedAt = Date.parse(lesson.lastVerifiedAt || lesson.updatedAt);
+  if (Number.isFinite(verifiedAt)) {
+    const ageDays = Math.max(0, (Date.now() - verifiedAt) / 86_400_000);
+    if (ageDays > 180) score -= 2;
+    else if (ageDays > 60) score -= 1;
+  }
+  return Math.max(0, score);
 }
 
 export async function relevantAgentLessons(
@@ -70,7 +78,7 @@ export function agentMemoryInstruction(lessons: AgentLessonRecord[]): string {
   if (!lessons.length) return '';
   return [
     'Verified Orlynx experience from earlier successful work follows. Treat it as evidence, not as an infallible rule; compare it with the current environment before applying it.',
-    ...lessons.map((lesson, index) => `${index + 1}. [${lesson.scope}] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}`),
+    ...lessons.map((lesson, index) => `${index + 1}. [${lesson.scope}; confidence ${Math.round((lesson.confidence ?? 0.65) * 100)}%] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}`),
     'If current observations conflict with a remembered lesson, trust fresh verified evidence and update the diagnosis rather than forcing the old lesson.',
   ].join('\n');
 }
@@ -107,15 +115,26 @@ export async function rememberVerifiedLesson(input: {
     ? input.harness.reflectionTarget
     : input.harness.verification.required;
   const contradictions = input.harness.contradictions || [];
+  const investigation = input.harness.investigation;
   const evidence = [
+    investigation?.question ? `Investigation question: ${investigation.question}` : '',
+    investigation?.hypothesis ? `Verified hypothesis path: ${investigation.hypothesis}` : '',
     ...contradictions,
     ...(input.harness.reflectionEvidence || []),
+    ...(investigation?.evidence || []),
+    investigation?.repairAction ? `Repair action: ${investigation.repairAction}` : '',
+    investigation?.outcome ? `Investigation outcome: ${investigation.outcome}` : '',
     `Verified acceptance: ${input.harness.verification.satisfied.join(', ') || 'requested outcome'}`,
     input.harness.modelReviewModelId
       ? `Selected-model review: ${input.harness.modelReviewModelId}`
       : '',
-  ].map((item) => clean(item, 520)).filter(Boolean).slice(-12);
-  const resolution = clean(input.responseText, 1_200);
+  ].map((item) => clean(item, 520)).filter(Boolean).slice(-16);
+  const finalResolution = clean(input.responseText, 1_200);
+  const resolution = clean([
+    investigation?.outcome || '',
+    investigation?.hypothesis ? `Working hypothesis that led to verification: ${investigation.hypothesis}` : '',
+    finalResolution,
+  ].filter(Boolean).join(' '), 1_400);
   if (!resolution) return [];
 
   const tags = words([
@@ -128,6 +147,7 @@ export async function rememberVerifiedLesson(input: {
   const now = new Date().toISOString();
   const title = clean(
     contradictions[0]
+      || investigation?.question
       || `Resolved after reflection: ${target.join(', ') || 'task verification'}`,
     220,
   );
@@ -145,6 +165,8 @@ export async function rememberVerifiedLesson(input: {
     tags,
     provider: input.provider,
     successCount: 1,
+    confidence: 0.65,
+    lastVerifiedAt: now,
     createdAt: now,
     updatedAt: now,
   };

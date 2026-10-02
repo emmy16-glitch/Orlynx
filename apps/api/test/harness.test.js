@@ -5,6 +5,7 @@ import {
   MAX_REFLECTION_ATTEMPTS,
   advanceHarnessPhase,
   applySteering,
+  blockInvestigation,
   consumeHarnessStep,
   createHarnessCheckpoint,
   classifyVerificationFailure,
@@ -17,6 +18,7 @@ import {
   queueIntentFor,
   reflectionInstruction,
   shouldReflect,
+  updateInvestigationFromOutcome,
   shouldSalvage,
   steeringActionFor,
   toolFamiliesFor,
@@ -34,6 +36,52 @@ test('IPv6 localhost failure cannot invalidate verified IPv4/provider Preview ev
   const verified = verifyHarness(checkpoint, events);
   assert.equal(verified.verification.status, 'passed');
   assert.equal(shouldReflect(verified, 'The application is reachable at the verified Preview URL.'), false);
+});
+
+test('unknown verification becomes a durable Investigation, captures the model hypothesis, and resolves from evidence', () => {
+  let checkpoint = createHarnessCheckpoint({ prompt: 'start localhost preview', mode: 'build', permission: 'full', plane: 'workspace' });
+  const firstEvents = [
+    evt(1, 'tool.completed', { command: 'curl http://127.0.0.1:5173/', semanticType: 'preview', exitCode: 0, out: 'HTTP/1.1 200 OK' }),
+  ];
+  checkpoint = verifyHarness(checkpoint, firstEvents, '2026-10-02T12:00:00.000Z');
+  checkpoint = prepareReflection(checkpoint, firstEvents, '2026-10-02T12:00:01.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'investigating');
+  assert.match(checkpoint.investigation?.question || '', /cannot verify preview/i);
+  const investigationId = checkpoint.investigation?.id;
+
+  checkpoint = updateInvestigationFromOutcome(
+    checkpoint,
+    'Model → Orlynx: localhost is healthy; verify the provider forwarding layer before changing Vite.',
+    firstEvents,
+    '2026-10-02T12:00:02.000Z',
+  );
+  assert.equal(checkpoint.investigation?.id, investigationId);
+  assert.equal(checkpoint.investigation?.stage, 'testing');
+  assert.match(checkpoint.investigation?.hypothesis || '', /provider forwarding/i);
+
+  const resolvedEvents = [
+    ...firstEvents,
+    evt(2, 'preview.ready', { port: 5173, url: 'https://workspace-5173.app.github.dev', verified: true }),
+  ];
+  checkpoint = verifyHarness(checkpoint, resolvedEvents, '2026-10-02T12:00:03.000Z');
+  checkpoint = updateInvestigationFromOutcome(
+    checkpoint,
+    'Model → Orlynx: provider forwarding is now confirmed and the browser Preview is reachable.',
+    resolvedEvents,
+    '2026-10-02T12:00:04.000Z',
+  );
+  assert.equal(checkpoint.investigation?.stage, 'resolved');
+  assert.match(checkpoint.investigation?.outcome || '', /Verified: preview/i);
+  assert.equal(checkpoint.investigation?.resolvedAt, '2026-10-02T12:00:04.000Z');
+});
+
+test('exhausted Investigation is blocked with a concrete reason instead of silently becoming certainty', () => {
+  let checkpoint = createHarnessCheckpoint({ prompt: 'verify preview', mode: 'build', permission: 'full', plane: 'workspace' });
+  checkpoint = verifyHarness(checkpoint, [], '2026-10-02T12:00:00.000Z');
+  checkpoint = prepareReflection(checkpoint, [], '2026-10-02T12:00:01.000Z');
+  checkpoint = blockInvestigation(checkpoint, 'Provider forwarding remained unavailable after bounded checks.', '2026-10-02T12:00:02.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'blocked');
+  assert.match(checkpoint.investigation?.outcome || '', /bounded checks/i);
 });
 
 test('unavailable external Preview terminates Investigation at the reflection budget', () => {
@@ -376,6 +424,58 @@ test('result verifier supports bounded model reflection instead of one-shot salv
   assert.equal(shouldReflect(cp, 'I am still working on it'), false);
 });
 
+test('Investigation state survives reason-act-observe cycles and resolves only on evidence', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'start localhost preview',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const localEvidence = [
+    evt(1, 'tool.output', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+    evt(2, 'tool.output', { command: 'ss -ltn', out: 'LISTEN 0 511 0.0.0.0:5173' }),
+  ];
+  cp = verifyHarness(cp, localEvidence);
+  cp = prepareReflection(cp, localEvidence, '2026-10-02T10:00:00.000Z');
+  assert.equal(cp.investigation?.stage, 'investigating');
+  assert.equal(cp.investigation?.attempt, 1);
+  assert.match(cp.investigation?.question || '', /cannot verify preview/i);
+  assert.ok((cp.investigation?.evidence || []).length > 0);
+
+  cp = updateInvestigationFromOutcome(
+    cp,
+    'Model → Orlynx: the app is healthy; test provider forwarding next.',
+    localEvidence,
+    '2026-10-02T10:00:01.000Z',
+  );
+  assert.equal(cp.investigation?.stage, 'testing');
+  assert.match(cp.investigation?.hypothesis || '', /provider forwarding/i);
+
+  const verifiedEvents = [
+    ...localEvidence,
+    evt(3, 'preview.ready', { port: 5173, url: 'https://real-preview.example', verified: true }),
+  ];
+  cp = verifyHarness(cp, verifiedEvents, '2026-10-02T10:00:02.000Z');
+  cp = updateInvestigationFromOutcome(cp, 'Preview is verified.', verifiedEvents, '2026-10-02T10:00:02.000Z');
+  assert.equal(cp.investigation?.stage, 'resolved');
+  assert.match(cp.investigation?.outcome || '', /Verified: preview/i);
+  assert.equal(cp.investigation?.resolvedAt, '2026-10-02T10:00:02.000Z');
+});
+
+test('exhausted uncertainty becomes an explicit blocked Investigation instead of silent failure', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'verify deployment',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, []);
+  cp = prepareReflection(cp, []);
+  cp = blockInvestigation(cp, 'Human-only organization approval is required.', '2026-10-02T10:01:00.000Z');
+  assert.equal(cp.investigation?.stage, 'blocked');
+  assert.equal(cp.investigation?.outcome, 'Human-only organization approval is required.');
+});
+
 test('reflection detects contradictory preview evidence and tells the model to diagnose the right layer', () => {
   let cp = createHarnessCheckpoint({
     prompt: 'start localhost preview',
@@ -468,9 +568,14 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
   assert.match(storage, /CREATE TABLE IF NOT EXISTS agent_lessons/);
+  assert.match(storage, /confidence real NOT NULL DEFAULT 0\.65/);
+  assert.match(storage, /last_verified_at/);
+  assert.match(storage, /LEAST\(0\.98,GREATEST\(agent_lessons\.confidence,EXCLUDED\.confidence\)\+0\.05\)/);
   assert.match(storage, /putAgentLesson/);
   assert.match(storage, /listAgentLessons/);
   assert.match(memory, /rememberVerifiedLesson/);
+  assert.match(memory, /investigation\?\.hypothesis/);
+  assert.match(memory, /confidence: 0\.65/);
   assert.match(memory, /verification\.status !== 'passed'/);
   assert.match(memory, /Verified Orlynx experience from earlier successful work/);
   assert.match(memory, /scope: 'environment'/);
