@@ -63,6 +63,7 @@ test('background runtime prewarm can outlive the interactive failover window', (
   assert.match(runtime, /waitForRuntimeReady\(controller\.signal, undefined, undefined, timeoutMs\)/);
   assert.match(runtime, /waitForRuntimeReady\(controller\.signal, undefined, undefined, 90_000\)/);
   assert.match(runtime, /await waitForRuntimeReady\(input\.signal, input\.onStatus, input\.onTiming\);/);
+  assert.match(runtime, /recordFailure = true/);
 });
 
 test('browser retries message admission with the same client id across transient cold-start failures', () => {
