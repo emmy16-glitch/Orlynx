@@ -659,10 +659,27 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           await repository.putTask(task);
 
           let publishError = '';
-          const onlyPublishMissing = task.harness.verification.missing.length === 1
-            && task.harness.verification.missing[0] === 'publish';
+          const publishSession = await repository.getSession(claims.sessionId);
+          const publishMessages = [
+            task.prompt,
+            ...(task.harness?.inbox || []).map((item) => item.text),
+          ].filter((value) => verificationRequirementsFor(String(value)).includes('publish'));
+          const publishExplicitlyRequested = publishMessages.length > 0;
+          const publishText = String(publishMessages.at(-1) || task.prompt);
+          const publishStrategy = publishIntentFor(publishText, publishSession?.branch || '') || 'direct';
+          const publishTarget = publishTargetBranchFor(publishText, publishSession?.branch || '') || publishSession?.branch;
+          // Existing committed local work can legitimately leave this run with
+          // both "changes" and "publish" missing: there was no fresh edit event
+          // because the desired commit already existed before the request.
+          // Let the controlled publisher recover that committed diff instead of
+          // sending the model back to manufacture another edit.
+          const publicationRecoverable = task.harness.verification.missing.includes('publish')
+            && task.harness.verification.missing.every((item) => item === 'changes' || item === 'publish');
 
-          if (onlyPublishMissing && effectivePermission === 'ask-first') {
+          // Ask-first protects unrequested privileged actions. When the user
+          // explicitly wrote "push/publish" in this task (or live steering),
+          // that instruction is already the approval for this exact publish.
+          if (publicationRecoverable && effectivePermission === 'ask-first' && !publishExplicitlyRequested) {
             const approvalId = `approval_${uuid()}`;
             const approvalNow = new Date().toISOString();
             task.state = 'waiting_approval';
@@ -684,7 +701,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 taskId: task.id,
                 runId,
                 workspaceId: claims.workspaceId,
-                branch: (await repository.getSession(claims.sessionId))?.branch || '',
+                branch: publishTarget || publishSession?.branch || '',
               },
               createdAt: approvalNow,
             });
@@ -705,22 +722,14 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               payload: {
                 approvalId,
                 action: 'git.push.default',
-                detail: 'Publish the verified commit to the conversation branch.',
+                detail: `Publish the verified commit to ${publishTarget || publishSession?.branch || 'the conversation branch'}.`,
               },
             });
             return;
           }
 
-          if (onlyPublishMissing && effectivePermission === 'full') {
+          if (publicationRecoverable && (effectivePermission === 'full' || publishExplicitlyRequested)) {
             try {
-              const publishSession = await repository.getSession(claims.sessionId);
-              const publishMessages = [
-                task.prompt,
-                ...(task.harness?.inbox || []).map((item) => item.text),
-              ].filter((value) => verificationRequirementsFor(String(value)).includes('publish'));
-              const publishText = String(publishMessages.at(-1) || task.prompt);
-              const publishStrategy = publishIntentFor(publishText, publishSession?.branch || '') || 'direct';
-              const publishTarget = publishTargetBranchFor(publishText, publishSession?.branch || '') || publishSession?.branch;
               const published = await controlledDefaultBranchPublish(
                 claims.workspaceId,
                 claims.sessionId,
