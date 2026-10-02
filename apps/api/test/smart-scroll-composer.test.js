@@ -85,6 +85,17 @@ describe('wired follow behavior in ProductionApp (§§83-88, 94-96, 100)', () =>
     assert.match(src, /import \{ distanceFromBottom, followAfterUserScroll, isFollowWorthyEvent, jumpBehavior \} from '\.\/ui\/scroll'/);
   });
 
+  it('paints the optimistic user message before task admission can start streaming', () => {
+    const src = app();
+    const start = src.indexOf('async function sendMessage(overrideText');
+    const block = src.slice(start, src.indexOf('const [retrying', start));
+    assert.match(src, /import \\{ flushSync \\} from 'react-dom'/);
+    assert.match(block, /optimisticMessagesRef\\.current\\.set\\(clientId, optimisticMessage\\)/);
+    assert.match(block, /flushSync\\(\\(\\) => \\{/);
+    const paint = block.indexOf('flushSync(() =>');
+    const admission = block.indexOf('fetch(`/v1/sessions/${session.id}/messages`');
+    assert.ok(paint >= 0 && admission > paint, 'message admission started before optimistic user turn was synchronously painted');
+  });
   it('sending a new message explicitly resumes live-follow', () => {
     const src = app();
     const start = src.indexOf('async function sendMessage(overrideText');
