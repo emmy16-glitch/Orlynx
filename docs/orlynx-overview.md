@@ -210,23 +210,31 @@ Depending on the request, Orlynx may require proof of:
 
 ## Investigation loop
 
-When reality conflicts with expectations, Orlynx uses a bounded evidence loop:
+When reality conflicts with expectations, Orlynx uses a bounded evidence loop backed by durable task state. **Unknown is an Investigation state, not a failure verdict.**
 
 ~~~text
-Orlynx observation
+unknown observation
     |
     v
-Model hypothesis / next check
+investigating
     |
     v
-Real tool evidence
+Model hypothesis / next discriminating check
     |
     v
-Harness verification
+testing with real tools
     |
-    +-- resolved -> continue/finalize
+    +-- evidence identifies repair -> repairing
+    |
+    v
+verifying
+    |
+    +-- resolved -> learn verified episode -> continue/finalize
     +-- unresolved -> another bounded Investigation
+    +-- genuinely blocked -> precise human/external dependency
 ~~~
+
+The Investigation ID, question, hypothesis, evidence and outcome survive reconnects and are rendered as one continuing Investigation card rather than separate retry noise.
 
 The UI can expose useful observable evidence and conclusions without exposing private hidden chain-of-thought.
 
