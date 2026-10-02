@@ -18,6 +18,7 @@ process.env.GITHUB_WEBHOOK_SECRET = 'test-webhook-secret';
 process.env.ORLYNX_PUBLIC_URL = 'https://orlynx.test';
 import { computeBrokerSnapshot, noteComputeFailure, resetComputeBrokerForTests, computeTargetQuarantined } from '../src/compute-broker.ts';
 import { store } from '../src/store.js';
+import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
 
 const INSTALLATION_ID = 424242;
 const realFetch = globalThis.fetch;
@@ -206,6 +207,49 @@ test('render deploy status reflects live, failed, and drift states', async () =>
   globalThis.fetch = realFetch;
   delete process.env.RENDER_API_KEY;
   delete process.env.RENDER_SERVICE_ID;
+});
+
+test('bare deploy after a merge verifies the merge commit instead of republishing the PR head', async (t) => {
+  setControlPlaneRepositoryForTests({
+    listChangeSets: async () => [{
+      id: 'change-merged',
+      sessionId: 'session-a',
+      baseSha: 'base000',
+      files: [],
+      reviewState: 'committed',
+      commitSha: 'prhead123',
+      pushedAt: '2026-10-02T00:00:00Z',
+      pullRequestUrl: 'https://github.com/acme/demo/pull/7',
+      pullRequestNumber: 7,
+      mergeCommitSha: 'merge456789',
+      mergedAt: '2026-10-02T00:01:00Z',
+      createdAt: '2026-10-02T00:00:00Z',
+    }],
+  });
+  t.after(() => setControlPlaneRepositoryForTests(undefined));
+  const { deploymentTargetForSession } = await import('../src/publisher.ts');
+  const target = await deploymentTargetForSession('session-a');
+  assert.deepEqual(target, { changeId: 'change-merged', commitSha: 'merge456789', source: 'merged' });
+});
+
+test('bare deploy cannot bypass an open pull request', async (t) => {
+  setControlPlaneRepositoryForTests({
+    listChangeSets: async () => [{
+      id: 'change-pr',
+      sessionId: 'session-a',
+      baseSha: 'base000',
+      files: [],
+      reviewState: 'committed',
+      commitSha: 'prhead123',
+      pushedAt: '2026-10-02T00:00:00Z',
+      pullRequestUrl: 'https://github.com/acme/demo/pull/7',
+      pullRequestNumber: 7,
+      createdAt: '2026-10-02T00:00:00Z',
+    }],
+  });
+  t.after(() => setControlPlaneRepositoryForTests(undefined));
+  const { deploymentTargetForSession } = await import('../src/publisher.ts');
+  await assert.rejects(() => deploymentTargetForSession('session-a'), /not merged yet/i);
 });
 
 test('deploy verification selects the expected commit from recent Render deploys', async () => {
