@@ -65,6 +65,10 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
     verificationRequirementsFor('fix trimming, run tests, build frontend, commit and push to main'),
     ['changes', 'tests', 'build', 'commit', 'publish'],
   );
+  assert.deepEqual(
+    verificationRequirementsFor('Check for any errors hidden bugs etc fix it then push to main'),
+    ['changes', 'publish'],
+  );
   assert.deepEqual(verificationRequirementsFor('explain how this file works'), []);
   assert.deepEqual(verificationRequirementsFor('Any update on main repo?'), []);
   assert.deepEqual(verificationRequirementsFor("What's the update on the branch?"), []);
