@@ -75,6 +75,8 @@ function continuationPayload(
     text,
     system,
     ...(task.harness?.reflectionAttempts ? { reflectionId: task.harness.reflectionAttempts } : {}),
+    ...(task.harness?.investigation?.id ? { investigationId: task.harness.investigation.id } : {}),
+    ...(task.harness?.investigation?.stage ? { investigationStage: task.harness.investigation.stage } : {}),
     ...(task.harness ? { tools: openCodeToolsFor(task.harness) } : {}),
   };
 }
