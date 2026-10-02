@@ -105,5 +105,33 @@ jobs:
           docker push "$IMAGE:${GITHUB_SHA}"
           docker push "$IMAGE:latest"
 
+  deploy-runners:
+    # Rolling fleet deploy, CI-gated: every active runner converges to the exact
+    # validated main SHA. Requires owner-configured secrets (see
+    # docs/render-production.md); the job is skipped until they exist.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.RENDER_API_KEY != '' && secrets.RENDER_RUNNER_SERVICE_IDS != ''
+    needs:
+      - verify
+      - runner-runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Rolling deploy of the runner fleet
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_RUNNER_SERVICE_IDS: ${{ secrets.RENDER_RUNNER_SERVICE_IDS }}
+          RENDER_DEPLOY_COMMIT: ${{ github.sha }}
+        run: node scripts/render-deploy-runners.mjs
+
 # Render web deploys are commit-driven (autoDeploy=yes). Do not call a deploy
 # hook from CI as well: that creates a second deployment for the same SHA.
