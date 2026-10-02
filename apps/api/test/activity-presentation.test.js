@@ -133,6 +133,42 @@ describe('canonical agent activity presentation', () => {
     assert.equal(rows[0].state, 'success');
   });
 
+  it('renders provider todo state as one typed Plan checklist instead of raw tool JSON', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.plan',
+        text: 'Plan',
+        items: [
+          { content: 'Inspect architecture', status: 'in_progress', priority: 'high' },
+          { content: 'Fix confirmed bugs', status: 'pending' },
+        ],
+        completed: 0,
+        total: 2,
+        active: 'Inspect architecture',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.plan',
+        text: 'Plan',
+        items: [
+          { content: 'Inspect architecture', status: 'completed', priority: 'high' },
+          { content: 'Fix confirmed bugs', status: 'in_progress' },
+        ],
+        completed: 1,
+        total: 2,
+        active: 'Fix confirmed bugs',
+      }),
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Plan');
+    assert.equal(rows[0].summary, '1/2 complete · Fix confirmed bugs');
+    assert.equal(toThreadParts(rows)[0].kind, 'status');
+
+    const renderer = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    assert.match(renderer, /className="ox-plan-list"/);
+    assert.match(renderer, /aria-label="Task plan"/);
+    assert.doesNotMatch(renderer, /JSON\.stringify\(.*evidence\.items/);
+  });
+
   it('high-frequency progress and workspace status stay bounded by semantic identity', () => {
     const progress = Array.from({ length: 650 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
     const rows = toActivities([...progress].reverse().concat(progress[0]));
