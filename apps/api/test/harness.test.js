@@ -516,9 +516,14 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
   assert.match(storage, /CREATE TABLE IF NOT EXISTS agent_lessons/);
+  assert.match(storage, /confidence real NOT NULL DEFAULT 0\.65/);
+  assert.match(storage, /last_verified_at/);
+  assert.match(storage, /LEAST\(0\.98,GREATEST\(agent_lessons\.confidence,EXCLUDED\.confidence\)\+0\.05\)/);
   assert.match(storage, /putAgentLesson/);
   assert.match(storage, /listAgentLessons/);
   assert.match(memory, /rememberVerifiedLesson/);
+  assert.match(memory, /investigation\?\.hypothesis/);
+  assert.match(memory, /confidence: 0\.65/);
   assert.match(memory, /verification\.status !== 'passed'/);
   assert.match(memory, /Verified Orlynx experience from earlier successful work/);
   assert.match(memory, /scope: 'environment'/);
