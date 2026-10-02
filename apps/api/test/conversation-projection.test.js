@@ -368,7 +368,8 @@ describe('conversation projection: visible Investigation dialogue', () => {
   it('keeps live file changes visible before the durable change set is finalized', () => {
     const src = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
     assert.match(src, /const liveChangeFiles = useMemo/);
-    assert.match(src, /activity\.category !== 'changes'/);
+    assert.match(src, /activity\.category !== 'file'/);
+    assert.match(src, /Array\.isArray\(evidence\.files\)/);
     assert.match(src, /<Badge tone="wait">Live<\/Badge>/);
     assert.match(src, /Streaming from the active run/);
     assert.match(src, /final verified diff will remain here/);
