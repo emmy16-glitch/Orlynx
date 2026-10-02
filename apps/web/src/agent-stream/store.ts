@@ -484,6 +484,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           ? event.detail as Record<string, unknown>
           : {};
         const reflectionId = Math.max(1, Number(detail.reflectionId || 1) || 1);
+        const investigationId = String(detail.investigationId || prior?.evidence && (prior.evidence as Record<string, unknown>).investigationId || '').trim();
+        const investigationStage = String(detail.investigationStage || prior?.evidence && (prior.evidence as Record<string, unknown>).investigationStage || '').trim();
         const side = event.sourceType.endsWith('.model') ? 'model' : 'orlynx';
         const rawText = String(detail.text || event.text || '');
         const text = rawText
@@ -518,6 +520,8 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           evidence: {
             sourceType: 'agent.reflection',
             reflectionId,
+            ...(investigationId ? { investigationId } : {}),
+            ...(investigationStage ? { investigationStage } : {}),
             dialogue,
             ...(latestOrlynx?.text ? { orlynxText: String(latestOrlynx.text) } : {}),
             ...(latestModel?.text ? { modelText: String(latestModel.text) } : {}),
