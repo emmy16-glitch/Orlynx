@@ -173,6 +173,13 @@ export interface HarnessVerification {
   checkedAt?: string;
 }
 
+export type HarnessPlanStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+export interface HarnessPlanItem {
+  content: string;
+  status: HarnessPlanStatus;
+  priority?: 'high' | 'medium' | 'low';
+}
+
 export type VerificationFailureClass = 'test' | 'build' | 'infrastructure' | 'unknown';
 
 export interface HarnessCheckpoint {
@@ -183,6 +190,9 @@ export interface HarnessCheckpoint {
   inbox: HarnessSteeringMessage[];
   toolFamilies: ToolFamily[];
   verification: HarnessVerification;
+  /** Provider-authored task checklist, normalized and persisted by Orlynx. */
+  planItems?: HarnessPlanItem[];
+  planUpdatedAt?: string;
   lastProgressAt?: string;
   lastCheckpointAt?: string;
   salvageAttempts: number;
