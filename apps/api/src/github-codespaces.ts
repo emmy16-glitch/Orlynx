@@ -4,8 +4,12 @@ import { bootstrapWorkspace } from './runtime-worker.js';
 import { githubUserAccessToken } from './github.js';
 import { controlPlaneRepository } from './storage.js';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 
 const API = 'https://api.github.com';
+const bundledGh = path.resolve(process.cwd(), '.render-bin', 'gh');
+const SERVER_GH_BIN = process.env.ORLYNX_GH_BIN || (existsSync(bundledGh) ? bundledGh : 'gh');
 type Codespace = {
   name: string;
   display_name?: string;
@@ -290,7 +294,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     const token = await githubUserAccessToken(workspace.userId);
     const timeoutMs = Math.max(60_000, Number(process.env.ORLYNX_CODESPACE_REBUILD_TIMEOUT_MS || 8 * 60_000));
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('gh', ['codespace', 'rebuild', '-c', workspace.codespaceName || ''], {
+      const child = spawn(SERVER_GH_BIN, ['codespace', 'rebuild', '-c', workspace.codespaceName || ''], {
         env: { ...process.env, GH_TOKEN: token },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -374,7 +378,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     const lookup = (async () => {
       const token = await githubUserAccessToken(workspace.userId);
       return await new Promise<CodespaceForwardedPort[]>((resolve) => {
-        const child = spawn('gh', [
+        const child = spawn(SERVER_GH_BIN, [
           'codespace', 'ports',
           '-c', codespace,
           '--json', 'sourcePort,browseUrl,visibility',
@@ -436,7 +440,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     let child = codespacePreviewForwarders.get(key);
     if (!child || child.exitCode !== null || child.killed) {
       const token = await githubUserAccessToken(workspace.userId);
-      child = spawn('gh', [
+      child = spawn(SERVER_GH_BIN, [
         'codespace', 'ports', 'forward',
         `${port}:0`,
         '-c', codespace,
