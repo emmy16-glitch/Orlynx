@@ -1862,10 +1862,11 @@ router.get('/sessions/:id/ports', async (req, res) => {
     const result = await bridgeRequest<{ ports?: Array<{ port: number; visibility?: string; url?: string }> }>(workspace.id, 'ports.list');
     const provider = providerForWorkspace(workspace);
     const blockedPreviewPorts = new Set([22, 23, 25, 2222, 3306, 5432, 5601, 6379, 6380, 9229, 9333, 27017, 27018]);
-    const ports = (result.ports || []).map((item) => ({
+    const resolved = await Promise.all((result.ports || []).map(async (item) => ({
       ...item,
-      url: item.url || provider.previewUrl?.(workspace, Number(item.port)),
-    })).filter((item) => {
+      url: item.url || await provider.previewUrl?.(workspace, Number(item.port)),
+    })));
+    const ports = resolved.filter((item) => {
       const port = Number(item.port);
       return item.url && Number.isInteger(port) && port > 1024 && port < 65536 && !blockedPreviewPorts.has(port);
     });
