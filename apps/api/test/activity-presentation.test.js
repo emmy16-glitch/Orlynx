@@ -247,7 +247,7 @@ describe('canonical agent activity presentation', () => {
     assert.deepEqual(rows.map(activityTranscriptLabel), ['Working', 'Repository', 'Read', 'Run command', 'Error']);
   });
 
-  it('keeps internal Orlynx/model reasoning out of the user activity stream', () => {
+  it('shows safe Orlynx/model diagnostic dialogue while keeping private reflection telemetry hidden', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -259,9 +259,15 @@ describe('canonical agent activity presentation', () => {
         reflectionId: 2,
         text: 'Model → Orlynx: check the provider forwarding layer instead of restarting the app.',
       }),
+      event(3, 'activity.progress', {
+        sourceType: 'agent.reflection',
+        text: 'private internal reflection telemetry',
+      }),
     ]);
-    assert.deepEqual(rows, []);
-    assert.deepEqual(toThreadParts(rows), []);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Investigation');
+    assert.deepEqual(rows[0].evidence?.dialogue?.map((line) => line.side), ['orlynx', 'model']);
+    assert.equal(toThreadParts(rows).filter((part) => part.title === 'Investigation').length, 1);
   });
 
   it('sanitizes historical event payloads before replay or reflection reuse', () => {
@@ -281,7 +287,7 @@ describe('canonical agent activity presentation', () => {
     assert.equal(redactEventString('Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456'), 'Authorization: Bearer [redacted-github-token]');
   });
 
-  it('dedupes verified-memory activity while keeping private dialogue hidden', () => {
+  it('dedupes verified-memory activity while preserving one safe Investigation dialogue', () => {
     const rows = toActivities([
       event(1, 'activity.progress', {
         sourceType: 'agent.dialogue.orlynx',
@@ -302,10 +308,14 @@ describe('canonical agent activity presentation', () => {
         text: 'Applied 3 verified project lessons.',
       }),
     ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].title, 'Applied verified project lessons');
-    assert.equal(rows[0].summary, '3 lessons');
-    assert.equal(rows[0].evidence?.sourceType, 'agent.memory');
+    assert.equal(rows.length, 2);
+    const investigation = rows.find((row) => row.title === 'Investigation');
+    const memory = rows.find((row) => row.title === 'Applied verified project lessons');
+    assert.ok(investigation);
+    assert.deepEqual(investigation.evidence?.dialogue?.map((line) => line.side), ['orlynx', 'model']);
+    assert.ok(memory);
+    assert.equal(memory.summary, '3 lessons');
+    assert.equal(memory.evidence?.sourceType, 'agent.memory');
   });
 
   it('does not mislabel arbitrary build/curl prose as Build or health checks', () => {
