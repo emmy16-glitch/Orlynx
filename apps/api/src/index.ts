@@ -77,7 +77,11 @@ if (runnerHosts().length) {
         console.log(`[startup-smoke] runner-pool healthy=${healthy.length}/${snapshot.length}`);
       } else {
         noteComputeFailure('orlynx-runner', 'No runner host recovered through the startup wake probe.');
-        console.warn(`[startup-smoke] runner-pool healthy=0/${snapshot.length}`);
+        const details = snapshot
+          .map(({ host, health }) => `${host.id}:${health.detail || (health.draining ? 'draining' : 'unavailable')}`)
+          .join(', ')
+          .slice(0, 900);
+        console.warn(`[startup-smoke] runner-pool healthy=0/${snapshot.length} details=${details}`);
       }
     })
     .catch((error) => {
