@@ -100,6 +100,27 @@ test('workspace preparing/ready stays one lifecycle; 100 heartbeats add zero row
   assert.equal(rows.length, 0);
 });
 
+test('compute failover resolves stale direct-runtime progress before workspace recovery', () => {
+  const queued = applyRawAgentEvents(emptyAgentStreamState(), [
+    runA('fo-1', 1, 'run.started', { messageId: 'user-1', plane: 'direct' }),
+    runA('fo-2', 2, 'activity.progress', { sourceType: 'direct.chat.runtime', text: 'Checking AI runtime…' }),
+    runA('fo-3', 3, 'run.state', { state: 'queued', message: 'Direct AI runtime unavailable · switching to workspace compute…' }),
+  ]);
+  const resolved = selectActivities(queued);
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].state, 'success');
+  assert.match(resolved[0].title, /Checking AI runtime/i);
+
+  const recovering = applyRawAgentEvents(queued, [
+    runA('fo-4', 4, 'activity.progress', { sourceType: 'agent.runtime.failover', text: 'Direct AI runtime unavailable · switching to github-codespaces workspace…' }),
+  ]);
+  const rows = selectActivities(recovering);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, 'running');
+  assert.match(rows[0].title, /switching to github-codespaces workspace/i);
+  assert.doesNotMatch(rows[0].title, /Checking AI runtime/i);
+});
+
 test('message markers and snapshots never become chat rows; failures stay actionable', () => {
   const state = applyRawAgentEvents(emptyAgentStreamState(), [
     runA('m1', 1, 'run.started', { messageId: 'user-1' }),
