@@ -89,8 +89,8 @@ describe('wired follow behavior in ProductionApp (§§83-88, 94-96, 100)', () =>
     const src = app();
     const start = src.indexOf('async function sendMessage(overrideText');
     const block = src.slice(start, src.indexOf('const [retrying', start));
-    assert.match(src, /import \\{ flushSync \\} from 'react-dom'/);
-    assert.match(block, /optimisticMessagesRef\\.current\\.set\\(clientId, optimisticMessage\\)/);
+    assert.ok(src.includes("import { flushSync } from 'react-dom';"));
+    assert.ok(block.includes('optimisticMessagesRef.current.set(clientId, optimisticMessage)'));
     assert.ok(block.includes('flushSync(() => {'));
     const paint = block.indexOf('flushSync(() =>');
     const admission = block.indexOf('fetch(`/v1/sessions/${session.id}/messages`');
