@@ -484,17 +484,26 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
           ? event.detail as Record<string, unknown>
           : {};
         const reflectionId = Math.max(1, Number(detail.reflectionId || 1) || 1);
-        const investigationId = String(detail.investigationId || prior?.evidence && (prior.evidence as Record<string, unknown>).investigationId || '').trim();
-        const investigationStage = String(detail.investigationStage || prior?.evidence && (prior.evidence as Record<string, unknown>).investigationStage || '').trim();
+        const priorEvidenceBase = prior?.evidence && typeof prior.evidence === 'object'
+          ? prior.evidence as Record<string, unknown>
+          : {};
+        const investigationId = String(detail.investigationId || priorEvidenceBase.investigationId || '').trim();
+        const investigationStage = String(detail.investigationStage || priorEvidenceBase.investigationStage || '').trim();
+        const investigationQuestion = String(detail.investigationQuestion || priorEvidenceBase.investigationQuestion || '').trim();
+        const investigationFailureClass = String(detail.investigationFailureClass || priorEvidenceBase.investigationFailureClass || '').trim();
+        const investigationEvidence = Array.isArray(detail.investigationEvidence)
+          ? detail.investigationEvidence.map(String).filter(Boolean).slice(-8)
+          : Array.isArray(priorEvidenceBase.investigationEvidence)
+            ? (priorEvidenceBase.investigationEvidence as unknown[]).map(String).filter(Boolean).slice(-8)
+            : [];
+        const investigationOutcome = String(detail.investigationOutcome || priorEvidenceBase.investigationOutcome || '').trim();
         const side = event.sourceType.endsWith('.model') ? 'model' : 'orlynx';
         const rawText = String(detail.text || event.text || '');
         const text = rawText
           .replace(/^Orlynx\s*[→>-]\s*Model:\s*/i, '')
           .replace(/^Model\s*[→>-]\s*Orlynx:\s*/i, '')
           .trim();
-        const priorEvidence = prior?.evidence && typeof prior.evidence === 'object'
-          ? prior.evidence as Record<string, unknown>
-          : {};
+        const priorEvidence = priorEvidenceBase;
         const priorDialogue = Array.isArray(priorEvidence.dialogue)
           ? priorEvidence.dialogue.filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
           : [];
@@ -522,6 +531,10 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
             reflectionId,
             ...(investigationId ? { investigationId } : {}),
             ...(investigationStage ? { investigationStage } : {}),
+            ...(investigationQuestion ? { investigationQuestion } : {}),
+            ...(investigationFailureClass ? { investigationFailureClass } : {}),
+            ...(investigationEvidence.length ? { investigationEvidence } : {}),
+            ...(investigationOutcome ? { investigationOutcome } : {}),
             dialogue,
             ...(latestOrlynx?.text ? { orlynxText: String(latestOrlynx.text) } : {}),
             ...(latestModel?.text ? { modelText: String(latestModel.text) } : {}),
