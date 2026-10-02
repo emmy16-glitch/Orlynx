@@ -707,6 +707,10 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 }
 
 
+function isOpenCodeTodoToolName(value: unknown): boolean {
+  return /^(?:todo(?:write)?|write[_-]?todos?|update[_-]?plan)$/i.test(String(value || ''));
+}
+
 function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; priority?: 'high' | 'medium' | 'low' }> } {
   const record = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, any> : {};
   const raw = Array.isArray(input) ? input
@@ -799,7 +803,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
         ? part.input as Record<string, any>
         : {};
     const toolName = String(part.tool || 'tool');
-    const todoTool = /^(?:todo(?:write)?|write[_-]?todos?|update[_-]?plan)$/i.test(toolName);
+    const todoTool = isOpenCodeTodoToolName(toolName);
     if (todoTool) {
       const plan = openCodeTodoItems(input);
       if (plan.present) {
@@ -1048,7 +1052,8 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
     return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
-    Object.assign(failure, { retrySafe: !visible && toolParts.size === 0, engineSessionId });
+    const sideEffectingToolSeen = [...toolParts.values()].some((part) => !isOpenCodeTodoToolName(part.tool));
+    Object.assign(failure, { retrySafe: !visible && !sideEffectingToolSeen, engineSessionId });
     // A timed-out run must not remain alive in OpenCode after Orlynx fails it.
     await opencodeRequest({ path: `/session/${engineSessionId}/abort`, method: 'POST', timeoutMs: 5_000 }).catch(() => undefined);
     throw failure;
