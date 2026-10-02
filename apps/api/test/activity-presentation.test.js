@@ -420,6 +420,19 @@ describe('canonical agent activity presentation', () => {
     assert.equal(investigation[0].item.evidence?.investigationStage, 'verifying');
   });
 
+  it('renders detailed safe Investigation evidence without exposing hidden chain-of-thought', () => {
+    const adapter = fs.readFileSync(new URL('../../web/src/agent-stream/adapter.ts', import.meta.url), 'utf8');
+    const store = fs.readFileSync(new URL('../../web/src/agent-stream/store.ts', import.meta.url), 'utf8');
+    const parts = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    assert.doesNotMatch(adapter, /sourceType === 'agent\.dialogue\.orlynx'.*return \[\]/);
+    assert.match(store, /investigationQuestion/);
+    assert.match(store, /investigationEvidence/);
+    assert.match(parts, /Current hypothesis/);
+    assert.match(parts, /Evidence \(/);
+    assert.match(parts, /Outcome/);
+    assert.match(parts, /Reviewing Orlynx’s evidence and choosing the next check/);
+  });
+
   it('uses one UI font family and Investigation never creates a nested mobile scroll trap', () => {
     const tokens = fs.readFileSync(new URL('../../web/src/ui/tokens.css', import.meta.url), 'utf8');
     const css = fs.readFileSync(new URL('../../web/src/styles.css', import.meta.url), 'utf8');
