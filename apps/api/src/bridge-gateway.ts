@@ -653,6 +653,29 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const verificationNow = new Date().toISOString();
           task.harness = verifyHarness(task.harness, recent, verificationNow);
           task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, verificationNow);
+
+          if (task.harness.investigation?.stage === 'resolved') {
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'activity.progress',
+              timestamp: verificationNow,
+              payload: {
+                sourceType: 'agent.dialogue.orlynx',
+                reflectionId: task.harness.investigation.attempt,
+                investigationId: task.harness.investigation.id,
+                investigationStage: 'resolved',
+                investigationQuestion: task.harness.investigation.question,
+                investigationFailureClass: task.harness.verificationFailureClass,
+                investigationEvidence: task.harness.investigation.evidence.slice(-8),
+                investigationOutcome: task.harness.investigation.outcome,
+                text: `Orlynx → Model: resolved — ${task.harness.investigation.outcome || 'the requested outcome is now verified by current evidence'}.`,
+              },
+            });
+          }
           // Once every requirement except publication is satisfied, bind that
           // evidence to the exact workspace HEAD. Publication will refuse stale
           // evidence if a later commit changes HEAD.
@@ -956,6 +979,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                   reflectionId: task.harness.reflectionAttempts,
                   investigationId: task.harness.investigation?.id,
                   investigationStage: task.harness.investigation?.stage,
+                  investigationQuestion: task.harness.investigation?.question,
+                  investigationFailureClass: task.harness.verificationFailureClass,
+                  investigationEvidence: task.harness.investigation?.evidence?.slice(-8),
                   text: `Orlynx → Model: ${task.harness.investigation?.question || `I cannot verify ${missing}.${contradiction ? ` ${contradiction}` : ''} What does the current evidence imply, and what is the next check that would resolve the uncertainty?`}`,
                 },
               });
@@ -987,6 +1013,28 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               `Investigation budget exhausted before Orlynx could verify: ${missing.join(', ') || 'requested outcome'}.`,
               failedAt,
             );
+            if (task.harness.investigation) {
+              await persistLiveEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'activity.progress',
+                timestamp: failedAt,
+                payload: {
+                  sourceType: 'agent.dialogue.orlynx',
+                  reflectionId: task.harness.investigation.attempt,
+                  investigationId: task.harness.investigation.id,
+                  investigationStage: 'blocked',
+                  investigationQuestion: task.harness.investigation.question,
+                  investigationFailureClass: task.harness.verificationFailureClass,
+                  investigationEvidence: task.harness.investigation.evidence.slice(-8),
+                  investigationOutcome: task.harness.investigation.outcome,
+                  text: `Orlynx → Model: blocked — ${task.harness.investigation.outcome || 'the remaining issue could not be verified inside the investigation budget'}`,
+                },
+              });
+            }
             task.state = 'failed';
             task.partialText = responseText;
             task.harness = {
@@ -1131,6 +1179,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 sourceType: 'agent.dialogue.orlynx',
                 reflectionId: `review:${task.harness.modelReviewAttempts}`,
                 modelId: task.modelId,
+                investigationId: task.harness.investigation?.id || `review-${runId}`,
+                investigationStage: 'verifying',
+                investigationQuestion: 'Does the completed work and evidence actually satisfy the user request without hidden gaps or regressions?',
+                investigationEvidence: evidenceSummary(recent).slice(-8),
                 text: `Orlynx → Model: verification passed. Before I finalize, independently review the evidence and completed work. Challenge unsupported claims or missed requirements, fix anything questionable, and only approve what the evidence supports.`,
               },
             });
