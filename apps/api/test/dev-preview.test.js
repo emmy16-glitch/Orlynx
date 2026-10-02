@@ -104,9 +104,9 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /loopbackOnly/);
     assert.match(bridge, /codespacePortsPending\) return codespacePortsPending/);
 
-    assert.doesNotMatch(provider, /codespacesPreviewUrl/);
-    assert.match(provider, /never fabricate one from the Codespace name/);
-    assert.match(provider, /return undefined/);
+    assert.match(provider, /https:\/\/\\$\{codespace\}-\\$\{port\}\.app\.github\.dev\//);
+    assert.match(provider, /GitHub documents the forwarded Codespaces URL/);
+    assert.match(provider, /private ports remain protected by the user's GitHub session/);
 
     assert.match(gateway, /type: 'preview\.state'/);
     assert.match(gateway, /localReady: true/);
@@ -135,6 +135,15 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
     assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
     assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
+  });
+
+  it('control plane can resolve an authenticated Codespaces preview URL without workspace GitHub credentials', () => {
+    const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');
+    assert.match(provider, /previewUrl\(workspace: WorkspaceRecord, port: number\)/);
+    assert.match(provider, /workspace\.codespaceName/);
+    assert.match(provider, /\^\[a-z0-9-\]\+\$/);
+    assert.match(provider, /port <= 1024 \|\| port > 65535/);
+    assert.doesNotMatch(provider, /previewUrl\([^)]*\)[\s\S]{0,300}githubUserAccessToken/);
   });
 
   it('prefers likely frontends but never invents a URL', () => {
