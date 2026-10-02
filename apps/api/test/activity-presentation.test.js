@@ -389,6 +389,37 @@ describe('canonical agent activity presentation', () => {
     assert.match(workspaces, /SSH unavailable — restarting with a fresh Codespace…/);
   });
 
+  it('keeps multiple reasoning cycles in one stable Investigation card and preserves the stage', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 1,
+        investigationId: 'investigation-1',
+        investigationStage: 'investigating',
+        text: 'Orlynx → Model: localhost is healthy but Preview is unknown.',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 1,
+        investigationId: 'investigation-1',
+        investigationStage: 'testing',
+        text: 'Model → Orlynx: check forwarding metadata.',
+      }),
+      event(3, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 2,
+        investigationId: 'investigation-1',
+        investigationStage: 'verifying',
+        text: 'Orlynx → Model: forwarding exists; verify the external URL.',
+      }),
+    ]);
+    const parts = toThreadParts(rows);
+    const investigation = parts.filter((part) => part.title === 'Investigation');
+    assert.equal(investigation.length, 1);
+    assert.equal(investigation[0].item.evidence?.investigationId, 'investigation-1');
+    assert.equal(investigation[0].item.evidence?.investigationStage, 'verifying');
+  });
+
   it('uses one UI font family and Investigation never creates a nested mobile scroll trap', () => {
     const tokens = fs.readFileSync(new URL('../../web/src/ui/tokens.css', import.meta.url), 'utf8');
     const css = fs.readFileSync(new URL('../../web/src/styles.css', import.meta.url), 'utf8');
