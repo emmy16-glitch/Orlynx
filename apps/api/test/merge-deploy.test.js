@@ -209,6 +209,26 @@ test('render deploy status reflects live, failed, and drift states', async () =>
   delete process.env.RENDER_SERVICE_ID;
 });
 
+test('unqualified merge never skips newer work to merge an older pull request', async (t) => {
+  setControlPlaneRepositoryForTests({
+    getSession: async () => ({ id: 'session-a', project: 'acme/demo' }),
+    listChangeSets: async () => [
+      {
+        id: 'older-pr', sessionId: 'session-a', baseSha: 'base1', files: [], reviewState: 'committed',
+        commitSha: 'oldhead', pushedAt: '2026-10-02T00:00:00Z', pullRequestNumber: 7,
+        pullRequestUrl: 'https://github.com/acme/demo/pull/7', createdAt: '2026-10-02T00:00:00Z',
+      },
+      {
+        id: 'newer-work', sessionId: 'session-a', baseSha: 'base2', files: [], reviewState: 'approved',
+        createdAt: '2026-10-02T00:02:00Z',
+      },
+    ],
+  });
+  t.after(() => setControlPlaneRepositoryForTests(undefined));
+  const { mergePublishedPullRequest } = await import('../src/publisher.ts');
+  await assert.rejects(() => mergePublishedPullRequest({ sessionId: 'session-a' }), /latest work does not have a pull request/i);
+});
+
 test('bare deploy after a merge verifies the merge commit instead of republishing the PR head', async (t) => {
   setControlPlaneRepositoryForTests({
     listChangeSets: async () => [{
