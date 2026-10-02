@@ -58,21 +58,17 @@ The Compute Broker selects among configured providers rather than relying on one
 
 The main Orlynx service deploys from `main`.
 
-Runner services use controlled/rolling deployment so the whole pool is not taken down together.
-CI automates it: after `verify` + `runner-runtime` pass on a `main` push, the
-`deploy-runners` job pins every active runner to the validated SHA via
-`scripts/render-deploy-runners.mjs` (one service at a time, drift-checked).
-It requires two owner-configured GitHub secrets:
-
-- `RENDER_API_KEY` — Render Account Settings → API Keys (never logged; the
-  deploy script redacts service IDs and prints only statuses/SHAs).
-- `RENDER_RUNNER_SERVICE_IDS` — comma/space-separated Render service IDs
-  (`srv_…`), one per active runner, in any stable order.
-
-Until both secrets exist the job is skipped and runners must be rolled
-manually; `/v1/integrations/status` → `compute.runners[]` shows each host's
-`buildCommit`/`stale` so drift is visible either way. Removing a retired
-service ID from the secret permanently excludes that worker.
+Runner services use commit-driven deployment (`autoDeploy: yes`, branch
+`main`) exactly like the web service, so validated `main` changes reach every
+worker with no manual step. Each runner is an independent Render service, so
+they roll separately and the pool keeps serving. `scripts/
+render-deploy-runners.mjs` remains for manual one-shot fleet rolls (pinned
+SHA, drift-checked; needs `RENDER_API_KEY` + `RENDER_RUNNER_SERVICE_IDS` in
+the invoking environment, never logged). `/v1/integrations/status` →
+`compute.runners[]` shows each host's `buildCommit`/`stale`, and the pool
+marks stale/protocol-mismatched hosts degraded so new traffic avoids them.
+Retired workers must be removed from `ORLYNX_RUNNER_HOSTS` (and ideally
+suspended in the dashboard) so configuration can never route to them.
 
 A merged GitHub commit is not enough to claim production success; verify the live Render deploy/commit.
 
