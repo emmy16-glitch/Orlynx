@@ -87,7 +87,8 @@ function phaseId(event: RawEvent): string {
       : raw === 'pty.output' ? 'pty-output'
         : raw === 'agent.dialogue.orlynx' || raw === 'agent.dialogue.model' ? 'reflection'
           : raw === 'agent.memory' ? 'memory'
-            : 'agent';
+            : raw === 'agent.plan' ? 'plan'
+              : 'agent';
   return `activity:${event.runId || event.sessionId || 'session'}:${source}`;
 }
 
