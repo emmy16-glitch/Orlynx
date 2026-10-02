@@ -324,9 +324,11 @@ function StatusDetail({ part }: { part: ThreadPart }) {
   ];
   const latest = lines[lines.length - 1];
   const awaitingModel = Boolean(latest && latest.side === 'orlynx' && part.item.state === 'running');
+  const investigationStage = str(evidence.investigationStage).replace(/_/g, ' ');
 
   return (
     <div className="ox-investigation" aria-label="Orlynx and model investigation dialogue">
+      {investigationStage && <div className="ox-investigation-stage" data-stage={investigationStage}>{investigationStage}</div>}
       {lines.map((line, index) => (
         <div
           className="ox-investigation-line"
