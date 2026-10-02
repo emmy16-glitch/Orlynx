@@ -707,12 +707,14 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 }
 
 
-function openCodeTodoItems(input: Record<string, any>): { present: boolean; items: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; priority?: 'high' | 'medium' | 'low' }> } {
-  const raw = Array.isArray(input.todos) ? input.todos
-    : Array.isArray(input.items) ? input.items
-      : Array.isArray(input.tasks) ? input.tasks
-        : Array.isArray(input.plan) ? input.plan
-          : null;
+function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; priority?: 'high' | 'medium' | 'low' }> } {
+  const record = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, any> : {};
+  const raw = Array.isArray(input) ? input
+    : Array.isArray(record.todos) ? record.todos
+      : Array.isArray(record.items) ? record.items
+        : Array.isArray(record.tasks) ? record.tasks
+          : Array.isArray(record.plan) ? record.plan
+            : null;
   if (!raw) return { present: false, items: [] };
   const items = raw.slice(0, 50).flatMap((value: unknown) => {
     if (!value || typeof value !== 'object') return [];
