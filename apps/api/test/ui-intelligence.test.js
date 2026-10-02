@@ -158,6 +158,16 @@ describe('chat and cloud reliability contract', () => {
     assert.doesNotMatch(src, /applyLiveReplyEvents/);
   });
 
+  it('keeps live file edits in Changes until the durable change set replaces them', () => {
+    assert.match(src, /const liveChangeFiles = useMemo\(\(\) => \{/);
+    assert.match(src, /const durableIds = new Set\(changes\.map/);
+    assert.match(src, /evidence\.changeId && durableIds\.has/);
+    assert.match(src, /Streaming from the active run/);
+    assert.match(src, /final verified diff will remain here/);
+    const product = fs.readFileSync(path.join(root, 'apps/web/src/ui/product.tsx'), 'utf8');
+    assert.match(product, /additions\?: number; deletions\?: number/);
+    assert.match(product, /className="diff-stats"/);
+  });
   it('keeps session refresh single-flight while canonical reconciliation rejects stale snapshots', () => {
     assert.match(src, /sessionRefreshesRef = useRef\(new Map<string, Promise<void>>\(\)\)/);
     assert.match(src, /const inFlight = sessionRefreshesRef\.current\.get\(id\)/);
