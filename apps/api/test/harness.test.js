@@ -424,6 +424,58 @@ test('result verifier supports bounded model reflection instead of one-shot salv
   assert.equal(shouldReflect(cp, 'I am still working on it'), false);
 });
 
+test('Investigation state survives reason-act-observe cycles and resolves only on evidence', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'start localhost preview',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const localEvidence = [
+    evt(1, 'tool.output', { command: 'curl http://localhost:5173/', out: 'HTTP/1.1 200 OK' }),
+    evt(2, 'tool.output', { command: 'ss -ltn', out: 'LISTEN 0 511 0.0.0.0:5173' }),
+  ];
+  cp = verifyHarness(cp, localEvidence);
+  cp = prepareReflection(cp, localEvidence, '2026-10-02T10:00:00.000Z');
+  assert.equal(cp.investigation?.stage, 'investigating');
+  assert.equal(cp.investigation?.attempt, 1);
+  assert.match(cp.investigation?.question || '', /cannot verify preview/i);
+  assert.ok((cp.investigation?.evidence || []).length > 0);
+
+  cp = updateInvestigationFromOutcome(
+    cp,
+    'Model → Orlynx: the app is healthy; test provider forwarding next.',
+    localEvidence,
+    '2026-10-02T10:00:01.000Z',
+  );
+  assert.equal(cp.investigation?.stage, 'testing');
+  assert.match(cp.investigation?.hypothesis || '', /provider forwarding/i);
+
+  const verifiedEvents = [
+    ...localEvidence,
+    evt(3, 'preview.ready', { port: 5173, url: 'https://real-preview.example', verified: true }),
+  ];
+  cp = verifyHarness(cp, verifiedEvents, '2026-10-02T10:00:02.000Z');
+  cp = updateInvestigationFromOutcome(cp, 'Preview is verified.', verifiedEvents, '2026-10-02T10:00:02.000Z');
+  assert.equal(cp.investigation?.stage, 'resolved');
+  assert.match(cp.investigation?.outcome || '', /Verified: preview/i);
+  assert.equal(cp.investigation?.resolvedAt, '2026-10-02T10:00:02.000Z');
+});
+
+test('exhausted uncertainty becomes an explicit blocked Investigation instead of silent failure', () => {
+  let cp = createHarnessCheckpoint({
+    prompt: 'verify deployment',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp = verifyHarness(cp, []);
+  cp = prepareReflection(cp, []);
+  cp = blockInvestigation(cp, 'Human-only organization approval is required.', '2026-10-02T10:01:00.000Z');
+  assert.equal(cp.investigation?.stage, 'blocked');
+  assert.equal(cp.investigation?.outcome, 'Human-only organization approval is required.');
+});
+
 test('reflection detects contradictory preview evidence and tells the model to diagnose the right layer', () => {
   let cp = createHarnessCheckpoint({
     prompt: 'start localhost preview',
