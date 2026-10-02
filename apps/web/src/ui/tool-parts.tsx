@@ -357,7 +357,7 @@ function StatusDetail({ part }: { part: ThreadPart }) {
       </div>
       {(investigationQuestion || latestModel?.text || investigationEvidence.length > 0 || investigationOutcome) && <div className="ox-investigation-summary">
         {investigationQuestion && <div><span>Question</span><p>{investigationQuestion}</p></div>}
-        {modelDiagnostic.hypothesis && <div><span>Hypothesis</span><p>{modelDiagnostic.hypothesis}</p></div>}
+        {modelDiagnostic.hypothesis && <div><span>Current hypothesis</span><p>{modelDiagnostic.hypothesis}</p></div>}
         {modelDiagnostic.evidence && <div><span>Model evidence</span><p>{modelDiagnostic.evidence}</p></div>}
         {modelDiagnostic.nextCheck && <div><span>Next check</span><p>{modelDiagnostic.nextCheck}</p></div>}
         {investigationEvidence.length > 0 && <details>
