@@ -655,8 +655,11 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   let visible = '';
   let finished = false;
   let lastProgressAt = Date.now();
+  let madeProgress = false;
+  const markProgress = () => { madeProgress = true; lastProgressAt = Date.now(); };
   const firstProgressMs = Math.max(10_000, Number(process.env.ORLYNX_AGENT_FIRST_PROGRESS_MS || 60_000));
   const silenceMs = Math.max(30_000, Number(process.env.ORLYNX_AGENT_SILENCE_MS || 90_000));
+  const toolSilenceMs = Math.max(60_000, Number(process.env.ORLYNX_AGENT_TOOL_SILENCE_MS || 4 * 60_000));
   let lastRetryKey = '';
   let streamFallbackNotified = false;
   const textParts = new Map<string, string>();
@@ -669,6 +672,7 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   const toolStates = new Map<string, string>();
   const toolOutputs = new Map<string, string>();
   const toolFailureTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let lastPlanSignature = '';
   let reflectionDiagnosticEmitted = false;
 
   const emitRetry = (status: Record<string, any>) => {
@@ -676,6 +680,7 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
     const key = `${status.attempt || 0}:${status.next || 0}:${status.message || ''}`;
     if (key === lastRetryKey) return;
     lastRetryKey = key;
+    markProgress();
     bridgeEvent(ws, 'activity.progress', {
       sourceType: 'opencode.retry',
       text: String(status.message || 'Provider is temporarily unavailable. Retrying…'),
@@ -701,8 +706,39 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
   return 'generic';
 }
 
+
+function openCodeTodoItems(input: Record<string, any>): { present: boolean; items: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; priority?: 'high' | 'medium' | 'low' }> } {
+  const raw = Array.isArray(input.todos) ? input.todos
+    : Array.isArray(input.items) ? input.items
+      : Array.isArray(input.tasks) ? input.tasks
+        : Array.isArray(input.plan) ? input.plan
+          : null;
+  if (!raw) return { present: false, items: [] };
+  const items = raw.slice(0, 50).flatMap((value: unknown) => {
+    if (!value || typeof value !== 'object') return [];
+    const item = value as Record<string, unknown>;
+    const content = String(item.content || item.text || item.title || item.task || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    if (!content) return [];
+    const state = String(item.status || item.state || 'pending').toLowerCase().replace(/[ -]+/g, '_');
+    const status: 'pending' | 'in_progress' | 'completed' | 'cancelled' = /^(?:done|complete|completed|success)$/.test(state)
+      ? 'completed'
+      : /^(?:in_progress|running|active|doing|current)$/.test(state)
+        ? 'in_progress'
+        : /^(?:cancelled|canceled|skipped)$/.test(state)
+          ? 'cancelled'
+          : 'pending';
+    const rawPriority = String(item.priority || '').toLowerCase();
+    const priority = rawPriority === 'high' || rawPriority === 'medium' || rawPriority === 'low'
+      ? rawPriority
+      : undefined;
+    return [{ content, status, ...(priority ? { priority } : {}) }];
+  });
+  return { present: true, items };
+}
+
   const emitTextDelta = (partID: string, delta: string) => {
     if (!delta) return;
+    markProgress();
     const before = textParts.get(partID) || '';
     const combined = before + delta;
     const responseOffset = visible.length;
@@ -761,6 +797,30 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
         ? part.input as Record<string, any>
         : {};
     const toolName = String(part.tool || 'tool');
+    const todoTool = /^(?:todo(?:write)?|write[_-]?todos?|update[_-]?plan)$/i.test(toolName);
+    if (todoTool) {
+      const plan = openCodeTodoItems(input);
+      if (plan.present) {
+        const signature = JSON.stringify(plan.items);
+        if (signature !== lastPlanSignature) {
+          lastPlanSignature = signature;
+          markProgress();
+          const completed = plan.items.filter((item) => item.status === 'completed' || item.status === 'cancelled').length;
+          const active = plan.items.find((item) => item.status === 'in_progress')?.content || '';
+          bridgeEvent(ws, 'activity.progress', {
+            sourceType: 'agent.plan',
+            text: 'Plan',
+            items: plan.items,
+            completed,
+            total: plan.items.length,
+            ...(active ? { active } : {}),
+          }, taskId, runId);
+        }
+      }
+      // The provider todo tool is control metadata, not user-facing terminal
+      // work. Do not spend harness tool budget or render its raw JSON.
+      return;
+    }
     const title = String(state.title || input.description || part.tool || 'Tool').slice(0, 240);
     const commandCandidate = input.command ?? input.cmd ?? input.script ?? input.shell;
     const pathCandidate = input.filePath ?? input.path ?? input.file ?? input.filename;
@@ -789,6 +849,7 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
 
     const previousStatus = toolStates.get(id);
     if (status !== previousStatus) {
+      markProgress();
       toolStates.set(id, status);
       if (status === 'pending') bridgeEvent(ws, 'tool.requested', common, taskId, runId);
       else if (status === 'running') {
@@ -800,6 +861,7 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
     const currentOutput = String(state.output || '');
     const previousOutput = toolOutputs.get(id) || '';
     if (currentOutput !== previousOutput) {
+      markProgress();
       const appendOnly = currentOutput.startsWith(previousOutput);
       const delta = appendOnly ? currentOutput.slice(previousOutput.length) : currentOutput;
       // Keep each WebSocket/event frame bounded while preserving the complete
@@ -867,8 +929,15 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
   try {
     while (Date.now() < deadline && !finished) {
       const activeTool = [...toolStates.values()].some(state => state === 'running' || state === 'pending');
-      if (!activeTool && Date.now() - lastProgressAt > (visible ? silenceMs : firstProgressMs)) {
-        throw new Error(visible ? 'OpenCode stopped making progress before completion.' : 'OpenCode first response timed out.');
+      const progressLimitMs = activeTool ? toolSilenceMs : madeProgress ? silenceMs : firstProgressMs;
+      if (Date.now() - lastProgressAt > progressLimitMs) {
+        throw new Error(
+          activeTool
+            ? 'OpenCode tool stopped making observable progress before completion.'
+            : madeProgress
+              ? 'OpenCode stopped making progress before completion.'
+              : 'OpenCode first response timed out.'
+        );
       }
       if (nextEvent) {
         const outcome = await Promise.race([
@@ -885,7 +954,6 @@ function toolSemanticType(toolName: string, command: string, filePath: string): 
             const properties = event.properties || {};
             const sessionID = String(properties.sessionID || properties.part?.sessionID || properties.info?.sessionID || '');
             if (sessionID && sessionID !== engineSessionId) continue;
-            if (sessionID === engineSessionId && ['message.part.updated', 'message.part.delta', 'message.updated'].includes(String(event.type))) lastProgressAt = Date.now();
 
             if (event.type === 'message.part.updated') {
               const part = properties.part && typeof properties.part === 'object' ? properties.part as Record<string, any> : undefined;
