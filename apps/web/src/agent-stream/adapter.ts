@@ -297,18 +297,18 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
 
     case 'activity.started': {
       const sourceType = str(payload.sourceType);
-      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
-      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined }];
+      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined, detail: payload }];
     }
     case 'activity.progress': {
       const sourceType = str(payload.sourceType);
-      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
+      // Investigation dialogue is safe, concise public reasoning metadata.
+      // Preserve it in the canonical stream so the store can coalesce the
+      // Orlynx ↔ Model exchange into one ordered live object.
       return [{ ...common, type: 'ACTIVITY_UPDATE', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined, detail: payload }];
     }
     case 'activity.completed': {
       const sourceType = str(payload.sourceType);
-      if (sourceType === 'agent.dialogue.orlynx' || sourceType === 'agent.dialogue.model') return [];
-      return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined }];
+      return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined, sourceType: sourceType || undefined }];
     }
 
     case 'workspace.preparing':
