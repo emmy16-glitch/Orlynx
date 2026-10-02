@@ -57,7 +57,9 @@ function hasRenderableDetail(part: ThreadPart): boolean {
     case 'status':
       return str(evidence.sourceType) === 'agent.reflection'
         ? Boolean(str(evidence.orlynxText) || str(evidence.modelText))
-        : command || path || raw;
+        : str(evidence.sourceType) === 'agent.plan'
+          ? Array.isArray(evidence.items)
+          : command || path || raw;
     case 'error':
     case 'generic':
     default: return command || path || raw;
@@ -281,6 +283,23 @@ function ApprovalDetail({ part, onResolveApproval }: { part: ThreadPart; onResol
 
 function StatusDetail({ part }: { part: ThreadPart }) {
   const evidence = asRecord(part.item.evidence);
+  if (str(evidence.sourceType) === 'agent.plan') {
+    const items = Array.isArray(evidence.items) ? evidence.items.flatMap((value) => {
+      const item = asRecord(value);
+      const content = str(item.content);
+      if (!content) return [];
+      return [{ content, status: str(item.status) || 'pending', priority: str(item.priority) }];
+    }) : [];
+    return <div className="ox-plan" aria-label="Task plan">
+      <ol className="ox-plan-list">
+        {items.map((item, index) => <li data-status={item.status} key={`${index}:${item.content}`}>
+          <span className="ox-plan-mark" aria-hidden>{item.status === 'completed' ? <Icon name="check" size={13} /> : item.status === 'cancelled' ? <Icon name="x" size={13} /> : item.status === 'in_progress' ? <span className="ox-live-dot" /> : <Icon name="ring" size={13} />}</span>
+          <span className="ox-plan-content">{item.content}</span>
+          {item.priority === 'high' && <span className="ox-plan-priority">High</span>}
+        </li>)}
+      </ol>
+    </div>;
+  }
   if (str(evidence.sourceType) !== 'agent.reflection') return <GenericDetail part={part} />;
 
   const dialogue = Array.isArray(evidence.dialogue)
