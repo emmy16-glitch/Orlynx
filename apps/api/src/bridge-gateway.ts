@@ -12,7 +12,7 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, blockInvestigation, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, updateInvestigationFromOutcome, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
@@ -648,7 +648,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
-          task.harness = verifyHarness(task.harness, recent, new Date().toISOString());
+          const verificationNow = new Date().toISOString();
+          task.harness = verifyHarness(task.harness, recent, verificationNow);
+          task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, verificationNow);
           // Once every requirement except publication is satisfied, bind that
           // evidence to the exact workspace HEAD. Publication will refuse stale
           // evidence if a later commit changes HEAD.
@@ -756,6 +758,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               });
               recent = await repository.listRunEvents(claims.sessionId, runId, 1000);
               task.harness = verifyHarness(task.harness, recent, publishedAt);
+              task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, publishedAt);
               await repository.putTask(task);
             } catch (error) {
               publishError = error instanceof Error ? error.message : 'Controlled Git publish failed.';
@@ -949,7 +952,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 payload: {
                   sourceType: 'agent.dialogue.orlynx',
                   reflectionId: task.harness.reflectionAttempts,
-                  text: `Orlynx → Model: I cannot verify ${missing}.${contradiction ? ` ${contradiction}` : ''} What does the current evidence imply, and what is the next check that would resolve the uncertainty?`,
+                  investigationId: task.harness.investigation?.id,
+                  investigationStage: task.harness.investigation?.stage,
+                  text: `Orlynx → Model: ${task.harness.investigation?.question || `I cannot verify ${missing}.${contradiction ? ` ${contradiction}` : ''} What does the current evidence imply, and what is the next check that would resolve the uncertainty?`}`,
                 },
               });
 
@@ -975,6 +980,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
             const failedAt = new Date().toISOString();
             const missing = task.harness.verification.missing;
+            task.harness = blockInvestigation(
+              task.harness,
+              `Investigation budget exhausted before Orlynx could verify: ${missing.join(', ') || 'requested outcome'}.`,
+              failedAt,
+            );
             task.state = 'failed';
             task.partialText = responseText;
             task.harness = {
@@ -1025,6 +1035,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 errorKind: 'verification',
                 recoverable: true,
                 missing,
+                investigation: task.harness.investigation,
               },
             });
             await promoteNextQueuedRun(claims.sessionId).catch(() => {});
