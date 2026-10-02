@@ -527,11 +527,16 @@ export async function mergePublishedPullRequest(input: {
   ]);
   if (!session) throw new Error('Publication session is unavailable.');
   const ordered = [...changes].reverse();
+  const latest = ordered[0];
   const change = input.changeId
     ? ordered.find((item) => item.id === input.changeId)
-    : ordered.find((item) => Number.isSafeInteger(item.pullRequestNumber));
+    : latest;
   if (!change) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
-  if (!change.pullRequestNumber) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
+  if (!change.pullRequestNumber) {
+    throw new Error(input.changeId
+      ? 'The requested change set does not have a pull request yet. Publish it first, then merge.'
+      : 'The latest work does not have a pull request yet. Publish the latest work first; Orlynx will not merge an older pull request implicitly.');
+  }
   const method = input.method || change.mergeMethod || 'merge';
 
   // Crash recovery: a merge recorded durably before the receipt was emitted
