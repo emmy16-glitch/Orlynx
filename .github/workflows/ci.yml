@@ -108,8 +108,8 @@ jobs:
   deploy-runners:
     # Rolling fleet deploy, CI-gated: every active runner converges to the exact
     # validated main SHA. Requires owner-configured secrets (see
-    # docs/render-production.md); the job is skipped until they exist.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.RENDER_API_KEY != '' && secrets.RENDER_RUNNER_SERVICE_IDS != ''
+    # docs/render-production.md); without them the job reports skipped.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
       - verify
       - runner-runtime
@@ -126,7 +126,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Check runner deploy secrets
+        id: gate
+        env:
+          HAS_KEY: ${{ secrets.RENDER_API_KEY != '' }}
+          HAS_IDS: ${{ secrets.RENDER_RUNNER_SERVICE_IDS != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ] && [ "$HAS_IDS" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Runner deploy secrets are not configured; skipping fleet deploy (manual roll required)." >> "$GITHUB_STEP_SUMMARY"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Rolling deploy of the runner fleet
+        if: steps.gate.outputs.enabled == 'true'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_RUNNER_SERVICE_IDS: ${{ secrets.RENDER_RUNNER_SERVICE_IDS }}
