@@ -361,7 +361,7 @@ function StatusDetail({ part }: { part: ThreadPart }) {
         {modelDiagnostic.evidence && <div><span>Model evidence</span><p>{modelDiagnostic.evidence}</p></div>}
         {modelDiagnostic.nextCheck && <div><span>Next check</span><p>{modelDiagnostic.nextCheck}</p></div>}
         {investigationEvidence.length > 0 && <details>
-          <summary>Observed evidence ({investigationEvidence.length})</summary>
+          <summary>Evidence ({investigationEvidence.length})</summary>
           <ul>{investigationEvidence.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul>
         </details>}
         {investigationOutcome && <div className="ox-investigation-outcome"><span>Outcome</span><p>{investigationOutcome}</p></div>}
