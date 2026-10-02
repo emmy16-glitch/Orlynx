@@ -296,6 +296,16 @@ pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: any
 .hljs-string, .hljs-title, .hljs-name, .hljs-type, .hljs-attribute, .hljs-symbol, .hljs-bullet, .hljs-addition { color: var(--success); }
 .hljs-number, .hljs-meta, .hljs-built_in, .hljs-builtin-name { color: var(--agent-waiting); }
 .hljs-deletion { color: var(--danger); }
+.live-change-set {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--surface-muted) 78%, var(--surface));
+}
+.live-change-set .change-set-heading {
+  margin-bottom: 10px;
+}
+.live-change-set .small {
+  color: var(--foreground-muted);
+}
 .change-set { margin: 12px 0 22px; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 17px; background: var(--surface); }
 .change-set-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
 .change-set-heading > div { display: grid; gap: 2px; }.change-set-heading .small { font-size: 11px; }
@@ -4880,6 +4890,13 @@ html[data-theme="light"] .composer-options-panel {
 
 
 /* Conversation continuation + durable queue */
+.message-delivery {
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.message-delivery.is-sending { color: var(--foreground-subtle); }
+.message-delivery.is-failed { color: var(--danger); }
 .continuation-label {
   margin-right: 6px;
   color: var(--foreground-subtle);
