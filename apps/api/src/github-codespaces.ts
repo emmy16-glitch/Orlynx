@@ -17,6 +17,15 @@ type Codespace = {
   updated_at?: string;
 };
 
+type CodespaceForwardedPort = {
+  sourcePort: number;
+  browseUrl?: string;
+  visibility?: string;
+};
+
+const codespacePortCache = new Map<string, { expiresAt: number; ports: CodespaceForwardedPort[] }>();
+const codespacePortPending = new Map<string, Promise<CodespaceForwardedPort[]>>();
+
 function headers(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
 }
@@ -335,15 +344,85 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     await bootstrapWorkspace(workspace, values);
   }
 
-  previewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
+  private async forwardedPorts(workspace: WorkspaceRecord): Promise<CodespaceForwardedPort[]> {
+    const codespace = String(workspace.codespaceName || '').trim();
+    if (!codespace) return [];
+
+    const cached = codespacePortCache.get(codespace);
+    if (cached && cached.expiresAt > Date.now()) return cached.ports;
+    const pending = codespacePortPending.get(codespace);
+    if (pending) return pending;
+
+    const lookup = (async () => {
+      const token = await githubUserAccessToken(workspace.userId);
+      return await new Promise<CodespaceForwardedPort[]>((resolve) => {
+        const child = spawn('gh', [
+          'codespace', 'ports',
+          '-c', codespace,
+          '--json', 'sourcePort,browseUrl,visibility',
+        ], {
+          env: { ...process.env, GH_TOKEN: token },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let settled = false;
+        const finish = (ports: CodespaceForwardedPort[]) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          codespacePortCache.set(codespace, { expiresAt: Date.now() + 5_000, ports });
+          resolve(ports);
+        };
+        const timer = setTimeout(() => {
+          try { child.kill('SIGTERM'); } catch {}
+          finish([]);
+        }, 5_000);
+        timer.unref?.();
+
+        child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-64_000); });
+        child.once('error', () => finish([]));
+        child.once('exit', (code) => {
+          if (code !== 0) return finish([]);
+          try {
+            const rows = JSON.parse(stdout || '[]') as Array<Record<string, unknown>>;
+            finish(rows.flatMap((row) => {
+              const sourcePort = Number(row.sourcePort);
+              if (!Number.isInteger(sourcePort) || sourcePort <= 0) return [];
+              return [{
+                sourcePort,
+                browseUrl: String(row.browseUrl || '') || undefined,
+                visibility: String(row.visibility || '') || undefined,
+              }];
+            }));
+          } catch {
+            finish([]);
+          }
+        });
+      });
+    })().finally(() => {
+      if (codespacePortPending.get(codespace) === lookup) codespacePortPending.delete(codespace);
+    });
+
+    codespacePortPending.set(codespace, lookup);
+    return lookup;
+  }
+
+  async previewUrl(workspace: WorkspaceRecord, port: number): Promise<string | undefined> {
     const codespace = String(workspace.codespaceName || '').trim().toLowerCase();
     if (!codespace || !/^[a-z0-9-]+$/.test(codespace)) return undefined;
     if (!Number.isInteger(port) || port <= 1024 || port > 65535) return undefined;
 
+    // Keep GitHub credentials server-side. Ask GitHub CLI for the authoritative
+    // forwarded-port browse URL using the authenticated user's Codespaces
+    // access, instead of trying to run credentialed gh commands in the
+    // workspace Bridge.
+    const forwarded = (await this.forwardedPorts(workspace)).find((item) => item.sourcePort === port);
+    if (forwarded?.browseUrl) return forwarded.browseUrl;
+
     // GitHub documents the forwarded Codespaces URL as
-    // https://CODESPACENAME-PORT.app.github.dev. Keep authentication in the
-    // browser: private ports remain protected by the user's GitHub session,
-    // while Orlynx never places a GitHub token in the workspace shell.
+    // https://CODESPACENAME-PORT.app.github.dev. This fallback lets the user's
+    // browser authenticate a private port even when GitHub's port inventory is
+    // briefly behind the healthy local listener.
     return `https://${codespace}-${port}.app.github.dev/`;
   }
 }
