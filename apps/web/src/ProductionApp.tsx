@@ -1581,6 +1581,7 @@ export default function ProductionApp() {
       setShowConnectAI(false);
       void setAiPrefs({ modelId: id });
     }}
+    onManageAccount={() => setAiPickerView('model')}
     onClose={() => setShowConnectAI(false)}
   /> : null;
   return (
@@ -1694,9 +1695,9 @@ export default function ProductionApp() {
                 </>}
               </section>}
               {tab === 'preview' && <PreviewPane workspaceReady={workspaceReady} online={online} ports={usablePorts} selected={selectedPreview} currentUrl={currentPreviewUrl} displayPath={previewDisplayPath} status={previewStatus} slow={previewSlow} canBack={previewIdx > 0} canForward={previewIdx < previewStack.length - 1} reloadKey={previewReloadKey} externalSuggest={externalSuggest} onSelectPort={(port) => openPreview(port)} onSubmitPath={submitPreviewPath} onDismissSuggest={() => setExternalSuggest(null)} onOpenExternalSuggest={() => { if (externalSuggest) openExternalUrl(externalSuggest); }} onBack={() => { setPreviewIdx((i) => Math.max(0, i - 1)); setPreviewStatus('loading'); setPreviewSlow(false); }} onForward={() => { setPreviewIdx((i) => Math.min(previewStack.length - 1, i + 1)); setPreviewStatus('loading'); setPreviewSlow(false); }} onReload={() => { setPreviewStatus('loading'); setPreviewSlow(false); setPreviewReloadKey((k) => k + 1); }} onOpenExternal={() => { const url = currentPreviewUrl && selectedPreview ? externalPreviewUrl(selectedPreview.url!, currentPreviewUrl) : selectedPreview?.url; if (url) openExternalUrl(url); }} onViewOutput={() => setTab('terminal')} onLoad={() => { setPreviewStatus('ready'); setPreviewSlow(false); }} onFrameError={() => setPreviewStatus('blocked')} />}
-              {(tab === 'terminal' || tab === 'more') && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>{tab === 'terminal' ? 'Terminal' : 'More'}</h1><p className="screen-subtitle">{tab === 'terminal' ? 'Run a command in this repository.' : 'Project tools and preferences.'}</p></div></div>{tab === 'more' ? <div className="more-grid"><button onClick={() => setTab('terminal')} disabled={!integration.workspace?.terminalAvailable}><Icon name="terminal" /><b>Terminal</b><span>{integration.workspace?.terminalAvailable ? 'Run a project command' : 'Unavailable for this workspace'}</span></button><button onClick={() => setTab('preview')} disabled={!integration.workspace?.previewAvailable}><Icon name="preview" /><b>Preview</b><span>{integration.workspace?.previewAvailable ? 'Open the running app' : 'No running app detected'}</span></button><button onClick={() => startCloud(session.workspace?.state === 'connecting')} disabled={!integration.workspace?.cloudAvailable || cloudBusy || session.workspace?.state === 'ready'}><Icon name="cloud" /><b>{session.workspace?.state === 'ready' ? 'Cloud ready' : cloudBusy ? 'Preparing workspace…' : session.workspace?.state === 'connecting' ? 'Reconnect workspace' : 'Work on cloud'}</b><span>{integration.workspace?.cloudAvailable ? session.workspace?.state === 'ready' ? 'Development workspace connected' : 'Start or reconnect the cloud workspace' : 'Unavailable in this deployment'}</span></button><button onClick={() => setShowConnectAI(true)}><Icon name="agents" /><b>Orlynx AI</b><span>{ai?.state === 'ready' || ai?.state === 'working' ? 'Ready' : 'Unavailable'}</span></button><button onClick={() => setPage('projects')}><Icon name="github" /><b>Switch repository</b><span>Choose another project</span></button><button onClick={() => setPage('settings')}><Icon name="settings" /><b>Settings</b><span>Connections and appearance</span></button></div> : <Terminal command={command} setCommand={setCommand} output={terminalOutput} run={runTerminalCommand} connected={integration.workspace?.terminalAvailable} />}</section>}
+              {(tab === 'terminal' || tab === 'more') && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">PROJECT</p><h1>{tab === 'terminal' ? 'Terminal' : 'More'}</h1><p className="screen-subtitle">{tab === 'terminal' ? 'Run a command in this repository.' : 'Project tools and preferences.'}</p></div></div>{tab === 'more' ? <div className="more-grid"><button onClick={() => setTab('terminal')} disabled={!integration.workspace?.terminalAvailable}><Icon name="terminal" /><b>Terminal</b><span>{integration.workspace?.terminalAvailable ? 'Run a project command' : 'Unavailable for this workspace'}</span></button><button onClick={() => setTab('preview')} disabled={!integration.workspace?.previewAvailable}><Icon name="preview" /><b>Preview</b><span>{integration.workspace?.previewAvailable ? 'Open the running app' : 'No running app detected'}</span></button><button onClick={() => startCloud(session.workspace?.state === 'connecting')} disabled={!integration.workspace?.cloudAvailable || cloudBusy || session.workspace?.state === 'ready'}><Icon name="cloud" /><b>{session.workspace?.state === 'ready' ? 'Cloud ready' : cloudBusy ? 'Preparing workspace…' : session.workspace?.state === 'connecting' ? 'Reconnect workspace' : 'Work on cloud'}</b><span>{integration.workspace?.cloudAvailable ? session.workspace?.state === 'ready' ? 'Development workspace connected' : 'Start or reconnect the cloud workspace' : 'Unavailable in this deployment'}</span></button><button onClick={() => { setAiPickerView('model'); setShowConnectAI(true); }}><Icon name="agents" /><b>Orlynx AI</b><span>Manage account & models</span></button><button onClick={() => setPage('projects')}><Icon name="github" /><b>Switch repository</b><span>Choose another project</span></button><button onClick={() => setPage('settings')}><Icon name="settings" /><b>Settings</b><span>Connections and appearance</span></button></div> : <Terminal command={command} setCommand={setCommand} output={terminalOutput} run={runTerminalCommand} connected={integration.workspace?.terminalAvailable} />}</section>}
             </main>
-            <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => setShowConnectAI(true)}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
+            <aside className="context-panel"><section className="context-card"><div className="context-heading"><span className="context-icon"><Icon name="agents" /></span><div><b>Orlynx AI</b><small>{ai.model ? `${selectedAgentAdapter?.displayName || 'Agent'} · ${ai.model.displayName} · ${ai.mode === 'build' ? 'Build' : ai.mode === 'plan' ? 'Plan' : 'Ask'}` : `${selectedAgentAdapter?.displayName || 'Agent'} · No model selected`}</small></div><Badge tone={ai.state === 'ready' ? 'ok' : ai.state === 'working' ? 'wait' : 'fail'}>{ai.state === 'ready' ? 'Ready' : ai.state === 'working' ? 'Working' : ai.state === 'needs_attention' ? 'Needs attention' : ai.state === 'error' ? 'Unavailable' : 'Not connected'}</Badge></div><p className="context-empty">{ai.message || 'Connect an AI account to start working.'}</p><button className="context-link" onClick={() => { setAiPickerView('model'); setShowConnectAI(true); }}>Manage AI <Icon name="arrow" /></button></section><section className="context-card"><button className="context-title" onClick={() => setPage('projects')}>Repository <Icon name="chevron" /></button><dl className="context-list"><div><dt><Icon name="github" />Project</dt><dd>{session.project}</dd></div><div><dt><Icon name="branch" />Branch</dt><dd>{session.branch}</dd></div><div><dt><Icon name="commit" />Commit</dt><dd>{changes.find((item: any) => item.commitSha)?.commitSha?.slice(0, 7) || '—'}</dd></div></dl></section><section className="context-card"><button className="context-title" onClick={() => setTab('changes')}>Recent changes <Icon name="chevron" /></button>{changes.slice(0, 1).flatMap((change: any) => change.files.slice(0, 4)).map((file: any) => <div className="mini-change" key={file.path}><Icon name="file" /><span>{file.path.split('/').pop()}</span></div>)}{!changes.length && <p className="context-empty">No changes yet.</p>}</section></aside>
           </div>
           {newActivity && tab === 'chat' && <div className="new-activity"><Button tone="ghost" onClick={() => { nearBottomRef.current = true; window.scrollTo({ top: document.documentElement.scrollHeight, behavior: jumpBehavior() }); setNewActivity(false); }}>↓ New activity</Button></div>}
               {showWorkBar && <div className="active-work-bar"><div className="active-work-pill" role="status" data-state={waitingForUser ? 'waiting' : 'working'}>{waitingForUser ? <Icon name="ring" size={16} /> : <Spinner label={workBarLabel} />}<span className="active-work-label">{workBarLabel}</span></div></div>}
@@ -1905,11 +1906,11 @@ function ModeAccessMenu({ mode, permission, online, onMode, onPermission, onClos
   </aside>;
 }
 
-function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onClose }: {
+function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, selectedModelId, modelError, search, setSearch, onRefresh, onSelectAdapter, onSelectModel, onManageAccount, onClose }: {
   view: 'agent' | 'model';
   models: any[]; providers: any[]; adapters: any[]; selectedAdapterId: string; selectedModelId: string;
   modelError: string; search: string; setSearch: (v: string) => void;
-  onRefresh: () => Promise<void>; onSelectAdapter: (id: string) => void; onSelectModel: (id: string) => void; onClose: () => void;
+  onRefresh: () => Promise<void>; onSelectAdapter: (id: string) => void; onSelectModel: (id: string) => void; onManageAccount: () => void; onClose: () => void;
 }) {
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1920,7 +1921,6 @@ function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, 
   const available = models.filter((m) => m.status === 'available');
   const openCodeModels = available.filter((m) => m.providerId === 'opencode' || String(m.id || '').toLowerCase().startsWith('opencode/'));
   const publicModelsAvailable = openCodeModels.some((m) => m.free ?? /-free$/i.test(m.id));
-  const connected = accountConnected || publicModelsAvailable;
   const query = search.toLowerCase().trim();
   const filtered = openCodeModels.filter((m) => `${m.displayName} ${m.providerName} ${m.family}`.toLowerCase().includes(query));
   const selectedAdapter = adapters.find((adapter: any) => adapter.id === selectedAdapterId) || adapters.find((adapter: any) => adapter.id === 'opencode');
@@ -1987,6 +1987,11 @@ function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, 
           </button>;
         })}
       </div>
+      <button type="button" className="opencode-account-link" onClick={onManageAccount}>
+        <Icon name="settings" size={13} />
+        <span><b>OpenCode account</b><small>{accountConnected ? 'Connected · replace or reconnect the key' : 'Optional for paid models · free models work without it'}</small></span>
+        <Icon name="chevron" size={12} />
+      </button>
     </aside>;
   }
 
@@ -1998,22 +2003,22 @@ function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, 
       <span className="ai-dropdown-count">{filtered.length} models</span>
     </div>
 
-    {!connected ? <form className="ai-quick-connect" onSubmit={connectOpenCode}>
-      <div><b>Connect OpenCode</b><small>Use a Zen API key for paid models. Free OpenCode models remain available without it.</small></div>
-      <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenCode Zen API key" autoComplete="off" spellCheck={false} />
-      <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : 'Connect'}</Button>
-    </form> : <>
-      {openCodeModels.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search OpenCode models…" /></label>}
-      {openCodeModels.length
-        ? <div className="ai-model-compact-list" role="listbox" aria-label="OpenCode model">
-            {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" role="option" aria-selected={m.id === selectedModelId} className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
-              <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
-              {m.id === selectedModelId ? <Icon name="check" size={12} /> : null}
-            </button>)}
-            {!filtered.length && <p className="ai-switcher-empty">No matching OpenCode models.</p>}
-          </div>
-        : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load OpenCode models' : 'Loading OpenCode models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
-    </>}
+    <form className="ai-quick-connect" onSubmit={connectOpenCode}>
+      <div><b>{accountConnected ? 'OpenCode account connected' : 'Connect OpenCode account'}</b><small>{accountConnected ? 'Free models keep working independently. Enter a fresh Zen API key only to replace or reconnect the account.' : 'Use a Zen API key for account-backed models. Free OpenCode models remain available without it.'}</small></div>
+      <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={accountConnected ? 'Replace OpenCode Zen API key' : 'OpenCode Zen API key'} autoComplete="off" spellCheck={false} />
+      <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : accountConnected ? 'Reconnect' : 'Connect'}</Button>
+    </form>
+    {!accountConnected && publicModelsAvailable && <p className="ai-switcher-empty">Free/public OpenCode models are available now. Connecting an account is optional.</p>}
+    {openCodeModels.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search OpenCode models…" /></label>}
+    {openCodeModels.length
+      ? <div className="ai-model-compact-list" role="listbox" aria-label="OpenCode model">
+          {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" role="option" aria-selected={m.id === selectedModelId} className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
+            <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>
+            {m.id === selectedModelId ? <Icon name="check" size={12} /> : null}
+          </button>)}
+          {!filtered.length && <p className="ai-switcher-empty">No matching OpenCode models.</p>}
+        </div>
+      : <div className="ai-model-wait compact"><div><b>{modelError ? 'Couldn’t load OpenCode models' : 'Loading OpenCode models…'}</b>{modelError && <Button tone="ghost" onClick={() => void onRefresh()}>Try again</Button>}</div></div>}
   </aside>;
 }
 

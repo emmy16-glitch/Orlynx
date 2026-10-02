@@ -89,6 +89,11 @@ describe('workspace trust and AI control contract', () => {
     assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');
     assert.match(src, /composer-ai-dropdown view-\$\{aiPickerView\}/, 'AI switcher is not anchored to the composer');
     assert.match(src, /page !== 'workspace'.*ai-settings-switcher-anchor/, 'settings AI switcher fallback missing');
+    assert.match(src, /onManageAccount=\{\(\) => setAiPickerView\('model'\)\}/, 'agent picker cannot reach OpenCode account management');
+    assert.match(src, /OpenCode account connected/, 'connected OpenCode account state is not visible');
+    assert.match(src, /Free\/public OpenCode models are available now/, 'free-model/account separation is not explained');
+    assert.match(src, /Manage account & models/, 'project More screen does not expose AI account management');
+    assert.doesNotMatch(src, /!connected \? <form className="ai-quick-connect"/, 'free public models still hide the OpenCode account form');
   });
 
   it('routes model recovery back into the unified AI controls', () => {

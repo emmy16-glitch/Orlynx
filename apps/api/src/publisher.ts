@@ -471,6 +471,34 @@ export async function publishVerifiedChangeSet(input: {
   }
 }
 
+export interface DeploymentTarget {
+  changeId: string;
+  commitSha: string;
+  source: 'merged' | 'direct-publish';
+}
+
+// Bare "deploy it" is a verification continuation when the newest change is
+// already published. Never re-push an old workspace commit after a PR merge.
+// If the newest publication is still an open PR, require the merge first so
+// deployment cannot silently bypass the review path.
+export async function deploymentTargetForSession(sessionId: string): Promise<DeploymentTarget | null> {
+  const changes = [...await controlPlaneRepository().listChangeSets(sessionId)].reverse();
+  const latest = changes[0];
+  if (!latest) return null;
+
+  if (latest.pullRequestUrl && !latest.mergeCommitSha) {
+    const label = latest.pullRequestNumber ? ` #${latest.pullRequestNumber}` : '';
+    throw new Error(`Pull request${label} is published but not merged yet. Merge it before verifying production deployment.`);
+  }
+  if (latest.mergeCommitSha) {
+    return { changeId: latest.id, commitSha: latest.mergeCommitSha, source: 'merged' };
+  }
+  if (latest.pushedAt && latest.commitSha) {
+    return { changeId: latest.id, commitSha: latest.commitSha, source: 'direct-publish' };
+  }
+  return null;
+}
+
 export interface MergeResult {
   changeId: string;
   pullRequestNumber: number;
@@ -499,11 +527,16 @@ export async function mergePublishedPullRequest(input: {
   ]);
   if (!session) throw new Error('Publication session is unavailable.');
   const ordered = [...changes].reverse();
+  const latest = ordered[0];
   const change = input.changeId
     ? ordered.find((item) => item.id === input.changeId)
-    : ordered.find((item) => Number.isSafeInteger(item.pullRequestNumber));
+    : latest;
   if (!change) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
-  if (!change.pullRequestNumber) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
+  if (!change.pullRequestNumber) {
+    throw new Error(input.changeId
+      ? 'The requested change set does not have a pull request yet. Publish it first, then merge.'
+      : 'The latest work does not have a pull request yet. Publish the latest work first; Orlynx will not merge an older pull request implicitly.');
+  }
   const method = input.method || change.mergeMethod || 'merge';
 
   // Crash recovery: a merge recorded durably before the receipt was emitted
