@@ -104,12 +104,15 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /loopbackOnly/);
     assert.match(bridge, /codespacePortsPending\) return codespacePortsPending/);
 
-    assert.match(provider, /'codespace', 'ports'/);
-    assert.match(provider, /--json', 'sourcePort,browseUrl,visibility'/);
-    assert.match(provider, /GH_TOKEN: token/);
+    assert.match(provider, /const SERVER_GH_BIN = process\.env\.ORLYNX_GH_BIN/);
+    assert.match(provider, /spawn\(SERVER_GH_BIN, \[/);
+    assert.match(provider, /'codespace', 'ports', 'forward'/);
+    assert.match(provider, /\`\$\{port\}:0\`/);
+    assert.match(provider, /codespacePreviewForwarders/);
+    assert.match(provider, /ensurePreviewForwarder/);
     assert.match(provider, /forwarded\?\.browseUrl/);
-    assert.ok(provider.includes('return `https://${codespace}-${port}.app.github.dev/`;'));
-    assert.match(provider, /Keep GitHub credentials server-side/);
+    assert.match(provider, /never invent/);
+    assert.doesNotMatch(provider, /return \`https:\/\/\$\{codespace\}-\$\{port\}\.app\.github\.dev\//);
 
     assert.match(gateway, /type: 'preview\.state'/);
     assert.match(gateway, /localReady: true/);
@@ -140,6 +143,16 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
   });
 
+  it('Render pins a loopback-safe GitHub CLI and verifies its checksum', () => {
+    const renderBuild = fs.readFileSync(path.join(root, 'scripts/render-build.sh'), 'utf8');
+    assert.match(renderBuild, /GH_VERSION="\$\{GH_VERSION:-2\.101\.0\}"/);
+    assert.match(renderBuild, /GH_SHA256="9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"/);
+    assert.match(renderBuild, /GH_SHA256="b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f"/);
+    assert.match(renderBuild, /sha256sum -c -/);
+    assert.match(renderBuild, /\.render-bin\/gh --version/);
+    assert.doesNotMatch(renderBuild, /2\.80\.0/);
+  });
+
   it('control plane can resolve an authenticated Codespaces preview URL without workspace GitHub credentials', () => {
     const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');
     const workspaceProvider = fs.readFileSync(path.join(root, 'apps/api/src/workspace-provider.ts'), 'utf8');
@@ -150,6 +163,9 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(provider, /\^\[a-z0-9-\]\+\$/);
     assert.match(provider, /port <= 1024 \|\| port > 65535/);
     assert.match(provider, /githubUserAccessToken\(workspace\.userId\)/);
+    assert.match(provider, /stopCodespacePreviewForwarders\(workspace\.codespaceName\)/);
+    assert.match(provider, /return forwarded\?\.browseUrl/);
+    assert.doesNotMatch(provider, /app\.github\.dev\/\`/);
     assert.match(workspaceProvider, /Promise<string \| undefined>/);
     assert.match(routes, /await provider\.previewUrl\?\.\(workspace, Number\(item\.port\)\)/);
     assert.match(gateway, /await previewProvider\?\.previewUrl\?\.\(previewWorkspace, preview\.port\)/);
