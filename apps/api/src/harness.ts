@@ -1,6 +1,7 @@
 import type {
   AgentMode,
   HarnessCheckpoint,
+  HarnessInvestigation,
   HarnessPlanItem,
   HarnessVerification,
   OrlynxEvent,
@@ -562,6 +563,79 @@ export function shouldReflect(checkpoint: HarnessCheckpoint, finalText: string):
 /** Backward-compatible name for existing callers/tests. */
 export const shouldSalvage = shouldReflect;
 
+function diagnosticLine(finalText: string): string | undefined {
+  const match = /(?:^|\n)\s*Model\s*[→>-]\s*Orlynx:\s*([^\n]+)/i.exec(String(finalText || ''));
+  const line = String(match?.[1] || '').replace(/\s+/g, ' ').trim();
+  return line ? line.slice(0, 520) : undefined;
+}
+
+function investigationQuestion(checkpoint: HarnessCheckpoint, contradictions: string[]): string {
+  const missing = checkpoint.verification.missing.join(', ') || 'the requested outcome';
+  const contradiction = contradictions[0] || '';
+  return [
+    `I cannot verify ${missing}.`,
+    contradiction,
+    'What does the current evidence imply, and what is the next discriminating check that would resolve the uncertainty?',
+  ].filter(Boolean).join(' ').slice(0, 1_200);
+}
+
+export function updateInvestigationFromOutcome(
+  checkpoint: HarnessCheckpoint,
+  finalText: string,
+  events: OrlynxEvent[],
+  now = new Date().toISOString(),
+): HarnessCheckpoint {
+  const current = checkpoint.investigation;
+  if (!current) return checkpoint;
+
+  const hypothesis = diagnosticLine(finalText) || current.hypothesis;
+  const evidence = evidenceSummary(events);
+  const verificationPassed = checkpoint.verification.status === 'passed';
+  const stage: HarnessInvestigation['stage'] = verificationPassed
+    ? 'resolved'
+    : hypothesis
+      ? 'testing'
+      : current.stage;
+
+  return {
+    ...checkpoint,
+    investigation: {
+      ...current,
+      stage,
+      ...(hypothesis ? { hypothesis } : {}),
+      evidence: evidence.length ? evidence : current.evidence,
+      ...(verificationPassed
+        ? {
+            outcome: `Verified: ${checkpoint.verification.satisfied.join(', ') || 'requested outcome'}`,
+            resolvedAt: now,
+          }
+        : {}),
+      updatedAt: now,
+    },
+    updatedAt: now,
+    lastCheckpointAt: now,
+  };
+}
+
+export function blockInvestigation(
+  checkpoint: HarnessCheckpoint,
+  reason: string,
+  now = new Date().toISOString(),
+): HarnessCheckpoint {
+  if (!checkpoint.investigation) return checkpoint;
+  return {
+    ...checkpoint,
+    investigation: {
+      ...checkpoint.investigation,
+      stage: 'blocked',
+      outcome: String(reason || 'Investigation budget exhausted.').slice(0, 1_200),
+      updatedAt: now,
+    },
+    updatedAt: now,
+    lastCheckpointAt: now,
+  };
+}
+
 export function prepareReflection(
   checkpoint: HarnessCheckpoint,
   events: OrlynxEvent[],
@@ -583,8 +657,23 @@ export function prepareReflection(
     ? (checkpoint.stagnantReflections || 0) + 1
     : 0;
 
+  const existing = checkpoint.investigation;
+  const investigation: HarnessInvestigation = {
+    id: existing?.id || `investigation-${attempts}`,
+    stage: 'investigating',
+    question: investigationQuestion(checkpoint, contradictions),
+    ...(existing?.hypothesis ? { hypothesis: existing.hypothesis } : {}),
+    ...(existing?.nextCheck ? { nextCheck: existing.nextCheck } : {}),
+    evidence,
+    ...(existing?.repairAction ? { repairAction: existing.repairAction } : {}),
+    attempt: attempts,
+    startedAt: existing?.startedAt || now,
+    updatedAt: now,
+  };
+
   return {
     ...checkpoint,
+    investigation,
     salvageAttempts: attempts,
     reflectionAttempts: attempts,
     reflectionTarget: checkpoint.reflectionTarget?.length
@@ -628,6 +717,13 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
   const stagnant = (checkpoint.stagnantReflections || 0) > 0
     ? 'The unresolved evidence is substantially the same as the previous reflection. Do not repeat the same failed command or hypothesis without gathering new evidence; choose a different diagnostic path.'
     : 'Do not repeat the same failed command or hypothesis without new evidence. Inspect first, then choose the next action.';
+  const investigationText = checkpoint.investigation
+    ? [
+        `Durable Investigation stage: ${checkpoint.investigation.stage}.`,
+        `Investigation question: ${checkpoint.investigation.question}`,
+        checkpoint.investigation.hypothesis ? `Previous hypothesis: ${checkpoint.investigation.hypothesis}` : '',
+      ].filter(Boolean).join(' ')
+    : '';
 
   return [
     `Reflection cycle ${attempts}/${MAX_REFLECTION_ATTEMPTS}. Orlynx still cannot verify: ${missing}.`,
@@ -637,6 +733,8 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     failureGuidance,
     lessonText,
     stagnant,
+    investigationText,
+    'Treat UNKNOWN as an investigation state, not as failure. Form one falsifiable hypothesis, choose one discriminating check, observe the result, then update the hypothesis. If evidence points to an infrastructure/control-plane defect, diagnose that layer instead of editing application code merely to make the symptom disappear.',
     'You are the connected reasoning layer; Orlynx is the control and evidence layer. When Orlynx asks because the evidence does not explain something, answer the specific Orlynx question instead of making Orlynx guess. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
     'Before calling the next tool, stream exactly one concise public diagnostic line beginning with "Model → Orlynx:". State only the evidence-grounded hypothesis and next check. If the evidence is insufficient, say which check would resolve the uncertainty instead of inventing certainty. Do not expose private chain-of-thought.',
     checkpoint.verification.missing.includes('preview')
