@@ -138,6 +138,88 @@ test('runner health gives a cold Render service one bounded wake retry before fa
   }
 });
 
+test('forced runner wake retries immediate Render 503 responses until the host becomes healthy', async () => {
+  const previousToken = process.env.ORLYNX_RUNNER_TOKEN;
+  const previousTimeout = process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS;
+  const previousColdTimeout = process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS;
+  const previousRetry = process.env.ORLYNX_RUNNER_WAKE_RETRY_MS;
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    process.env.ORLYNX_RUNNER_TOKEN = 'forced-wake-test-token';
+    process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = '2500';
+    process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = '2500';
+    process.env.ORLYNX_RUNNER_WAKE_RETRY_MS = '500';
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        capacity: 1,
+        running: 0,
+        available: 1,
+        stopped: 0,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+
+    const health = await probeRunnerHost({
+      id: 'forced-render-retry',
+      url: 'https://forced-render.example.com',
+      publicUrl: 'https://forced-render.example.com',
+      weight: 1,
+    }, true);
+    assert.equal(calls, 3);
+    assert.equal(health.ok, true);
+    assert.equal(health.available, 1);
+  } finally {
+    if (previousToken == null) delete process.env.ORLYNX_RUNNER_TOKEN; else process.env.ORLYNX_RUNNER_TOKEN = previousToken;
+    if (previousTimeout == null) delete process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = previousTimeout;
+    if (previousColdTimeout == null) delete process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = previousColdTimeout;
+    if (previousRetry == null) delete process.env.ORLYNX_RUNNER_WAKE_RETRY_MS; else process.env.ORLYNX_RUNNER_WAKE_RETRY_MS = previousRetry;
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('forced runner wake fails fast on non-transient authorization errors', async () => {
+  const previousToken = process.env.ORLYNX_RUNNER_TOKEN;
+  const previousTimeout = process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS;
+  const previousColdTimeout = process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS;
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    process.env.ORLYNX_RUNNER_TOKEN = 'forced-wake-test-token';
+    process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = '2500';
+    process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = '2500';
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ ok: false }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const health = await probeRunnerHost({
+      id: 'forced-render-auth',
+      url: 'https://forced-auth.example.com',
+      publicUrl: 'https://forced-auth.example.com',
+      weight: 1,
+    }, true);
+    assert.equal(calls, 1);
+    assert.equal(health.ok, false);
+    assert.equal(health.detail, 'HTTP 401');
+  } finally {
+    if (previousToken == null) delete process.env.ORLYNX_RUNNER_TOKEN; else process.env.ORLYNX_RUNNER_TOKEN = previousToken;
+    if (previousTimeout == null) delete process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_HEALTH_TIMEOUT_MS = previousTimeout;
+    if (previousColdTimeout == null) delete process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS; else process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS = previousColdTimeout;
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test('runner image bakes and verifies Chromium E2E runtime', () => {
   const dockerfile = fs.readFileSync(new URL('../../../runner-runtime/Dockerfile', import.meta.url), 'utf8');
   const smoke = fs.readFileSync(new URL('../../../runner-runtime/browser-smoke.mjs', import.meta.url), 'utf8');
