@@ -4746,6 +4746,69 @@ html[data-theme="light"] .composer-options-panel {
   border-radius: 0 10px 10px 0;
   font-family: var(--font-sans);
 }
+.ox-investigation-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.ox-investigation-class {
+  color: var(--foreground-subtle);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.ox-investigation-summary {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.ox-investigation-summary > div { display: grid; gap: 2px; }
+.ox-investigation-summary span,
+.ox-investigation-summary summary {
+  color: var(--foreground-subtle);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.ox-investigation-summary p {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.ox-investigation-summary details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.ox-investigation-summary details > summary::-webkit-details-marker { display: none; }
+.ox-investigation-summary ul {
+  margin: 7px 0 0;
+  padding-left: 17px;
+  color: var(--foreground-muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.ox-investigation-outcome {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ox-investigation-dialogue {
+  display: grid;
+  gap: 7px;
+}
+.ox-investigation-stage[data-stage="resolved"] {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  color: var(--success);
+}
+.ox-investigation-stage[data-stage="blocked"] {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--danger);
+}
 .ox-investigation-stage {
   width: fit-content;
   padding: 2px 7px;
