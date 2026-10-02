@@ -1447,10 +1447,11 @@ export default function ProductionApp() {
     const durableIds = new Set(changes.map((change: any) => String(change.id)));
     const byPath = new Map<string, any>();
     for (const activity of activities) {
-      if (activity.category !== 'changes') continue;
+      if (activity.category !== 'file') continue;
       const evidence = activity.evidence && typeof activity.evidence === 'object' ? activity.evidence as Record<string, any> : {};
-      if (evidence.changeId && durableIds.has(String(evidence.changeId))) continue;
       const files = Array.isArray(evidence.files) ? evidence.files : [];
+      if (!files.length) continue;
+      if (evidence.changeId && durableIds.has(String(evidence.changeId))) continue;
       for (const file of files) {
         if (!file || typeof file !== 'object' || !String(file.path || '').trim()) continue;
         byPath.set(String(file.path), { ...file, runId: activity.runId });
