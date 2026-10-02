@@ -4748,6 +4748,8 @@ html[data-theme="light"] .composer-options-panel {
    without mixing it into raw terminal output or exposing private chain-of-thought. */
 .ox-investigation {
   min-width: 0;
+  max-height: none;
+  overflow: visible;
   display: grid;
   gap: 7px;
   padding: 10px 12px 12px;
