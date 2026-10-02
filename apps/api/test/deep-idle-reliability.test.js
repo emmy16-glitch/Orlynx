@@ -49,6 +49,8 @@ test('workspace agent progress watchdog ignores liveness-only heartbeats and bou
   assert.doesNotMatch(bridge, /\['message\.part\.updated', 'message\.part\.delta', 'message\.updated'\]\.includes\(String\(event\.type\)\)\) lastProgressAt = Date\.now\(\)/);
   assert.match(bridge, /sourceType: 'agent\.plan'/);
   assert.match(bridge, /The provider todo tool is control metadata, not user-facing terminal/);
+  assert.match(bridge, /sideEffectingToolSeen = \[\.\.\.toolParts\.values\(\)\]\.some\(\(part\) => !isOpenCodeTodoToolName\(part\.tool\)\)/);
+  assert.match(bridge, /retrySafe: !visible && !sideEffectingToolSeen/);
 
   assert.match(gateway, /type === 'activity\.progress' && String\(payload\.sourceType \|\| ''\) === 'agent\.plan'/);
   assert.match(gateway, /planItems,/);
