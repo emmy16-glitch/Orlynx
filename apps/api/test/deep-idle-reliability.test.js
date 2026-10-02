@@ -51,6 +51,13 @@ test('workspace agent progress watchdog ignores liveness-only heartbeats and bou
   assert.match(bridge, /The provider todo tool is control metadata, not user-facing terminal/);
   assert.match(bridge, /sideEffectingToolSeen = \[\.\.\.toolParts\.values\(\)\]\.some\(\(part\) => !isOpenCodeTodoToolName\(part\.tool\)\)/);
   assert.match(bridge, /retrySafe: !visible && !sideEffectingToolSeen/);
+  assert.match(bridge, /sourceType: 'agent\.wait'/);
+  assert.match(bridge, /doesNotCountAsProgress: true/);
+  assert.match(bridge, /failure\.retrySafe === true/);
+  assert.match(gateway, /const bridgeRetrySafe = message\.result\?\.retrySafe === true/);
+  assert.match(gateway, /automaticRecoveryEligible/);
+  assert.match(gateway, /Recovering interrupted task/);
+  assert.match(gateway, /retrying this same task automatically/);
 
   assert.match(gateway, /type === 'activity\.progress' && String\(payload\.sourceType \|\| ''\) === 'agent\.plan'/);
   assert.match(gateway, /planItems,/);

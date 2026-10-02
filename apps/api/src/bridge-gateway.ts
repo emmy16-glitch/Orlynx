@@ -368,9 +368,64 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                     : errorKind === 'permission'
                       ? 'This task needs permission that the current access level does not allow.'
                       : errorKind === 'engine'
-                        ? 'The AI workspace connection was interrupted. Reconnect the workspace and try again.'
+                        ? 'The AI workspace connection was interrupted after automatic recovery could not complete safely. Your workspace state is preserved.'
                         : 'Orlynx AI could not complete this task.';
             console.warn(`[bridge] agent run failed session=${claims.sessionId} run=${runId} kind=${errorKind} freePublic=${freePublicModel}`);
+
+            const bridgeRetrySafe = message.result?.retrySafe === true;
+            const automaticRecoveryEligible = Boolean(
+              task
+              && bridgeRetrySafe
+              && (errorKind === 'engine' || (errorKind === 'unknown' && /timed out|timeout|connection|transport|stopped making observable progress/i.test(detail)))
+              && Number(task.harness?.salvageAttempts || 0) < 1
+            );
+
+            if (task && automaticRecoveryEligible) {
+              const effectivePermission = task.tempPermission || task.permission || 'full';
+              task.harness ||= createHarnessCheckpoint({
+                prompt: task.prompt,
+                mode: task.mode || 'build',
+                permission: effectivePermission,
+                plane: task.plane || 'workspace',
+                now,
+              });
+              task.harness = {
+                ...advanceHarnessPhase(task.harness, 'routing', {
+                  mode: task.mode || 'build',
+                  permission: effectivePermission,
+                  now,
+                }),
+                salvageAttempts: Number(task.harness.salvageAttempts || 0) + 1,
+              };
+              task.state = 'queued';
+              task.updatedAt = now;
+              await repository.putTask(task);
+
+              if (memoryRun) {
+                memoryRun.state = 'queued';
+                memoryRun.activity = 'Recovering interrupted task';
+                memoryRun.finishedAt = undefined;
+                memoryRun.errorKind = undefined;
+                store.save();
+              }
+
+              await persistLiveEvent({
+                eventId: `evt_${uuid()}`,
+                sessionId: claims.sessionId,
+                taskId,
+                runId,
+                workspaceId: claims.workspaceId,
+                type: 'run.state',
+                timestamp: now,
+                payload: {
+                  state: 'queued',
+                  recovered: true,
+                  message: 'The agent connection ended before any visible output or side effects · Orlynx is retrying this same task automatically.',
+                },
+              });
+              void promoteNextQueuedRun(claims.sessionId).catch((promoteError) => console.warn(`[bridge] automatic safe retry promotion failed: ${promoteError instanceof Error ? promoteError.message : 'unknown error'}`));
+              return;
+            }
 
             if (task) {
               task.state = 'failed';

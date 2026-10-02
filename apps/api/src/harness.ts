@@ -357,7 +357,10 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
     if (event.type === 'preview.ready') found.add('preview');
 
     if (event.type === 'receipt.created') {
-      if (payload.commitSha || payload.commit) found.add('commit');
+      if (payload.commitSha || payload.commit) {
+        found.add('commit');
+        found.add('changes');
+      }
       if (payload.pushedAt || payload.pushedBranch || payload.pullRequestUrl || payload.publish === true) found.add('publish');
       if (payload.deploymentUrl || payload.deployed === true) found.add('deployment');
     }
@@ -371,7 +374,13 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
         : event.type === 'tool.failed'
           ? false
           : (exitCode ?? 0) === 0;
-      if (ok && /\bgit\s+commit\b/.test(command)) found.add('commit');
+      if (ok && /\bgit\s+commit\b/.test(command)) {
+        // A successful local commit is authoritative proof that repository
+        // content changed even when git status is clean afterwards. Without
+        // this, committed work falsely fails the "changes" requirement.
+        found.add('commit');
+        found.add('changes');
+      }
       if (ok && /\bgit\s+push\b/.test(command)) found.add('publish');
 
       const isBuild = semanticType === 'build-result'

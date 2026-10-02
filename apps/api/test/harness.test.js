@@ -107,6 +107,26 @@ test('provider-authored todo plan is normalized, durable, and handed back to the
   assert.match(instruction, /do not dump raw todo JSON/i);
 });
 
+test('a successful local commit satisfies both commit and changes verification on a clean tree', () => {
+  const checkpoint = createHarnessCheckpoint({
+    prompt: 'update architecture docs and commit the fix',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  const verified = verifyHarness(checkpoint, [
+    evt(1, 'tool.completed', {
+      tool: 'bash',
+      semanticType: 'git',
+      command: 'git commit -m "Docs: clarify lifecycle"',
+      exitCode: 0,
+    }),
+  ]);
+  assert.equal(verified.verification.status, 'passed');
+  assert.deepEqual(verified.verification.satisfied, ['changes', 'commit']);
+  assert.deepEqual(verified.verification.missing, []);
+});
+
 test('harness starts durable and progressively discloses tool families', () => {
   const cp = createHarnessCheckpoint({
     prompt: 'fix it and run tests',

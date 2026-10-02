@@ -66,6 +66,10 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(routes, /blockedPreviewPorts = new Set\(\[22, 23, 25, 2222/);
     assert.match(gateway, /type: 'preview\.ready'/);
     assert.match(gateway, /verified: true/);
+    assert.match(bridge, /const previewHints = new Set<number>\(\)/);
+    assert.match(bridge, /previewToolSeen/);
+    assert.match(bridge, /Development server is healthy on port/);
+    assert.match(bridge, /recoveredFromToolFailure: true/);
   });
 
   it('applies Vite Codespaces host compatibility globally without editing repositories', () => {

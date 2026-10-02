@@ -16,7 +16,7 @@ import { runnerHostSupportsBrowserE2e, taskRequiresBrowserE2e } from './runner-p
 import { scopeToolCallId } from './agent-protocol.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { agentMemoryInstruction, relevantAgentLessons } from './agent-memory.js';
-import { advanceHarnessPhase, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, harnessSystemInstruction, openCodeToolsFor, verifyHarness } from './harness.js';
 import { GitHubActionsUnavailableError, githubActionsVerificationEligible, runGitHubActionsVerification, selectDispatchableVerificationWorkflow } from './github-actions.js';
 import { noteComputeFailure, selectWorkspaceProvider } from './compute-broker.js';
 
@@ -544,6 +544,11 @@ export function buildPresentationInstruction(mode: AgentMode): string {
     'Never ask the user to run gh auth login, paste a PAT, or expose a GitHub token. Do not use gh auth status as evidence that Orlynx is disconnected from GitHub.',
     'Do not run raw git push from the provider shell. Prepare and commit changes locally, then report that they are ready for Orlynx controlled publish/review unless the Orlynx publish action itself confirms publication.',
     'When a repository already has a package-lock.json and the goal is only to install existing dependencies, prefer npm ci rather than npm install. Do not leave package-lock.json changed unless the task intentionally changes dependencies.',
+    'For a long-running development server, do not keep a foreground shell tool open waiting forever. Launch it as a detached process with stdin detached and output redirected to a workspace log, then verify the listening port/HTTP response. Treat a healthy discovered Preview port as stronger evidence than a stale launcher-shell timeout.',
+    'When the user asks to bring a clean feature branch up to date with main, fetch first. Fast-forward when possible; when the feature branch has local unpublished commits, prefer rebasing those commits onto origin/main instead of manufacturing a merge commit. Never rewrite a published remote branch unless the user explicitly asked for that history change.',
+    'When reporting Git divergence, distinguish HEAD vs origin/main from HEAD vs the feature branch tracking remote. Do not present a huge ahead count against a stale tracking branch as if Orlynx created that many new commits.',
+    'Do not truncate diagnostic or verification command output with head/tail in a way that can hide failures. It is fine to render a concise excerpt to the user, but capture/inspect the complete command result before declaring success.',
+    'Verify architecture/runtime claims from the current checkout before stating them as repository facts; do not reuse a stale project summary when live code disagrees.',
     'Reserve normal assistant prose for the final result, a necessary user question, or an approval that genuinely requires user input.',
   ].join(' ');
 }
@@ -1726,14 +1731,73 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
     if (directStillRunning) continue;
     // Another instance or an in-flight startup may own a fresh heartbeat.
     if (Date.now() - Date.parse(task.updatedAt) < 30_000) continue;
-    // After process death an upstream request cannot be resumed safely. Keep
-    // partial text and terminate once rather than silently billing/running twice.
+
+    const now = new Date().toISOString();
+    const partial = String(task.partialText || '').trim();
+    const salvageAttempts = Number(task.harness?.salvageAttempts || 0);
+
+    // Direct Ask/Plan is non-mutating. If no visible response escaped before
+    // the process died, retry the SAME durable task once automatically rather
+    // than forcing the user to type "??". This is bounded and preserves run ID.
+    if (!partial && salvageAttempts < 1) {
+      task.harness ||= createHarnessCheckpoint({
+        prompt: task.prompt,
+        mode: task.mode || 'ask',
+        permission: task.tempPermission || task.permission || 'full',
+        plane: 'direct',
+        now,
+      });
+      const steered = applySteering(
+        task,
+        'Orlynx recovery checkpoint: the previous direct response process ended before any user-visible text. Resume the same request from durable conversation state without asking the user to resend it.',
+        'append',
+        now,
+      );
+      Object.assign(task, steered);
+      task.harness = {
+        ...task.harness!,
+        salvageAttempts: salvageAttempts + 1,
+        phase: 'routing',
+        updatedAt: now,
+        lastCheckpointAt: now,
+      };
+      task.state = 'queued';
+      task.updatedAt = now;
+      await repository.putTask(task);
+
+      const run = (store.db.runs[sessionId] || []).find((item) => item.id === task.runId);
+      if (run) {
+        run.state = 'queued';
+        run.activity = 'Recovering interrupted response';
+        run.finishedAt = undefined;
+        run.errorKind = undefined;
+      }
+      emit(sessionId, 'run.state', {
+        taskId: task.id,
+        state: 'queued',
+        recovered: true,
+        message: 'The response process restarted before producing text · Orlynx is resuming it automatically.',
+      }, task.runId);
+      recovered = true;
+      continue;
+    }
+
+    // Once user-visible text exists, silently replaying the whole model turn
+    // could duplicate prose. Preserve that partial response and surface one
+    // bounded failure instead of inventing continuation text.
     task.state = 'failed';
-    task.updatedAt = new Date().toISOString();
+    task.updatedAt = now;
     await repository.putTask(task);
     const run = (store.db.runs[sessionId] || []).find((item) => item.id === task.runId);
     if (run) { run.state = 'failed'; run.activity = 'Response interrupted'; run.finishedAt = task.updatedAt; }
-    emit(sessionId, 'run.failed', { taskId: task.id, error: 'The server restarted before this response finished. Your partial response is preserved. Send a new message to continue.', errorKind: 'engine', recoverable: true }, task.runId);
+    emit(sessionId, 'run.failed', {
+      taskId: task.id,
+      error: partial
+        ? 'The response process restarted after partial text was already shown. The partial response is preserved and can be retried safely from the response action.'
+        : 'The response process restarted again after an automatic recovery attempt. The task was released so you can continue.',
+      errorKind: 'engine',
+      recoverable: true,
+    }, task.runId);
     recovered = true;
   }
   if (recovered) {
