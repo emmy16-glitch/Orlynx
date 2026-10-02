@@ -542,7 +542,7 @@ export function buildPresentationInstruction(mode: AgentMode): string {
     'Use tools directly; Orlynx already renders repository reads, commands, tests, builds, edits, and workspace state as live activity rows.',
     'GitHub authentication is managed by the Orlynx GitHub App. The provider shell intentionally does not receive GitHub tokens.',
     'Never ask the user to run gh auth login, paste a PAT, or expose a GitHub token. Do not use gh auth status as evidence that Orlynx is disconnected from GitHub.',
-    'Do not run raw git push from the provider shell. Prepare and commit changes locally; Orlynx owns authenticated publication in the control plane.',
+    'Do not run raw git push from the provider shell. Prepare and commit changes locally; Orlynx controlled publish/review owns authenticated publication in the control plane.',
     'If the user explicitly asked to push/publish, missing shell GitHub credentials are expected and are NOT a reason to stop, ask the user, or report the task as impossible. Finish local verification and leave a clean committed HEAD; Orlynx will recover that committed diff and publish it through the controlled GitHub path.',
     'When a repository already has a package-lock.json and the goal is only to install existing dependencies, prefer npm ci rather than npm install. Do not leave package-lock.json changed unless the task intentionally changes dependencies.',
     'For a long-running development server, do not keep a foreground shell tool open waiting forever. Launch it as a detached process with stdin detached and output redirected to a workspace log, then verify the listening port/HTTP response. Treat a healthy discovered Preview port as stronger evidence than a stale launcher-shell timeout.',
