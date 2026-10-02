@@ -121,6 +121,18 @@
   .ox-stream, .ox-btn { transition: none; }
 }
 
+
+.ox-plan { display: grid; gap: 6px; }
+.ox-plan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.ox-plan-list li { min-height: 30px; display: flex; align-items: flex-start; gap: 8px; color: var(--foreground-muted); }
+.ox-plan-list li[data-status="in_progress"] { color: var(--foreground); font-weight: 600; }
+.ox-plan-list li[data-status="completed"], .ox-plan-list li[data-status="cancelled"] { color: var(--foreground-subtle); }
+.ox-plan-mark { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+.ox-plan-list li[data-status="completed"] .ox-plan-mark { color: var(--agent-success); }
+.ox-plan-list li[data-status="cancelled"] .ox-plan-mark { color: var(--foreground-subtle); }
+.ox-plan-content { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.ox-plan-priority { flex: none; font-size: var(--text-meta); color: var(--agent-waiting); font-weight: 700; }
+
 /* Thread turns: one user request owns its response + work. No boxes in boxes:
    whitespace + one hairline separate turns; parts are borderless rows. */
 .thread-turn { padding: 6px 0 10px; }

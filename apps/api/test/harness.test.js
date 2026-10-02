@@ -10,6 +10,7 @@ import {
   classifyVerificationFailure,
   harnessBudgetStatus,
   harnessSystemInstruction,
+  normalizeHarnessPlanItems,
   detectEvidenceContradictions,
   openCodeToolsFor,
   prepareReflection,
@@ -70,6 +71,40 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
   assert.deepEqual(verificationRequirementsFor('update the README and tests'), ['changes', 'tests']);
   assert.deepEqual(verificationRequirementsFor('start localhost and verify preview'), ['preview']);
   assert.deepEqual(verificationRequirementsFor('check online for the latest official docs'), ['browser']);
+});
+
+test('provider-authored todo plan is normalized, durable, and handed back to the model', () => {
+  const items = normalizeHarnessPlanItems([
+    { content: 'Read architecture docs', status: 'completed', priority: 'high' },
+    { content: 'Audit hidden runtime gaps', status: 'in_progress', priority: 'high' },
+    { content: 'Fix confirmed bugs', status: 'pending' },
+    { content: 'Run regression tests', status: 'todo' },
+    { content: '  ', status: 'pending' },
+  ]);
+  assert.deepEqual(items, [
+    { content: 'Read architecture docs', status: 'completed', priority: 'high' },
+    { content: 'Audit hidden runtime gaps', status: 'in_progress', priority: 'high' },
+    { content: 'Fix confirmed bugs', status: 'pending' },
+    { content: 'Run regression tests', status: 'pending' },
+  ]);
+
+  const cp = createHarnessCheckpoint({
+    prompt: 'audit hidden gaps and fix them',
+    mode: 'build',
+    permission: 'full',
+    plane: 'workspace',
+  });
+  cp.planItems = items;
+  cp.planUpdatedAt = '2026-10-02T04:00:00.000Z';
+
+  const instruction = harnessSystemInstruction(cp);
+  assert.match(instruction, /Durable task plan:/);
+  assert.match(instruction, /\[completed\] Read architecture docs/);
+  assert.match(instruction, /\[in_progress\] Audit hidden runtime gaps/);
+  assert.match(instruction, /Continue this same plan/);
+  assert.match(instruction, /provider todo\/plan tool/);
+  assert.match(instruction, /Do not invent an extra approval checkpoint/);
+  assert.match(instruction, /do not dump raw todo JSON/i);
 });
 
 test('harness starts durable and progressively discloses tool families', () => {

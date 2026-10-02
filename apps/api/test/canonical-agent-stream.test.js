@@ -62,6 +62,44 @@ test('event replay is idempotent and sequence, not timestamp, orders text', () =
   assert.equal(state.seenEventIds.size, 4);
 });
 
+test('provider todo updates project as one structured plan and settle with the run', () => {
+  const first = raw('plan-1', 1, 'activity.progress', 'run-plan', {
+    sourceType: 'agent.plan',
+    text: 'Plan',
+    items: [
+      { content: 'Inspect repository', status: 'in_progress', priority: 'high' },
+      { content: 'Fix confirmed bugs', status: 'pending' },
+    ],
+    completed: 0,
+    total: 2,
+    active: 'Inspect repository',
+  });
+  const second = raw('plan-2', 2, 'activity.progress', 'run-plan', {
+    sourceType: 'agent.plan',
+    text: 'Plan',
+    items: [
+      { content: 'Inspect repository', status: 'completed', priority: 'high' },
+      { content: 'Fix confirmed bugs', status: 'in_progress' },
+    ],
+    completed: 1,
+    total: 2,
+    active: 'Fix confirmed bugs',
+  });
+
+  let state = applyRawAgentEvents(emptyAgentStreamState(), [first, second]);
+  let rows = selectActivities(state);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].title, 'Plan');
+  assert.equal(rows[0].summary, '1/2 complete · Fix confirmed bugs');
+  assert.equal(rows[0].state, 'running');
+  assert.deepEqual(rows[0].evidence?.items?.map((item) => item.status), ['completed', 'in_progress']);
+
+  state = applyRawAgentEvents(state, [raw('plan-done', 3, 'run.completed', 'run-plan', { summary: 'done' })]);
+  rows = selectActivities(state);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, 'success');
+});
+
 test('steady heartbeats remain state-only while actionable failures surface once', () => {
   const state = applyRawAgentEvents(emptyAgentStreamState(), [
     raw('1', 1, 'state.delta', 'run-a', { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }),

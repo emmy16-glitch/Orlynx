@@ -38,6 +38,25 @@ test('running Build transport is repaired early while ghost tasks are released o
   assert.match(agents, /previous AI task is no longer active/);
 });
 
+test('workspace agent progress watchdog ignores liveness-only heartbeats and bounds stuck tools', () => {
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+
+  assert.match(bridge, /ORLYNX_AGENT_TOOL_SILENCE_MS \|\| 4 \* 60_000/);
+  assert.match(bridge, /const progressLimitMs = activeTool \? toolSilenceMs : madeProgress \? silenceMs : firstProgressMs/);
+  assert.match(bridge, /OpenCode tool stopped making observable progress before completion/);
+  assert.doesNotMatch(bridge, /if \(!activeTool && Date\.now\(\) - lastProgressAt/);
+  assert.doesNotMatch(bridge, /\['message\.part\.updated', 'message\.part\.delta', 'message\.updated'\]\.includes\(String\(event\.type\)\)\) lastProgressAt = Date\.now\(\)/);
+  assert.match(bridge, /sourceType: 'agent\.plan'/);
+  assert.match(bridge, /The provider todo tool is control metadata, not user-facing terminal/);
+  assert.match(bridge, /sideEffectingToolSeen = \[\.\.\.toolParts\.values\(\)\]\.some\(\(part\) => !isOpenCodeTodoToolName\(part\.tool\)\)/);
+  assert.match(bridge, /retrySafe: !visible && !sideEffectingToolSeen/);
+
+  assert.match(gateway, /type === 'activity\.progress' && String\(payload\.sourceType \|\| ''\) === 'agent\.plan'/);
+  assert.match(gateway, /planItems,/);
+  assert.match(gateway, /planUpdatedAt: now/);
+});
+
 test('long-idle GitHub refresh is single-flight and can salvage a token rotated by another API process', () => {
   const github = fs.readFileSync(new URL('../src/github.ts', import.meta.url), 'utf8');
 
