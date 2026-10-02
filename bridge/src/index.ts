@@ -95,7 +95,17 @@ export function runCommandOnce(command: Command, ws: WebSocket): void {
   const promise = (async (): Promise<CommandReply> => {
     let reply: CommandReply;
     try { reply = { ok: true, result: await execute(command, ws) }; }
-    catch (error) { reply = { ok: false, error: error instanceof Error ? error.message.slice(0, 2000) : 'Command failed.' }; }
+    catch (error) {
+      const failure = error as Error & { retrySafe?: boolean; engineSessionId?: string };
+      reply = {
+        ok: false,
+        error: error instanceof Error ? error.message.slice(0, 2000) : 'Command failed.',
+        result: {
+          ...(failure.retrySafe === true ? { retrySafe: true } : {}),
+          ...(failure.engineSessionId ? { engineSessionId: String(failure.engineSessionId) } : {}),
+        },
+      };
+    }
     remember(command.commandId, reply);
     const active = inFlight.get(command.commandId);
     if (active) for (const target of active.sockets) sendCommandReply(target, command.commandId, reply);
