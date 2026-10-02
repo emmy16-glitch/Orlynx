@@ -335,10 +335,15 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     await bootstrapWorkspace(workspace, values);
   }
 
-  previewUrl(_workspace: WorkspaceRecord, _port: number): string | undefined {
-    // A Codespaces browse URL is usable only after GitHub has actually created
-    // the forwarded Dev Tunnel port. The bridge returns that confirmed URL
-    // from `gh codespace ports`; never fabricate one from the Codespace name.
-    return undefined;
+  previewUrl(workspace: WorkspaceRecord, port: number): string | undefined {
+    const codespace = String(workspace.codespaceName || '').trim().toLowerCase();
+    if (!codespace || !/^[a-z0-9-]+$/.test(codespace)) return undefined;
+    if (!Number.isInteger(port) || port <= 1024 || port > 65535) return undefined;
+
+    // GitHub documents the forwarded Codespaces URL as
+    // https://CODESPACENAME-PORT.app.github.dev. Keep authentication in the
+    // browser: private ports remain protected by the user's GitHub session,
+    // while Orlynx never places a GitHub token in the workspace shell.
+    return `https://${codespace}-${port}.app.github.dev/`;
   }
 }
