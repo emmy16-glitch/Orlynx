@@ -38,6 +38,27 @@ Orlynx therefore learns only from verified resolution and retrieves memory conse
 
 The current implementation is centered in **apps/api/src/agent-memory.ts** and the harness.
 
+A durable Investigation is now first-class task state. Orlynx does not collapse uncertainty directly into failure. The bounded state machine is:
+
+~~~text
+unknown
+  ↓
+investigating
+  ↓
+hypothesis
+  ↓
+testing
+  ↓
+repairing / verifying
+  ↓
+resolved
+  └── blocked only when the bounded investigation cannot proceed safely
+~~~
+
+The Investigation object persists its stable ID, question, model hypothesis, observable evidence, repair context, attempt number and verified outcome in the durable harness checkpoint. Reconnects and process restarts therefore resume the same diagnosis instead of inventing a new one.
+
+The verified learning pipeline is:
+
 ~~~text
 Task begins
    ↓
@@ -268,9 +289,11 @@ Instead of one general lesson form, Orlynx can maintain typed memories such as:
 
 ### Confidence and decay
 
-Lessons can gain explicit confidence, last-verified time, failure count and decay.
+Verified lessons now carry explicit confidence and last-verified time. A newly verified lesson starts conservatively; repeated equivalent verified successes raise confidence gradually, with a hard ceiling below absolute certainty. Retrieval also discounts old lessons that have not been revalidated recently.
 
-A once-correct environment fact should gradually lose influence if it has not been revalidated.
+Confidence affects retrieval priority only. It never permits memory to override fresh repository/tool evidence.
+
+Failure/contradiction counters and automatic lesson replacement remain future hardening; Orlynx does not yet downgrade a lesson merely because an unrelated task failed.
 
 ### Contradiction-driven correction
 
