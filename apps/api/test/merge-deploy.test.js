@@ -208,6 +208,47 @@ test('render deploy status reflects live, failed, and drift states', async () =>
   delete process.env.RENDER_SERVICE_ID;
 });
 
+test('deploy verification selects the expected commit from recent Render deploys', async () => {
+  process.env.RENDER_API_KEY = 'test-key';
+  process.env.RENDER_SERVICE_ID = 'srv_test';
+  delete process.env.RENDER_SERVICE_IDS;
+  const { renderDeployStatus } = await import('../src/render.ts');
+  mockFetch(async () => jsonResponse(200, [
+    { deploy: { id: 'dep_newer', status: 'live', commit: { id: '9999999fff' } } },
+    { deploy: { id: 'dep_expected', status: 'build_in_progress', commit: { id: 'abc1234def' } } },
+  ]));
+  const result = await renderDeployStatus('abc1234def');
+  assert.equal(result.deployId, 'dep_expected');
+  assert.equal(result.commitMatches, true);
+  assert.equal(result.live, false);
+  assert.equal(result.status, 'build_in_progress');
+  globalThis.fetch = realFetch;
+  delete process.env.RENDER_API_KEY;
+  delete process.env.RENDER_SERVICE_ID;
+});
+
+test('deploy verification proves the whole configured Render fleet', async () => {
+  process.env.RENDER_API_KEY = 'test-key';
+  process.env.RENDER_SERVICE_ID = 'srv_api';
+  process.env.RENDER_SERVICE_IDS = 'srv_runtime,srv_runner2';
+  const { renderDeployStatus } = await import('../src/render.ts');
+  mockFetch(async (url) => {
+    const match = String(url).match(/services\/([^/]+)\/deploys/);
+    assert.ok(match);
+    const serviceId = decodeURIComponent(match[1]);
+    return jsonResponse(200, [{ deploy: { id: `dep_${serviceId}`, status: 'live', commit: { id: 'abc1234def' } } }]);
+  });
+  const result = await renderDeployStatus('abc1234def');
+  assert.equal(result.live, true);
+  assert.equal(result.commitMatches, true);
+  assert.equal(result.services?.length, 3);
+  assert.match(result.message, /All 3 Render services are live/);
+  globalThis.fetch = realFetch;
+  delete process.env.RENDER_API_KEY;
+  delete process.env.RENDER_SERVICE_ID;
+  delete process.env.RENDER_SERVICE_IDS;
+});
+
 test('stale runner builds are marked degraded, never healthy', async () => {
   const { probeRunnerHost } = await import('../src/runner-pool.ts');
   process.env.RENDER_GIT_COMMIT = 'expected123';
