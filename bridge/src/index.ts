@@ -593,6 +593,8 @@ export async function runAgent(payload: Record<string, unknown>, ws: WebSocket) 
 async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   const taskId = String(payload.taskId || ''); const runId = String(payload.runId || '');
   const reflectionId = Number(payload.reflectionId || 0);
+  const investigationId = String(payload.investigationId || '');
+  const investigationStage = String(payload.investigationStage || '');
   let engineSessionId = String(payload.engineSessionId || '');
   if (typeof payload.openCodePublicAccess === 'boolean') {
     const restarted = await ensureOpenCodeAuthMode(payload.openCodePublicAccess);
@@ -772,6 +774,8 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
         bridgeEvent(ws, 'activity.progress', {
           sourceType: 'agent.dialogue.model',
           reflectionId,
+          ...(investigationId ? { investigationId } : {}),
+          ...(investigationStage ? { investigationStage } : {}),
           text: firstLine.slice(0, 420),
         }, taskId, runId);
       } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
