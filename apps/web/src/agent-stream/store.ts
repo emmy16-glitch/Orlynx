@@ -182,6 +182,15 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       if ((event.state === 'queued' || event.state === 'running') && state.activities[`run-error:${event.runId}`]) {
         delete state.activities[`run-error:${event.runId}`];
       }
+      // A queued transition can mean the same durable run is moving from one
+      // compute plane to another. Resolve the old in-flight status before the
+      // new recovery activity arrives so mobile UI never remains stuck on a
+      // stale "Checking AI runtime" row while workspace recovery is underway.
+      if (event.state === 'queued') resolveRunActivities(state, event.runId, 'success');
+      if (event.state === 'running') {
+        const queued = state.activities[`queue:${event.runId}`];
+        if (queued) delete state.activities[queued.id];
+      }
       if (event.state === 'running' && run?.messageId && state.messages[run.messageId]) {
         state.messages[run.messageId] = {
           ...state.messages[run.messageId],
