@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
@@ -515,6 +516,25 @@ export default function ProductionApp() {
           setLastRun((current: any) => current?.id === item.runId ? { ...current, state: item.payload?.cancelled ? 'cancelled' : 'failed', finishedAt: item.timestamp } : current);
         }
 
+        if (item.type === 'changes.updated' && item.payload?.changeId && Array.isArray(item.payload?.files)) {
+          // Changes is a first-class durable surface, but it should feel live.
+          // Project the canonical event immediately, then let refreshSession
+          // reconcile richer durable metadata (base SHA, review/publish state).
+          setChanges((current: any[]) => {
+            const id = String(item.payload.changeId);
+            const existing = current.find((change: any) => String(change.id) === id);
+            const live = {
+              ...(existing || {}),
+              id,
+              files: item.payload.files,
+              reviewState: existing?.reviewState || 'pending',
+              createdAt: existing?.createdAt || item.timestamp,
+              updatedAt: item.timestamp,
+              live: !existing,
+            };
+            return [live, ...current.filter((change: any) => String(change.id) !== id)];
+          });
+        }
         if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
         if (item.type === 'state.delta' && item.payload?.scope === 'agent-adapter') {
           refreshAi(sessionId).catch(() => {});
@@ -1197,9 +1217,15 @@ export default function ProductionApp() {
       deliveryState: 'sending',
     };
     optimisticMessagesRef.current.set(clientId, optimisticMessage);
-    setMessages((current: any[]) => current.some((message: any) => message.id === clientId)
-      ? current
-      : [...current, optimisticMessage]);
+    // Message-first invariant: commit the human turn synchronously before the
+    // POST can admit work and SSE can begin streaming. Without this paint
+    // boundary a fast backend can visibly render "Preparing workspace" before
+    // the message the user just sent.
+    flushSync(() => {
+      setMessages((current: any[]) => current.some((message: any) => message.id === clientId)
+        ? current
+        : [...current, optimisticMessage]);
+    });
     const messageBody = JSON.stringify({
       text,
       clientId,
