@@ -108,7 +108,7 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(provider, /--json', 'sourcePort,browseUrl,visibility'/);
     assert.match(provider, /GH_TOKEN: token/);
     assert.match(provider, /forwarded\?\.browseUrl/);
-    assert.match(provider, /https:\/\/\\$\{codespace\}-\\$\{port\}\.app\.github\.dev\//);
+    assert.ok(provider.includes('return `https://${codespace}-${port}.app.github.dev/`;'));
     assert.match(provider, /Keep GitHub credentials server-side/);
 
     assert.match(gateway, /type: 'preview\.state'/);
