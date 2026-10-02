@@ -730,7 +730,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
           ? 'cancelled'
           : 'pending';
     const rawPriority = String(item.priority || '').toLowerCase();
-    const priority = rawPriority === 'high' || rawPriority === 'medium' || rawPriority === 'low'
+    const priority: 'high' | 'medium' | 'low' | undefined = rawPriority === 'high' || rawPriority === 'medium' || rawPriority === 'low'
       ? rawPriority
       : undefined;
     return [{ content, status, ...(priority ? { priority } : {}) }];
