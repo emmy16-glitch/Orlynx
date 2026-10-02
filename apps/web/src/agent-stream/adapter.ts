@@ -297,7 +297,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
 
     case 'activity.started': {
       const sourceType = str(payload.sourceType);
-      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined, detail: payload }];
+      return [{ ...common, type: 'ACTIVITY_START', activityId: phaseId(event), text: str(payload.text) || 'Working', sourceType: sourceType || undefined }];
     }
     case 'activity.progress': {
       const sourceType = str(payload.sourceType);
@@ -308,7 +308,7 @@ export function normalizeOrlynxEvent(event: RawEvent): StreamProjectionEvent[] {
     }
     case 'activity.completed': {
       const sourceType = str(payload.sourceType);
-      return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined, sourceType: sourceType || undefined }];
+      return [{ ...common, type: 'ACTIVITY_END', activityId: phaseId(event), text: str(payload.text) || undefined }];
     }
 
     case 'workspace.preparing':
