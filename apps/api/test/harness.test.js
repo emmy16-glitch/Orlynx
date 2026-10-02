@@ -5,6 +5,7 @@ import {
   MAX_REFLECTION_ATTEMPTS,
   advanceHarnessPhase,
   applySteering,
+  blockInvestigation,
   consumeHarnessStep,
   createHarnessCheckpoint,
   classifyVerificationFailure,
@@ -17,6 +18,7 @@ import {
   queueIntentFor,
   reflectionInstruction,
   shouldReflect,
+  updateInvestigationFromOutcome,
   shouldSalvage,
   steeringActionFor,
   toolFamiliesFor,
@@ -34,6 +36,52 @@ test('IPv6 localhost failure cannot invalidate verified IPv4/provider Preview ev
   const verified = verifyHarness(checkpoint, events);
   assert.equal(verified.verification.status, 'passed');
   assert.equal(shouldReflect(verified, 'The application is reachable at the verified Preview URL.'), false);
+});
+
+test('unknown verification becomes a durable Investigation, captures the model hypothesis, and resolves from evidence', () => {
+  let checkpoint = createHarnessCheckpoint({ prompt: 'start localhost preview', mode: 'build', permission: 'full', plane: 'workspace' });
+  const firstEvents = [
+    evt(1, 'tool.completed', { command: 'curl http://127.0.0.1:5173/', semanticType: 'preview', exitCode: 0, out: 'HTTP/1.1 200 OK' }),
+  ];
+  checkpoint = verifyHarness(checkpoint, firstEvents, '2026-10-02T12:00:00.000Z');
+  checkpoint = prepareReflection(checkpoint, firstEvents, '2026-10-02T12:00:01.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'investigating');
+  assert.match(checkpoint.investigation?.question || '', /cannot verify preview/i);
+  const investigationId = checkpoint.investigation?.id;
+
+  checkpoint = updateInvestigationFromOutcome(
+    checkpoint,
+    'Model → Orlynx: localhost is healthy; verify the provider forwarding layer before changing Vite.',
+    firstEvents,
+    '2026-10-02T12:00:02.000Z',
+  );
+  assert.equal(checkpoint.investigation?.id, investigationId);
+  assert.equal(checkpoint.investigation?.stage, 'testing');
+  assert.match(checkpoint.investigation?.hypothesis || '', /provider forwarding/i);
+
+  const resolvedEvents = [
+    ...firstEvents,
+    evt(2, 'preview.ready', { port: 5173, url: 'https://workspace-5173.app.github.dev', verified: true }),
+  ];
+  checkpoint = verifyHarness(checkpoint, resolvedEvents, '2026-10-02T12:00:03.000Z');
+  checkpoint = updateInvestigationFromOutcome(
+    checkpoint,
+    'Model → Orlynx: provider forwarding is now confirmed and the browser Preview is reachable.',
+    resolvedEvents,
+    '2026-10-02T12:00:04.000Z',
+  );
+  assert.equal(checkpoint.investigation?.stage, 'resolved');
+  assert.match(checkpoint.investigation?.outcome || '', /Verified: preview/i);
+  assert.equal(checkpoint.investigation?.resolvedAt, '2026-10-02T12:00:04.000Z');
+});
+
+test('exhausted Investigation is blocked with a concrete reason instead of silently becoming certainty', () => {
+  let checkpoint = createHarnessCheckpoint({ prompt: 'verify preview', mode: 'build', permission: 'full', plane: 'workspace' });
+  checkpoint = verifyHarness(checkpoint, [], '2026-10-02T12:00:00.000Z');
+  checkpoint = prepareReflection(checkpoint, [], '2026-10-02T12:00:01.000Z');
+  checkpoint = blockInvestigation(checkpoint, 'Provider forwarding remained unavailable after bounded checks.', '2026-10-02T12:00:02.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'blocked');
+  assert.match(checkpoint.investigation?.outcome || '', /bounded checks/i);
 });
 
 test('unavailable external Preview terminates Investigation at the reflection budget', () => {
