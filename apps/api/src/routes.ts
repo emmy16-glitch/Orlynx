@@ -27,7 +27,7 @@ import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
 import { computeBrokerSnapshot, selectWorkspaceProvider } from './compute-broker.js';
 import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
-import { mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
+import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
 
 export const router = Router();
 
@@ -709,6 +709,68 @@ router.post('/sessions/:id/messages', async (req, res) => {
           ? res.json({ message: msg, run, plane: 'workspace', instant: true, merged })
           : res.status(409).json({ message: msg, run, plane: 'workspace', instant: true, error: reply, merged });
       }
+      // If the newest change is already on GitHub, a bare deploy follow-up is
+      // deployment verification only. In particular, after a PR merge the
+      // workspace still points at the PR head; re-publishing that old commit
+      // would be wrong and may fail because main has moved to the merge commit.
+      if (deployIntentFor(String(text)) && durableStorageConfigured()) {
+        const target = await deploymentTargetForSession(s.id);
+        if (target) {
+          const { renderDeployStatus } = await import('./render.js');
+          const deployment = await renderDeployStatus(target.commitSha);
+          const shortSha = target.commitSha.slice(0, 7);
+          const reply = `Deployment verification for ${target.source === 'merged' ? 'merged' : 'published'} commit \`${shortSha}\`: ${deployment.message}`;
+          const finishedAt = new Date().toISOString();
+          const degraded = Boolean(
+            deployment.configured
+            && (deployment.failed || (deployment.live && deployment.commitMatches === false))
+          );
+          const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId, createdAt: finishedAt };
+          const run = degraded
+            ? { ...baseRun, state: 'failed' as const, activity: 'Deployment needs attention', finishedAt, errorKind: 'engine' as const }
+            : { ...baseRun, state: 'completed' as const, activity: deployment.live ? 'Deployment verified' : 'Deployment checked', finishedAt };
+
+          (store.db.messages[s.id] ||= []).push(assistant);
+          (store.db.runs[s.id] ||= []).push(run as never);
+          store.save();
+
+          const repository = controlPlaneRepository();
+          await repository.putMessage(assistant);
+          await repository.putTask({
+            id: taskId, sessionId: s.id, workspaceId: workspace?.id || 'workspace', plane: 'workspace',
+            runId, messageId: msg.id, state: degraded ? 'failed' : 'completed',
+            prompt: String(text), modelId: selectedModel || undefined, adapterId: selectedAdapterId,
+            mode: effectiveMode, permission: prefs.permission, createdAt: now, updatedAt: finishedAt,
+          });
+          await recordAudit(req, s.id, 'deploy.verify', degraded ? 'attention' : deployment.live ? 'live' : 'checked', {
+            changeId: target.changeId,
+            commitSha: target.commitSha,
+            source: target.source,
+            deployId: deployment.deployId,
+            deployStatus: deployment.status,
+            commitMatches: deployment.commitMatches,
+            fleetSize: deployment.services?.length || 1,
+          });
+          emit(s.id, 'activity.completed', {
+            taskId,
+            text: deployment.live && deployment.commitMatches ? 'Deployment verified' : deployment.message,
+            sourceType: 'deployment.verify',
+            deployId: deployment.deployId,
+            commitSha: target.commitSha,
+          }, runId);
+          emit(s.id, 'receipt.created', {
+            taskId,
+            changeId: target.changeId,
+            commitSha: target.commitSha,
+            deployment,
+          }, runId);
+          emit(s.id, 'message.end', { taskId, instant: true }, runId);
+          if (degraded) emit(s.id, 'run.failed', { taskId, error: reply, errorKind: 'engine', recoverable: true }, runId);
+          else emit(s.id, 'run.completed', { taskId, summary: reply, instant: true }, runId);
+          return res.json({ message: msg, run, plane: 'workspace', instant: true, deployment, deploymentOnly: true });
+        }
+      }
+
       const published = await publishCommittedWorkspaceHead(req, s, publishIntent, publishTargetBranch || undefined);
       const shortSha = published.head.slice(0, 7);
       let reply = published.pullRequestUrl
