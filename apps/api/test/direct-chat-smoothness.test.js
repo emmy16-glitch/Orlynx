@@ -146,7 +146,8 @@ test('direct runtime outages fail over the same durable turn to workspace comput
   assert.match(agents, /run\.plane = 'workspace'/);
   assert.match(agents, /direct_runtime_failover/);
   assert.match(agents, /selectWorkspaceProvider\(\{ taskText: task\.prompt \}\)/);
-  assert.match(agents, /message: 'Switching compute…'/);
+  assert.match(agents, /message: 'Direct AI runtime unavailable · switching to workspace compute…'/);
+  assert.match(agents, /Direct AI runtime unavailable · switching to \$\{workspace\.provider\} workspace/);
   assert.match(agents, /\[502, 503, 504\]\.includes\(error\.statusCode \|\| 0\)/);
   assert.match(storage, /getProject\(id: string\)/);
   assert.match(runtime, /DEFAULT_RUNTIME_WAKE_TIMEOUT_MS = 12_000/);
