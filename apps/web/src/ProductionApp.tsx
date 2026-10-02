@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import './styles.css';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
@@ -1197,9 +1198,15 @@ export default function ProductionApp() {
       deliveryState: 'sending',
     };
     optimisticMessagesRef.current.set(clientId, optimisticMessage);
-    setMessages((current: any[]) => current.some((message: any) => message.id === clientId)
-      ? current
-      : [...current, optimisticMessage]);
+    // Message-first invariant: commit the human turn synchronously before the
+    // POST can admit work and SSE can begin streaming. Without this paint
+    // boundary a fast backend can visibly render "Preparing workspace" before
+    // the message the user just sent.
+    flushSync(() => {
+      setMessages((current: any[]) => current.some((message: any) => message.id === clientId)
+        ? current
+        : [...current, optimisticMessage]);
+    });
     const messageBody = JSON.stringify({
       text,
       clientId,
@@ -1734,16 +1741,16 @@ export default function ProductionApp() {
                   {!changes.length && !liveChangeFiles.length && <EmptyState title="No changes yet" hint="Files appear here live as Orlynx edits the repository, then remain as verified change sets." />}
                   {liveChangeFiles.length > 0 && <section className="change-set live-change-set">
                     <div className="change-set-heading"><div><b>{liveChangeFiles.length} file{liveChangeFiles.length === 1 ? '' : 's'} changing now</b><span className="small">Streaming from the active run · final verified diff will remain here</span></div><Badge tone="wait">Live</Badge></div>
-                    <DiffSummary files={liveChangeFiles.map((file: any) => ({ path: file.path, action: file.action || 'modify' }))} />
+                    <DiffSummary files={liveChangeFiles.map((file: any) => ({ path: file.path, action: file.action || 'modify', additions: file.additions, deletions: file.deletions }))} />
                     {liveChangeFiles.map((file: any) => <details className="diff-file" key={file.path}><summary><span><Icon name="file" size={14} />{file.path}</span><span className="diff-stats"><i>+{Number(file.additions || 0)}</i><i>−{Number(file.deletions || 0)}</i></span></summary><p className="diff-explanation">Live change evidence</p><pre>{file.diff || file.after || file.before || '(diff will appear when the change is finalized)'}</pre></details>)}
                   </section>}
                   {changes.map((change: any) => <section className="change-set" key={change.id}>
                     <div className="change-set-heading"><div><b>{change.files.length} changed file{change.files.length === 1 ? '' : 's'}</b><span className="small">Base {change.baseSha?.slice(0, 7)}</span></div><Badge tone={change.pushedAt ? 'ok' : change.reviewState === 'pending' ? 'wait' : 'neutral'}>{change.pushedAt ? 'Pushed' : change.reviewState}</Badge></div>
-                    <DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} />
+                    <DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action, additions: file.additions, deletions: file.deletions }))} />
                     {change.files.map((file: any) => <details className="diff-file" key={file.path}><summary><span><Icon name="file" size={14} />{file.path}</span><span className="diff-stats"><i>+{Number(file.additions || 0)}</i><i>−{Number(file.deletions || 0)}</i></span></summary><p className="diff-explanation">Exact diff</p><pre>{file.diff || file.after || file.before || '(binary or empty file)'}</pre></details>)}
                     {change.reviewState === 'pending' && <AgentApprovalCard title="Approve these changes" detail="Review the exact files above before continuing." busy={busyChange === change.id} onApprove={() => reviewChange(change)} />}
                     {change.reviewState === 'approved' && <div className="commit-form premium"><div><h2>Ready to commit changes</h2><p>Write the message that will appear in Git history.</p></div><label>Commit message<input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this change" /></label><div className="commit-branch"><span>Push to branch</span><b><Icon name="branch" />{session.branch}</b></div><Button disabled={!commitMessage.trim() || busyChange === change.id} onClick={() => commitChange(change)}>{busyChange === change.id ? 'Committing…' : 'Create commit'}</Button></div>}
-                    {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to publish changes</h2><p>{change.files.length} files are committed and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action }))} /><div className="commit-branch"><span>{['main', 'master'].includes(session.branch) ? 'Review target' : 'Push to branch'}</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review publish</Button></div>}
+                    {change.reviewState === 'committed' && !change.pushedAt && <div className="ready-to-push"><div><h2>Ready to publish changes</h2><p>{change.files.length} files are committed and ready for GitHub.</p></div><DiffSummary files={change.files.map((file: any) => ({ path: file.path, action: file.action, additions: file.additions, deletions: file.deletions }))} /><div className="commit-branch"><span>{['main', 'master'].includes(session.branch) ? 'Review target' : 'Push to branch'}</span><b><Icon name="branch" />{session.branch}</b></div><Button onClick={() => setPushReview(change)}>Review publish</Button></div>}
                     {pushReview?.id === change.id && <div className="push-confirm"><b>Publish ${change.files.length} changed files to ${session.project}?</b><p>{['main', 'master'].includes(session.branch) ? `Choose whether to push the approved commit directly to ${session.branch} or publish it through a pull request.` : `This publishes the approved commit to ${session.branch}.`}</p><div className="action-row"><Button tone="ghost" onClick={() => setPushReview(null)}>Cancel</Button>{['main', 'master'].includes(session.branch) && <Button tone="ghost" onClick={() => pushChange(change, 'pull-request')} disabled={busyChange === change.id}>Create PR</Button>}<Button onClick={() => pushChange(change, 'direct')} disabled={busyChange === change.id}>{['main', 'master'].includes(session.branch) ? `Push to ${session.branch}` : 'Approve & push'}</Button></div></div>}
                   </section>)}
                 </>}

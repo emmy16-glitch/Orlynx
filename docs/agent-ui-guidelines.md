@@ -99,3 +99,33 @@ Keep touch targets accessible, focus states visible, state understandable withou
 ## Verification
 
 Run supported typecheck/tests/build after changes and add regression tests for any modified architecture contract.
+
+## Live-stream ordering contract
+
+The conversation must preserve human-first chronology even when the backend admits work faster than the browser can paint:
+
+1. the user's submitted message is rendered synchronously;
+2. only after that paint boundary may task admission begin;
+3. run/workspace/tool/model stream events render beneath that user turn;
+4. reconnect/replay must preserve the same ordering and stable identities.
+
+An Orlynx ↔ Model Investigation is one durable run-scoped UI object, not a stack of temporary cards. It should show the public diagnostic loop in order:
+
+- Orlynx question;
+- model hypothesis;
+- model evidence summary;
+- next discriminating check;
+- observed tool evidence;
+- final verified outcome or concrete block reason.
+
+The model-facing diagnostic is a public evidence summary, not hidden chain-of-thought.
+
+Long-running silent work must remain visibly alive. Liveness notices may update the current activity row, but they must never count as provider progress or reset a stuck-task watchdog.
+
+## Files and Changes
+
+`Files` is the repository browser. `Changes` is the persistent review surface.
+
+While a task is actively editing, canonical file/change events may appear immediately under a Live change set. Once Orlynx persists the verified change set, that same work moves naturally into the durable Changes history. The UI must not double-count a live projection and its durable replacement.
+
+Chat should keep file activity compact; full paths, line statistics and exact diffs belong in Changes.

@@ -776,7 +776,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
           reflectionId,
           ...(investigationId ? { investigationId } : {}),
           ...(investigationStage ? { investigationStage } : {}),
-          text: firstLine.slice(0, 420),
+          text: firstLine.slice(0, 900),
         }, taskId, runId);
       } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
         // Do not hold or reinterpret normal assistant text when the model does
@@ -957,7 +957,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
       // User-visible liveness is NOT provider progress. Long installs/tests can
       // legitimately go quiet, so keep the same activity row moving without
       // refreshing lastProgressAt. The watchdog below still expires dead work.
-      if (silentForMs >= 30_000 && now - lastWaitNoticeAt >= 30_000) {
+      if (silentForMs >= 15_000 && now - lastWaitNoticeAt >= 20_000) {
         const activeEntry = [...toolStates.entries()].find(([, state]) => state === 'running' || state === 'pending');
         const activePart = activeEntry ? toolParts.get(activeEntry[0]) : undefined;
         const activeState = activePart?.state && typeof activePart.state === 'object' ? activePart.state as Record<string, any> : {};
@@ -970,8 +970,8 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
         bridgeEvent(ws, 'activity.progress', {
           sourceType: 'agent.wait',
           text: activeTool
-            ? `Still working · ${activeTitle || 'current tool has not produced new output yet'}`
-            : 'Still working · waiting for the model to produce the next result',
+            ? `Still working · ${activeTitle || 'current tool has not produced new output yet'} · ${Math.max(15, Math.round(silentForMs / 1000))}s without new output`
+            : `Still working · waiting for the model to produce the next result · ${Math.max(15, Math.round(silentForMs / 1000))}s quiet`,
           silentForMs,
           doesNotCountAsProgress: true,
         }, taskId, runId);

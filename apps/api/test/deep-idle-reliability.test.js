@@ -52,6 +52,9 @@ test('workspace agent progress watchdog ignores liveness-only heartbeats and bou
   assert.match(bridge, /sideEffectingToolSeen = \[\.\.\.toolParts\.values\(\)\]\.some\(\(part\) => !isOpenCodeTodoToolName\(part\.tool\)\)/);
   assert.match(bridge, /retrySafe: !visible && !sideEffectingToolSeen/);
   assert.match(bridge, /sourceType: 'agent\.wait'/);
+  assert.match(bridge, /silentForMs >= 15_000/);
+  assert.match(bridge, /now - lastWaitNoticeAt >= 20_000/);
+  assert.match(bridge, /without new output/);
   assert.match(bridge, /doesNotCountAsProgress: true/);
   assert.match(bridge, /failure\.retrySafe === true/);
   assert.match(gateway, /const bridgeRetrySafe = message\.result\?\.retrySafe === true/);

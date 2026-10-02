@@ -17,6 +17,21 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function publicDiagnostic(value: string): { hypothesis?: string; evidence?: string; nextCheck?: string } {
+  const text = String(value || '').replace(/^Model\s*[→>-]\s*Orlynx:\s*/i, '').trim();
+  if (!text) return {};
+  const match = /Hypothesis:\s*([\s\S]*?)(?:\s*\|\s*Evidence:\s*([\s\S]*?))?(?:\s*\|\s*Next check:\s*([\s\S]*))?$/i.exec(text);
+  if (!match) return { hypothesis: text };
+  const hypothesis = String(match[1] || '').trim();
+  const evidence = String(match[2] || '').trim();
+  const nextCheck = String(match[3] || '').trim();
+  return {
+    ...(hypothesis ? { hypothesis } : {}),
+    ...(evidence ? { evidence } : {}),
+    ...(nextCheck ? { nextCheck } : {}),
+  };
+}
+
 function filesOf(part: ThreadPart): { path: string; action?: string; diff?: string }[] {
   const evidence = asRecord(part.item.evidence);
   const files = Array.isArray(evidence.files) ? evidence.files : [];
@@ -332,6 +347,7 @@ function StatusDetail({ part }: { part: ThreadPart }) {
     ? evidence.investigationEvidence.map(str).filter(Boolean).slice(-6)
     : [];
   const latestModel = [...lines].reverse().find((line) => line.side === 'model');
+  const modelDiagnostic = latestModel ? publicDiagnostic(latestModel.text) : {};
 
   return (
     <div className="ox-investigation" aria-label="Orlynx and model investigation dialogue">
@@ -341,7 +357,9 @@ function StatusDetail({ part }: { part: ThreadPart }) {
       </div>
       {(investigationQuestion || latestModel?.text || investigationEvidence.length > 0 || investigationOutcome) && <div className="ox-investigation-summary">
         {investigationQuestion && <div><span>Question</span><p>{investigationQuestion}</p></div>}
-        {latestModel?.text && <div><span>Current hypothesis</span><p>{latestModel.text}</p></div>}
+        {modelDiagnostic.hypothesis && <div><span>Current hypothesis</span><p>{modelDiagnostic.hypothesis}</p></div>}
+        {modelDiagnostic.evidence && <div><span>Model evidence</span><p>{modelDiagnostic.evidence}</p></div>}
+        {modelDiagnostic.nextCheck && <div><span>Next check</span><p>{modelDiagnostic.nextCheck}</p></div>}
         {investigationEvidence.length > 0 && <details>
           <summary>Evidence ({investigationEvidence.length})</summary>
           <ul>{investigationEvidence.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul>

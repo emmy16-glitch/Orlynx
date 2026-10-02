@@ -288,15 +288,23 @@ export function AgentErrorCard({ title, hint, onRetry, onReconnect, retryLabel =
   );
 }
 
-export function DiffSummary({ files }: { files: { path: string; action: string }[] }) {
+export function DiffSummary({ files }: { files: { path: string; action: string; additions?: number; deletions?: number }[] }) {
   if (!files.length) return <div className="small">No changes yet. Ask the agent to edit.</div>;
+  const additions = files.reduce((sum, file) => sum + (Number(file.additions) || 0), 0);
+  const deletions = files.reduce((sum, file) => sum + (Number(file.deletions) || 0), 0);
   return (
-    <div>
-      <b>{files.length} file{files.length === 1 ? '' : 's'} changed</b>
+    <div className="diff-summary">
+      <div className="ox-row" style={{ justifyContent: 'space-between' }}>
+        <b>{files.length} file{files.length === 1 ? '' : 's'} changed</b>
+        {(additions > 0 || deletions > 0) && <span className="diff-stats" aria-label={`${additions} additions, ${deletions} deletions`}><i>+${additions}</i><i>−${deletions}</i></span>}
+      </div>
       {files.map((f) => (
         <div key={f.path} className="ox-row" style={{ justifyContent: 'space-between' }}>
           <span><Icon name="file" /> {f.path}</span>
-          <Badge tone={f.action === 'delete' ? 'fail' : f.action === 'create' ? 'ok' : 'neutral'}>{f.action}</Badge>
+          <span className="ox-row" style={{ gap: 8 }}>
+            {(Number(f.additions) > 0 || Number(f.deletions) > 0) && <span className="diff-stats"><i>+{Number(f.additions) || 0}</i><i>−{Number(f.deletions) || 0}</i></span>}
+            <Badge tone={f.action === 'delete' ? 'fail' : f.action === 'create' ? 'ok' : 'neutral'}>{f.action}</Badge>
+          </span>
         </div>
       ))}
     </div>
