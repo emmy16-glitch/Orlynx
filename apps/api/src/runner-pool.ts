@@ -147,14 +147,20 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
     normalTimeoutMs,
     Number(process.env.ORLYNX_RUNNER_COLD_START_TIMEOUT_MS || 45_000),
   );
-  const attemptTimeouts = force ? [coldStartTimeoutMs] : [normalTimeoutMs, coldStartTimeoutMs];
+  const wakeRetryMs = Math.max(500, Number(process.env.ORLYNX_RUNNER_WAKE_RETRY_MS || 2_000));
   let lastDetail = 'health probe failed';
+  let attempts = 0;
 
-  for (let attempt = 0; attempt < attemptTimeouts.length; attempt += 1) {
+  const probeOnce = async (timeoutMs: number): Promise<{
+    result?: RunnerHostHealth;
+    retryable: boolean;
+    detail: string;
+  }> => {
+    attempts += 1;
     try {
       const response = await fetch(`${host.url}/health`, {
         headers: process.env.ORLYNX_RUNNER_TOKEN ? { Authorization: `Bearer ${process.env.ORLYNX_RUNNER_TOKEN}` } : {},
-        signal: AbortSignal.timeout(attemptTimeouts[attempt]),
+        signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
       });
       const body = await response.json().catch(() => ({})) as {
         ok?: boolean;
@@ -182,32 +188,71 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
         detail: response.ok ? undefined : `HTTP ${response.status}`,
         capabilities: body.capabilities,
       };
-
-      if (result.ok) {
-        healthCache.set(host.id, result);
-        noteRunnerHostSuccess(host.id);
-        return result;
-      }
-
-      lastDetail = result.detail || 'runner reported unhealthy';
-      const retryableStatus = response.status === 502 || response.status === 503 || response.status === 504;
-      if (attempt + 1 < attemptTimeouts.length && retryableStatus) {
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        continue;
-      }
-
-      healthCache.set(host.id, result);
-      noteRunnerHostFailure(host.id);
-      return result;
+      return {
+        result,
+        retryable: response.status === 502 || response.status === 503 || response.status === 504,
+        detail: result.detail || (result.ok ? 'healthy' : 'runner reported unhealthy'),
+      };
     } catch (error) {
-      lastDetail = error instanceof Error ? error.message : 'health probe failed';
-      if (attempt + 1 < attemptTimeouts.length) {
-        // Render free services can be asleep when the first probe arrives.
-        // Give the same request path one bounded cold-start window before
-        // opening the circuit or falling back to Codespaces.
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        continue;
-      }
+      return {
+        retryable: true,
+        detail: error instanceof Error ? error.message : 'health probe failed',
+      };
+    }
+  };
+
+  const accept = (result: RunnerHostHealth): RunnerHostHealth => {
+    healthCache.set(host.id, result);
+    if (result.ok) noteRunnerHostSuccess(host.id);
+    else noteRunnerHostFailure(host.id);
+    return result;
+  };
+
+  if (force) {
+    // Render may answer 502/503 immediately while a free service is booting.
+    // A single long request timeout therefore does not create a real cold-start
+    // window. Retry transient edge responses until one overall deadline while
+    // still failing fast on non-transient responses such as 401/403/404.
+    const deadline = started + coldStartTimeoutMs;
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const outcome = await probeOnce(Math.min(normalTimeoutMs, remaining));
+      lastDetail = outcome.detail;
+      if (outcome.result?.ok) return accept(outcome.result);
+      if (outcome.result && !outcome.retryable) return accept(outcome.result);
+
+      const remainingAfterProbe = deadline - Date.now();
+      if (remainingAfterProbe <= 0) break;
+      const backoff = Math.min(5_000, wakeRetryMs * Math.min(3, attempts));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(backoff, remainingAfterProbe)));
+    }
+
+    noteRunnerHostFailure(host.id);
+    const result: RunnerHostHealth = {
+      id: host.id,
+      ok: false,
+      capacity: 0,
+      running: 0,
+      available: 0,
+      stopped: 0,
+      draining: false,
+      latencyMs: Date.now() - started,
+      checkedAt: Date.now(),
+      detail: `${lastDetail}; wake attempts=${attempts}`,
+    };
+    healthCache.set(host.id, result);
+    return result;
+  }
+
+  const attemptTimeouts = [normalTimeoutMs, coldStartTimeoutMs];
+  for (let attempt = 0; attempt < attemptTimeouts.length; attempt += 1) {
+    const outcome = await probeOnce(attemptTimeouts[attempt]);
+    lastDetail = outcome.detail;
+    if (outcome.result?.ok) return accept(outcome.result);
+    if (outcome.result && !outcome.retryable) return accept(outcome.result);
+    if (attempt + 1 < attemptTimeouts.length) {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      continue;
     }
   }
 
@@ -227,7 +272,6 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
   healthCache.set(host.id, result);
   return result;
 }
-
 export async function runnerPoolSnapshot(force = false): Promise<Array<{ host: RunnerHostConfig; health: RunnerHostHealth }>> {
   const hosts = runnerHosts();
   return Promise.all(hosts.map(async (host) => ({ host, health: await probeRunnerHost(host, force) })));
