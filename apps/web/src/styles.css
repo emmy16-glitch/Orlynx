@@ -4746,6 +4746,18 @@ html[data-theme="light"] .composer-options-panel {
   border-radius: 0 10px 10px 0;
   font-family: var(--font-sans);
 }
+.ox-investigation-stage {
+  width: fit-content;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground-muted);
+  background: var(--surface);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-transform: capitalize;
+}
 .ox-investigation-line {
   min-width: 0;
   display: grid;
