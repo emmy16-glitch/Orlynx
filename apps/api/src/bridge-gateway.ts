@@ -12,7 +12,7 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
+import { advanceHarnessPhase, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
 import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
@@ -1250,6 +1250,36 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         if (type === 'state.delta' && String(payload.scope || '') === 'harness' && String(payload.engineSessionId || '')) {
           const adapterId = String(payload.adapterId || 'opencode');
           await repository.putAgentSession(claims.sessionId, adapterId, String(payload.engineSessionId));
+        }
+
+        if (eventTaskId && type === 'activity.progress' && String(payload.sourceType || '') === 'agent.plan') {
+          const task = await repository.getTask(eventTaskId);
+          if (task) {
+            const now = new Date().toISOString();
+            const effectivePermission = task.tempPermission || task.permission || 'full';
+            task.harness ||= createHarnessCheckpoint({
+              prompt: task.prompt,
+              mode: task.mode || 'build',
+              permission: effectivePermission,
+              plane: task.plane || 'workspace',
+              now,
+            });
+            const planItems = normalizeHarnessPlanItems(payload.items);
+            task.harness = {
+              ...task.harness,
+              planItems,
+              planUpdatedAt: now,
+              lastProgressAt: now,
+              lastCheckpointAt: now,
+              updatedAt: now,
+            };
+            task.updatedAt = now;
+            await repository.putTask(task);
+            payload.items = planItems;
+            payload.completed = planItems.filter((item) => item.status === 'completed' || item.status === 'cancelled').length;
+            payload.total = planItems.length;
+            payload.active = planItems.find((item) => item.status === 'in_progress')?.content || '';
+          }
         }
 
         if (eventTaskId && (type === 'step.started' || type === 'approval.required' || type === 'approval.resolved')) {
