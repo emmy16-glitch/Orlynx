@@ -25,6 +25,22 @@ type CodespaceForwardedPort = {
 
 const codespacePortCache = new Map<string, { expiresAt: number; ports: CodespaceForwardedPort[] }>();
 const codespacePortPending = new Map<string, Promise<CodespaceForwardedPort[]>>();
+const codespacePreviewForwarders = new Map<string, ReturnType<typeof spawn>>();
+
+function previewForwarderKey(codespace: string, port: number): string {
+  return `${codespace}:${port}`;
+}
+
+function stopCodespacePreviewForwarders(codespaceName?: string): void {
+  const codespace = String(codespaceName || '').trim();
+  if (!codespace) return;
+  for (const [key, child] of codespacePreviewForwarders) {
+    if (!key.startsWith(`${codespace}:`)) continue;
+    try { child.kill('SIGTERM'); } catch {}
+    codespacePreviewForwarders.delete(key);
+  }
+  codespacePortCache.delete(codespace);
+}
 
 function headers(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
@@ -318,6 +334,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   }
   async stop(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) throw new Error('Workspace has no Codespace name.');
+    stopCodespacePreviewForwarders(workspace.codespaceName);
     await this.request<Codespace>(workspace.userId, `/user/codespaces/${encodeURIComponent(workspace.codespaceName)}/stop`, { method: 'POST' });
     return { ...workspace, state: 'stopped' as const, bridgeState: 'disconnected' as const , updatedAt: new Date().toISOString() };
   }
@@ -330,6 +347,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
   async getStatus(workspace: WorkspaceRecord) { return (await this.get(workspace)).state; }
   async destroy(workspace: WorkspaceRecord) {
     if (!workspace.codespaceName) return;
+    stopCodespacePreviewForwarders(workspace.codespaceName);
     try {
       await this.request<void>(workspace.userId, `/user/codespaces/${encodeURIComponent(workspace.codespaceName)}`, { method: 'DELETE' });
     } catch (error) {
@@ -344,12 +362,12 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     await bootstrapWorkspace(workspace, values);
   }
 
-  private async forwardedPorts(workspace: WorkspaceRecord): Promise<CodespaceForwardedPort[]> {
+  private async forwardedPorts(workspace: WorkspaceRecord, force = false): Promise<CodespaceForwardedPort[]> {
     const codespace = String(workspace.codespaceName || '').trim();
     if (!codespace) return [];
 
     const cached = codespacePortCache.get(codespace);
-    if (cached && cached.expiresAt > Date.now()) return cached.ports;
+    if (!force && cached && cached.expiresAt > Date.now()) return cached.ports;
     const pending = codespacePortPending.get(codespace);
     if (pending) return pending;
 
@@ -407,22 +425,62 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     return lookup;
   }
 
+  private async ensurePreviewForwarder(workspace: WorkspaceRecord, port: number): Promise<CodespaceForwardedPort | undefined> {
+    const codespace = String(workspace.codespaceName || '').trim();
+    if (!codespace) return undefined;
+
+    const alreadyForwarded = (await this.forwardedPorts(workspace, true)).find((item) => item.sourcePort === port);
+    if (alreadyForwarded?.browseUrl) return alreadyForwarded;
+
+    const key = previewForwarderKey(codespace, port);
+    let child = codespacePreviewForwarders.get(key);
+    if (!child || child.exitCode !== null || child.killed) {
+      const token = await githubUserAccessToken(workspace.userId);
+      child = spawn('gh', [
+        'codespace', 'ports', 'forward',
+        `${port}:0`,
+        '-c', codespace,
+      ], {
+        env: { ...process.env, GH_TOKEN: token },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      codespacePreviewForwarders.set(key, child);
+      child.once('exit', (code) => {
+        if (codespacePreviewForwarders.get(key) === child) codespacePreviewForwarders.delete(key);
+        codespacePortCache.delete(codespace);
+        if (code !== 0 && code !== null) {
+          console.warn(`[codespaces-preview] forwarder exited codespace=${codespace} port=${port} code=${code}`);
+        }
+      });
+      child.once('error', (error) => {
+        if (codespacePreviewForwarders.get(key) === child) codespacePreviewForwarders.delete(key);
+        codespacePortCache.delete(codespace);
+        console.warn(`[codespaces-preview] forwarder failed codespace=${codespace} port=${port}: ${error.message}`);
+      });
+    }
+
+    // gh creates the Dev Tunnel port before holding the local relay open.
+    // Poll GitHub's authoritative inventory briefly; the UI will continue its
+    // normal /ports reconciliation if publication takes longer.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const forwarded = (await this.forwardedPorts(workspace, true)).find((item) => item.sourcePort === port);
+      if (forwarded?.browseUrl) return forwarded;
+      if (child.exitCode !== null || child.killed) break;
+    }
+    return undefined;
+  }
+
   async previewUrl(workspace: WorkspaceRecord, port: number): Promise<string | undefined> {
     const codespace = String(workspace.codespaceName || '').trim().toLowerCase();
     if (!codespace || !/^[a-z0-9-]+$/.test(codespace)) return undefined;
     if (!Number.isInteger(port) || port <= 1024 || port > 65535) return undefined;
 
-    // Keep GitHub credentials server-side. Ask GitHub CLI for the authoritative
-    // forwarded-port browse URL using the authenticated user's Codespaces
-    // access, instead of trying to run credentialed gh commands in the
-    // workspace Bridge.
-    const forwarded = (await this.forwardedPorts(workspace)).find((item) => item.sourcePort === port);
-    if (forwarded?.browseUrl) return forwarded.browseUrl;
-
-    // GitHub documents the forwarded Codespaces URL as
-    // https://CODESPACENAME-PORT.app.github.dev. This fallback lets the user's
-    // browser authenticate a private port even when GitHub's port inventory is
-    // briefly behind the healthy local listener.
-    return `https://${codespace}-${port}.app.github.dev/`;
+    // A local listener is not a browser Preview until GitHub has registered
+    // the corresponding Dev Tunnel port. Keep the forwarding process on the
+    // Orlynx control plane (where GitHub credentials belong), and never invent
+    // an app.github.dev URL before GitHub lists that port.
+    const forwarded = await this.ensurePreviewForwarder(workspace, port);
+    return forwarded?.browseUrl;
   }
 }
