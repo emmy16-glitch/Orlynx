@@ -1,6 +1,7 @@
 import type {
   AgentMode,
   HarnessCheckpoint,
+  HarnessPlanItem,
   HarnessVerification,
   OrlynxEvent,
   PermissionProfile,
@@ -11,6 +12,29 @@ import type {
 } from '@orlynx/shared';
 
 export type BudgetStage = 'normal' | 'warn' | 'finalize' | 'force-final';
+
+export function normalizeHarnessPlanItems(value: unknown): HarnessPlanItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return [];
+    const item = raw as Record<string, unknown>;
+    const content = String(item.content || item.text || item.title || item.task || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    if (!content) return [];
+    const rawStatus = String(item.status || item.state || 'pending').toLowerCase().replace(/[ -]+/g, '_');
+    const status: HarnessPlanItem['status'] = /^(?:done|complete|completed|success)$/.test(rawStatus)
+      ? 'completed'
+      : /^(?:in_progress|running|active|doing|current)$/.test(rawStatus)
+        ? 'in_progress'
+        : /^(?:cancelled|canceled|skipped)$/.test(rawStatus)
+          ? 'cancelled'
+          : 'pending';
+    const rawPriority = String(item.priority || '').toLowerCase();
+    const priority = ['high','medium','low'].includes(rawPriority)
+      ? rawPriority as HarnessPlanItem['priority']
+      : undefined;
+    return [{ content, status, ...(priority ? { priority } : {}) }];
+  });
+}
 
 export const MAX_REFLECTION_ATTEMPTS = Math.max(2, Number(process.env.ORLYNX_MAX_REFLECTION_ATTEMPTS || 4));
 
@@ -700,6 +724,10 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
   const steeringText = steering.length
     ? `Live user updates: ${steering.map((item) => `[${item.action.toUpperCase()}] ${item.text}`).join(' | ')}`
     : '';
+  const plan = normalizeHarnessPlanItems(checkpoint.planItems || []);
+  const planText = plan.length
+    ? `Durable task plan: ${plan.map((item, index) => `${index + 1}. [${item.status}] ${item.content}`).join(' | ')}. Continue this same plan; update it with the provider todo tool instead of creating a competing plan.`
+    : '';
 
   return [
     `Orlynx harness phase: ${checkpoint.phase}. Step ${checkpoint.step}/${checkpoint.stepBudget}.`,
@@ -707,11 +735,14 @@ export function harnessSystemInstruction(checkpoint: HarnessCheckpoint): string 
     `Active tool families: ${checkpoint.toolFamilies.length ? checkpoint.toolFamilies.join(', ') : 'none'}.`,
     budget.instruction || '',
     steeringText,
+    planText,
     checkpoint.verification.required.includes('preview')
       ? 'For a cloud-workspace development server, bind the app to 0.0.0.0 (for example Vite --host 0.0.0.0) unless the framework has a verified equivalent. Do not treat a loopback-only 127.0.0.1 listener as remotely previewable. Let Orlynx verify provider forwarding separately. An IPv4 HTTP listener and healthy provider URL are sufficient; failure at IPv6 ::1 does not invalidate them. Do not repeat equivalent localhost probes. If the local application is healthy but external forwarding remains unavailable, conclude with that precise limitation within the reflection budget.'
       : '',
     'When an observation is unexpected, ambiguous, unknown, or conflicts with another signal, Orlynx must not invent an explanation. Treat the connected model as the reasoning partner: ask it to interpret the evidence and choose the next check, then verify that hypothesis with tools.',
     'Do not ask the user for information that repository, terminal, browser, provider, workspace, or other available tools or the connected model can determine. Escalate only for genuinely human-only input or permission.',
+    'If the user already asked to inspect and fix a problem, continue through safe in-repository edits and verification. Do not invent an extra approval checkpoint; only pause when Orlynx emits a real approval request or genuinely human-only input is required.',
+    'Use the provider todo/plan tool for multi-step work and keep that one plan updated as work completes. Do not dump raw todo JSON into assistant prose.',
     'Do not claim completion until Orlynx verification criteria are satisfied. Progress text is not a final answer.',
   ].filter(Boolean).join(' ');
 }
