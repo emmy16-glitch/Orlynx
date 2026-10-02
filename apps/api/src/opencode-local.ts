@@ -143,7 +143,9 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       // Background prewarm may wait through a Render cold boot; interactive
       // requests still use the short ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS
       // so users fail over to workspace compute quickly.
-      await waitForRuntimeReady(controller.signal, undefined, undefined, timeoutMs);
+      // Background warming is advisory. It must never quarantine the
+      // interactive direct path before a user has even submitted a turn.
+      await waitForRuntimeReady(controller.signal, undefined, undefined, timeoutMs, false);
       runtimePrewarmAt = Date.now();
       runtimePrewarmRetryAt = 0;
       console.info('[ai-runtime] prewarm ready');
@@ -152,7 +154,7 @@ export function warmOpenCodeRuntime(): Promise<boolean> {
       const status = error instanceof ProviderRequestError ? error.statusCode : undefined;
       const transient = status ? TRANSIENT_RUNTIME_STATUSES.has(status) : true;
       runtimePrewarmRetryAt = Date.now() + (transient ? RUNTIME_PREWARM_FAILURE_BACKOFF_MS : RUNTIME_PREWARM_TTL_MS);
-      const detail = status ? `HTTP ${status}` : error instanceof Error ? error.name : 'Error';
+      const detail = status ? `HTTP ${status}` : error instanceof Error ? error.message.slice(0, 160) || error.name : 'Error';
       console.warn(`[ai-runtime] prewarm unavailable (${detail}); backing off`);
       return false;
     } finally {
@@ -196,6 +198,7 @@ async function waitForRuntimeReady(
   onStatus?: (message: string) => void,
   onTiming?: (stage: string, ms: number) => void,
   timeoutOverrideMs?: number,
+  recordFailure = true,
 ): Promise<void> {
   const started = performance.now();
   const configuredTimeout = timeoutOverrideMs ?? Number(process.env.ORLYNX_OPENCODE_RUNTIME_WAKE_TIMEOUT_MS || DEFAULT_RUNTIME_WAKE_TIMEOUT_MS);
@@ -246,7 +249,7 @@ async function waitForRuntimeReady(
     } catch (error) {
       if (signal.aborted) throw signal.reason;
       if (error instanceof ProviderRequestError && error.statusCode && !TRANSIENT_RUNTIME_STATUSES.has(error.statusCode)) {
-        noteComputeFailure('direct-runtime', error.message, performance.now() - started);
+        if (recordFailure) noteComputeFailure('direct-runtime', error.message, performance.now() - started);
         throw error;
       }
     }
@@ -263,7 +266,7 @@ async function waitForRuntimeReady(
     lastStatus || 503,
     true,
   );
-  noteComputeFailure('direct-runtime', unavailable.message, performance.now() - started);
+  if (recordFailure) noteComputeFailure('direct-runtime', unavailable.message, performance.now() - started);
   throw unavailable;
 }
 
@@ -274,7 +277,9 @@ function scheduleOpenCodeRuntimeRecovery(): void {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('runtime recovery timeout')), 90_000);
     timeout.unref?.();
-    void waitForRuntimeReady(controller.signal, undefined, undefined, 90_000)
+    // Post-turn warming is also advisory; only a real user turn should trip
+    // the direct-runtime circuit breaker.
+    void waitForRuntimeReady(controller.signal, undefined, undefined, 90_000, false)
       .then(() => {
         runtimePrewarmAt = Date.now();
         runtimePrewarmRetryAt = 0;
