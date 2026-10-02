@@ -424,6 +424,42 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model' || event.sourceType === 'agent.reflection') return;
       const prior = state.activities[event.activityId];
 
+      if (event.sourceType === 'agent.plan') {
+        const detail = event.type === 'ACTIVITY_UPDATE' && event.detail && typeof event.detail === 'object'
+          ? event.detail as Record<string, unknown>
+          : {};
+        const rawItems = Array.isArray(detail.items) ? detail.items : [];
+        const items = rawItems.slice(0, 50).flatMap((value) => {
+          if (!value || typeof value !== 'object') return [];
+          const item = value as Record<string, unknown>;
+          const content = String(item.content || '').trim();
+          if (!content) return [];
+          return [{
+            content,
+            status: String(item.status || 'pending'),
+            ...(item.priority ? { priority: String(item.priority) } : {}),
+          }];
+        });
+        const completed = Number(detail.completed ?? items.filter((item) => item.status === 'completed' || item.status === 'cancelled').length);
+        const total = Number(detail.total ?? items.length);
+        const active = String(detail.active || items.find((item) => item.status === 'in_progress')?.content || '');
+        putActivity(state, {
+          id: event.activityId,
+          runId: event.runId,
+          taskId: event.taskId,
+          sequence: event.sequence,
+          startedSequence: prior?.startedSequence || event.sequence,
+          timestamp: prior?.timestamp || event.timestamp,
+          state: 'running',
+          kind: 'agent',
+          title: 'Plan',
+          summary: total > 0 ? `${Math.max(0, completed)}/${total} complete${active ? ` · ${compact(active, 90)}` : ''}` : 'Plan updated',
+          sourceType: 'agent.plan',
+          evidence: { sourceType: 'agent.plan', items, completed, total, active },
+        });
+        return;
+      }
+
       if (event.sourceType === 'agent.memory') {
         const count = Number(/(\d+)\s+(?:(?:verified\s+)?project\s+|verified\s+|reusable\s+)?lessons?/i.exec(String(event.text || ''))?.[1] || 0);
         putActivity(state, {
