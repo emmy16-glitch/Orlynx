@@ -776,7 +776,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
           reflectionId,
           ...(investigationId ? { investigationId } : {}),
           ...(investigationStage ? { investigationStage } : {}),
-          text: firstLine.slice(0, 420),
+          text: firstLine.slice(0, 900),
         }, taskId, runId);
       } else if (lineEnd >= 0 && firstLine && !/^Model\s*[→>-]\s*Orlynx:/i.test(firstLine)) {
         // Do not hold or reinterpret normal assistant text when the model does
