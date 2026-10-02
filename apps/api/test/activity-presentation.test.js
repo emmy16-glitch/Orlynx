@@ -193,7 +193,7 @@ describe('canonical agent activity presentation', () => {
     const renderer = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
     const harness = fs.readFileSync(new URL('../src/harness.ts', import.meta.url), 'utf8');
     assert.match(renderer, /function publicDiagnostic/);
-    assert.match(renderer, />Hypothesis</);
+    assert.match(renderer, />Current hypothesis</);
     assert.match(renderer, />Model evidence</);
     assert.match(renderer, />Next check</);
     assert.match(harness, /Hypothesis: <best current explanation> \| Evidence:/);
