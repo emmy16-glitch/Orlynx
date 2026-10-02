@@ -978,3 +978,112 @@ export async function createGitHubPullRequest(
   }
   return { number: result.number, url: result.html_url };
 }
+
+export type GitHubMergeMethod = 'merge' | 'squash' | 'rebase';
+
+export interface GitHubPullState {
+  number: number;
+  url: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  mergeCommitSha: string | null;
+  mergeableState: string;
+  mergeable: boolean | null;
+  headSha: string;
+  headRef: string;
+  baseRef: string;
+}
+
+export async function getGitHubPullRequest(
+  project: string,
+  prNumber: number,
+  installationId?: number,
+): Promise<GitHubPullState> {
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) throw new Error('Pull request number is invalid.');
+  const repo = await findRepository(project, installationId);
+  const pr = await githubInstallationApiRequest<{
+    number: number; html_url: string; state: string; merged: boolean;
+    merge_commit_sha: string | null; mergeable_state: string; mergeable: boolean | null;
+    head: { sha: string; ref: string }; base: { ref: string };
+  }>(repo.installationId, `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`);
+  return {
+    number: pr.number, url: pr.html_url,
+    state: pr.state === 'closed' ? 'closed' : 'open',
+    merged: Boolean(pr.merged), mergeCommitSha: pr.merge_commit_sha,
+    mergeableState: String(pr.mergeable_state || 'unknown'),
+    mergeable: pr.mergeable,
+    headSha: pr.head.sha, headRef: pr.head.ref, baseRef: pr.base.ref,
+  };
+}
+
+export interface GitHubMergeResult {
+  merged: boolean;
+  alreadyMerged?: boolean;
+  checksPending?: boolean;
+  sha: string | null;
+  message: string;
+}
+
+// Control-plane PR merge. Credentials never leave the API process: this uses
+// the short-lived installation token, never a workspace token. Never force.
+export async function mergeGitHubPullRequest(
+  project: string,
+  prNumber: number,
+  options: { method?: GitHubMergeMethod; commitTitle?: string; installationId?: number } = {},
+): Promise<GitHubMergeResult> {
+  const repo = await findRepository(project, options.installationId);
+  const requested = options.method || 'merge';
+  if (!['merge', 'squash', 'rebase'].includes(requested)) throw new Error('Merge method is invalid.');
+
+  const info = await githubInstallationApiRequest<{
+    allow_merge_commit?: boolean; allow_squash_merge?: boolean; allow_rebase_merge?: boolean;
+  }>(repo.installationId, `/repos/${repo.owner}/${repo.name}`);
+  const allowed =
+    requested === 'squash' ? info.allow_squash_merge !== false
+    : requested === 'rebase' ? info.allow_rebase_merge !== false
+    : info.allow_merge_commit !== false;
+  if (!allowed) {
+    throw new Error(`Repository policy does not allow ${requested} merges. Choose a permitted merge method.`);
+  }
+
+  const pr = await getGitHubPullRequest(project, prNumber, options.installationId);
+  // Idempotency: a crash after merging but before receipt recording must
+  // resolve to the existing merge, not an error or duplicate.
+  if (pr.merged) {
+    return { merged: true, alreadyMerged: true, sha: pr.mergeCommitSha, message: `Pull request #${prNumber} is already merged${pr.mergeCommitSha ? ` (${pr.mergeCommitSha.slice(0, 7)})` : ''}.` };
+  }
+  if (pr.state !== 'open') throw new Error(`Pull request #${prNumber} is closed without being merged.`);
+  if (pr.mergeableState === 'dirty') throw new Error(`Pull request #${prNumber} has merge conflicts. Resolve them before merging.`);
+  if (pr.mergeableState === 'blocked') {
+    throw new Error(`Pull request #${prNumber} is blocked by branch protection (missing reviews or required checks). Human approval is required.`);
+  }
+  if (['behind', 'unknown', 'unstable'].includes(pr.mergeableState)) {
+    // Required checks still running or branch behind: report accurately,
+    // never claim completion.
+    return { merged: false, checksPending: true, sha: null, message: `Pull request #${prNumber} is not yet mergeable (state: ${pr.mergeableState}). Required checks may still be running.` };
+  }
+
+  try {
+    const merged = await githubInstallationApiRequest<{ merged: boolean; sha?: string | null; message?: string }>(
+      repo.installationId,
+      `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/merge`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          merge_method: requested,
+          ...(options.commitTitle ? { commit_title: options.commitTitle.slice(0, 180) } : {}),
+        }),
+      },
+    );
+    if (!merged.merged) {
+      return { merged: false, checksPending: true, sha: null, message: merged.message || `GitHub did not merge pull request #${prNumber} yet.` };
+    }
+    return { merged: true, sha: merged.sha || null, message: `Merged pull request #${prNumber}${merged.sha ? ` (${String(merged.sha).slice(0, 7)})` : ''}.` };
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 403) throw new Error(`GitHub refused the merge (HTTP 403). Required approval or checks are missing for pull request #${prNumber}.`);
+    if (status === 405) throw new Error(`Pull request #${prNumber} cannot be merged in its current state.`);
+    if (status === 409) throw new Error(`Pull request #${prNumber} head was modified during the merge. Retry to use the current head.`);
+    throw error;
+  }
+}

@@ -26,16 +26,35 @@ app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
   const hostedProduction = process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1';
   if (!hostedProduction || durableStorageConfigured()) return next();
-  if (req.path === '/health' || req.path.startsWith('/v1/setup/github-app')) return next();
+  if (req.path === '/health' || req.path === '/ready' || req.path.startsWith('/v1/setup/github-app')) return next();
   return res.status(503).json({ error: 'Orlynx is temporarily unavailable.' });
 });
 
 app.get('/health', async (_req, res) => {
+  // Liveness: the process is alive. Optional sleeping providers (runners,
+  // direct runtime, Codespaces) must never fail liveness and cause restarts.
+  res.status(200).json({ alive: true, service: 'orlynx-api', time: new Date().toISOString(), commit: String(process.env.RENDER_GIT_COMMIT || '') || null });
+});
+
+app.get('/ready', async (_req, res) => {
+  // Readiness: the API can accept useful work. Core dependencies only:
+  // durable storage when hosted, plus GitHub App configuration. Sleeping
+  // optional compute is reported by /v1/integrations/status, never here.
   let database = false;
-  if (durableStorageConfigured()) { try { await controlPlaneRepository().initialize(); database = true; } catch {} }
+  let databaseError: string | undefined;
+  if (durableStorageConfigured()) {
+    try { await controlPlaneRepository().initialize(); database = true; }
+    catch (error) { databaseError = error instanceof Error ? error.message.slice(0, 160) : 'database unavailable'; }
+  }
   const hostedProduction = process.env.VERCEL === '1' || process.env.ORLYNX_HOSTED_PRODUCTION === '1';
   const ready = githubAppConfigured() && (!hostedProduction || database);
-  res.status(ready ? 200 : 503).json({ ok: ready, service: 'orlynx-api', time: new Date().toISOString(), ready, durableStorage: database, runtimeBootstrapConfigured: process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox' || process.env.ORLYNX_BOOTSTRAP_MODE === 'local' || Boolean(process.env.ORLYNX_RUNTIME_WORKER_URL && process.env.ORLYNX_RUNTIME_WORKER_TOKEN), bridgeConfigured: Boolean(process.env.ORLYNX_BRIDGE_SIGNING_SECRET) });
+  res.status(ready ? 200 : 503).json({
+    ready, service: 'orlynx-api', time: new Date().toISOString(),
+    commit: String(process.env.RENDER_GIT_COMMIT || '') || null,
+    githubAppConfigured: githubAppConfigured(),
+    durableStorage: durableStorageConfigured() ? database : 'not-required',
+    ...(databaseError ? { databaseError } : {}),
+  });
 });
 app.use('/v1', router);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

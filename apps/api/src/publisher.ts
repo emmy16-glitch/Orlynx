@@ -3,9 +3,12 @@ import type { ChangeSet, ChangedFile, TaskRecord } from '@orlynx/shared';
 import { bridgeRequest } from './bridge-rpc.js';
 import {
   createGitHubPullRequest,
+  getGitHubPullRequest,
   githubInstallationApiRequest,
   githubInstallationPermissionStatus,
   githubRepositoryById,
+  mergeGitHubPullRequest,
+  type GitHubMergeMethod,
 } from './github.js';
 import { controlPlaneRepository } from './storage.js';
 
@@ -466,6 +469,78 @@ export async function publishVerifiedChangeSet(input: {
       changeId: change.id,
     };
   }
+}
+
+export interface MergeResult {
+  changeId: string;
+  pullRequestNumber: number;
+  pullRequestUrl?: string;
+  merged: boolean;
+  alreadyMerged?: boolean;
+  checksPending?: boolean;
+  mergeCommitSha: string | null;
+  mergeMethod?: GitHubMergeMethod;
+  message: string;
+}
+
+// Merge the session's current pull request through the control plane.
+// Finds the newest change set carrying a PR number, verifies live PR state,
+// and merges only when GitHub permits it. Required human approvals or
+// running checks are reported, never bypassed or misreported as success.
+export async function mergePublishedPullRequest(input: {
+  sessionId: string;
+  changeId?: string;
+  method?: GitHubMergeMethod;
+}): Promise<MergeResult> {
+  const repository = controlPlaneRepository();
+  const [session, changes] = await Promise.all([
+    repository.getSession(input.sessionId),
+    repository.listChangeSets(input.sessionId),
+  ]);
+  if (!session) throw new Error('Publication session is unavailable.');
+  const ordered = [...changes].reverse();
+  const change = input.changeId
+    ? ordered.find((item) => item.id === input.changeId)
+    : ordered.find((item) => Number.isSafeInteger(item.pullRequestNumber));
+  if (!change) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
+  if (!change.pullRequestNumber) throw new Error('No pull request exists for this work yet. Publish it first, then merge.');
+  const method = input.method || change.mergeMethod || 'merge';
+
+  // Crash recovery: a merge recorded durably before the receipt was emitted
+  // must not trigger a second merge attempt.
+  if (change.mergeCommitSha) {
+    try {
+      const live = await getGitHubPullRequest(session.project, change.pullRequestNumber);
+      if (live.merged) {
+        change.mergedAt ||= new Date().toISOString();
+        await repository.putChangeSet(change);
+        return {
+          changeId: change.id, pullRequestNumber: change.pullRequestNumber,
+          pullRequestUrl: change.pullRequestUrl, merged: true, alreadyMerged: true,
+          mergeCommitSha: change.mergeCommitSha, mergeMethod: change.mergeMethod, message: live.url
+            ? `Pull request #${change.pullRequestNumber} is already merged (${change.mergeCommitSha.slice(0, 7)}).`
+            : `Pull request #${change.pullRequestNumber} is already merged.`,
+        };
+      }
+    } catch {
+      // Live verification failed; fall through to a fresh merge attempt so a
+      // stale local record can never fake a merge.
+    }
+  }
+
+  const result = await mergeGitHubPullRequest(session.project, change.pullRequestNumber, { method });
+  if (result.merged && result.sha) {
+    change.mergeCommitSha = result.sha;
+    change.mergeMethod = method;
+    change.mergedAt = new Date().toISOString();
+    await repository.putChangeSet(change);
+  }
+  return {
+    changeId: change.id, pullRequestNumber: change.pullRequestNumber,
+    pullRequestUrl: change.pullRequestUrl, merged: result.merged,
+    alreadyMerged: result.alreadyMerged, checksPending: result.checksPending,
+    mergeCommitSha: result.sha, mergeMethod: method, message: result.message,
+  };
 }
 
 export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256 };

@@ -20,13 +20,14 @@ import { safeName, type ChatMessage } from '@orlynx/shared';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
-import { executionPlaneFor, executionPlaneForSession, instantReplyFor, publishIntentFor, publishTargetBranchFor, type PublishIntent } from './direct-chat.js';
+import { deployIntentFor, executionPlaneFor, executionPlaneForSession, instantReplyFor, mergeIntentFor, publishIntentFor, publishTargetBranchFor, type PublishIntent } from './direct-chat.js';
 import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
-import { selectWorkspaceProvider } from './compute-broker.js';
-import { publishVerifiedChangeSet } from './publisher.js';
+import { computeBrokerSnapshot, selectWorkspaceProvider } from './compute-broker.js';
+import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
+import { mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
 
 export const router = Router();
 
@@ -667,23 +668,79 @@ router.post('/sessions/:id/messages', async (req, res) => {
       startedAt: now,
     };
 
+    const wantsMerge = mergeIntentFor(String(text));
     emit(s.id, 'run.started', { taskId, messageId: msg.id, plane: 'workspace', engine: selectedAdapterId, mode: effectiveMode, permission: prefs.permission }, runId);
-    emit(s.id, 'activity.started', { taskId, text: publishIntent === 'direct' ? `Publishing to ${publishTargetBranch || s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
+    emit(s.id, 'activity.started', { taskId, text: wantsMerge ? 'Merging pull request…' : publishIntent === 'direct' ? `Publishing to ${publishTargetBranch || s.branch}…` : 'Creating pull request…', sourceType: 'git.publish' }, runId);
 
     try {
+      if (wantsMerge) {
+        const gate = canPerform(s.id, 'git.push');
+        if (!gate.allowed) throw new Error(gate.reason || 'Merging is blocked by the current project access level.');
+        const merged = await mergePublishedPullRequest({ sessionId: s.id });
+        const reply = merged.merged
+          ? `Merged pull request #${merged.pullRequestNumber}${merged.mergeCommitSha ? ` (\`${merged.mergeCommitSha.slice(0, 7)}\`)` : ''}${merged.alreadyMerged ? ' — it was already merged.' : '.'}`
+          : `Not merged yet: ${merged.message}`;
+        const finishedAt = new Date().toISOString();
+        const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId, createdAt: finishedAt };
+        const run = { ...baseRun, state: (merged.merged ? 'completed' : 'failed') as 'completed' | 'failed', activity: merged.merged ? 'Merged' : 'Merge needs attention', finishedAt, ...(merged.merged ? {} : { errorKind: 'permission' as const }) };
+        (store.db.messages[s.id] ||= []).push(assistant);
+        (store.db.runs[s.id] ||= []).push(run as never);
+        store.save();
+        if (durableStorageConfigured()) {
+          const repository = controlPlaneRepository();
+          await repository.putMessage(assistant);
+          await repository.putTask({
+            id: taskId, sessionId: s.id, workspaceId: workspace?.id || 'workspace', plane: 'workspace',
+            runId, messageId: msg.id, state: merged.merged ? 'completed' : 'failed',
+            prompt: String(text), modelId: selectedModel || undefined, adapterId: selectedAdapterId,
+            mode: effectiveMode, permission: prefs.permission, createdAt: now, updatedAt: finishedAt,
+          });
+        }
+        await recordAudit(req, s.id, 'git.merge', merged.merged ? 'completed' : 'blocked', {
+          pullRequestNumber: merged.pullRequestNumber, mergeCommitSha: merged.mergeCommitSha,
+          checksPending: merged.checksPending, alreadyMerged: merged.alreadyMerged,
+        });
+        emit(s.id, 'activity.completed', { taskId, text: merged.merged ? 'Merged' : 'Merge blocked', sourceType: 'git.publish', pullRequestNumber: merged.pullRequestNumber, mergeCommitSha: merged.mergeCommitSha }, runId);
+        emit(s.id, 'receipt.created', { taskId, pullRequestNumber: merged.pullRequestNumber, pullRequestUrl: merged.pullRequestUrl, mergeCommitSha: merged.mergeCommitSha, merged: merged.merged, checksPending: merged.checksPending }, runId);
+        emit(s.id, 'message.end', { taskId, instant: true }, runId);
+        if (merged.merged) emit(s.id, 'run.completed', { taskId, summary: reply, instant: true }, runId);
+        else emit(s.id, 'run.failed', { taskId, error: reply, errorKind: 'permission', recoverable: true }, runId);
+        return merged.merged
+          ? res.json({ message: msg, run, plane: 'workspace', instant: true, merged })
+          : res.status(409).json({ message: msg, run, plane: 'workspace', instant: true, error: reply, merged });
+      }
       const published = await publishCommittedWorkspaceHead(req, s, publishIntent, publishTargetBranch || undefined);
       const shortSha = published.head.slice(0, 7);
-      const reply = published.pullRequestUrl
+      let reply = published.pullRequestUrl
         ? `Published \`${shortSha}\` as pull request #${published.pullRequestNumber}: ${published.pullRequestUrl}`
         : published.alreadyPublished
           ? `Already published: \`${shortSha}\` is already on \`${published.branch}\`.`
           : `Published \`${shortSha}\` to \`${published.branch}\`.`;
+      // Deployment verification: only for direct branch publication when the
+      // user asked for a deploy. Never collapses push/CI/deploy into one
+      // fake success state; each stage is reported from live evidence.
+      let deployment: import('./render.js').RenderDeployState | undefined;
+      if (deployIntentFor(String(text)) && !published.pullRequestUrl) {
+        const { renderDeployStatus } = await import('./render.js');
+        deployment = await renderDeployStatus(published.head);
+        reply += deployment?.configured
+          ? `\nDeployment: ${deployment.message}`
+          : `\nDeployment: ${deployment?.message || 'verification is not configured.'}`;
+        emit(s.id, 'activity.progress', { taskId, text: `Deployment: ${deployment?.status || 'unknown'}`, sourceType: 'git.publish', deployId: deployment?.deployId, commitSha: published.head }, runId);
+      }
       const finishedAt = new Date().toISOString();
       const assistant = { id: `msg_${runId}`, sessionId: s.id, role: 'assistant' as const, text: reply, runId, createdAt: finishedAt };
-      const run = { ...baseRun, state: 'completed' as const, activity: 'Published', finishedAt };
+      // The push succeeded but the deployment did not: degrade the task
+      // instead of reporting full success.
+      const deployFailed = Boolean(deployment?.configured && deployment.failed);
+      const deployDrift = Boolean(deployment?.configured && deployment.live && deployment.commitMatches === false);
+      const degraded = deployFailed || deployDrift;
+      const run = degraded
+        ? { ...baseRun, state: 'failed' as const, activity: 'Deployment needs attention', finishedAt, errorKind: 'engine' as const }
+        : { ...baseRun, state: 'completed' as const, activity: 'Published', finishedAt };
 
       (store.db.messages[s.id] ||= []).push(assistant);
-      (store.db.runs[s.id] ||= []).push(run as any);
+      (store.db.runs[s.id] ||= []).push(run as never);
       store.save();
 
       if (durableStorageConfigured()) {
@@ -696,7 +753,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
           plane: 'workspace',
           runId,
           messageId: msg.id,
-          state: 'completed',
+          state: degraded ? 'failed' : 'completed',
           prompt: String(text),
           modelId: selectedModel || undefined,
           adapterId: selectedAdapterId,
@@ -708,10 +765,14 @@ router.post('/sessions/:id/messages', async (req, res) => {
       }
 
       emit(s.id, 'activity.completed', { taskId, text: published.alreadyPublished ? 'Already published' : 'Published to GitHub', sourceType: 'git.publish', branch: published.branch, head: published.head, pullRequestUrl: published.pullRequestUrl }, runId);
-      emit(s.id, 'receipt.created', { taskId, branch: published.branch, commitSha: published.head, pullRequestUrl: published.pullRequestUrl, pullRequestNumber: published.pullRequestNumber }, runId);
+      emit(s.id, 'receipt.created', { taskId, branch: published.branch, commitSha: published.head, pullRequestUrl: published.pullRequestUrl, pullRequestNumber: published.pullRequestNumber, ...(deployment ? { deployment } : {}) }, runId);
       emit(s.id, 'message.end', { taskId, instant: true }, runId);
+      if (degraded) {
+        emit(s.id, 'run.failed', { taskId, error: reply, errorKind: 'engine', recoverable: true, degraded: true }, runId);
+        return res.status(502).json({ message: msg, run, plane: 'workspace', instant: true, published, deployment });
+      }
       emit(s.id, 'run.completed', { taskId, summary: reply, instant: true }, runId);
-      return res.json({ message: msg, run, plane: 'workspace', instant: true, published });
+      return res.json({ message: msg, run, plane: 'workspace', instant: true, published, ...(deployment ? { deployment } : {}) });
     } catch (error) {
       const finishedAt = new Date().toISOString();
       const detail = error instanceof Error ? error.message : 'Orlynx could not publish this commit.';
@@ -2253,8 +2314,37 @@ router.get('/integrations/status', async (req, res) => {
     githubAvailable: platform.configured && platform.healthy,
     ai: { available: opencode.connected || directAi?.state === 'connected' },
     workspace: { terminalAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', cloudAvailable: infrastructure && connection.userAuthorizationState === 'established', previewAvailable: workspace?.state === 'ready' && workspace.bridgeState === 'ready', state: workspace?.state || 'not_created' },
+    build: {
+      commit: String(process.env.RENDER_GIT_COMMIT || '') || null,
+      serviceId: String(process.env.RENDER_SERVICE_ID || '') || null,
+    },
+    compute: diagnosticsCompute(),
   });
 });
+
+function diagnosticsCompute(): {
+  broker: Array<{ id: string; successes: number; failures: number; consecutiveFailures: number; quarantined: boolean; lastFailure?: string }>;
+  runners: Array<{ hostId: string; ok: boolean | null; available: number; latencyMs: number; buildCommit: string | null; stale: boolean; detail?: string }>;
+  expectedRunnerCommit: string | null;
+} {
+  return {
+    broker: computeBrokerSnapshot().map((row) => ({
+      id: row.id, successes: row.successes, failures: row.failures,
+      consecutiveFailures: row.consecutiveFailures, quarantined: row.quarantined,
+      ...(row.lastFailure ? { lastFailure: row.lastFailure } : {}),
+    })),
+    runners: runnerPoolCachedHealth().map((row) => ({
+      hostId: row.hostId,
+      ok: row.health ? row.health.ok : null,
+      available: row.health?.available ?? 0,
+      latencyMs: row.health?.latencyMs ?? 0,
+      buildCommit: row.health?.buildCommit ?? null,
+      stale: Boolean(row.health?.stale),
+      ...(row.health?.detail ? { detail: row.health.detail } : {}),
+    })),
+    expectedRunnerCommit: expectedRunnerCommit(),
+  };
+}
 router.get('/repos/:owner/:name/branches', async (req, res) => {
   try {
     const branches = await githubBranches(`${req.params.owner}/${req.params.name}`, requestInstallationId(req));

@@ -553,12 +553,16 @@ async function failoverDirectTaskToWorkspace(
   task: TaskRecord,
   run: AgentRun,
   detail: string,
+  options: { brokerRecorded?: boolean } = {},
 ): Promise<boolean> {
   const repository = controlPlaneRepository();
   const project = await repository.getProject(session.projectId);
   if (!project || !Number.isFinite(project.repositoryId)) return false;
 
-  noteComputeFailure('direct-runtime', detail);
+  // The readiness wait already records the broker failure for the same event.
+  // Recording it again here would double-count one outage (and double the
+  // quarantine). Record only failures that surfaced after readiness passed.
+  if (!options.brokerRecorded) noteComputeFailure('direct-runtime', detail);
   const preferredProvider = await selectWorkspaceProvider({ taskText: task.prompt });
   if (!preferredProvider) return false;
   const workspace = await ensureWorkspaceRecord({
@@ -960,7 +964,8 @@ async function executeDirectTask(
       || /runtime .*unavailable|runtime .*recover|fetch failed|ECONNRESET|socket .*closed|connection .*failed|temporarily unavailable/i.test(detail)
     );
     if (transientRuntimeFailure) {
-      const failedOver = await failoverDirectTaskToWorkspace(session, task, run, detail).catch((failoverError) => {
+      const brokerRecorded = (error as { brokerRecorded?: string })?.brokerRecorded === 'direct-runtime';
+      const failedOver = await failoverDirectTaskToWorkspace(session, task, run, detail, { brokerRecorded }).catch((failoverError) => {
         console.warn(`[direct-chat] compute failover failed session=${session.id} run=${run.id}: ${failoverError instanceof Error ? failoverError.message : 'unknown error'}`);
         return false;
       });

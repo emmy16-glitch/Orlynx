@@ -37,6 +37,26 @@ export function instantReplyFor(input: {
 
 export type PublishIntent = 'direct' | 'pull-request';
 
+// True when the user asks to merge an existing pull request ("merge it") as
+// opposed to creating one. Merge execution looks up the session's current PR
+// and merges it through the control plane when GitHub permits it.
+export function mergeIntentFor(text: string): boolean {
+  const normalized = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length > 90) return false;
+  if (/\b(?:don't|do not|dont|never)\s+merge\b/.test(normalized)) return false;
+  return /^(?:merge\s+(?:it|this|that|the\s+(?:pr|pull\s+request))|finish\s+and\s+merge)[.!?\s]*$/.test(normalized);
+}
+
+// True when the user asks for deployment verification ("deploy it",
+// "finish and deploy"), not just publication. After a successful publish the
+// control plane checks Render for the expected commit and reports the real
+// deployment state instead of assuming the push eventually deploys.
+export function deployIntentFor(text: string): boolean {
+  const normalized = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length > 90) return false;
+  return /\bdeploy\b/.test(normalized);
+}
+
 export function publishTargetBranchFor(text: string, branch = 'main'): string | null {
   const normalized = String(text || '')
     .replace(/\b(?:puhs|pussh|psuh)\b/gi, 'push')
@@ -86,7 +106,7 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
   if (/^(?:finish|complete)(?:\s+(?:this|it|everything|up))?\s+and\s+(?:put\s+(?:it|everything)\s+on\s+(?:main|master)|push(?:\s+(?:it|this))?|deploy)[.!?\s]*$/.test(normalized)) return 'direct';
   if (/^fix\s+(?:it|this|that)(?:\s+up)?\s+and\s+push(?:\s+(?:it|this))?[.!?\s]*$/.test(normalized)) return 'direct';
   if (/^(?:commit|commit\s+(?:this|it|that|these\s+changes|the\s+changes))[.!?\s]*$/.test(normalized)) return 'direct';
-  if (/^(?:merge\s+(?:it|this|that|the\s+(?:pr|pull\s+request)))[.!?\s]*$/.test(normalized)) return 'pull-request';
+  if (mergeIntentFor(normalized)) return 'pull-request';
   if (/^(?:deploy\s+(?:it|this|that|what\s+you\s+just\s+(?:fixed|built|did))|finish\s+and\s+deploy)[.!?\s]*$/.test(normalized)) return 'direct';
   return null;
 }

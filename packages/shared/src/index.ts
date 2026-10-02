@@ -64,6 +64,9 @@ export interface ChangeSet {
   pushedBranch?: string;
   pullRequestUrl?: string;
   pullRequestNumber?: number;
+  mergeCommitSha?: string;
+  mergedAt?: string;
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
   createdAt: string;
 }
 

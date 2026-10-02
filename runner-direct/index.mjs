@@ -18,6 +18,13 @@ const IDLE_SECONDS = Math.max(300, Number(process.env.ORLYNX_RUNNER_IDLE_SECONDS
 const RECLAIM_SECONDS = Math.max(IDLE_SECONDS, Number(process.env.ORLYNX_RUNNER_RECLAIM_SECONDS || 7200));
 const CLEANUP_SECONDS = Math.max(30, Number(process.env.ORLYNX_RUNNER_CLEANUP_SECONDS || 60));
 const PREVIEW_COOKIE = 'orlynx_preview';
+// Runner protocol/build identity. Render injects RENDER_GIT_COMMIT at deploy
+// time; ORLYNX_RUNNER_BUILD allows image builds to stamp the same value.
+const RUNNER_PROTOCOL_VERSION = 1;
+const RUNNER_BUILD_COMMIT = String(
+  process.env.ORLYNX_RUNNER_BUILD || process.env.RENDER_GIT_COMMIT || '',
+).slice(0, 40) || null;
+const RUNNER_SERVICE_ID = String(process.env.RENDER_SERVICE_ID || '') || null;
 
 let bridgeChild = null;
 let lastActivityTouchMs = 0;
@@ -379,6 +386,9 @@ async function route(req, res) {
     return json(res, healthy ? 200 : 503, {
       ok: healthy,
       service: 'orlynx-direct-runner',
+      protocolVersion: RUNNER_PROTOCOL_VERSION,
+      buildCommit: RUNNER_BUILD_COMMIT,
+      serviceId: RUNNER_SERVICE_ID,
       hostId: String(process.env.ORLYNX_RUNNER_HOST_ID || 'direct-default'),
       region: String(process.env.ORLYNX_RUNNER_REGION || '') || undefined,
       capacity: 1,

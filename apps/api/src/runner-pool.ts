@@ -6,6 +6,13 @@ export interface RunnerHostConfig {
   weight: number;
 }
 
+export const RUNNER_PROTOCOL_VERSION = 1;
+
+export function expectedRunnerCommit(): string | null {
+  const value = String(process.env.RENDER_GIT_COMMIT || process.env.ORLYNX_RUNNER_BUILD || '').slice(0, 40);
+  return value || null;
+}
+
 export interface RunnerHostHealth {
   id: string;
   ok: boolean;
@@ -17,6 +24,10 @@ export interface RunnerHostHealth {
   latencyMs: number;
   checkedAt: number;
   detail?: string;
+  protocolVersion?: number;
+  buildCommit?: string | null;
+  serviceId?: string | null;
+  stale?: boolean;
   capabilities?: {
     browserE2e?: boolean;
   };
@@ -170,14 +181,23 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
         stopped?: number;
         draining?: boolean;
         workspace?: { state?: string } | null;
+        protocolVersion?: number;
+        buildCommit?: string | null;
+        serviceId?: string | null;
         capabilities?: { browserE2e?: boolean };
       };
       const capacity = Math.max(1, Number(body.capacity || 1));
       const running = Math.max(0, Number(body.running ?? (body.workspace?.state === 'running' ? 1 : 0)));
       const available = Math.max(0, Number(body.available ?? (capacity - running)));
+      const expected = expectedRunnerCommit();
+      const reported = typeof body.buildCommit === 'string' && body.buildCommit ? body.buildCommit.slice(0, 40) : null;
+      const stale = Boolean(expected && reported && expected !== reported);
+      const protocolMismatch = typeof body.protocolVersion === 'number' && body.protocolVersion !== RUNNER_PROTOCOL_VERSION;
       const result: RunnerHostHealth = {
         id: host.id,
-        ok: response.ok && body.ok !== false,
+        // A stale or protocol-mismatched runner must never look healthy to
+        // the pool: it is marked degraded so routing prefers current hosts.
+        ok: response.ok && body.ok !== false && !stale && !protocolMismatch,
         capacity,
         running,
         available,
@@ -185,7 +205,15 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
         draining: Boolean(body.draining),
         latencyMs: Date.now() - started,
         checkedAt: Date.now(),
-        detail: response.ok ? undefined : `HTTP ${response.status}`,
+        detail: stale
+          ? `stale build ${reported} (expected ${expected})`
+          : protocolMismatch
+            ? `protocol v${body.protocolVersion} (expected v${RUNNER_PROTOCOL_VERSION})`
+            : response.ok ? undefined : `HTTP ${response.status}`,
+        protocolVersion: typeof body.protocolVersion === 'number' ? body.protocolVersion : undefined,
+        buildCommit: reported,
+        serviceId: typeof body.serviceId === 'string' && body.serviceId ? body.serviceId : null,
+        stale,
         capabilities: body.capabilities,
       };
       return {
@@ -275,6 +303,12 @@ export async function probeRunnerHost(host: RunnerHostConfig, force = false): Pr
 export async function runnerPoolSnapshot(force = false): Promise<Array<{ host: RunnerHostConfig; health: RunnerHostHealth }>> {
   const hosts = runnerHosts();
   return Promise.all(hosts.map(async (host) => ({ host, health: await probeRunnerHost(host, force) })));
+}
+
+// Cached per-host health for diagnostics. Never probes: probing is the
+// pool's job (bounded wake windows); diagnostics must stay fast and safe.
+export function runnerPoolCachedHealth(): Array<{ hostId: string; url: string; health: RunnerHostHealth | null }> {
+  return runnerHosts().map((host) => ({ hostId: host.id, url: host.url, health: healthCache.get(host.id) || null }));
 }
 
 export function runnerPoolHealthSummary(): {

@@ -249,7 +249,10 @@ async function waitForRuntimeReady(
     } catch (error) {
       if (signal.aborted) throw signal.reason;
       if (error instanceof ProviderRequestError && error.statusCode && !TRANSIENT_RUNTIME_STATUSES.has(error.statusCode)) {
-        if (recordFailure) noteComputeFailure('direct-runtime', error.message, performance.now() - started);
+        if (recordFailure) {
+          noteComputeFailure('direct-runtime', error.message, performance.now() - started);
+          (error as Error & { brokerRecorded?: string }).brokerRecorded = 'direct-runtime';
+        }
         throw error;
       }
     }
@@ -266,7 +269,10 @@ async function waitForRuntimeReady(
     lastStatus || 503,
     true,
   );
-  if (recordFailure) noteComputeFailure('direct-runtime', unavailable.message, performance.now() - started);
+  if (recordFailure) {
+    noteComputeFailure('direct-runtime', unavailable.message, performance.now() - started);
+    (unavailable as Error & { brokerRecorded?: string }).brokerRecorded = 'direct-runtime';
+  }
   throw unavailable;
 }
 
