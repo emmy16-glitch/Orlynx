@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 
 const CONTROL = process.env.ORLYNX_CONTROL || '';
 let token = process.env.ORLYNX_WORKSPACE_TOKEN || '';
@@ -1565,6 +1566,71 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       };
     }
     case 'git.diff': return { diff: git(['diff', '--no-ext-diff', '--', String(payload.path || '.')]) };
+    case 'git.capture-committed-changes': {
+      if (payload.approved !== true) throw new Error('Committed publication capture requires an approved control-plane command.');
+      const baseSha = String(payload.baseSha || '').trim();
+      if (!/^[a-f0-9]{40}$/i.test(baseSha)) throw new Error('Committed publication base SHA is invalid.');
+
+      const branch = git(['branch', '--show-current']).trim();
+      const head = git(['rev-parse', 'HEAD']).trim();
+      const porcelain = git(['status', '--porcelain=v1']);
+      if (porcelain.trim()) throw new Error('Committed publication recovery requires a clean working tree.');
+      if (head === baseSha) return { branch, head, baseSha, ahead: 0, files: [] };
+
+      const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', baseSha, head], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: cleanEnvironment(),
+      });
+      if (ancestor.status !== 0) throw new Error('The GitHub publication base is not an ancestor of the local workspace HEAD.');
+
+      const ahead = Number(git(['rev-list', '--count', `${baseSha}..${head}`]).trim());
+      if (!Number.isFinite(ahead) || ahead < 1) throw new Error('No committed local work is ahead of the GitHub publication base.');
+      if (ahead > 50) throw new Error(`Committed publication recovery found ${ahead} local commits. Reconcile the branch before publishing such a large history gap.`);
+
+      const raw = git(['diff', '--name-status', '--no-renames', '-z', `${baseSha}..${head}`], 60_000);
+      const tokens = raw.split('\0').filter(Boolean);
+      const entries: Array<{ status: string; path: string }> = [];
+      for (let index = 0; index + 1 < tokens.length; index += 2) {
+        entries.push({ status: tokens[index], path: tokens[index + 1] });
+      }
+      if (!entries.length) throw new Error('The local commits do not contain publishable file changes.');
+      if (entries.length > 200) throw new Error('Committed publication recovery exceeds the 200-file safety limit.');
+
+      const files = entries.map((entry) => {
+        const relative = String(entry.path || '').trim();
+        if (!relative || relative.startsWith('/') || relative.split('/').includes('..')) throw new Error('Committed publication contains an invalid file path.');
+        const target = safePath(relative);
+        const statusCode = String(entry.status || '').charAt(0).toUpperCase();
+        const action = statusCode === 'A' ? 'create' : statusCode === 'D' ? 'delete' : 'modify';
+        const diff = git(['diff', '--no-ext-diff', '--unified=3', `${baseSha}..${head}`, '--', relative], 30_000).slice(0, 8_000);
+        const additions = diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+        const deletions = diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+
+        if (action === 'delete') return { path: relative, action, diff, additions, deletions };
+
+        const stat = fs.lstatSync(target);
+        let bytes: Buffer;
+        if (stat.isSymbolicLink()) bytes = Buffer.from(fs.readlinkSync(target), 'utf8');
+        else {
+          if (!stat.isFile()) throw new Error(`Committed publication path is not a regular file: ${relative}`);
+          if (stat.size > 1_000_000) throw new Error(`Committed publication file is too large: ${relative}`);
+          bytes = fs.readFileSync(target);
+        }
+        if (bytes.length > 1_000_000) throw new Error(`Committed publication file is too large: ${relative}`);
+        return {
+          path: relative,
+          action,
+          diff,
+          additions,
+          deletions,
+          afterHash: crypto.createHash('sha256').update(bytes).digest('hex'),
+        };
+      });
+
+      return { branch, head, baseSha, ahead, files };
+    }
     case 'git.read-publication-file': {
       if (payload.approved !== true) throw new Error('Publication file read requires an approved control-plane command.');
       const target = safePath(String(payload.path || ''));

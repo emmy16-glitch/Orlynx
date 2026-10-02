@@ -44,6 +44,29 @@ test('verified publication is control-plane GitHub App work, never a workspace p
   assert.doesNotMatch(chatPublisher, /bridgeRequest/);
 });
 
+test('controlled publish recovers clean committed local work and never gives the workspace push credentials', () => {
+  const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+
+  assert.match(bridge, /case 'git\.capture-committed-changes'/);
+  assert.match(bridge, /merge-base', '--is-ancestor'/);
+  assert.match(bridge, /Committed publication recovery requires a clean working tree/);
+  assert.match(bridge, /crypto\.createHash\('sha256'\)/);
+  assert.doesNotMatch(bridge.slice(bridge.indexOf("case 'git.capture-committed-changes':"), bridge.indexOf("case 'git.read-publication-file':")), /git\(\['push'/);
+
+  assert.match(publisher, /recoverCommittedPublicationCandidate/);
+  assert.match(publisher, /recoveredCommittedWork: true/);
+  assert.match(publisher, /change\.currentHead \|\| change\.baseSha/);
+  assert.match(publisher, /strategy === 'direct' && targetRemoteSha \? targetBranch : sessionBaseBranch/);
+  assert.match(publisher, /expectedHead: workspaceHeadBeforePublish/);
+
+  assert.match(gateway, /publicationRecoverable/);
+  assert.match(gateway, /publishExplicitlyRequested/);
+  assert.match(gateway, /effectivePermission === 'full' \|\| publishExplicitlyRequested/);
+  assert.match(gateway, /item === 'changes' \|\| item === 'publish'/);
+});
+
 test('workspace commit stages only approved files and rejects unrelated staged files', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   const block = bridge.slice(bridge.indexOf("case 'git.commit':"), bridge.indexOf("case 'command.exec':"));

@@ -11,6 +11,8 @@ import {
   type GitHubMergeMethod,
 } from './github.js';
 import { controlPlaneRepository } from './storage.js';
+import { emitPersisted } from './events.js';
+import { verifyHarness } from './harness.js';
 
 export type PublicationStrategy = 'direct' | 'pull-request';
 
@@ -89,6 +91,85 @@ function publicationCandidate(
   throw new Error('No verified change set is ready to publish.');
 }
 
+type CommittedWorkspaceSnapshot = {
+  branch?: string;
+  head?: string;
+  baseSha?: string;
+  ahead?: number;
+  files?: ChangedFile[];
+};
+
+async function recoverCommittedPublicationCandidate(input: {
+  sessionId: string;
+  workspaceId: string;
+  tasks: TaskRecord[];
+  baseSha: string;
+  runId?: string;
+}): Promise<{ change: ChangeSet; task: TaskRecord }> {
+  const orderedTasks = [...input.tasks].reverse();
+  const task = input.runId
+    ? orderedTasks.find((item) => item.runId === input.runId)
+    : orderedTasks.find((item) => item.harness?.verification.required.includes('publish'));
+  if (!task?.harness || !task.runId) throw new Error('No verified change set is ready to publish.');
+
+  const snapshot = await bridgeRequest<CommittedWorkspaceSnapshot>(
+    input.workspaceId,
+    'git.capture-committed-changes',
+    { approved: true, baseSha: input.baseSha },
+    90_000,
+  );
+  const head = String(snapshot.head || '');
+  const baseSha = String(snapshot.baseSha || '');
+  const files = Array.isArray(snapshot.files) ? snapshot.files : [];
+  const ahead = Number(snapshot.ahead || 0);
+  if (!/^[a-f0-9]{40}$/i.test(head) || baseSha !== input.baseSha || ahead < 1 || !files.length) {
+    throw new Error('No committed local work is ready for controlled publication.');
+  }
+
+  const change: ChangeSet = {
+    id: `chg_${crypto.randomUUID()}`,
+    sessionId: input.sessionId,
+    runId: task.runId,
+    baseSha: input.baseSha,
+    currentHead: head,
+    files,
+    reviewState: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  await controlPlaneRepository().putChangeSet(change);
+
+  const now = new Date().toISOString();
+  await emitPersisted(
+    input.sessionId,
+    'changes.updated',
+    {
+      changeId: change.id,
+      count: files.length,
+      files: files.slice(0, 20).map((file) => ({
+        path: file.path,
+        action: file.action,
+        additions: file.additions,
+        deletions: file.deletions,
+        afterHash: file.afterHash,
+        diff: String(file.diff || '').slice(0, 8_000),
+      })),
+      recoveredCommittedWork: true,
+      localHead: head,
+      baseSha: input.baseSha,
+      ahead,
+    },
+    task.runId,
+    { taskId: task.id, workspaceId: input.workspaceId, timestamp: now },
+  );
+
+  const recent = await controlPlaneRepository().listRunEvents(input.sessionId, task.runId, 1000);
+  task.harness = verifyHarness(task.harness, recent, now);
+  task.harness.verifiedWorkspaceHead = head;
+  task.updatedAt = now;
+  await controlPlaneRepository().putTask(task);
+  return { change, task };
+}
+
 async function validatedWorkspaceFiles(
   workspaceId: string,
   change: ChangeSet,
@@ -96,8 +177,9 @@ async function validatedWorkspaceFiles(
 ): Promise<{ files: Array<{ file: ChangedFile; contentBase64?: string; mode?: '100644' | '100755' | '120000' }>; status: GitStatus }> {
   const status = await bridgeRequest<GitStatus>(workspaceId, 'git.status', {}, 30_000);
   const head = String(status.head || '');
-  if (!head || !change.baseSha) throw new Error('Publication cannot verify the workspace base commit.');
-  if (head !== change.baseSha) {
+  const expectedWorkspaceHead = String(change.currentHead || change.baseSha || '');
+  if (!head || !change.baseSha || !expectedWorkspaceHead) throw new Error('Publication cannot verify the workspace base commit.');
+  if (head !== expectedWorkspaceHead) {
     throw new Error('Workspace HEAD changed after the recorded change set. Re-verify before publishing.');
   }
   if (task.harness?.verifiedWorkspaceHead && task.harness.verifiedWorkspaceHead !== head) {
@@ -300,12 +382,6 @@ export async function publishVerifiedChangeSet(input: {
   if (!session || !workspace || workspace.sessionId !== session.id) throw new Error('Publication session/workspace is unavailable.');
   if (workspace.state !== 'ready' || workspace.bridgeState !== 'ready') throw new Error('The development environment must be ready before publishing.');
 
-  const { change, task } = publicationCandidate(changes, tasks, input.runId);
-  const nonPublishMissing = task.harness?.verification.missing.filter((item) => item !== 'publish') || [];
-  if (nonPublishMissing.length) {
-    throw new Error(`Verification is incomplete: ${nonPublishMissing.join(', ')}.`);
-  }
-
   const githubRepo = await githubRepositoryById(workspace.userId, workspace.repositoryId);
   if (githubRepo.fullName.toLowerCase() !== session.project.toLowerCase()) {
     throw new Error('Connected GitHub authorization does not match this conversation repository.');
@@ -315,14 +391,38 @@ export async function publishVerifiedChangeSet(input: {
     throw new Error(`GitHub App publication permissions are incomplete: ${permissions.missingPublish.join(', ')}.`);
   }
 
-  const baseBranch = safeBranch(session.branch);
-  const targetBranch = safeBranch(input.targetBranch || baseBranch);
+  const sessionBaseBranch = safeBranch(session.branch);
+  const targetBranch = safeBranch(input.targetBranch || sessionBaseBranch);
   const strategy = input.strategy || 'direct';
-  const baseRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
+  const targetRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
+  // Direct publication to an existing explicit target (for example "push to
+  // main") is based on that target's live GitHub head, not stale conversation
+  // branch metadata. New target branches still fork from the session branch.
+  const baseBranch = strategy === 'direct' && targetRemoteSha ? targetBranch : sessionBaseBranch;
+  const baseRemoteSha = baseBranch === targetBranch
+    ? targetRemoteSha
+    : await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
   if (!baseRemoteSha) throw new Error(`GitHub branch ${baseBranch} does not exist.`);
-  const existingTargetSha = targetBranch === baseBranch
-    ? baseRemoteSha
-    : await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
+  const existingTargetSha = targetRemoteSha;
+
+  let candidate: { change: ChangeSet; task: TaskRecord };
+  try {
+    candidate = publicationCandidate(changes, tasks, input.runId);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'No verified change set is ready to publish.') throw error;
+    candidate = await recoverCommittedPublicationCandidate({
+      sessionId: input.sessionId,
+      workspaceId: input.workspaceId,
+      tasks,
+      baseSha: baseRemoteSha,
+      runId: input.runId,
+    });
+  }
+  const { change, task } = candidate;
+  const nonPublishMissing = task.harness?.verification.missing.filter((item) => item !== 'publish') || [];
+  if (nonPublishMissing.length) {
+    throw new Error(`Verification is incomplete: ${nonPublishMissing.join(', ')}.`);
+  }
 
   // Recover a remote publication whose durable receipt was interrupted. This
   // check intentionally happens before workspace dirty/hash validation: after a
@@ -336,7 +436,7 @@ export async function publishVerifiedChangeSet(input: {
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
           branch: baseBranch,
-          expectedHead: change.baseSha,
+          expectedHead: change.currentHead || change.baseSha,
           publishedHead: change.commitSha,
           files: change.files.map((file) => file.path),
         })
@@ -384,6 +484,7 @@ export async function publishVerifiedChangeSet(input: {
     throw new Error(`GitHub branch ${targetBranch} diverged from the verified base. Refusing a non-fast-forward publication.`);
   }
 
+  const workspaceHeadBeforePublish = change.currentHead || change.baseSha;
   const commitSha = change.commitSha || await createCommitFromFiles({
     installationId: githubRepo.installationId,
     project: githubRepo.fullName,
@@ -393,7 +494,10 @@ export async function publishVerifiedChangeSet(input: {
   });
   change.reviewState = 'committed';
   change.commitSha = commitSha;
-  change.currentHead = commitSha;
+  // Preserve the actual local workspace HEAD until reconciliation succeeds.
+  // A recovered local commit can have a different SHA from the GitHub commit
+  // Orlynx safely reconstructs from the same verified bytes.
+  change.currentHead = workspaceHeadBeforePublish;
   await repository.putChangeSet(change);
 
   if (strategy === 'pull-request') {
@@ -430,11 +534,15 @@ export async function publishVerifiedChangeSet(input: {
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
           branch: baseBranch,
-          expectedHead: change.baseSha,
+          expectedHead: workspaceHeadBeforePublish,
           publishedHead: commitSha,
           files: change.files.map((file) => file.path),
         })
       : false;
+    if (workspaceReconciled) {
+      change.currentHead = commitSha;
+      await repository.putChangeSet(change);
+    }
     return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
