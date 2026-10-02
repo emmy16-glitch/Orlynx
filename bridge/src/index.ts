@@ -662,6 +662,7 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
   const toolSilenceMs = Math.max(60_000, Number(process.env.ORLYNX_AGENT_TOOL_SILENCE_MS || 4 * 60_000));
   let lastRetryKey = '';
   let streamFallbackNotified = false;
+  let lastWaitNoticeAt = 0;
   const textParts = new Map<string, string>();
   const partMessages = new Map<string, string>();
   const partTypes = new Map<string, string>();
@@ -934,9 +935,36 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
 
   try {
     while (Date.now() < deadline && !finished) {
+      const now = Date.now();
       const activeTool = [...toolStates.values()].some(state => state === 'running' || state === 'pending');
+      const silentForMs = now - lastProgressAt;
+
+      // User-visible liveness is NOT provider progress. Long installs/tests can
+      // legitimately go quiet, so keep the same activity row moving without
+      // refreshing lastProgressAt. The watchdog below still expires dead work.
+      if (silentForMs >= 30_000 && now - lastWaitNoticeAt >= 30_000) {
+        const activeEntry = [...toolStates.entries()].find(([, state]) => state === 'running' || state === 'pending');
+        const activePart = activeEntry ? toolParts.get(activeEntry[0]) : undefined;
+        const activeState = activePart?.state && typeof activePart.state === 'object' ? activePart.state as Record<string, any> : {};
+        const activeInput = activeState.input && typeof activeState.input === 'object'
+          ? activeState.input as Record<string, any>
+          : activePart?.input && typeof activePart.input === 'object'
+            ? activePart.input as Record<string, any>
+            : {};
+        const activeTitle = String(activeState.title || activeInput.description || activePart?.tool || '').trim().slice(0, 120);
+        bridgeEvent(ws, 'activity.progress', {
+          sourceType: 'agent.wait',
+          text: activeTool
+            ? `Still working · ${activeTitle || 'current tool has not produced new output yet'}`
+            : 'Still working · waiting for the model to produce the next result',
+          silentForMs,
+          doesNotCountAsProgress: true,
+        }, taskId, runId);
+        lastWaitNoticeAt = now;
+      }
+
       const progressLimitMs = activeTool ? toolSilenceMs : madeProgress ? silenceMs : firstProgressMs;
-      if (Date.now() - lastProgressAt > progressLimitMs) {
+      if (silentForMs > progressLimitMs) {
         throw new Error(
           activeTool
             ? 'OpenCode tool stopped making observable progress before completion.'
@@ -1052,6 +1080,67 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
     return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
+
+    // A dev-server shell wrapper can time out even though the child server is
+    // already healthy (for example npm/nohup process-group quirks). Runtime
+    // port truth is stronger evidence than the wrapper exit in that case.
+    const previewHints = new Set<number>();
+    let previewToolSeen = false;
+    for (const [id, part] of toolParts) {
+      if (isOpenCodeTodoToolName(part.tool)) continue;
+      const state = part.state && typeof part.state === 'object' ? part.state as Record<string, any> : {};
+      const input = state.input && typeof state.input === 'object'
+        ? state.input as Record<string, any>
+        : part.input && typeof part.input === 'object'
+          ? part.input as Record<string, any>
+          : {};
+      const toolName = String(part.tool || 'tool');
+      const commandCandidate = input.command ?? input.cmd ?? input.script ?? input.shell;
+      const pathCandidate = input.filePath ?? input.path ?? input.file ?? input.filename;
+      const command = typeof commandCandidate === 'string'
+        ? commandCandidate
+        : /bash|shell|exec|terminal/i.test(toolName) && state.title
+          ? String(state.title)
+          : '';
+      const filePath = typeof pathCandidate === 'string' ? pathCandidate : '';
+      if (toolSemanticType(toolName, command, filePath) !== 'preview') continue;
+      previewToolSeen = true;
+      const observable = `${command}\n${toolOutputs.get(id) || ''}\n${String(state.title || '')}`;
+      for (const pattern of [/localhost:(\d{2,5})/ig, /127\.0\.0\.1:(\d{2,5})/ig, /(?:port|PORT)[^\d]{0,12}(\d{2,5})/g]) {
+        for (const match of observable.matchAll(pattern)) {
+          const port = Number(match[1]);
+          if (port > 1024 && port < 65536) previewHints.add(port);
+        }
+      }
+    }
+
+    if (previewToolSeen) {
+      const discovered = await ports().catch(() => []);
+      const matching = previewHints.size
+        ? discovered.filter((item) => previewHints.has(Number(item.port)))
+        : discovered.length === 1 ? discovered : [];
+      if (matching.length) {
+        const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }).catch(() => ({ body: [] })) as { body?: Array<Record<string, unknown>> };
+        const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws).catch(() => ({} as Record<string, unknown>));
+        await opencodeRequest({ path: `/session/${engineSessionId}/abort`, method: 'POST', timeoutMs: 5_000 }).catch(() => undefined);
+        const portText = matching.map((item) => Number(item.port)).filter(Number.isFinite).join(', ');
+        bridgeEvent(ws, 'activity.progress', {
+          sourceType: 'preview.recovered',
+          text: `Development server is healthy on port${matching.length === 1 ? '' : 's'} ${portText} · ignoring the stale shell timeout`,
+          ports: matching,
+          recovered: true,
+        }, taskId, runId);
+        return {
+          engineSessionId,
+          responseText: visible.trim() || `Development server is running on port${matching.length === 1 ? '' : 's'} ${portText}.`,
+          diff: diff.body || [],
+          head: status.head,
+          previewPorts: matching,
+          recoveredFromToolFailure: true,
+        };
+      }
+    }
+
     const sideEffectingToolSeen = [...toolParts.values()].some((part) => !isOpenCodeTodoToolName(part.tool));
     Object.assign(failure, { retrySafe: !visible && !sideEffectingToolSeen, engineSessionId });
     // A timed-out run must not remain alive in OpenCode after Orlynx fails it.
