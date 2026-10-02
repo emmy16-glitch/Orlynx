@@ -322,6 +322,59 @@ describe('conversation projection: stream/telemetry hygiene', () => {
   });
 });
 
+describe('conversation projection: visible Investigation dialogue', () => {
+  it('keeps Orlynx and model diagnostic turns in one ordered Investigation object', () => {
+    fresh();
+    const rows = toActivities([
+      evt('activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 1,
+        investigationId: 'investigation-1',
+        investigationStage: 'investigating',
+        investigationQuestion: 'Why is Preview missing while localhost is healthy?',
+        investigationFailureClass: 'infrastructure',
+        investigationEvidence: ['localhost:5273 returned HTTP 200'],
+        text: 'Orlynx → Model: Why is Preview missing while localhost is healthy?',
+      }),
+      evt('activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 1,
+        text: 'Model → Orlynx: check the provider forwarding layer before touching Vite.',
+      }),
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Investigation');
+    assert.equal(rows[0].evidence?.investigationId, 'investigation-1');
+    assert.equal(rows[0].evidence?.investigationStage, 'investigating');
+    assert.equal(rows[0].evidence?.investigationQuestion, 'Why is Preview missing while localhost is healthy?');
+    assert.deepEqual(rows[0].evidence?.investigationEvidence, ['localhost:5273 returned HTTP 200']);
+    assert.deepEqual(rows[0].evidence?.dialogue?.map((line) => line.side), ['orlynx', 'model']);
+  });
+
+  it('inserts the user message locally before message admission can stream a run', () => {
+    const src = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+    const start = src.indexOf('async function sendMessage(overrideText');
+    const end = src.indexOf('const [retrying', start);
+    const block = src.slice(start, end);
+    const optimisticAt = block.indexOf('optimisticMessagesRef.current.set(clientId, optimisticMessage)');
+    const fetchAt = block.indexOf('fetch(`/v1/sessions/${session.id}/messages`');
+    assert.ok(optimisticAt >= 0, 'optimistic user message is missing');
+    assert.ok(fetchAt > optimisticAt, 'network admission can start before the local user message exists');
+    assert.match(block, /id: clientId/);
+    assert.match(block, /deliveryState: 'sending'/);
+    assert.match(block, /message.id === clientId/);
+  });
+
+  it('keeps live file changes visible before the durable change set is finalized', () => {
+    const src = fs.readFileSync(path.join(webSrc, 'ProductionApp.tsx'), 'utf8');
+    assert.match(src, /const liveChangeFiles = useMemo/);
+    assert.match(src, /activity\.category !== 'changes'/);
+    assert.match(src, /<Badge tone="wait">Live<\/Badge>/);
+    assert.match(src, /Streaming from the active run/);
+    assert.match(src, /final verified diff will remain here/);
+  });
+});
+
 describe('conversation projection: results and failures', () => {
   it('TEST 16: test counts surface passed/failed', () => {
     fresh();
