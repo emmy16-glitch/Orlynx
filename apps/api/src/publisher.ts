@@ -471,6 +471,34 @@ export async function publishVerifiedChangeSet(input: {
   }
 }
 
+export interface DeploymentTarget {
+  changeId: string;
+  commitSha: string;
+  source: 'merged' | 'direct-publish';
+}
+
+// Bare "deploy it" is a verification continuation when the newest change is
+// already published. Never re-push an old workspace commit after a PR merge.
+// If the newest publication is still an open PR, require the merge first so
+// deployment cannot silently bypass the review path.
+export async function deploymentTargetForSession(sessionId: string): Promise<DeploymentTarget | null> {
+  const changes = [...await controlPlaneRepository().listChangeSets(sessionId)].reverse();
+  const latest = changes[0];
+  if (!latest) return null;
+
+  if (latest.pullRequestUrl && !latest.mergeCommitSha) {
+    const label = latest.pullRequestNumber ? ` #${latest.pullRequestNumber}` : '';
+    throw new Error(`Pull request${label} is published but not merged yet. Merge it before verifying production deployment.`);
+  }
+  if (latest.mergeCommitSha) {
+    return { changeId: latest.id, commitSha: latest.mergeCommitSha, source: 'merged' };
+  }
+  if (latest.pushedAt && latest.commitSha) {
+    return { changeId: latest.id, commitSha: latest.commitSha, source: 'direct-publish' };
+  }
+  return null;
+}
+
 export interface MergeResult {
   changeId: string;
   pullRequestNumber: number;
