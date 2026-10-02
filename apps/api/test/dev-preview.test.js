@@ -104,9 +104,12 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /loopbackOnly/);
     assert.match(bridge, /codespacePortsPending\) return codespacePortsPending/);
 
-    assert.doesNotMatch(provider, /codespacesPreviewUrl/);
-    assert.match(provider, /never fabricate one from the Codespace name/);
-    assert.match(provider, /return undefined/);
+    assert.match(provider, /'codespace', 'ports'/);
+    assert.match(provider, /--json', 'sourcePort,browseUrl,visibility'/);
+    assert.match(provider, /GH_TOKEN: token/);
+    assert.match(provider, /forwarded\?\.browseUrl/);
+    assert.ok(provider.includes('return `https://${codespace}-${port}.app.github.dev/`;'));
+    assert.match(provider, /Keep GitHub credentials server-side/);
 
     assert.match(gateway, /type: 'preview\.state'/);
     assert.match(gateway, /localReady: true/);
@@ -135,6 +138,21 @@ describe('dev-server intent and port truth (§§193, 205, 207, 214-215)', () => 
     assert.match(bridge, /const GH_BIN = process\.env\.ORLYNX_GH_BIN \|\| 'gh'/);
     assert.match(bridge, /spawnSync\(GH_BIN, \['--version'\]/);
     assert.match(bridge, /spawn\(GH_BIN, \['codespace', 'ports', 'forward'/);
+  });
+
+  it('control plane can resolve an authenticated Codespaces preview URL without workspace GitHub credentials', () => {
+    const provider = fs.readFileSync(path.join(root, 'apps/api/src/github-codespaces.ts'), 'utf8');
+    const workspaceProvider = fs.readFileSync(path.join(root, 'apps/api/src/workspace-provider.ts'), 'utf8');
+    const routes = fs.readFileSync(path.join(root, 'apps/api/src/routes.ts'), 'utf8');
+    const gateway = fs.readFileSync(path.join(root, 'apps/api/src/bridge-gateway.ts'), 'utf8');
+    assert.match(provider, /async previewUrl\(workspace: WorkspaceRecord, port: number\)/);
+    assert.match(provider, /workspace\.codespaceName/);
+    assert.match(provider, /\^\[a-z0-9-\]\+\$/);
+    assert.match(provider, /port <= 1024 \|\| port > 65535/);
+    assert.match(provider, /githubUserAccessToken\(workspace\.userId\)/);
+    assert.match(workspaceProvider, /Promise<string \| undefined>/);
+    assert.match(routes, /await provider\.previewUrl\?\.\(workspace, Number\(item\.port\)\)/);
+    assert.match(gateway, /await previewProvider\?\.previewUrl\?\.\(previewWorkspace, preview\.port\)/);
   });
 
   it('prefers likely frontends but never invents a URL', () => {

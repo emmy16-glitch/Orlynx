@@ -547,7 +547,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const previewWorkspace = await repository.getWorkspace(claims.workspaceId).catch(() => null);
           const previewProvider = previewWorkspace ? providerForWorkspace(previewWorkspace) : null;
           for (const preview of localPreviewPorts) {
-            const url = preview.url || (previewWorkspace ? previewProvider?.previewUrl?.(previewWorkspace, preview.port) : undefined);
+            const url = preview.url || (previewWorkspace ? await previewProvider?.previewUrl?.(previewWorkspace, preview.port) : undefined);
             if (!url) {
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
