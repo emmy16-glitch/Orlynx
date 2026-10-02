@@ -420,8 +420,9 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
       // Terminal output is already represented by the tool/PTY surfaces. It
       // must not become another generic "Thought" row.
       if (event.sourceType === 'pty.output') return;
-      // Harness/model dialogue is durable diagnostic evidence, not user-facing chat.
-      if (event.sourceType === 'agent.dialogue.orlynx' || event.sourceType === 'agent.dialogue.model' || event.sourceType === 'agent.reflection') return;
+      // Private reflection telemetry stays hidden. Safe Orlynx ↔ Model
+      // diagnostic dialogue is handled below as one visible Investigation row.
+      if (event.sourceType === 'agent.reflection') return;
       const prior = state.activities[event.activityId];
 
       if (event.sourceType === 'agent.plan') {
