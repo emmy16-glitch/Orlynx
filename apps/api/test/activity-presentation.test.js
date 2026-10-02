@@ -169,6 +169,35 @@ describe('canonical agent activity presentation', () => {
     assert.doesNotMatch(renderer, /JSON\.stringify\(.*evidence\.items/);
   });
 
+  it('renders one ordered Investigation with structured public model diagnostics', () => {
+    const rows = toActivities([
+      event(1, 'activity.progress', {
+        sourceType: 'agent.dialogue.orlynx',
+        reflectionId: 1,
+        investigationId: 'inv-preview',
+        investigationStage: 'investigating',
+        investigationQuestion: 'Why is Preview missing while localhost is healthy?',
+        text: 'Orlynx → Model: Why is Preview missing while localhost is healthy?',
+      }),
+      event(2, 'activity.progress', {
+        sourceType: 'agent.dialogue.model',
+        reflectionId: 1,
+        investigationId: 'inv-preview',
+        investigationStage: 'testing',
+        text: 'Model → Orlynx: Hypothesis: forwarding is missing | Evidence: localhost returns 200 but no browse URL exists | Next check: inspect the provider port inventory',
+      }),
+    ]);
+    const parts = toThreadParts(rows);
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0].title, 'Investigation');
+    const renderer = fs.readFileSync(new URL('../../web/src/ui/tool-parts.tsx', import.meta.url), 'utf8');
+    const harness = fs.readFileSync(new URL('../src/harness.ts', import.meta.url), 'utf8');
+    assert.match(renderer, /function publicDiagnostic/);
+    assert.match(renderer, />Hypothesis</);
+    assert.match(renderer, />Model evidence</);
+    assert.match(renderer, />Next check</);
+    assert.match(harness, /Hypothesis: <best current explanation> \| Evidence:/);
+  });
   it('high-frequency progress and workspace status stay bounded by semantic identity', () => {
     const progress = Array.from({ length: 650 }, (_, i) => event(i + 1, 'activity.progress', { text: `step ${i}` }, 'run-long'));
     const rows = toActivities([...progress].reverse().concat(progress[0]));
