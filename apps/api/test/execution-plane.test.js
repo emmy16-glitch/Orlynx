@@ -82,6 +82,9 @@ test('verified Build work must be challenged by the currently selected model bef
   assert.match(gateway, /delegationRole: 'reviewer'/);
   assert.match(gateway, /!String\(payload\.delegationRole \|\| ''\)/);
   assert.match(gateway, /runIndependentReviewer/);
+  assert.match(gateway, /runIndependentArchitect/);
+  assert.match(gateway, /role: 'architect'/);
+  assert.match(gateway, /Independent architect findings from a separate read-only agent session/);
   assert.match(gateway, /type: 'subagent\.started'/);
   assert.match(gateway, /type: 'subagent\.finished'/);
   assert.match(gateway, /Independent reviewer findings from a separate read-only agent session/);
