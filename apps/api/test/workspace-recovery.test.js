@@ -65,6 +65,20 @@ test('Codespace bootstrap uses a CPU-compatible native OpenCode binary and smoke
   }
 });
 
+test('workspace bootstrap carries control-plane provider credentials across every compute path', () => {
+  const apiWorker = fs.readFileSync(new URL('../src/runtime-worker.ts', import.meta.url), 'utf8');
+  const e2b = fs.readFileSync(new URL('../src/e2b-provider.ts', import.meta.url), 'utf8');
+  const remoteWorker = fs.readFileSync(new URL('../../../runtime-worker/src/index.ts', import.meta.url), 'utf8');
+
+  assert.match(apiWorker, /ORLYNX_OPENROUTER_API_KEY=\$\{openRouterApiKey\}/);
+  assert.match(apiWorker, /openCodePassword: values\.openCodePassword, openCodeApiKey, openRouterApiKey/);
+  assert.match(e2b, /process\.env\.ORLYNX_OPENROUTER_API_KEY \|\| ''/);
+  assert.match(e2b, /buildWorkspaceBootstrapScript\(workspace, values, publicBridgeUrl\(\), openCodeApiKey, openRouterApiKey\)/);
+  assert.match(remoteWorker, /openCodeApiKey\?: string; openRouterApiKey\?: string/);
+  assert.match(remoteWorker, /OPENCODE_API_KEY=\$\{body\.openCodeApiKey\}/);
+  assert.match(remoteWorker, /ORLYNX_OPENROUTER_API_KEY=\$\{body\.openRouterApiKey\}/);
+});
+
 test('workspace OpenCode readiness ignores one transient health miss before declaring unavailable', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(bridge, /OPENCODE_HEALTH_FAILURE_THRESHOLD = 2/);
