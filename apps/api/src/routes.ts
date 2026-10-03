@@ -1879,10 +1879,13 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
   try {
+    const before = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status', {}, 30_000);
+    if (before.branch !== s.branch) throw new Error('Workspace branch changed before E2E isolation.');
+    const liveE2EBaseBranch = s.checkpoint?.liveE2EBaseBranch || s.branch;
     const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
     if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
     if (String(result.branch) !== requestedBranch) throw new Error('Workspace returned a different E2E branch.');
-    s.checkpoint = { ...(s.checkpoint || { decisions: [], filesTouched: [], pendingIssues: [] }), branch: requestedBranch, liveE2EBranch: requestedBranch, updatedAt: new Date().toISOString() };
+    s.checkpoint = { ...(s.checkpoint || { decisions: [], filesTouched: [], pendingIssues: [] }), branch: requestedBranch, liveE2EBranch: requestedBranch, liveE2EBaseBranch, updatedAt: new Date().toISOString() };
     s.branch = String(result.branch);
     store.save();
     s.updatedAt = new Date().toISOString();

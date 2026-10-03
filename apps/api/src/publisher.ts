@@ -75,6 +75,21 @@ function safeBranch(value: string): string {
   return cleaned;
 }
 
+function publicationBaseBranch(
+  session: { branch: string; checkpoint?: { liveE2EBaseBranch?: string } },
+  targetBranch: string,
+  targetRemoteSha: string | null,
+  strategy: PublicationStrategy,
+  e2ePublication: boolean,
+): string {
+  if (e2ePublication && !targetRemoteSha) {
+    const recorded = session.checkpoint?.liveE2EBaseBranch;
+    if (!recorded) throw new Error('Live E2E remote base branch is unavailable.');
+    return safeBranch(recorded);
+  }
+  return strategy === 'direct' && targetRemoteSha ? targetBranch : safeBranch(session.branch);
+}
+
 function publicationCandidate(
   changes: ChangeSet[],
   tasks: TaskRecord[],
@@ -426,7 +441,7 @@ export async function publishVerifiedChangeSet(input: {
   // Direct publication to an existing explicit target (for example "push to
   // main") is based on that target's live GitHub head, not stale conversation
   // branch metadata. New target branches still fork from the session branch.
-  const baseBranch = strategy === 'direct' && targetRemoteSha ? targetBranch : sessionBaseBranch;
+  const baseBranch = publicationBaseBranch(session, targetBranch, targetRemoteSha, strategy, e2ePublication);
   const baseRemoteSha = baseBranch === targetBranch
     ? targetRemoteSha
     : await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
@@ -460,10 +475,10 @@ export async function publishVerifiedChangeSet(input: {
     change.pushedAt ||= new Date().toISOString();
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
-    const workspaceReconciled = targetBranch === baseBranch
+    const workspaceReconciled = targetBranch === sessionBaseBranch
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
-          branch: baseBranch,
+          branch: targetBranch,
           expectedHead: change.currentHead || change.baseSha,
           publishedHead: change.commitSha,
           files: change.files.map((file) => file.path),
@@ -563,10 +578,10 @@ export async function publishVerifiedChangeSet(input: {
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
 
-    const workspaceReconciled = targetBranch === baseBranch
+    const workspaceReconciled = targetBranch === sessionBaseBranch
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
-          branch: baseBranch,
+          branch: targetBranch,
           expectedHead: workspaceHeadBeforePublish,
           publishedHead: commitSha,
           files: change.files.map((file) => file.path),
@@ -718,4 +733,4 @@ export async function mergePublishedPullRequest(input: {
   };
 }
 
-export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate, remoteCommitExists };
+export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate, remoteCommitExists, publicationBaseBranch };
