@@ -220,9 +220,27 @@ export async function runWorkspaceOrchestratorLoop(): Promise<never> {
   let recoverySweep: Promise<void> | undefined;
   console.log(`[orchestrator] started worker=${id}`);
 
+  let consecutivePollFailures = 0;
   for (;;) {
-    const sessions = await runWorkspaceOrchestratorOnce(id);
-    for (const sessionId of sessions) await promoteSession(sessionId);
+    let sessions: string[] = [];
+    try {
+      sessions = await runWorkspaceOrchestratorOnce(id);
+      consecutivePollFailures = 0;
+      for (const sessionId of sessions) await promoteSession(sessionId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || 'unknown error');
+      // Neon/Postgres can have brief network or proxy interruptions. A durable
+      // worker must not terminate (and take the API down with it) for those.
+      // Non-transient programming/schema failures still escape so deployment
+      // health catches real defects instead of spinning forever.
+      const transient = /fetch failed|ECONN|ENET|EAI_AGAIN|socket|connection|network|timeout|timed out|HTTP 50[234]|temporarily unavailable/i.test(detail);
+      if (!transient) throw error;
+      consecutivePollFailures += 1;
+      const retryMs = Math.min(30_000, Math.max(idleMs, 500 * 2 ** Math.min(consecutivePollFailures, 6)));
+      console.warn(`[orchestrator] transient storage poll failure; retrying in ${retryMs}ms: ${detail}`);
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+      continue;
+    }
 
     const now = Date.now();
     if (now >= nextRecoverySweepAt && !recoverySweep) {
