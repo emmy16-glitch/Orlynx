@@ -33,6 +33,9 @@ function lessonScore(lesson: AgentLessonRecord, query: Set<string>, projectId?: 
     ...words(lesson.title),
     ...words(lesson.problem),
     ...words(lesson.lesson),
+    ...words(lesson.subject || ''),
+    ...words(lesson.predicate || ''),
+    ...words(lesson.object || ''),
   ]);
   let overlap = 0;
   for (const token of query) if (searchable.has(token)) overlap += 1;
@@ -78,7 +81,12 @@ export function agentMemoryInstruction(lessons: AgentLessonRecord[]): string {
   if (!lessons.length) return '';
   return [
     'Verified Orlynx experience from earlier successful work follows. Treat it as evidence, not as an infallible rule; compare it with the current environment before applying it.',
-    ...lessons.map((lesson, index) => `${index + 1}. [id ${lesson.id}; ${lesson.kind || 'general'}; ${lesson.scope}; confidence ${Math.round((lesson.confidence ?? 0.65) * 100)}%] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}`),
+    ...lessons.map((lesson, index) => {
+      const edge = lesson.subject && lesson.predicate && lesson.object
+        ? ` | knowledge: ${clean(lesson.subject, 120)} → ${clean(lesson.predicate, 100)} → ${clean(lesson.object, 260)}`
+        : '';
+      return `${index + 1}. [id ${lesson.id}; ${lesson.kind || 'general'}; ${lesson.scope}; confidence ${Math.round((lesson.confidence ?? 0.65) * 100)}%] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}${edge}`;
+    }),
     'If current observations conflict with a remembered lesson, trust fresh verified evidence and update the diagnosis rather than forcing the old lesson.',
     'When fresh observable evidence clearly disproves one of these retrieved lessons, include [MEMORY_CONTRADICTION:<lesson-id>] in the public Model → Orlynx diagnostic so Orlynx can lower that lesson confidence. Do not mark a lesson contradicted merely because it was irrelevant.',
   ].join('\n');
@@ -104,6 +112,18 @@ function lessonKindFor(text: string): AgentLessonKind {
   if (/\b(dependency|package|version|compatib|upgrade|downgrade|module)\b/.test(value)) return 'dependency_compatibility';
   if (/\b(convention|pattern|folder|directory|route|naming|architecture)\b/.test(value)) return 'repository_convention';
   return 'general';
+}
+
+function knowledgePredicate(kind: AgentLessonKind): string {
+  return ({
+    repository_convention: 'uses_convention',
+    build_test_recipe: 'verifies_with',
+    infrastructure_recovery: 'recovers_via',
+    preview_pattern: 'previews_via',
+    dependency_compatibility: 'depends_on_compatibility',
+    deployment_procedure: 'deploys_via',
+    general: 'verified_fact',
+  } satisfies Record<AgentLessonKind, string>)[kind];
 }
 
 export function memoryContradictionIds(finalText: string, allowedIds: string[] = []): string[] {
@@ -209,6 +229,9 @@ export async function rememberVerifiedLesson(input: {
     sessionId: input.session.id,
     scope: 'repository',
     kind,
+    subject: `repository:${input.session.project}`,
+    predicate: knowledgePredicate(kind),
+    object: resolution,
     title,
     problem: clean(input.task.prompt, 1_000),
     lesson: resolution,
@@ -231,6 +254,9 @@ export async function rememberVerifiedLesson(input: {
       id: lessonId(input.session.userId, 'environment', undefined, kind, target, tags),
       projectId: undefined,
       scope: 'environment',
+      subject: `environment:${input.provider || 'orlynx'}`,
+      predicate: knowledgePredicate(kind),
+      object: resolution,
       title: clean(`Environment lesson: ${title}`, 220),
     };
     await persistLesson(environmentLesson);
