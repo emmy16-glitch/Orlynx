@@ -58,7 +58,7 @@ test('controlled publish recovers clean committed local work and never gives the
   assert.match(publisher, /recoverCommittedPublicationCandidate/);
   assert.match(publisher, /recoveredCommittedWork: true/);
   assert.match(publisher, /change\.currentHead \|\| change\.baseSha/);
-  assert.match(publisher, /strategy === 'direct' && targetRemoteSha \? targetBranch : sessionBaseBranch/);
+  assert.match(publisher, /publicationBaseBranch\(session, targetBranch, targetRemoteSha, strategy, e2ePublication\)/);
   assert.match(publisher, /expectedHead: workspaceHeadBeforePublish/);
 
   assert.match(gateway, /publicationRecoverable/);
@@ -135,4 +135,25 @@ test('publish candidate waits for tests but permits downstream deployment verifi
   assert.throws(() => publicationInternals.publicationCandidate([change],[task],'run'), /No verified change set/);
   task.harness.verification.missing = ['publish','deployment'];
   assert.throws(() => publicationInternals.publicationCandidate([change],[task],'other-run'), /No verified change set/);
+});
+
+
+test('publication reconstructs local-only commit receipts and preserves GitHub auth failures', async () => {
+  const sha = 'a'.repeat(40);
+  const exists = publicationInternals.remoteCommitExists;
+  assert.equal(await exists(1, 'owner/repo', sha, async () => ({ sha })), true);
+  for (const status of [404, 422]) {
+    assert.equal(await exists(1, 'owner/repo', sha, async () => { throw Object.assign(new Error('missing'), { status }); }), false);
+  }
+  await assert.rejects(() => exists(1, 'owner/repo', sha, async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); }), /forbidden/);
+  assert.equal(await exists(1, 'owner/repo', 'invalid', async () => { throw new Error('must not request'); }), false);
+});
+
+
+test('first isolated E2E publication reads its original remote base but targets only the isolated branch', () => {
+  const branch = 'orlynx-e2e/1760000000000';
+  const session = { branch, checkpoint: { liveE2EBaseBranch: 'main' } };
+  assert.equal(publicationInternals.publicationBaseBranch(session, branch, null, 'direct', true), 'main');
+  assert.equal(publicationInternals.publicationBaseBranch(session, branch, 'a'.repeat(40), 'direct', true), branch);
+  assert.throws(() => publicationInternals.publicationBaseBranch({ branch }, branch, null, 'direct', true), /base branch/);
 });

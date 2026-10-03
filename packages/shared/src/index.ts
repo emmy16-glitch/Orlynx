@@ -21,6 +21,9 @@ export interface ProjectSession {
 }
 
 export interface SessionCheckpoint {
+  /** Immutable production E2E isolation marker, persisted with the session. */
+  liveE2EBranch?: string;
+  liveE2EBaseBranch?: string;
   goal?: string;
   decisions: string[];
   branch: string;

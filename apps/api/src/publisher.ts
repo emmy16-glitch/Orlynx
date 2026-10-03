@@ -1,3 +1,4 @@
+import { assertLiveE2EPublication, liveE2ESessionBranch } from './e2e-safety.js';
 import { prePublicationMissing } from './publication-language.js';
 import crypto from 'node:crypto';
 import type { ChangeSet, ChangedFile, TaskRecord } from '@orlynx/shared';
@@ -72,6 +73,21 @@ function safeBranch(value: string): string {
     .slice(0, 100);
   if (!cleaned || cleaned.includes('..') || cleaned.startsWith('-')) throw new Error('Publication branch is invalid.');
   return cleaned;
+}
+
+function publicationBaseBranch(
+  session: { branch: string; checkpoint?: { liveE2EBaseBranch?: string } },
+  targetBranch: string,
+  targetRemoteSha: string | null,
+  strategy: PublicationStrategy,
+  e2ePublication: boolean,
+): string {
+  if (e2ePublication && !targetRemoteSha) {
+    const recorded = session.checkpoint?.liveE2EBaseBranch;
+    if (!recorded) throw new Error('Live E2E remote base branch is unavailable.');
+    return safeBranch(recorded);
+  }
+  return strategy === 'direct' && targetRemoteSha ? targetBranch : safeBranch(session.branch);
 }
 
 function publicationCandidate(
@@ -246,6 +262,23 @@ async function refSha(installationId: number, project: string, branch: string): 
   }
 }
 
+async function remoteCommitExists(
+  installationId: number,
+  project: string,
+  sha: string,
+  request = githubInstallationApiRequest,
+): Promise<boolean> {
+  if (!/^[a-f0-9]{40}$/i.test(sha)) return false;
+  try {
+    await request(installationId, `/repos/${project}/git/commits/${encodeURIComponent(sha)}`);
+    return true;
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 404 || status === 422) return false;
+    throw error;
+  }
+}
+
 async function createCommitFromFiles(input: {
   installationId: number;
   project: string;
@@ -395,11 +428,20 @@ export async function publishVerifiedChangeSet(input: {
   const sessionBaseBranch = safeBranch(session.branch);
   const targetBranch = safeBranch(input.targetBranch || sessionBaseBranch);
   const strategy = input.strategy || 'direct';
+  assertLiveE2EPublication(session, targetBranch, strategy);
+  let e2ePublication = Boolean(liveE2ESessionBranch(session));
+  const verifyE2EWorkspaceBranch = async () => {
+    const status = await bridgeRequest<GitStatus>(input.workspaceId, 'git.status', {}, 30_000);
+    const actualBranch = String(status.branch || '');
+    e2ePublication ||= actualBranch.startsWith('orlynx-e2e/');
+    assertLiveE2EPublication(session, targetBranch, strategy, actualBranch);
+  };
+  await verifyE2EWorkspaceBranch();
   const targetRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
   // Direct publication to an existing explicit target (for example "push to
   // main") is based on that target's live GitHub head, not stale conversation
   // branch metadata. New target branches still fork from the session branch.
-  const baseBranch = strategy === 'direct' && targetRemoteSha ? targetBranch : sessionBaseBranch;
+  const baseBranch = publicationBaseBranch(session, targetBranch, targetRemoteSha, strategy, e2ePublication);
   const baseRemoteSha = baseBranch === targetBranch
     ? targetRemoteSha
     : await refSha(githubRepo.installationId, githubRepo.fullName, baseBranch);
@@ -433,10 +475,10 @@ export async function publishVerifiedChangeSet(input: {
     change.pushedAt ||= new Date().toISOString();
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
-    const workspaceReconciled = targetBranch === baseBranch
+    const workspaceReconciled = targetBranch === sessionBaseBranch
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
-          branch: baseBranch,
+          branch: targetBranch,
           expectedHead: change.currentHead || change.baseSha,
           publishedHead: change.commitSha,
           files: change.files.map((file) => file.path),
@@ -486,7 +528,11 @@ export async function publishVerifiedChangeSet(input: {
   }
 
   const workspaceHeadBeforePublish = change.currentHead || change.baseSha;
-  const commitSha = change.commitSha || await createCommitFromFiles({
+  // A ChangeSet commit receipt can refer to a local-only bridge commit.
+  // GitHub cannot update a ref to that object until verified bytes are uploaded.
+  const reusableCommitSha = change.commitSha && await remoteCommitExists(githubRepo.installationId, githubRepo.fullName, change.commitSha)
+    ? change.commitSha : undefined;
+  const commitSha = reusableCommitSha || await createCommitFromFiles({
     installationId: githubRepo.installationId,
     project: githubRepo.fullName,
     parentSha: change.baseSha,
@@ -525,16 +571,17 @@ export async function publishVerifiedChangeSet(input: {
   }
 
   try {
+    await verifyE2EWorkspaceBranch();
     if (!existingTargetSha) await createBranch(githubRepo.installationId, githubRepo.fullName, targetBranch, commitSha);
     else await updateBranch(githubRepo.installationId, githubRepo.fullName, targetBranch, commitSha);
     change.pushedAt = new Date().toISOString();
     change.pushedBranch = targetBranch;
     await repository.putChangeSet(change);
 
-    const workspaceReconciled = targetBranch === baseBranch
+    const workspaceReconciled = targetBranch === sessionBaseBranch
       ? await reconcilePublishedWorkspace({
           workspaceId: input.workspaceId,
-          branch: baseBranch,
+          branch: targetBranch,
           expectedHead: workspaceHeadBeforePublish,
           publishedHead: commitSha,
           files: change.files.map((file) => file.path),
@@ -547,6 +594,7 @@ export async function publishVerifiedChangeSet(input: {
     return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
+    if (e2ePublication) throw error;
     if (targetBranch !== baseBranch || (statusCode !== 403 && statusCode !== 422)) throw error;
 
     // Direct default-branch updates may be prohibited by rulesets/branch
@@ -685,4 +733,4 @@ export async function mergePublishedPullRequest(input: {
   };
 }
 
-export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate };
+export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate, remoteCommitExists, publicationBaseBranch };

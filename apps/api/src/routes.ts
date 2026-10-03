@@ -32,7 +32,7 @@ import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
 import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
 import { rememberVerifiedProductionOutcome } from './agent-memory.js';
 import { portableAdapterConfig } from './portable-agent-config.js';
-import { assertLiveE2ESession, liveE2EEnabled, liveE2ERepositoryAllowed, validLiveE2EBranch } from './e2e-safety.js';
+import { assertLiveE2EPublication, liveE2ESessionBranch, assertLiveE2ESession, liveE2EEnabled, liveE2ERepositoryAllowed, validLiveE2EBranch } from './e2e-safety.js';
 
 export const router = Router();
 
@@ -201,6 +201,7 @@ async function publishCommittedWorkspaceHead(req: Request, session: any, strateg
 
 async function persistRecoveredBranch(session: any, branch: string): Promise<void> {
   if (!branch || session.branch === branch) return;
+  if (liveE2ESessionBranch(session)) throw new Error('Live E2E session branch cannot be recovered to another branch.');
   const previous = session.branch;
   session.branch = branch;
   session.updatedAt = new Date().toISOString();
@@ -1878,9 +1879,15 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
   try {
+    const before = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status', {}, 30_000);
+    if (before.branch !== s.branch) throw new Error('Workspace branch changed before E2E isolation.');
+    const liveE2EBaseBranch = s.checkpoint?.liveE2EBaseBranch || s.branch;
     const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
     if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
+    if (String(result.branch) !== requestedBranch) throw new Error('Workspace returned a different E2E branch.');
+    s.checkpoint = { ...(s.checkpoint || { decisions: [], filesTouched: [], pendingIssues: [] }), branch: requestedBranch, liveE2EBranch: requestedBranch, liveE2EBaseBranch, updatedAt: new Date().toISOString() };
     s.branch = String(result.branch);
+    store.save();
     s.updatedAt = new Date().toISOString();
     const durable = await controlPlaneRepository().getSession(s.id);
     if (durable) await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
@@ -1971,12 +1978,22 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
       const explicitStrategy = String(req.body?.strategy || '');
       const originalBranch = session.branch;
-      if (validLiveE2EBranch(originalBranch)) {
-        try { assertLiveE2ESession(session.project, originalBranch); }
+      if (liveE2ESessionBranch(session)) {
+        try { assertLiveE2EPublication(session, originalBranch, explicitStrategy || 'direct'); }
         catch (error) { return res.status(403).json({ error: error instanceof Error ? error.message : 'Live E2E publishing is blocked.' }); }
       }
       if (['main', 'master'].includes(originalBranch) && !['direct', 'pull-request'].includes(explicitStrategy)) {
         return res.status(400).json({ error: 'Choose whether to push directly to the default branch or create a pull request.' });
+      }
+      if (liveE2ESessionBranch(session)) {
+        const published = await publishVerifiedChangeSet({ sessionId: sid, workspaceId: workspace.id, strategy: 'direct', targetBranch: originalBranch, runId: c.runId, commitMessage: String(req.body?.message || 'test: verify Orlynx execution plane') });
+        const persisted = await controlPlaneRepository().getChangeSet(published.changeId);
+        if (!persisted) throw new Error('Published ChangeSet receipt is unavailable.');
+        store.db.changes[sid] = currentChanges(sid).map(item => item.id === persisted.id ? persisted : item);
+        store.save();
+        await emitPersisted(sid, 'receipt.created', { changeId: persisted.id, commitSha: published.head, branch: published.branch, pushedAt: persisted.pushedAt });
+        await recordAudit(req, sid, 'git.push', 'completed', { changeId: persisted.id, branch: published.branch, commitSha: published.head });
+        return res.json(persisted);
       }
       const publishAsPullRequest = explicitStrategy === 'pull-request';
       let publishedBranch = originalBranch;
