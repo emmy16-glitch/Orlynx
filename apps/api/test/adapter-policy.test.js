@@ -64,3 +64,17 @@ test('all adapters consume the same observable checkpoint without native session
   const input={taskId:'t',runId:'r',sessionId:'s',modelId:'openai/test',text:'objective',handoff:{taskId:'t',objective:'checkpoint'},executionGeneration:4,workspaceBaseHead:'a'.repeat(40)};
   for(const id of ['opencode','mini-swe','cline']){const adapter=getAgentAdapter(id);const payload=adapter.workspacePayload(input);assert.equal(payload.taskId,'t');assert.equal(payload.handoff,input.handoff);assert.equal(payload.workspaceBaseHead,input.workspaceBaseHead);if(id!=='opencode')assert.equal(adapter.getOrCreateSession,undefined);}
 });
+
+test('provider model namespaces preserve the user-selected free model',async()=>{
+  const {setSessionPrefs}=await import('../src/ai.ts');
+  const id='openrouter/poolside/laguna-s-2.1:free';assert.equal(setSessionPrefs('adapter-policy-model',{modelId:id}).modelId,id);
+  assert.throws(()=>setSessionPrefs('adapter-policy-model',{modelId:'openrouter/../bad key'}),/Unknown model/);
+});
+
+
+test('workspace-only agents and provider-specific models never fall back into the OpenCode direct lane',async()=>{
+  const {adapterExecutionPlane}=await import('../src/agent-runtime.ts');
+  assert.equal(adapterExecutionPlane(getAgentAdapter('opencode'),'opencode/free','direct'),'direct');
+  assert.equal(adapterExecutionPlane(getAgentAdapter('opencode'),'openrouter/poolside/laguna-s-2.1:free','direct'),'workspace');
+  for(const id of ['cline','mini-swe'])assert.equal(adapterExecutionPlane(getAgentAdapter(id),'openai/test','direct'),'workspace');
+});

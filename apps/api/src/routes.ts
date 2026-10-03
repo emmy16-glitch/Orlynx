@@ -1,3 +1,4 @@
+import { adapterExecutionPlane } from './agent-runtime.js';
 import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
 import multer from 'multer';
@@ -428,7 +429,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   const selectedAdapterId = preference === 'auto' && durableStorageConfigured() ? await resolvePreferredAdapter(preference, s.id, selectedModel || '', effectiveMode, prefs.permission) : preference === 'auto' ? 'opencode' : preference;
   const selectedAdapter = getAgentAdapter(selectedAdapterId);
   let plane = executionPlaneFor(String(text), effectiveMode);
-  if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
+  plane = adapterExecutionPlane(selectedAdapter, selectedModel || '', plane);
   const publishIntent = effectiveMode === 'build' ? publishIntentFor(String(text), s.branch) : null;
   const publishTargetBranch = publishIntent ? publishTargetBranchFor(String(text), s.branch) : null;
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
@@ -946,7 +947,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     // above. For a new turn, a merely warm workspace must not make ordinary
     // conversation pay cloud/runtime recovery latency.
     let workspace = await repository.getWorkspaceBySession(s.id);
-    plane = executionPlaneForSession(String(text), effectiveMode, workspace);
+    plane = adapterExecutionPlane(selectedAdapter, selectedModel || '', executionPlaneForSession(String(text), effectiveMode, workspace));
 
     if (plane === 'workspace') {
       // The compute broker is authoritative for new/recovering Build work, but
@@ -2167,7 +2168,7 @@ router.put('/ai/session/:id', async (req, res) => {
       if (durableStorageConfigured()) {
         const active = (await controlPlaneRepository().listTasks(s.id)).find(task => ['running','queued','waiting_input'].includes(task.state));
         if (active && (active.adapterId || 'opencode') !== selected.id) {
-          switchedTask = await switchTaskAdapter(active.id, selected.id);
+          switchedTask = await switchTaskAdapter(active.id, selected.id, 'manual-switch', req.body?.modelId ? String(req.body.modelId) : currentPrefs.modelId);
           void promoteNextQueuedRun(s.id).catch(() => {});
         }
       }

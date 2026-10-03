@@ -233,7 +233,7 @@ export interface HarnessCheckpoint {
   agentHandoff?: AgentHandoffCheckpoint;
   adapterAttempts?: string[];
   executionGeneration?: number;
-  adapterTransition?: { target: string; reason: AgentHandoffCheckpoint['reasonForHandoff']; startedAt: string };
+  adapterTransition?: { target: string; modelId?: string; reason: AgentHandoffCheckpoint['reasonForHandoff']; startedAt: string };
   /** Durable OpenHands/LangGraph-style Investigation state. */
   investigation?: HarnessInvestigation;
   /** Model-guided reason/act/observe cycles after an unexpected result. */

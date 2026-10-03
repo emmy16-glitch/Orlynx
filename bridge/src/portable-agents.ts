@@ -19,6 +19,13 @@ const clineRuns = new Map<string, { agent: Agent; stopped: Promise<void> }>();
 const runFile=promisify(execFile);
 let pythonProbe: {binary: string; at: number} | undefined;
 
+export function adapterProviderKey(id: string): string | undefined {
+  const prefix=id==='cline' ? 'ORLYNX_CLINE' : 'ORLYNX_MINI_SWE';
+  const own=process.env[`${prefix}_API_KEY`];
+  const base=process.env[`${prefix}_API_BASE`] || '';
+  return own || (/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base) ? process.env.ORLYNX_OPENROUTER_API_KEY : undefined);
+}
+
 async function providerAuthentication(base: string, key?: string): Promise<boolean> {
   if (!/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base)) return true;
   if (!key) return false;
@@ -28,21 +35,22 @@ async function providerAuthentication(base: string, key?: string): Promise<boole
 const python = () => process.env.ORLYNX_MINI_SWE_PYTHON || (fs.existsSync('/opt/orlynx/mini-swe/bin/python') ? '/opt/orlynx/mini-swe/bin/python' : fileURLToPath(new URL('../../.runner-mini-swe/bin/python', import.meta.url)));
 export function portableTaskIds(): string[] { return [...processes.keys(), ...clineRuns.keys()]; }
 
-export async function portableHealth(id: string, root: string): Promise<{ state: string; reason?: string; supportedModels?: string[]; runtimeVersion?: string }> {
+export async function portableHealth(id: string, root: string): Promise<{ state: string; reason?: string; supportedModels?: string[]; freeModels?: string[]; runtimeVersion?: string }> {
   if (!fs.existsSync(root)) return { state: 'unavailable', reason: 'workspace_unavailable' };
   if (id === 'cline') {
     if (!process.env.ORLYNX_CLINE_API_BASE || !process.env.ORLYNX_CLINE_MODEL) return { state: 'not_installed', reason: 'Configure a compatible local/free Cline model endpoint.' };
-    if (!await providerAuthentication(process.env.ORLYNX_CLINE_API_BASE,process.env.ORLYNX_CLINE_API_KEY)) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for Cline.'};
+    if (!await providerAuthentication(process.env.ORLYNX_CLINE_API_BASE,adapterProviderKey('cline'))) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for Cline.'};
     try {
-      const response = await fetch(`${process.env.ORLYNX_CLINE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: process.env.ORLYNX_CLINE_API_KEY ? { Authorization: `Bearer ${process.env.ORLYNX_CLINE_API_KEY}` } : {} });
-      const body = await response.json() as { data?: Array<{ id: string }> };
+      const response = await fetch(`${process.env.ORLYNX_CLINE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('cline') ? { Authorization: `Bearer ${adapterProviderKey('cline')}` } : {} });
+      const body = await response.json() as { data?: Array<{ id: string; pricing?: {prompt?: string; completion?: string} }> };
       const wanted = process.env.ORLYNX_CLINE_MODEL.split('/').slice(1).join('/');
       if (!response.ok || !body.data?.some(model => model.id === wanted)) return { state: 'unavailable', reason: 'Configured Cline model is unavailable.' };
-      return { state: clineRuns.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_CLINE_MODEL!], runtimeVersion: '@cline/agents@0.0.90' };
+      const free = body.data.find(model=>model.id===wanted)?.pricing;
+      return { freeModels: free?.prompt==='0' && free.completion==='0' ? [process.env.ORLYNX_CLINE_MODEL!] : [], state: clineRuns.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_CLINE_MODEL!], runtimeVersion: '@cline/agents@0.0.90' };
     } catch { return { state: 'unavailable', reason: 'Cline model endpoint is unreachable.' }; }
   }
   if (!process.env.ORLYNX_MINI_SWE_API_BASE || !process.env.ORLYNX_MINI_SWE_MODEL) return { state: 'not_installed', reason: 'Configure a local/free compatible model endpoint and install mini-SWE 2.4.6.' };
-  if (!await providerAuthentication(process.env.ORLYNX_MINI_SWE_API_BASE,process.env.ORLYNX_MINI_SWE_API_KEY)) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for mini-SWE.'};
+  if (!await providerAuthentication(process.env.ORLYNX_MINI_SWE_API_BASE,adapterProviderKey('mini-swe'))) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for mini-SWE.'};
   if (!pythonProbe || pythonProbe.binary!==python() || Date.now()-pythonProbe.at>300000) {
     try {
       await runFile(python(), ['-c', 'import minisweagent; from minisweagent.agents.default import DefaultAgent; from minisweagent.models.litellm_model import LitellmModel; assert minisweagent.__version__ == "2.4.6"'], { timeout: 10000 });
@@ -50,12 +58,13 @@ export async function portableHealth(id: string, root: string): Promise<{ state:
     } catch { return {state:'not_installed',reason:'mini-SWE 2.4.6 import probe failed.'}; }
   }
   try {
-    const response = await fetch(`${process.env.ORLYNX_MINI_SWE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: process.env.ORLYNX_MINI_SWE_API_KEY ? { Authorization: `Bearer ${process.env.ORLYNX_MINI_SWE_API_KEY}` } : {} });
+    const response = await fetch(`${process.env.ORLYNX_MINI_SWE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('mini-swe') ? { Authorization: `Bearer ${adapterProviderKey('mini-swe')}` } : {} });
     if (!response.ok) return { state: 'unavailable', reason: `Model endpoint returned ${response.status}.` };
-    const body = await response.json() as { data?: Array<{ id: string }> };
+    const body = await response.json() as { data?: Array<{ id: string; pricing?: {prompt?: string; completion?: string} }> };
     const wanted = process.env.ORLYNX_MINI_SWE_MODEL.split('/').slice(1).join('/');
     if (!body.data?.some(m => m.id === wanted)) return { state: 'unavailable', reason: 'Selected mini-SWE model is not available at the configured endpoint.' };
-    return { state: processes.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_MINI_SWE_MODEL!], runtimeVersion: 'mini-swe-agent@2.4.6' };
+    const free = body.data.find(model=>model.id===wanted)?.pricing;
+    return { freeModels: free?.prompt==='0' && free.completion==='0' ? [process.env.ORLYNX_MINI_SWE_MODEL!] : [], state: processes.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_MINI_SWE_MODEL!], runtimeVersion: 'mini-swe-agent@2.4.6' };
   } catch { return { state: 'unavailable', reason: 'Configured model endpoint is unreachable.' }; }
 }
 
@@ -81,7 +90,7 @@ export async function runPortable(id: string, payload: Record<string, unknown>, 
   // Only the model runner receives optional provider configuration; command
   // execution happens in the Bridge with its separate stripped environment.
   env.ORLYNX_MINI_SWE_API_BASE = process.env.ORLYNX_MINI_SWE_API_BASE;
-  env.ORLYNX_MINI_SWE_API_KEY = process.env.ORLYNX_MINI_SWE_API_KEY;
+  env.ORLYNX_MINI_SWE_API_KEY = adapterProviderKey('mini-swe');
   const child = spawn(python(), ['-u', fileURLToPath(new URL('./mini-swe-runtime.py', import.meta.url))], { cwd: host.root, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let finish!: () => void;
   const stopped = new Promise<void>(resolve => { finish = resolve; });
@@ -146,7 +155,7 @@ export async function runCline(payload: Record<string, unknown>, host: PortableH
   const readOnly = payload.mode !== 'build' || payload.permission !== 'full';
   let lastProgress = Date.now();
   const agent = new Agent({ providerId: 'openai-compatible', modelId: model.split('/').slice(1).join('/'),
-    baseUrl: process.env.ORLYNX_CLINE_API_BASE, apiKey: process.env.ORLYNX_CLINE_API_KEY || 'local-endpoint',
+    baseUrl: process.env.ORLYNX_CLINE_API_BASE, apiKey: adapterProviderKey('cline') || 'local-endpoint',
     maxIterations: 60, toolPolicies: { '*': { autoApprove: true } },
     systemPrompt: String(payload.system || '') + '\nYou execute an Orlynx task. Use the command tool to inspect files, edit when allowed, and verify. Never push or publish. Return concise observable results, never private reasoning.',
     tools: [{ name: 'command', description: 'Run a repository command through Orlynx permission and publication policy.',

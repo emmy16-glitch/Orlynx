@@ -17,14 +17,14 @@ where effect reconciliation cannot establish that takeover is safe.
 | Manual switching | PARTIAL | Active workspace and stopped direct task identity tested; cold direct task needs prepared compatible workspace; browser production flow unverified |
 | Automatic failover | PARTIAL | Compatible routing, bounded attempts, failure result and health/ghost-task paths; full production mid-write OpenCode→portable execution not verified |
 | Adapter health/circuit registry | COMPLETE | Durable application probes, exact configured models, authentication, freshness, failure counts/cooldown; tests reject stale/circuit-open routes |
-| Capability-aware routing / Auto | COMPLETE | Read/write/tool requirements and explicit same-model compatibility; manual errors instead of aliases |
+| Capability-aware routing / Auto | COMPLETE | Read/write/tool requirements and same-model preference and verified free-model fallback; manual errors instead of aliases |
 | Workspace/task locking | PARTIAL | DB lease/generation, task-write fences and bridge singleton; orphan OpenCode tool process proof after restart incomplete |
 | Durable event replay | COMPLETE | Existing canonical sequence/idempotency replay preserved; handoff/failure/provenance persisted |
 | Crash/restart recovery | PARTIAL | Restart gate, transition-intent replay, late-write fencing and observation reclaim tested; uncertain restarted writer blocks |
 | Crash-at-every-stage integration suite | PARTIAL | Real transition/crash/reconciliation boundaries tested; exhaustive fault injection through reviewer/publication/deployment remains missing |
 | Architect / executor / reviewer roles | COMPLETE | Isolated contexts through selected compatible adapters; reviewer challenges remain evidence, not authority |
 | Knowledge graph | PARTIAL | Scoped verified relation/package edges with provenance, retrieval revalidation; no complete code-symbol graph |
-| Knowledge invalidation | PARTIAL | Changed/deleted referenced files stale lessons/edges; transitive dependency invalidation not implemented |
+| Knowledge invalidation | PARTIAL | Changed/deleted references and dependency edges propagate staleness; code-symbol extraction remains limited |
 | Verified memory | COMPLETE | Verification-gated lessons, confidence/contradiction/decay foundations preserved; task/commit/file provenance and idempotent learning added |
 | Production outcome learning | COMPLETE | Existing exact-commit deployment gate retained; durable observation learning replay idempotent by source commit |
 | Postdeploy observation | PARTIAL | Optional bounded HTTPS health + Render identity window; application-log and runtime-metric feedback not implemented |

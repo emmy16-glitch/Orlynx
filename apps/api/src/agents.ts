@@ -1,7 +1,7 @@
 import { requireSessionAdapter } from './agent-runtime.js';
 import { adapterEligible } from './adapter-policy.js';
 import { repositoryKnowledgeInstruction } from './knowledge-graph.js';
-import { switchTaskAdapter, resolvePreferredAdapter, failoverCandidate } from './agent-handoff.js';
+import { switchTaskAdapter, resolvePreferredAdapter, failoverRoute } from './agent-handoff.js';
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
 import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
@@ -479,10 +479,10 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
         const exactTaskHeartbeats = Array.isArray(workspace.capabilities) && workspace.capabilities.includes('task-heartbeat-v2');
         if (exactTaskHeartbeats && bridgeFresh && taskAge >= activeTaskHeartbeatStaleMs) {
           if (task.harness && Number(task.harness.runtimeRecoveryAttempts || 0) < 2 && !['verifying','finalizing','completed'].includes(task.harness.phase)) {
-            const candidate = await failoverCandidate(task);
-            const target = candidate || task.adapterId || 'opencode';
+            const candidate = await failoverRoute(task);
+            const target = candidate?.adapterId || task.adapterId || 'opencode';
             try {
-              const resumed = await switchTaskAdapter(task.id, target, 'recovery');
+              const resumed = await switchTaskAdapter(task.id, target, 'recovery', candidate?.modelId);
               resumed.harness!.runtimeRecoveryAttempts = Number(task.harness.runtimeRecoveryAttempts || 0) + 1;
               await repository.putTask(resumed);
               changed = true;
@@ -1218,9 +1218,9 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     const adapterId = nextQueued.adapterId || 'opencode';
     const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);
     if (adapterState && ['unavailable','failed'].includes(adapterState.state) || adapterState?.circuitOpenUntil && !adapterEligible(adapterState)) {
-      const candidate = await failoverCandidate(nextQueued);
+      const candidate = await failoverRoute(nextQueued);
       if (candidate) {
-        try { await switchTaskAdapter(nextQueued.id, candidate, 'health-degradation'); return promoteNextQueuedRunInner(sessionId); }
+        try { await switchTaskAdapter(nextQueued.id, candidate.adapterId, 'health-degradation', candidate.modelId); return promoteNextQueuedRunInner(sessionId); }
         catch { if ((await repository.getTask(nextQueued.id))?.harness?.adapterTransition) return null; }
       }
       if (adapterState?.circuitOpenUntil && Date.parse(adapterState.circuitOpenUntil) > Date.now()) {
@@ -1536,6 +1536,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       (store.db.runs[sessionId] ||= []).push(run);
       await repository.putTask(task);
     } else {
+      run.engine = adapter.id;
       run.plane = task.plane || 'workspace';
       run.provider = provider;
       run.model = modelId;

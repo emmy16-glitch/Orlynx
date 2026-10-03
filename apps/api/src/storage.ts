@@ -30,6 +30,7 @@ export interface WorkspaceAgentAdapterRecord {
   reason?: string;
   updatedAt: string;
   supportedModels?: string[];
+  freeModels?: string[];
   runtimeVersion?: string;
   consecutiveFailures?: number;
   circuitOpenUntil?: string;
@@ -138,7 +139,7 @@ export interface ProductionObservationRecord {
 
 export interface ControlPlaneRepository {
   initialize(): Promise<void>;
-  beginAdapterTransition(taskId: string, target: string, reason: string, generation: number): Promise<boolean>;
+  beginAdapterTransition(taskId: string, target: string, reason: string, generation: number, modelId?: string): Promise<boolean>;
   touchTaskHeartbeat(taskId: string, generation: number, updatedAt: string): Promise<void>;
   enqueueProductionObservation(record: ProductionObservationRecord): Promise<void>;
   claimProductionObservations(owner: string): Promise<ProductionObservationRecord[]>;
@@ -817,9 +818,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     return rows(await this.sql`UPDATE workspace_jobs SET state='failed',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id} AND state='leased' AND worker_id=${lease.workerId || null} AND attempt=${lease.attempt} AND lease_until>now() RETURNING id`).length > 0;
   }
-  async beginAdapterTransition(taskId: string, target: string, reason: string, generation: number) {
+  async beginAdapterTransition(taskId: string, target: string, reason: string, generation: number, modelId?: string) {
     await this.initialize();
-    return rows(await this.sql.query(`UPDATE tasks SET harness_state=harness_state || jsonb_build_object('executionGeneration',$4::bigint,'adapterTransition',jsonb_build_object('target',$2::text,'reason',$3::text,'startedAt',now()::text)),updated_at=now() WHERE id=$1 AND state IN ('running','queued','waiting_input') AND COALESCE(harness_state->>'phase','') NOT IN ('verifying','finalizing','completed') AND COALESCE((harness_state->>'executionGeneration')::bigint,0)<=$4 RETURNING id`, [taskId,target,reason,generation])).length>0;
+    return rows(await this.sql.query(`UPDATE tasks SET harness_state=harness_state || jsonb_build_object('executionGeneration',$4::bigint,'adapterTransition',jsonb_build_object('target',$2::text,'reason',$3::text,'startedAt',now()::text,'modelId',$5::text)),updated_at=now() WHERE id=$1 AND state IN ('running','queued','waiting_input') AND COALESCE(harness_state->>'phase','') NOT IN ('verifying','finalizing','completed') AND COALESCE((harness_state->>'executionGeneration')::bigint,0)<=$4 RETURNING id`, [taskId,target,reason,generation,modelId || null])).length>0;
   }
   async touchTaskHeartbeat(taskId: string, generation: number, updatedAt: string) {
     await this.initialize();
@@ -851,7 +852,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putWorkspaceAgentAdapter(v: WorkspaceAgentAdapterRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at,health) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt},${JSON.stringify({supportedModels:v.supportedModels,runtimeVersion:v.runtimeVersion})}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at,health=workspace_agent_adapters.health || EXCLUDED.health`;
+    await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at,health) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt},${JSON.stringify({supportedModels:v.supportedModels,freeModels:v.freeModels,runtimeVersion:v.runtimeVersion})}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at,health=workspace_agent_adapters.health || EXCLUDED.health`;
   }
   async getWorkspaceAgentAdapter(workspaceId: string, adapterId: string) {
     await this.initialize();
@@ -1035,7 +1036,10 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async invalidateKnowledgeEdges(userId: string, projectId: string, files: string[], commitSha: string) {
     await this.initialize();
     if (!files.length) return;
-    await this.sql.query(`UPDATE knowledge_edges SET record=record || jsonb_build_object('status','stale','confidence',0.35,'staleReason','Referenced files changed at ' || $4::text),updated_at=now() WHERE user_id=$1 AND project_id=$2 AND record->>'status'='active' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(record->'referencedFiles') f WHERE f=ANY($3::text[]))`, [userId,projectId,files,commitSha]);
+    await this.sql.query(`WITH RECURSIVE impacted(subject) AS (
+      SELECT record->>'subject' FROM knowledge_edges WHERE user_id=$1 AND project_id=$2 AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(record->'referencedFiles') f WHERE f=ANY($3::text[]))
+      UNION SELECT edge.record->>'subject' FROM knowledge_edges edge JOIN impacted i ON edge.record->>'object'=i.subject WHERE edge.user_id=$1 AND edge.project_id=$2 AND edge.record->>'predicate' IN ('depends_on','uses','calls')
+    ) UPDATE knowledge_edges SET record=record || jsonb_build_object('status','stale','confidence',0.35,'staleReason','Referenced files or dependency changed at ' || $4::text),updated_at=now() WHERE user_id=$1 AND project_id=$2 AND record->>'status'='active' AND record->>'subject' IN (SELECT subject FROM impacted)`, [userId,projectId,files,commitSha]);
   }
   async putAgentLesson(v: AgentLessonRecord) {
     await this.initialize();

@@ -440,6 +440,7 @@ async function startOpenCode(useAccountKey = Boolean(OPENCODE_API_KEY), forceRes
     env: cleanEnvironment({
       OPENCODE_SERVER_PASSWORD: OPENCODE_PASSWORD,
       ...(useAccountKey && OPENCODE_API_KEY ? { OPENCODE_API_KEY } : {}),
+      ...(process.env.ORLYNX_OPENROUTER_API_KEY ? {OPENROUTER_API_KEY:process.env.ORLYNX_OPENROUTER_API_KEY} : {}),
     }),
   });
   child.unref();

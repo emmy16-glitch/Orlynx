@@ -13,7 +13,7 @@ generation and an observable handoff. Native session methods are optional;
 portable adapters do not fabricate OpenCode sessions. Capability requirements,
 health freshness, configured model availability and durable circuit state filter
 routing. `Auto` is a controller preference, not a fourth runtime. Model selection
-is independent of adapter selection. No automatic paid-model substitution occurs.
+is independent of adapter selection. Same-model routes take priority. A fallback to a different model requires catalog evidence of zero prompt/completion pricing and is announced in the stream. Set `ORLYNX_ALLOW_FREE_MODEL_FAILOVER=0` for strict model pinning. No automatic paid-model substitution occurs.
 An unavailable or incompatible manual choice returns a clear error.
 
 `adapter-policy.ts` classifies provider, runtime, stream, workspace, command,
@@ -55,7 +55,7 @@ trajectory is persisted as durable task state. Cline uses pinned
 OpenCode or require VS Code. No VS Code extension state is transferred.
 Both use tool-compatible configurable endpoints. Local unauthenticated endpoints
 are supported; authenticated endpoints receive optional adapter-specific keys.
-The configured model must match the selected model exactly. OpenRouter readiness
+The adapter executes the explicitly selected or visibly routed model; it never substitutes a model privately. OpenRouter readiness
 requires a valid key plus the requested model in the model catalog. Listing a
 public catalog alone does not establish readiness.
 
@@ -63,7 +63,7 @@ Set `ORLYNX_MINI_SWE_API_BASE`, `ORLYNX_MINI_SWE_MODEL`,
 `ORLYNX_MINI_SWE_API_KEY`, and corresponding `ORLYNX_CLINE_*` variables on runner
 services. For OpenRouter the Orlynx model ID includes the provider prefix:
 `openrouter/poolside/laguna-s-2.1:free`. The SDK receives the model part.
-Never put provider keys in a prompt, repository or public checkpoint.
+One `ORLYNX_OPENROUTER_API_KEY` can serve both adapters and the workspace OpenCode provider; adapter-specific keys override it. The shared key is used only for OpenRouter endpoints. Never put provider keys in a prompt, repository or public checkpoint.
 Native runners can install Python runtime asynchronously at startup with
 `ORLYNX_INSTALL_MINI_SWE=1`; failure leaves OpenCode available. Docker includes
 mini-SWE by default (`INSTALL_MINI_SWE=false` opts out). Native Python 3/venv
@@ -102,7 +102,7 @@ rechecks referenced files against the supporting commit and current dirty state;
 changed/deleted references stale the affected facts and repository lessons.
 Unknown provenance is excluded. Existing confidence decay, contradictions and
 supersession remain in effect. This is a bounded project knowledge system, not a
-complete symbol graph or transitive dependency invalidator.
+complete symbol graph. Dependency relationships (`depends_on`, `uses`, `calls`) propagate staleness through scoped edges.
 
 Postdeploy observation is optional (`ORLYNX_POST_DEPLOY_HEALTH_URLS`, window
 30 seconds–10 minutes). A durable claimed observation samples HTTPS health and

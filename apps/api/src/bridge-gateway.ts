@@ -1,7 +1,7 @@
 import { getAgentAdapter } from './agent-runtime.js';
 import { adapterEligible, compatibleCapabilities } from './adapter-policy.js';
 import { currentExecution, classifyAgentFailure } from './adapter-policy.js';
-import { failoverCandidate, switchTaskAdapter } from './agent-handoff.js';
+import { failoverRoute, switchTaskAdapter } from './agent-handoff.js';
 import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
@@ -178,7 +178,7 @@ async function runIndependentArchitect(input: Omit<Parameters<typeof runIndepend
   return runIndependentDelegate({ ...input, role: 'architect' });
 }
 
-type BridgeAdapterState = { state?: string; reason?: string; supportedModels?: string[]; runtimeVersion?: string };
+type BridgeAdapterState = { state?: string; reason?: string; supportedModels?: string[]; freeModels?: string[]; runtimeVersion?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
 type VerificationArtifact = {
@@ -204,7 +204,7 @@ async function persistAdapterState(claims: BridgeClaims, adapterId: string, adap
     ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
     : 'unavailable';
   const now = new Date().toISOString();
-  await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, supportedModels: adapter.supportedModels, runtimeVersion: adapter.runtimeVersion, updatedAt: now });
+  await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, supportedModels: adapter.supportedModels, freeModels: adapter.freeModels, runtimeVersion: adapter.runtimeVersion, updatedAt: now });
   await persistLiveEvent({
     eventId: `evt_${uuid()}`,
     sessionId: claims.sessionId,
@@ -473,12 +473,15 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             console.warn(`[bridge] agent run failed session=${claims.sessionId} run=${runId} kind=${errorKind} freePublic=${freePublicModel}`);
 
             await repository.recordAdapterOutcome(claims.workspaceId, adapterId, false);
-            const failure = classifyAgentFailure(detail);
+            const classifiedFailure = classifyAgentFailure(detail);
+            const failure = freePublicModel && classifiedFailure.code === 'provider_auth'
+              ? {...classifiedFailure,code:'provider_unavailable' as const,retryable:true,adapterFailover:true,humanActionRequired:false}
+              : classifiedFailure;
             if (task && failure.adapterFailover && Number(task.harness?.adapterAttempts?.length || 0) < 3) {
-              const candidate = await failoverCandidate(task);
+              const candidate = await failoverRoute(task);
               if (candidate) {
                 try {
-                  await switchTaskAdapter(task.id, candidate, 'runtime-failure');
+                  await switchTaskAdapter(task.id, candidate.adapterId, 'runtime-failure', candidate.modelId);
                   void promoteNextQueuedRun(claims.sessionId).catch(() => {});
                   return;
                 } catch (switchError) {

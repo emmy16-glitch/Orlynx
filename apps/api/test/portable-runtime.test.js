@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {runPortable, portableHealth, cancelPortable} from '../../../bridge/src/portable-agents.ts';
+import {runPortable, portableHealth, cancelPortable, adapterProviderKey} from '../../../bridge/src/portable-agents.ts';
 const exec=promisify(execFile);
 
 // These tests run the real upstream loops with a deterministic model endpoint.
@@ -49,4 +49,12 @@ for (const adapter of ['cline','mini-swe']) test(`${adapter} actual runtime writ
   await assert.rejects(runPortable(adapter,{taskId:'cancel-task',modelId:'openai/test',text:'inspect',mode:'build',permission:'full'},cancellable),/cancel|abort/i);
   assert.equal(aborted,true);
 
+});
+
+
+test('one shared provider key is confined to configured OpenRouter endpoints',t=>{
+  const before={key:process.env.ORLYNX_OPENROUTER_API_KEY,base:process.env.ORLYNX_CLINE_API_BASE};
+  t.after(()=>{for(const [key,value] of [['ORLYNX_OPENROUTER_API_KEY',before.key],['ORLYNX_CLINE_API_BASE',before.base]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
+  process.env.ORLYNX_OPENROUTER_API_KEY='test-credential';process.env.ORLYNX_CLINE_API_BASE='https://openrouter.ai/api/v1';assert.equal(adapterProviderKey('cline'),'test-credential');
+  process.env.ORLYNX_CLINE_API_BASE='https://another-provider.invalid/v1';assert.equal(adapterProviderKey('cline'),undefined);
 });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { controlPlaneFixture } from './helpers/control-plane.js';
 import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
-import { switchTaskAdapter, failoverCandidate } from '../src/agent-handoff.ts';
+import { switchTaskAdapter, failoverCandidate, failoverRoute } from '../src/agent-handoff.ts';
 import { createHarnessCheckpoint } from '../src/harness.ts';
 import { registerBridgeSocket, authenticateBridgeSocket, unregisterBridgeSocket, publishLiveBridgeResult } from '../src/bridge-live.ts';
 import { verifiedKnowledgeEdge } from '../src/knowledge-graph.ts';
@@ -60,10 +60,13 @@ test('transition lease is exclusive, expiring, and stale holders cannot release 
 test('knowledge provenance invalidates only affected scoped facts and re-verification restores them',async t=>{
   const {repository,now}=await controlPlaneFixture(t);
   const edge=verifiedKnowledgeEdge({userId:'u',projectId:'p',subject:'auth-route',predicate:'implemented_by',object:'src/auth.ts',sourceTaskId:'t',commitSha:'a'.repeat(40),referencedFiles:['src/auth.ts'],evidenceRefs:['evt-test']},true);
+  const dependent=verifiedKnowledgeEdge({...edge,subject:'frontend',predicate:'calls',object:'auth-route',referencedFiles:['frontend/package.json']},true);
+  await repository.putKnowledgeEdge(dependent);
   await repository.putKnowledgeEdge(edge);assert.equal((await repository.listKnowledgeEdges('other','p')).length,0);
   await repository.invalidateKnowledgeEdges('u','p',['README.md'],'b'.repeat(40));assert.equal((await repository.listKnowledgeEdges('u','p'))[0].status,'active');
   await repository.invalidateKnowledgeEdges('u','p',['src/auth.ts'],'b'.repeat(40));assert.equal((await repository.listKnowledgeEdges('u','p'))[0].status,'stale');
-  await repository.putKnowledgeEdge({...edge,commitSha:'b'.repeat(40)});assert.equal((await repository.listKnowledgeEdges('u','p'))[0].status,'active');
+  assert.equal((await repository.listKnowledgeEdges('u','p')).find(item=>item.id===dependent.id).status,'stale');
+  await repository.putKnowledgeEdge({...edge,commitSha:'b'.repeat(40)});assert.equal((await repository.listKnowledgeEdges('u','p')).find(item=>item.id===edge.id).status,'active');
   assert.equal(verifiedKnowledgeEdge({...edge,commitSha:'wrong'},true),undefined);
   const lesson={id:'l',userId:'u',projectId:'p',scope:'repository',title:'auth',problem:'bug',lesson:'verified',evidence:['test'],tags:['auth'],successCount:1,confidence:.7,repositoryCommit:'a'.repeat(40),sourceTaskId:'t',referencedFiles:['src/auth.ts'],createdAt:now,updatedAt:now};
   await repository.putAgentLesson(lesson);assert.equal((await repository.listAgentLessons('u','p'))[0].repositoryCommit,'a'.repeat(40));
@@ -92,4 +95,16 @@ test('an uncertain cancellation blocks with task and workspace intact',async t=>
 test('a stopped direct response switches into the existing workspace without replacing task identity',async t=>{
   const {repository}=await switchFixture(t);const task=await repository.getTask('t');task.plane='direct';task.workspaceId='direct';await repository.putTask(task);
   const switched=await switchTaskAdapter('t','cline');assert.equal(switched.id,'t');assert.equal(switched.runId,'run-t');assert.equal(switched.plane,'workspace');assert.equal(switched.workspaceId,'ws');assert.equal(switched.harness.investigation.id,'inv');
+});
+
+
+test('failover preserves task identity while visibly routing only to a catalog-proven free model',async t=>{
+  const {repository}=await switchFixture(t);const task=await repository.getTask('t');task.modelId='opencode/free';await repository.putTask(task);
+  const free='openrouter/poolside/laguna-s-2.1:free';
+  await repository.putWorkspaceAgentAdapter({workspaceId:'ws',adapterId:'mini-swe',state:'ready',supportedModels:[free],freeModels:[],updatedAt:new Date().toISOString()});
+  assert.equal(await failoverRoute(task),undefined);
+  await repository.putWorkspaceAgentAdapter({workspaceId:'ws',adapterId:'mini-swe',state:'ready',supportedModels:[free],freeModels:[free],updatedAt:new Date().toISOString()});
+  const route=await failoverRoute(task);assert.deepEqual(route,{adapterId:'mini-swe',modelId:free});
+  const continued=await switchTaskAdapter(task.id,route.adapterId,'runtime-failure',route.modelId);assert.equal(continued.id,'t');assert.equal(continued.modelId,free);assert.equal(continued.harness.investigation.id,'inv');
+  const events=await repository.listRunEvents('s','run-t',100);assert.ok(events.some(event=>event.payload.sourceType==='handoff.created' && event.payload.previousModel==='opencode/free' && event.payload.modelId===free));
 });

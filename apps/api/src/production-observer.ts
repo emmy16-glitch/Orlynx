@@ -20,7 +20,7 @@ export async function productionHealthSample(commitSha: string, urls: string[], 
       const response=await fetcher(url,{signal:AbortSignal.timeout(5000),redirect:'error'});
       const body=await response.json() as { commit?: string; buildCommit?: string; ready?: boolean; alive?: boolean; healthy?: boolean };
       const commitMatches=(body.commit || body.buildCommit)===commitSha;
-      const healthy=response.ok && body.ready!==false && body.healthy!==false && body.alive!==false;
+      const healthy=response.ok && (body.ready===true || body.healthy===true || body.alive===true) && body.ready!==false && body.healthy!==false && body.alive!==false;
       return {url,status:response.status,healthy,commitMatches};
     } catch { return {url,healthy:false,commitMatches:false}; }
   }));

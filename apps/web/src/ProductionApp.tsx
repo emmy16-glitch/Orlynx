@@ -2065,8 +2065,8 @@ function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, 
       <Button disabled={!apiKey.trim() || busy}>{busy ? 'Connecting…' : accountConnected ? 'Reconnect' : 'Connect'}</Button>
     </form>
     {!accountConnected && publicModelsAvailable && <p className="ai-switcher-empty">Free/public OpenCode models are available now. Connecting an account is optional.</p>}
-    {openCodeModels.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
-    {openCodeModels.length
+    {available.length > 6 && <label className="search-field ai-switcher-search"><Icon name="search" size={14} /><input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" /></label>}
+    {available.length
       ? <div className="ai-model-compact-list" role="listbox" aria-label="Model">
           {filtered.slice(0, 50).map((m: any) => <button key={m.id} type="button" role="option" aria-selected={m.id === selectedModelId} className={m.id === selectedModelId ? 'ai-model-compact selected' : 'ai-model-compact'} onClick={() => onSelectModel(m.id)}>
             <span><b>{m.displayName}</b><small>{m.family}{m.free ? ' · Free' : ''}</small></span>

@@ -70,6 +70,7 @@ export interface AgentAdapter {
   readonly version?: string;
   /** Explicit provider compatibility; never silently replace the selected model. */
   supportsModel?(modelId: string): boolean;
+  supportsDirectModel?(modelId: string): boolean;
   readonly capabilities: AgentAdapterCapabilities;
   readonly bridgeRunCommand: string;
   readonly bridgeCancelCommand: string;
@@ -99,6 +100,8 @@ function parseProviderModel(modelId: string): { providerID: string; modelID: str
 export const openCodeRuntime: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
+  version: '1.18.32',
+  supportsDirectModel: modelId => modelId.startsWith('opencode/'),
   capabilities: {
     repositoryRead: true, repositoryWrite: true, shell: true, tests: true, planning: true, review: true,
     workspace: true,
@@ -213,4 +216,9 @@ export async function workspaceModelCatalog(sessionId: string): Promise<import('
 export function requireSessionAdapter(adapter: AgentAdapter): asserts adapter is AgentAdapter & Required<Pick<AgentAdapter, 'getOrCreateSession' | 'messages' | 'sessionStatus' | 'diff' | 'prompt' | 'abort'>> {
   if (!adapter.getOrCreateSession || !adapter.messages || !adapter.sessionStatus || !adapter.diff || !adapter.prompt || !adapter.abort)
     throw new Error(`${adapter.displayName} requires durable workspace execution. Native session access is unsupported.`);
+}
+
+/** Direct chat availability is model-specific as well as adapter-specific. */
+export function adapterExecutionPlane(adapter: AgentAdapter, modelId: string, requested: 'direct' | 'workspace'): 'direct' | 'workspace' {
+  return requested==='direct' && adapter.capabilities.directChat && adapter.supportsDirectModel?.(modelId) ? 'direct' : 'workspace';
 }

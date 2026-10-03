@@ -22,31 +22,43 @@ export function handoffCheckpoint(task: TaskRecord, repository: AgentHandoffChec
     memoryRefs: harness?.lessonsApplied || [], previousAdapter: task.adapterId || 'opencode', reasonForHandoff: reason, createdAt: new Date().toISOString() };
 }
 
-export async function failoverCandidate(task: TaskRecord): Promise<string | undefined> {
-  const states = await controlPlaneRepository().listWorkspaceAgentAdapters(task.workspaceId);
-  const attempted = new Set([task.adapterId || 'opencode', ...(task.harness?.adapterAttempts || [])]);
-  return listAgentAdapters().find(adapter => !attempted.has(adapter.id)
-    && compatibleCapabilities(adapter.capabilities, taskCapabilities(task))
-    && (!adapter.supportsModel || adapter.supportsModel(task.modelId || ''))
-    && adapterEligible(states.find(s => s.adapterId === adapter.id))
-    && (!states.find(s => s.adapterId === adapter.id)?.supportedModels || states.find(s => s.adapterId === adapter.id)!.supportedModels!.includes(task.modelId || '')))?.id;
+export async function failoverRoute(task: TaskRecord): Promise<{adapterId: string; modelId: string} | undefined> {
+  const states=await controlPlaneRepository().listWorkspaceAgentAdapters(task.workspaceId);
+  const attempted=new Set([task.adapterId || 'opencode',...(task.harness?.adapterAttempts || [])]);
+  const candidates=listAgentAdapters().filter(adapter=>!attempted.has(adapter.id) && compatibleCapabilities(adapter.capabilities,taskCapabilities(task)) && adapterEligible(states.find(state=>state.adapterId===adapter.id)));
+  for (const adapter of candidates) {
+    const state=states.find(state=>state.adapterId===adapter.id)!;
+    const modelId=task.modelId || '';
+    if ((!adapter.supportsModel || adapter.supportsModel(modelId)) && (!state.supportedModels || state.supportedModels.includes(modelId))) return {adapterId:adapter.id,modelId};
+  }
+  // A catalog-proven zero-price model is an independent model-policy route.
+  // Never silently fall back to a paid or unknown-price model.
+  if (process.env.ORLYNX_ALLOW_FREE_MODEL_FAILOVER==='0') return undefined;
+  for (const adapter of candidates) {
+    const state=states.find(state=>state.adapterId===adapter.id)!;
+    const modelId=(state.freeModels || []).find(model=>state.supportedModels?.includes(model) && (!adapter.supportsModel || adapter.supportsModel(model)));
+    if (modelId) return {adapterId:adapter.id,modelId};
+  }
 }
+export async function failoverCandidate(task: TaskRecord): Promise<string | undefined> { return (await failoverRoute(task))?.adapterId; }
 
 /** Persist intent before stopping the old writer. Fail closed on uncertain effects.
  * No new task, run, workspace, branch, or Investigation is allocated here. */
-export async function switchTaskAdapter(taskId: string, target: string, reason: AgentHandoffCheckpoint['reasonForHandoff'] = 'manual-switch'): Promise<TaskRecord> {
+export async function switchTaskAdapter(taskId: string, target: string, reason: AgentHandoffCheckpoint['reasonForHandoff'] = 'manual-switch', selectedModel?: string): Promise<TaskRecord> {
   const repository = controlPlaneRepository();
   const initial = await repository.getTask(taskId);
   if (!initial) throw new Error('Task not found.');
   const adapter = getAgentAdapter(target);
+  const modelId = selectedModel || initial.harness?.adapterTransition?.modelId || initial.modelId || '';
+  if (!/^[\w.-]+\/[\w.:-]+(?:\/[\w.:-]+)*$/.test(modelId)) throw new Error('Unknown model. Choose a compatible model explicitly.');
   const direct = (initial.plane || 'workspace') === 'direct';
   const destination = direct ? await repository.getWorkspaceBySession(initial.sessionId) : undefined;
   if (direct && !destination) throw new Error('The selected adapter needs a prepared controlled workspace. Your direct task is preserved.');
   const workspaceId = destination?.id || initial.workspaceId;
   if (!compatibleCapabilities(adapter.capabilities, taskCapabilities(initial))) throw new Error(`${adapter.displayName} cannot satisfy this task's required capabilities.`);
-  if (adapter.supportsModel && !adapter.supportsModel(initial.modelId || '')) throw new Error(`${adapter.displayName} cannot use the selected model. Select a compatible model explicitly.`);
+  if (adapter.supportsModel && !adapter.supportsModel(modelId)) throw new Error(`${adapter.displayName} cannot use the selected model. Select a compatible model explicitly.`);
   const state = await repository.getWorkspaceAgentAdapter(workspaceId, target);
-  if (state?.supportedModels && !state.supportedModels.includes(initial.modelId || '')) throw new Error(`${adapter.displayName} does not have the selected model configured in this workspace.`);
+  if (state?.supportedModels && !state.supportedModels.includes(modelId)) throw new Error(`${adapter.displayName} does not have the selected model configured in this workspace.`);
   if (!adapterEligible(state || undefined)) throw new Error(`${adapter.displayName} is not healthy and configured in this workspace${state?.reason ? `: ${state.reason}` : '.'}`);
   const owner = randomUUID();
   const generation = await repository.claimAdapterTransition(workspaceId, owner);
@@ -68,9 +80,9 @@ export async function switchTaskAdapter(taskId: string, target: string, reason: 
     const session = await repository.getSession(task.sessionId);
     const workspace = await repository.getWorkspace(task.workspaceId);
     if (!session || !workspace || session.userId !== workspace.userId || session.projectId !== workspace.projectId || workspace.sessionId !== task.sessionId) throw new Error('Workspace ownership mismatch.');
-    task.harness.adapterTransition = { target, reason, startedAt: new Date().toISOString() };
+    task.harness.adapterTransition = { target, reason, modelId, startedAt: new Date().toISOString() };
     task.harness.executionGeneration = generation;
-    if (!await repository.beginAdapterTransition(task.id, target, reason, generation)) throw new Error('The task entered verification/publication before switching could begin.');
+    if (!await repository.beginAdapterTransition(task.id, target, reason, generation, modelId)) throw new Error('The task entered verification/publication before switching could begin.');
     await emitPersisted(task.sessionId, 'activity.progress', { taskId, sourceType: 'adapter.failover.started', text: `Saving the task and switching to ${adapter.displayName}…`, adapterId: target }, task.runId);
     const reconciled = await bridgeRequest(task.workspaceId, 'agent.reconcile', { taskId, executionGeneration: generation, workspaceBaseHead: task.harness.workspaceBaseHead }, 20_000) as Record<string, unknown>;
     if (reconciled.reconciled !== true) throw new Error('workspace_conflict: previous writer was not reconciled.');
@@ -87,11 +99,12 @@ export async function switchTaskAdapter(taskId: string, target: string, reason: 
     task.harness.modelReviewAttempts = 0;
     task.harness.phase = 'routing';
     task.harness.adapterTransition = undefined;
-    task.adapterId = target; task.state = 'queued'; task.updatedAt = new Date().toISOString();
+    const previousModel = task.modelId;
+    task.adapterId = target; task.modelId = modelId; task.state = 'queued'; task.updatedAt = new Date().toISOString();
     await repository.putTask(task);
     const saved = await repository.getTask(task.id);
     if (saved?.harness?.executionGeneration !== generation || saved.adapterId !== target) throw new Error('workspace_conflict: a newer transition superseded this handoff.');
-    await emitPersisted(task.sessionId, 'activity.progress', { taskId, sourceType: 'handoff.created', text: `Checkpoint saved. ${adapter.displayName} will continue the same task.`, adapterId: target, executionGeneration: generation, investigationId: task.harness.investigation?.id }, task.runId);
+    await emitPersisted(task.sessionId, 'activity.progress', { taskId, sourceType: 'handoff.created', text: `Checkpoint saved. ${adapter.displayName} will continue the same task${previousModel !== modelId ? ` using ${modelId}` : ''}.`, adapterId: target, modelId, previousModel, executionGeneration: generation, investigationId: task.harness.investigation?.id }, task.runId);
     return task;
   } catch (error) {
     const task = await repository.getTask(taskId);
