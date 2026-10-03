@@ -503,8 +503,17 @@ process.on('SIGINT', () => { killBridge(); server.close(() => process.exit(0)); 
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[direct-runner] listening on :${PORT} capacity=1 idleSeconds=${IDLE_SECONDS}`);
-  if (process.env.ORLYNX_INSTALL_MINI_SWE === '1') {
-    // Optional installation runs independently of the OpenCode startup path.
-    run('bash',[path.join(ROOT,'scripts','install-mini-swe-runtime.sh')],{timeoutMs:180000}).then(()=>console.log('[direct-runner] mini-SWE 2.4.6 import verified')).catch(()=>console.warn('[direct-runner] optional mini-SWE installation unavailable; OpenCode remains available'));
+  async function reportAdapterReadiness() {
+    try {
+      const { portableHealth } = await import('../bridge/dist/portable-agents.js');
+      const adapters = await Promise.all(['mini-swe', 'cline'].map(async adapterId => ({ adapterId, ...await portableHealth(adapterId, ROOT) })));
+      // Only bounded public health results are logged. Never log environment,
+      // credentials, provider replies, or private model diagnostics.
+      console.log(`[direct-runner] adapter-readiness ${JSON.stringify(adapters)}`);
+    } catch { console.warn('[direct-runner] adapter-readiness probe unavailable'); }
   }
+  if (process.env.ORLYNX_INSTALL_MINI_SWE === '1' && !fs.existsSync(path.join(ROOT, '.runner-mini-swe', 'bin', 'python'))) {
+    // Optional installation runs independently of the OpenCode startup path.
+    run('bash',[path.join(ROOT,'scripts','install-mini-swe-runtime.sh')],{timeoutMs:180000}).then(()=>console.log('[direct-runner] mini-SWE 2.4.6 import verified')).catch(()=>console.warn('[direct-runner] optional mini-SWE installation unavailable; OpenCode remains available')).finally(reportAdapterReadiness);
+  } else void reportAdapterReadiness();
 });

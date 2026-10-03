@@ -49,6 +49,13 @@ for (const adapter of ['cline','mini-swe']) test(`${adapter} actual runtime writ
   await assert.rejects(runPortable(adapter,{taskId:'cancel-task',modelId:'openai/test',text:'inspect',mode:'build',permission:'full'},cancellable),/cancel|abort/i);
   assert.equal(aborted,true);
 
+  if(adapter==='cline') {
+  requests=0;aborted=false;
+  const timed={...host,command:async(_command,_readOnly,signal)=>new Promise(resolve=>signal.addEventListener('abort',()=>{aborted=true;resolve({returncode:1,output:'interrupted'});},{once:true}))};
+  await assert.rejects(runPortable(adapter,{taskId:'timeout-task',modelId:'openai/test',text:'inspect',mode:'build',permission:'full',timeoutMs:1000},timed),/runtime_timeout/);
+  assert.equal(aborted,true,'deadline must stop outstanding tools and retain recoverable timeout classification');
+  }
+
 });
 
 
@@ -57,4 +64,21 @@ test('one shared provider key is confined to configured OpenRouter endpoints',t=
   t.after(()=>{for(const [key,value] of [['ORLYNX_OPENROUTER_API_KEY',before.key],['ORLYNX_CLINE_API_BASE',before.base]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
   process.env.ORLYNX_OPENROUTER_API_KEY='test-credential';process.env.ORLYNX_CLINE_API_BASE='https://openrouter.ai/api/v1';assert.equal(adapterProviderKey('cline'),'test-credential');
   process.env.ORLYNX_CLINE_API_BASE='https://another-provider.invalid/v1';assert.equal(adapterProviderKey('cline'),undefined);
+});
+
+test('OpenRouter health distinguishes missing/rejected credentials from temporary provider failures',async t=>{
+  const keys=['ORLYNX_CLINE_API_BASE','ORLYNX_CLINE_MODEL','ORLYNX_CLINE_API_KEY','ORLYNX_OPENROUTER_API_KEY'];
+  const before=Object.fromEntries(keys.map(key=>[key,process.env[key]]));const fetchBefore=globalThis.fetch;
+  t.after(()=>{globalThis.fetch=fetchBefore;for(const key of keys){if(before[key]===undefined)delete process.env[key];else process.env[key]=before[key];}});
+  process.env.ORLYNX_CLINE_API_BASE='https://openrouter.ai/api/v1';process.env.ORLYNX_CLINE_MODEL='openrouter/poolside/laguna-s-2.1:free';
+  delete process.env.ORLYNX_CLINE_API_KEY;delete process.env.ORLYNX_OPENROUTER_API_KEY;
+  globalThis.fetch=async()=>{throw new Error('must not request without a key');};
+  assert.match((await portableHealth('cline',os.tmpdir())).reason,/^provider_auth/);
+  process.env.ORLYNX_OPENROUTER_API_KEY='PRIVATE_CREDENTIAL_SENTINEL';
+  for(const [status,code] of [[401,'provider_auth'],[403,'provider_auth'],[429,'provider_rate_limit'],[503,'provider_unavailable']]) {
+    globalThis.fetch=async()=>new Response('{}',{status});
+    const health=await portableHealth('cline',os.tmpdir());assert.match(health.reason,new RegExp(`^${code}`));assert.doesNotMatch(JSON.stringify(health),/PRIVATE_CREDENTIAL_SENTINEL/);
+  }
+  globalThis.fetch=async()=>{throw new Error('PRIVATE_CREDENTIAL_SENTINEL');};
+  const health=await portableHealth('cline',os.tmpdir());assert.match(health.reason,/^provider_unavailable/);assert.doesNotMatch(JSON.stringify(health),/PRIVATE_CREDENTIAL_SENTINEL/);
 });

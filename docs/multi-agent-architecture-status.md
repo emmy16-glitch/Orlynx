@@ -12,7 +12,7 @@ where effect reconciliation cannot establish that takeover is safe.
 | OpenCode adapter | COMPLETE | Existing runtime/recovery/publication regressions retained; primary/default adapter |
 | mini-SWE runtime integration | COMPLETE | Actual pinned DefaultAgent/LiteLLM loop runs writes/tests/cancellation against deterministic endpoint |
 | Cline runtime integration | COMPLETE | Actual pinned headless SDK runs host tools, writes/tests/cancellation; no VS Code dependency or OpenCode alias |
-| New adapters in production | BLOCKED BY EXTERNAL REQUIREMENT | OpenRouter endpoint/free model configured; runner API keys and real authenticated execution need verification |
+| New adapters in production | PARTIAL | Shared OpenRouter fallback implemented; user configured a Render key. Runner credential readiness and real authenticated execution still need verification |
 | Durable public handoff checkpoint | COMPLETE | Task/run/workspace/Investigation IDs, public evidence, changed files, pending updates, verification preserved |
 | Manual switching | PARTIAL | Active workspace and stopped direct task identity tested; cold direct task needs prepared compatible workspace; browser production flow unverified |
 | Automatic failover | PARTIAL | Compatible routing, bounded attempts, failure result and health/ghost-task paths; full production mid-write OpenCode→portable execution not verified |
@@ -33,7 +33,7 @@ where effect reconciliation cannot establish that takeover is safe.
 | File changes / evidence ledger | COMPLETE | Adapter/task/generation/time + content hashes and current-byte verification; task base commit preserves local committed work |
 | GitHub publication authority | COMPLETE | Existing control-plane publisher retained; native shell push cannot satisfy verification |
 | Permission / tenancy boundaries | PARTIAL | Scoped frame/task writes; stripped credentials; read-only argument vectors reject shell/host paths/hooks; full native hostile-code OS sandbox still missing |
-| Runner packaging | PARTIAL | Pinned SDK lockfile, optional native Python install, Docker pinned mini-SWE; Python transitive dependency set not fully locked |
+| Runner packaging | PARTIAL | Pinned SDK lockfile, native Python build install/import verification and safe startup fallback, Docker pinned mini-SWE; Python transitive dependency set not fully locked |
 | Migration safety | COMPLETE | Additive tables/JSON fields; legacy defaults preserved; lease/reclaim/stale-holder tests |
 | CI / exact production release proof | PARTIAL | Local checks recorded below; final CI/Render release evidence must be checked after publication |
 
@@ -53,3 +53,12 @@ See [architecture](multi-agent-architecture.md), [gap matrix](agent-architecture
 real runtime tests, controller tests, existing memory/publication/recovery suites
 and `scripts/evaluate-adapters.mjs`. No hidden/private model reasoning is used as
 handoff state, durable evidence or a completion criterion.
+
+Release checkpoint: PR #134 merged as
+`9b9a44849686033b7443455cd13af6779abc65f0`; 540 local tests passed without skips,
+typechecking and build passed, and both PR CI runs passed. The production API
+served that exact commit at 2026-10-03T03:20:53Z. Startup logs reported four
+healthy runners, warm direct runtime and healthy GitHub App. All four native
+mini-SWE startup installations reached the 180-second timeout; this prompted
+moving preparation to build time and adding credential-safe readiness logs.
+Those host checks do not establish authenticated adapter task execution.

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json && cp src/mini-swe-runtime.py dist/mini-swe-runtime.py",
+    "postbuild": "if [ \"${ORLYNX_INSTALL_MINI_SWE:-0}\" = \"1\" ]; then bash ../scripts/install-mini-swe-runtime.sh; fi",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js"
   },
