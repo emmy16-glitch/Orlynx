@@ -7,9 +7,24 @@ import { spawn } from 'node:child_process';
 const PORT = Number(process.env.PORT || 8080);
 const WORKER_TOKEN = process.env.ORLYNX_RUNTIME_WORKER_TOKEN || '';
 const BRIDGE_FILE = process.env.ORLYNX_BRIDGE_BUNDLE || path.resolve(process.cwd(), '../bridge/dist/index.js');
+const BRIDGE_DIR = path.dirname(BRIDGE_FILE);
 const OPENCODE_VERSION = '1.18.32';
+const MINI_SWE_VERSION = '2.4.6';
+const CLINE_SDK_VERSION = '0.0.90';
+const BRIDGE_RUNTIME_PACKAGE = JSON.stringify({
+  type: 'module',
+  dependencies: { '@cline/agents': CLINE_SDK_VERSION, 'node-pty': '1.1.0', ws: '^8.18.0' },
+  allowScripts: { 'node-pty@1.1.0': true },
+});
+type BridgeRuntimeAsset = { name: string; content: string };
+function bridgeRuntimeAssets(): BridgeRuntimeAsset[] {
+  return fs.readdirSync(BRIDGE_DIR)
+    .filter((name) => /^[A-Za-z0-9_.-]+\.(?:js|py)$/.test(name))
+    .sort()
+    .map((name) => ({ name, content: fs.readFileSync(path.join(BRIDGE_DIR, name), 'utf8') }));
+}
 
-type BootstrapRequest = { codespaceName: string; githubUserToken: string; bridgeUrl: string; bridgeToken: string; workspaceId: string; sessionId: string; userId: string; connectionId: string; openCodePassword: string; openCodeApiKey?: string; openRouterApiKey?: string };
+type BootstrapRequest = { codespaceName: string; githubUserToken: string; bridgeUrl: string; bridgeToken: string; workspaceId: string; sessionId: string; userId: string; connectionId: string; openCodePassword: string; openCodeApiKey?: string; openRouterApiKey?: string; miniSweApiBase?: string; miniSweModel?: string; clineApiBase?: string; clineModel?: string };
 function encoded(value: string): string { return Buffer.from(value).toString('base64'); }
 function authorized(header: string | undefined): boolean {
   const candidate = header?.startsWith('Bearer ') ? header.slice(7) : '';
@@ -20,22 +35,44 @@ function authorized(header: string | undefined): boolean {
 function valid(body: BootstrapRequest): boolean {
   return Boolean(body.codespaceName && /^[a-zA-Z0-9-]+$/.test(body.codespaceName) && body.githubUserToken && body.bridgeUrl.startsWith('wss://') && body.bridgeToken && body.workspaceId && body.sessionId && body.userId && body.connectionId && body.openCodePassword);
 }
-function bootstrapScript(body: BootstrapRequest, bridge: string): string {
+function bootstrapScript(body: BootstrapRequest, assets: BridgeRuntimeAsset[]): string {
+  const bridgeWrites = assets.map((asset) => `printf '%s' '${encoded(asset.content)}' | base64 -d > "$runtime/${asset.name}"`).join('\n');
   const envValues = [
     `ORLYNX_CONTROL=${body.bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${body.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${body.workspaceId}`,
     `ORLYNX_SESSION_ID=${body.sessionId}`, `ORLYNX_USER_ID=${body.userId}`, `ORLYNX_CONNECTION_ID=${body.connectionId}`, `OPENCODE_SERVER_PASSWORD=${body.openCodePassword}`,
   ];
   if (body.openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${body.openCodeApiKey}`);
   if (body.openRouterApiKey) envValues.push(`ORLYNX_OPENROUTER_API_KEY=${body.openRouterApiKey}`);
+  if (body.miniSweApiBase) envValues.push(`ORLYNX_MINI_SWE_API_BASE=${body.miniSweApiBase}`);
+  if (body.miniSweModel) envValues.push(`ORLYNX_MINI_SWE_MODEL=${body.miniSweModel}`);
+  if (body.clineApiBase) envValues.push(`ORLYNX_CLINE_API_BASE=${body.clineApiBase}`);
+  if (body.clineModel) envValues.push(`ORLYNX_CLINE_MODEL=${body.clineModel}`);
   const env = envValues.map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime"
 chmod 700 "$HOME/.orlynx" "$runtime"
-printf '%s' '${encoded(bridge)}' | base64 -d > "$runtime/index.js"
-printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
+${bridgeWrites}
+printf '%s' '${encoded(BRIDGE_RUNTIME_PACKAGE)}' | base64 -d > "$runtime/package.json"
 cd "$runtime"
-if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty"; then npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty" || ! test -d "$runtime/node_modules/@cline/agents"; then npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+
+mini_swe_python="$runtime/mini-swe/bin/python"
+mini_swe_ready=0
+if test -x "$mini_swe_python" && "$mini_swe_python" -c 'import minisweagent; assert minisweagent.__version__ == "${MINI_SWE_VERSION}"' >/dev/null 2>&1; then
+  mini_swe_ready=1
+elif command -v python3 >/dev/null 2>&1; then
+  rm -rf "$runtime/mini-swe"
+  if python3 -m venv "$runtime/mini-swe" >/dev/null 2>&1 \
+    && "$runtime/mini-swe/bin/pip" install --disable-pip-version-check --no-cache-dir "mini-swe-agent==${MINI_SWE_VERSION}" >/dev/null 2>&1 \
+    && "$mini_swe_python" -c 'import minisweagent; assert minisweagent.__version__ == "${MINI_SWE_VERSION}"' >/dev/null 2>&1; then
+    mini_swe_ready=1
+  else
+    rm -rf "$runtime/mini-swe"
+    mini_swe_python=""
+    echo "mini-SWE ${MINI_SWE_VERSION} preparation unavailable; other adapters remain usable." >&2
+  fi
+fi
 
 # Install the exact native OpenCode binary instead of the opencode-ai launcher.
 # The launcher can cache an AVX2 build on x64 machines that require the baseline binary.
@@ -134,6 +171,7 @@ printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
 printf 'OPENCODE_VERSION=%s\\n' '${OPENCODE_VERSION}' >> "$runtime/workspace.env"
 printf 'ORLYNX_GH_BIN=%s\\n' "$gh_bin" >> "$runtime/workspace.env"
+if test "$mini_swe_ready" -eq 1; then printf 'ORLYNX_MINI_SWE_PYTHON=%s\\n' "$mini_swe_python" >> "$runtime/workspace.env"; fi
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a
 . "$runtime/workspace.env"
@@ -145,12 +183,12 @@ kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null || { echo "Orlynx bridge exit
 `;
 }
 function runBootstrap(body: BootstrapRequest): Promise<void> {
-  const bridge = fs.readFileSync(BRIDGE_FILE, 'utf8');
+  const assets = bridgeRuntimeAssets();
   return new Promise((resolve, reject) => {
     const child = spawn('gh', ['codespace', 'ssh', '-c', body.codespaceName, '--', 'bash', '-s'], { env: { PATH: process.env.PATH, GH_TOKEN: body.githubUserToken }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stderr = ''; child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4000); }); child.stdout.resume();
     child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Codespace bootstrap failed (exit ${code}): ${stderr}`)));
-    child.stdin.end(bootstrapScript(body, bridge));
+    child.stdin.end(bootstrapScript(body, assets));
   });
 }
 
