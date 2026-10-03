@@ -126,3 +126,13 @@ test('bridge path containment rejects realpath escapes rather than trusting lexi
   assert.match(guard, /fs\.realpathSync\(probe\)/);
   assert.match(guard, /Path resolves outside the workspace repository/);
 });
+
+test('publish candidate waits for tests but permits downstream deployment verification', () => {
+  const change = {runId:'run',files:[{path:'src/fix.ts'}]};
+  const task = {runId:'run',harness:{verification:{missing:['publish','deployment']}}};
+  assert.equal(publicationInternals.publicationCandidate([change],[task],'run').task,task);
+  task.harness.verification.missing.push('tests');
+  assert.throws(() => publicationInternals.publicationCandidate([change],[task],'run'), /No verified change set/);
+  task.harness.verification.missing = ['publish','deployment'];
+  assert.throws(() => publicationInternals.publicationCandidate([change],[task],'other-run'), /No verified change set/);
+});

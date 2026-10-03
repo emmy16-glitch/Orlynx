@@ -1,3 +1,4 @@
+import { shippingFollowup } from './publication-language.js';
 import type { AgentMode, ChatMessage, EventType, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
 import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEntry } from './github.js';
@@ -54,7 +55,8 @@ export function mergeIntentFor(text: string): boolean {
 export function deployIntentFor(text: string): boolean {
   const normalized = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
   if (!normalized || normalized.length > 90) return false;
-  return /\bdeploy\b/.test(normalized);
+  if (/\b(?:don't|do not|dont|never)\s+(?:deploy|ship)\b/.test(normalized)) return false;
+  return /\bdeploy\b/.test(normalized) || shippingFollowup(normalized).deployment;
 }
 
 export function publishTargetBranchFor(text: string, branch = 'main'): string | null {
@@ -79,13 +81,15 @@ export function publishIntentFor(text: string, branch = 'main'): PublishIntent |
     .trim();
 
   if (!normalized) return null;
+  // Check refusal before recognizing PR creation as publication authority.
+  const negated = /\b(?:don't|do not|dont|never)\s+(?:(?:create|open|make)\s+(?:a\s+)?(?:pr|pull request)|push|publish|commit|merge|deploy|ship)\b/.test(normalized);
+  if (negated) return null;
+  if (shippingFollowup(normalized).publication) return 'direct';
   if (/\b(?:create|open|make)\s+(?:a\s+)?(?:pr|pull request)\b|\bpublish\b[\s\S]{0,40}\b(?:via|as)\s+(?:a\s+)?(?:pr|pull request)\b/.test(normalized)) {
     return 'pull-request';
   }
 
   const explicitTarget = publishTargetBranchFor(normalized, branch);
-  const negated = /\b(?:don't|do not|dont|never)\s+(?:push|publish|commit|merge|deploy)\b/.test(normalized);
-  if (negated) return null;
   const direct = /^(?:git\s+)?(?:push|publish)\b/.test(normalized);
   if (direct) {
     // A named branch is first-class publication intent. The control plane will

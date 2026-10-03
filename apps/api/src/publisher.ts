@@ -1,3 +1,4 @@
+import { prePublicationMissing } from './publication-language.js';
 import crypto from 'node:crypto';
 import type { ChangeSet, ChangedFile, TaskRecord } from '@orlynx/shared';
 import { bridgeRequest } from './bridge-rpc.js';
@@ -84,7 +85,7 @@ function publicationCandidate(
     if (runId && change.runId !== runId) continue;
     const task = [...tasks].reverse().find((item) => item.runId && item.runId === change.runId);
     if (!task?.harness) continue;
-    const nonPublishMissing = task.harness.verification.missing.filter((item) => item !== 'publish');
+    const nonPublishMissing = prePublicationMissing(task.harness.verification.missing);
     if (nonPublishMissing.length) continue;
     return { change, task };
   }
@@ -419,7 +420,7 @@ export async function publishVerifiedChangeSet(input: {
     });
   }
   const { change, task } = candidate;
-  const nonPublishMissing = task.harness?.verification.missing.filter((item) => item !== 'publish') || [];
+  const nonPublishMissing = prePublicationMissing(task.harness?.verification.missing || []);
   if (nonPublishMissing.length) {
     throw new Error(`Verification is incomplete: ${nonPublishMissing.join(', ')}.`);
   }
@@ -684,4 +685,4 @@ export async function mergePublishedPullRequest(input: {
   };
 }
 
-export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256 };
+export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate };

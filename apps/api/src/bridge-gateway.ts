@@ -1,3 +1,4 @@
+import { deploymentVerified } from './publication-language.js';
 import { getAgentAdapter } from './agent-runtime.js';
 import { adapterEligible, compatibleCapabilities } from './adapter-policy.js';
 import { currentExecution, classifyAgentFailure } from './adapter-policy.js';
@@ -21,7 +22,7 @@ import { agentMemoryInstruction, recordMemoryContradictions, relevantAgentLesson
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import { addChangeEvidence } from './changes.js';
-import { publishVerifiedChangeSet, type PublicationStrategy } from './publisher.js';
+import { deploymentTargetForSession, publishVerifiedChangeSet, type PublicationStrategy } from './publisher.js';
 import { publishIntentFor, publishTargetBranchFor } from './direct-chat.js';
 import type { EventType } from '@orlynx/shared';
 
@@ -857,7 +858,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           // Once every requirement except publication is satisfied, bind that
           // evidence to the exact workspace HEAD. Publication will refuse stale
           // evidence if a later commit changes HEAD.
-          if (task.harness.verification.missing.every((item) => item === 'publish')) {
+          if (task.harness.verification.missing.every((item) => item === 'publish' || item === 'deployment')) {
             const verifiedStatus = await bridgeRequest<{ head?: string }>(claims.workspaceId, 'git.status', {}, 30_000).catch(() => null);
             if (verifiedStatus?.head) task.harness.verifiedWorkspaceHead = String(verifiedStatus.head);
           }
@@ -879,7 +880,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           // Let the controlled publisher recover that committed diff instead of
           // sending the model back to manufacture another edit.
           const publicationRecoverable = task.harness.verification.missing.includes('publish')
-            && task.harness.verification.missing.every((item) => item === 'changes' || item === 'publish');
+            && task.harness.verification.missing.every((item) => item === 'changes' || item === 'publish' || item === 'deployment');
 
           // Ask-first protects unrequested privileged actions. When the user
           // explicitly wrote "push/publish" in this task (or live steering),
@@ -967,6 +968,38 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               await repository.putTask(task);
             } catch (error) {
               publishError = error instanceof Error ? error.message : 'Controlled Git publish failed.';
+            }
+          }
+
+          // Deployment proof follows a durable publication/merge receipt. Never
+          // infer deployment from a successful push or a host's live label alone.
+          if (task.harness.verification.missing.includes('deployment')
+            && !task.harness.verification.missing.includes('publish')) {
+            try {
+              const target = await deploymentTargetForSession(claims.sessionId);
+              if (!target) throw new Error('No published commit is available for deployment verification.');
+              const { renderDeployStatus } = await import('./render.js');
+              const deployment = await renderDeployStatus(target.commitSha);
+              const checkedAt = new Date().toISOString();
+              if (deploymentVerified(deployment, target.commitSha)) {
+                await persistLiveEvent({
+                  eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId,
+                  workspaceId: claims.workspaceId, type: 'receipt.created', timestamp: checkedAt,
+                  payload: { deployed: true, commitSha: target.commitSha, deployId: deployment.deployId, services: deployment.services },
+                });
+                recent = await repository.listRunEvents(claims.sessionId, runId, 1000);
+                task.harness = verifyHarness(task.harness, recent, checkedAt);
+                await repository.putTask(task);
+              } else {
+                publishError = deployment.message;
+                await persistLiveEvent({
+                  eventId: `evt_${uuid()}`, sessionId: claims.sessionId, taskId, runId,
+                  workspaceId: claims.workspaceId, type: 'activity.progress', timestamp: checkedAt,
+                  payload: { sourceType: 'deployment.verification', text: deployment.message, commitSha: target.commitSha, status: deployment.status || 'unknown' },
+                });
+              }
+            } catch (error) {
+              publishError = error instanceof Error ? error.message : 'Deployment verification failed.';
             }
           }
 

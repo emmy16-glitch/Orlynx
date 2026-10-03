@@ -1,3 +1,4 @@
+import { shippingFollowup } from './publication-language.js';
 import type {
   AgentMode,
   HarnessCheckpoint,
@@ -64,6 +65,9 @@ const DEFAULT_BUDGETS: Record<'direct' | 'workspace', number> = {
 export function verificationRequirementsFor(prompt: string): string[] {
   const value = String(prompt || '').toLowerCase();
   const required = new Set<string>();
+  const shipping = shippingFollowup(value);
+  if (shipping.publication) required.add('publish');
+  if (shipping.deployment) required.add('deployment');
   // "Any update on main?" is a status question, not a request to edit files.
   // Treat update as a mutation only when the prompt is not clearly asking for
   // progress/status. Strong mutation verbs remain authoritative.
@@ -227,6 +231,7 @@ export function queueIntentFor(text: string): boolean {
 export function steeringActionFor(text: string): SteeringAction {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return 'ignore';
+  if (shippingFollowup(value).publication) return 'append';
 
   if (/^(?:please\s+)?(?:stop|cancel|abort|halt|never\s*mind|nevermind)(?:\s+(?:it|this|that|the\s+task|current\s+task|the\s+current\s+task|current\s+job|the\s+current\s+job|job))?[.!?\s]*$/.test(value)) return 'stop';
   if (/\b(?:forget|ignore)\s+(?:that|the\s+(?:previous|original)|what\s+i\s+said)|\binstead\b|\bchange\s+(?:the\s+)?request\b|\bonly\s+(?:do|check|fix|work)\b/.test(value)) return 'replace';
