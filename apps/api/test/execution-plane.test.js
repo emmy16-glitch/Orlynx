@@ -76,7 +76,7 @@ test('verified Build work must be challenged by the currently selected model bef
   assert.match(gateway, /Orlynx → Model: verification passed/);
   assert.match(gateway, /modelReviewCompletedAt/);
   assert.match(gateway, /runIndependentReviewer/);
-  assert.match(gateway, /Independent reviewer started/);
+  assert.match(gateway, /runIndependentDelegate/);
   assert.match(gateway, /type: 'subagent\.started'/);
   assert.match(gateway, /type: 'subagent\.finished'/);
   assert.match(gateway, /runIndependentArchitect/);
