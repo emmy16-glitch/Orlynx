@@ -140,7 +140,9 @@ export async function recordMemoryContradictions(input: {
   harness: HarnessCheckpoint;
   responseText: string;
 }): Promise<string[]> {
-  const allowed = input.harness.lessonsApplied || [];
+  if (input.harness.verification.status !== 'passed') return [];
+  const alreadyApplied = new Set(input.harness.memoryContradictionsApplied || []);
+  const allowed = (input.harness.lessonsApplied || []).filter((id) => !alreadyApplied.has(id));
   const ids = memoryContradictionIds(input.responseText, allowed);
   if (!ids.length) return [];
   const investigation = input.harness.investigation;
