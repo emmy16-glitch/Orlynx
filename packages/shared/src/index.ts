@@ -190,6 +190,7 @@ export type InvestigationStage =
   | 'repairing'
   | 'verifying'
   | 'resolved'
+  | 'learned'
   | 'blocked';
 
 export interface HarnessInvestigation {
