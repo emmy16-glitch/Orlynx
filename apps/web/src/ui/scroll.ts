@@ -57,11 +57,9 @@ export function isFollowWorthyEvent(type: string, payload?: Record<string, unkno
     const raw = str(p.state);
     const reason = str(p.reason || p.error || p.message);
     if (scope === 'agent-adapter') {
-      // Dynamic import would complicate the hot path; classify inline with
-      // the same rules as mapping.ts adapterKind (steady = invisible).
-      const text = `${raw} ${reason}`.toLowerCase();
-      if (/fail|unavailable|error|auth|model|rate.?limit|quota|exceed|too many|reject|expired|forbidden|unauthor|needs.?attention|not.?available/.test(text)) return true;
-      if (/start|install|connect|reconnect|busy|work|load|prepar|pending|waiting|retry/.test(text)) return true;
+      // Adapter health is reflected in the selector/status surface. Actual
+      // task impact arrives as run.failed/run.state and is follow-worthy there.
+      // Heartbeats must never pull the conversation viewport around.
       return false;
     }
     return /fail|error|unavailable|disconnect|offline|interrupt|expired|denied/i.test(`${raw} ${reason}`);
