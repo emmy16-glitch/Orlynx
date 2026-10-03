@@ -174,18 +174,26 @@ Switching agent changes execution behavior, not the Orlynx product architecture.
 
 ### Stage C — Stronger project intelligence
 
-Status: **future**
+Status: **current + hardening**
 
-Goals:
+Implemented foundations:
 
-- typed memory;
-- confidence and decay;
-- contradiction-driven memory correction;
-- repository knowledge graph;
-- architecture map;
-- test/deploy recipes;
+- typed verified memory;
+- confidence and time-based decay;
+- contradiction-driven confidence reduction and automatic lesson supersession;
+- bounded verified repository/environment knowledge edges;
+- test/deploy/recovery lesson types;
 - verified conventions;
-- project-level dependency/service relationships.
+- durable Investigation lifecycle through hypothesis → testing → repairing → verifying → resolved → learned;
+- separate read-only architect delegation for stuck/unknown investigations;
+- separate read-only reviewer delegation before Build finalization.
+
+Still to harden/extend:
+
+- full automatically extracted architecture map;
+- richer package/service/route/dependency relationships beyond verified lesson edges;
+- additional memory provenance/query surfaces;
+- production-outcome feedback after later health/regression observation.
 
 Success condition:
 
@@ -229,9 +237,16 @@ A team can treat Orlynx as a shared engineering workspace rather than a personal
 
 ### Stage F — Parallel specialized agents under one coordinator
 
-Status: **future**
+Status: **foundation implemented; parallel specialist execution remains future**
 
-Goals:
+Current foundation:
+
+- canonical subagent lifecycle events;
+- bounded separate-session read-only architect delegation;
+- bounded separate-session read-only reviewer delegation;
+- parent task retains final authority and verification state.
+
+Remaining goals:
 
 - coordinator-owned task decomposition;
 - specialist agents for code, security, tests, docs, release or research;
