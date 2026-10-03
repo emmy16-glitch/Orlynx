@@ -18,6 +18,9 @@ const processes = new Map<string, { child: ChildProcess; stopped: Promise<void>;
 const clineRuns = new Map<string, { agent: Agent; stopped: Promise<void> }>();
 const runFile=promisify(execFile);
 let pythonProbe: {binary: string; at: number} | undefined;
+// First import of minisweagent is heavy (~4s idle, slower under parallel
+// test load), so the probe gets headroom. Results are cached for 5 minutes.
+const MINI_SWE_PROBE_TIMEOUT_MS = 30_000;
 const DEFAULT_OPENAI_BASE = 'https://openrouter.ai/api/v1';
 const DEFAULT_PORTABLE_MODEL = 'openrouter/poolside/laguna-s-2.1:free';
 function adapterBase(id: string): string {
@@ -70,7 +73,7 @@ export async function portableHealth(id: string, root: string): Promise<{ state:
   if (authenticationFailure) return {state:'unavailable',reason:authenticationFailure};
   if (!pythonProbe || pythonProbe.binary!==python() || Date.now()-pythonProbe.at>300000) {
     try {
-      await runFile(python(), ['-c', 'import minisweagent; from minisweagent.agents.default import DefaultAgent; from minisweagent.models.litellm_model import LitellmModel; assert minisweagent.__version__ == "2.4.6"'], { timeout: 10000 });
+      await runFile(python(), ['-c', 'import minisweagent; from minisweagent.agents.default import DefaultAgent; from minisweagent.models.litellm_model import LitellmModel; assert minisweagent.__version__ == "2.4.6"'], { timeout: MINI_SWE_PROBE_TIMEOUT_MS });
       pythonProbe={binary:python(),at:Date.now()};
     } catch { return {state:'not_installed',reason:'mini-SWE 2.4.6 import probe failed.'}; }
   }
