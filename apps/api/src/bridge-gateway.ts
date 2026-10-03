@@ -821,6 +821,15 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               }).catch(() => [])
             : [];
           if (correctedLessons.length) {
+            task.harness = {
+              ...task.harness,
+              memoryContradictionsApplied: [...new Set([
+                ...(task.harness.memoryContradictionsApplied || []),
+                ...correctedLessons,
+              ])],
+            };
+            task.updatedAt = verificationNow;
+            await repository.putTask(task);
             await persistLiveEvent({
               eventId: `evt_${uuid()}`,
               sessionId: claims.sessionId,
