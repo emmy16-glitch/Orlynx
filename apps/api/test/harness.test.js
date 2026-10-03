@@ -614,6 +614,8 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   assert.match(storage, /predicate text/);
   assert.match(storage, /object text/);
   assert.match(memory, /MEMORY_CONTRADICTION/);
+  assert.match(memory, /input\.harness\.verification\.status !== 'passed'/);
+  assert.match(memory, /memoryContradictionsApplied/);
   assert.match(memory, /verification\.status !== 'passed'/);
   assert.match(memory, /Verified Orlynx experience from earlier successful work/);
   assert.match(memory, /scope: 'environment'/);
