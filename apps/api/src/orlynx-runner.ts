@@ -176,6 +176,14 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
     const openCodeApiKey = openCodeConnection?.state === 'connected' && openCodeConnection.credential
       ? decryptCredential(openCodeConnection.credential)
       : '';
+    // Portable agent provider credentials are owned by the control plane and
+    // delivered only to the authenticated workspace runtime. Runner hosts do
+    // not need a duplicate long-lived Render secret.
+    const openRouterApiKey = process.env.ORLYNX_OPENROUTER_API_KEY || '';
+    const miniSweApiBase = process.env.ORLYNX_MINI_SWE_API_BASE || '';
+    const miniSweModel = process.env.ORLYNX_MINI_SWE_MODEL || '';
+    const clineApiBase = process.env.ORLYNX_CLINE_API_BASE || '';
+    const clineModel = process.env.ORLYNX_CLINE_MODEL || '';
     const githubToken = await githubUserAccessToken(workspace.userId);
     const host = this.hostFor(workspace);
 
@@ -190,6 +198,11 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
         connectionId: values.connectionId,
         openCodePassword: values.openCodePassword,
         openCodeApiKey,
+        openRouterApiKey,
+        miniSweApiBase,
+        miniSweModel,
+        clineApiBase,
+        clineModel,
         githubToken,
       }),
       signal: AbortSignal.timeout(Math.max(15_000, Number(process.env.ORLYNX_RUNNER_CONNECT_TIMEOUT_MS || 30_000))),
