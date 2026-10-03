@@ -298,7 +298,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       return;
     }
   }
-  try { await persistBridgeState(claims, 'connecting'); }
+  try {
+    const workspace = await controlPlaneRepository().getWorkspace(claims.workspaceId);
+    if (!workspace || workspace.connectionId !== claims.connectionId) throw new Error('Superseded workspace credential.');
+    await persistBridgeState(claims, 'connecting');
+  }
   catch { console.warn('[bridge] handshake rejected: workspace scope or storage'); ws.close(1008, 'workspace scope rejected'); return; }
   console.info(reconnectGraceUsed ? '[bridge] expired reconnect credential accepted and will be rotated' : '[bridge] credential accepted');
 
@@ -408,6 +412,12 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
       if (message.kind === 'RESULT' && message.commandId) {
         const command = await repository.getCommand(message.commandId);
+        // Signed bridge credentials authorize only this workspace. Unknown
+        // attachment replies have no durable command or RPC waiter to resolve.
+        if (!command || command.workspaceId !== claims.workspaceId) {
+          console.warn('[bridge] ignored result outside authenticated command scope');
+          return;
+        }
         const resultPayload = message.result || { error: message.error || 'Workspace command failed.' };
 
         // Durable commands are at-most-once at the state-machine layer. The
