@@ -1714,7 +1714,7 @@ export async function resumeWaitingInputTask(sessionId: string, taskId: string, 
     taskId: task.id,
     sourceType: 'agent.dialogue.orlynx',
     reflectionId: (task.harness.reflectionAttempts || 0) + 1,
-    text: 'Orlynx → Model: Joseph supplied the requested input. Continue the same task and verify the outcome.',
+    text: 'Orlynx → Model: the user supplied the requested input. Continue the same task and verify the outcome.',
   }, run.id);
   await queueBridgeCommand(workspace.id, adapter.bridgeRunCommand, payload, timeoutMs);
   return run;
@@ -1738,7 +1738,7 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
     const runtimeRecoveryAttempts = Number(task.harness?.runtimeRecoveryAttempts || 0);
 
     // Direct Ask/Plan is non-mutating. If no visible response escaped before
-    // the process died, retry the SAME durable task once automatically rather
+    // the process died, retry the SAME durable task within a small bounded budget rather
     // than forcing the user to type "??". This is bounded and preserves run ID.
     if (!partial && runtimeRecoveryAttempts < 2) {
       task.harness ||= createHarnessCheckpoint({
