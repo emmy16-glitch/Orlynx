@@ -650,6 +650,15 @@ function applyOne(state: AgentStreamState, event: StreamProjectionEvent) {
         const activityId = `adapter-error:${adapterId}`;
         const prior = state.activities[activityId];
 
+        // Workspace adapter health heartbeats are availability state, not task
+        // failures. They have no run/task identity and remain visible through
+        // the adapter selector only. A failed inactive adapter must not leave a
+        // blocking chat error after Orlynx has already failed over successfully.
+        if (!event.runId && !event.taskId) {
+          if (prior) delete state.activities[activityId];
+          return;
+        }
+
         // Normal ready/busy heartbeats remain state-only. If a visible error
         // had existed, READY resolves that same semantic object in place.
         if (/ready/.test(rawState) && prior?.state === 'failed') {
