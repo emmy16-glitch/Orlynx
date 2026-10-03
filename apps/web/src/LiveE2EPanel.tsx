@@ -49,11 +49,11 @@ export function LiveE2EPanel({ onOpen }: { onOpen: (session: any) => void }) {
       }
       if (run?.state !== 'completed') throw new Error(`Build did not complete: ${run?.state}`);
       note('Running real npm test');
-      await api(`${root}/e2e/test`, {});
+      const tested = await api(`${root}/e2e/test`, {});
       note('npm test passed');
       const changes = await api(`${root}/changes`), change = changes.find((c: any) => c.reviewState === 'pending' && c.files.some((f: any) => f.path === plan.filename));
       if (!change || change.files.length !== 1) throw new Error('Expected single-file ChangeSet is missing');
-      const diff = await api(`${root}/git/diff`);
+      const diff = tested;
       if (!String(diff.diff || '').includes(plan.filename)) throw new Error('Real Git diff does not contain verification file');
       await api(`/changes/${change.id}/approve`, {});
       await api(`/changes/${change.id}/commit`, { message: `test: verify Orlynx execution plane ${plan.clientId}` });

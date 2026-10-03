@@ -335,10 +335,12 @@ router.post('/sessions/:id/e2e/test', async (req, res) => {
     if (!workspace || workspace.state !== 'ready') throw new Error('Workspace is not ready.');
     const actual = await bridgeRequest(workspace.id, 'git.status');
     assertLiveE2EPublication(s, s.checkpoint.liveE2EPlan.branch, 'direct', String(actual.branch || ''));
-    const result = await bridgeRequest(workspace.id, 'command.exec', { command: 'npm', args: ['test'] }, 10 * 60_000);
+    const diff = await bridgeRequest(workspace.id, 'command.exec', { command: 'git', args: ['diff', '--no-ext-diff', '--no-index', '--', '/dev/null', s.checkpoint.liveE2EPlan.filename] });
+    if (Number(diff.code) !== 1 || !String(diff.stdout || '').includes(s.checkpoint.liveE2EPlan.filename)) throw new Error('Real new-file Git diff is missing.');
+    const result = await bridgeRequest(workspace.id, 'command.exec', { command: 'npm', args: ['test'], timeoutMs: 300_000 }, 10 * 60_000);
     await emitPersisted(s.id, 'receipt.created', { e2eTest: true, cmd: 'npm test', ...result });
     if (Number(result.code) !== 0) return res.status(409).json({ error: 'Real npm test failed.', ...result });
-    res.json(result);
+    res.json({ ...result, diff: diff.stdout });
   } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Test failed.' }); }
 });
 router.post('/sessions/:id/e2e/verify', async (req, res) => {
