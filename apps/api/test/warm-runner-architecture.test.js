@@ -13,6 +13,7 @@ import { defaultWorkspaceProviderId, shouldPrewarmWorkspace } from '../src/works
 import { OrlynxRunnerProvider } from '../src/orlynx-runner.ts';
 import { probeRunnerHost, rankedRunnerHosts, runnerGlobalMaxWorkspaces, runnerHosts } from '../src/runner-pool.ts';
 import { workspaceShouldAdoptPreferredRunner } from '../src/workspaces.ts';
+import { transientOrchestratorStorageFailure } from '../src/workspace-jobs.ts';
 
 function withEnv(values, fn) {
   const previous = {};
@@ -372,6 +373,23 @@ test('workspace orchestration is durable, leased and recoverable', () => {
   assert.doesNotMatch(routes, /void prepareWorkspace\(/);
 });
 
+test('orchestrator retries transient Neon transport failures without hiding schema errors', () => {
+  assert.equal(transientOrchestratorStorageFailure(new Error('Error connecting to database: TypeError: fetch failed')), true);
+  assert.equal(transientOrchestratorStorageFailure(new Error('ECONNRESET while reading Neon')), true);
+  assert.equal(transientOrchestratorStorageFailure(new Error('database connection timed out')), true);
+  assert.equal(transientOrchestratorStorageFailure(new Error('column workspace_id does not exist')), false);
+  assert.equal(transientOrchestratorStorageFailure(new Error('syntax error at or near SELECT')), false);
+});
+
+test('production supervisor keeps API alive and restarts only the orchestrator worker', () => {
+  const supervisor = fs.readFileSync(new URL('../scripts/production-start.mjs', import.meta.url), 'utf8');
+  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\], \{ restart: true \}\)/);
+  assert.match(supervisor, /restarting worker in \$\{delay\}ms while API remains available/);
+  assert.match(supervisor, /let failureHandled = false/);
+  assert.match(supervisor, /restartTimers\.values\(\)/);
+  assert.match(supervisor, /if \(restart\) return scheduleRestart\(detail\)/);
+});
+
 test('Build work can escalate a passive prewarm job to Codespaces fallback', () => {
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   const jobs = fs.readFileSync(new URL('../src/workspace-jobs.ts', import.meta.url), 'utf8');
@@ -428,7 +446,7 @@ test('production start separates API and orchestrator processes', () => {
   assert.equal(pkg.scripts.start, 'node scripts/production-start.mjs');
   assert.equal(pkg.scripts['start:api'], 'node dist/index.js');
   assert.match(supervisor, /launch\('api', \['dist\/index\.js'\]\)/);
-  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\]\)/);
+  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\], \{ restart: true \}\)/);
   assert.match(supervisor, /ORLYNX_ORCHESTRATOR_MODE: 'worker'/);
   assert.match(supervisor, /DATABASE_URL \|\| process\.env\.POSTGRES_URL/);
 });
