@@ -81,6 +81,153 @@ function continuationPayload(
   };
 }
 
+
+async function runIndependentReviewer(input: {
+  workspaceId: string;
+  sessionId: string;
+  taskId: string;
+  runId?: string;
+  modelId: string;
+  instruction: string;
+}): Promise<string | undefined> {
+  const delegationId = `review_${uuid()}`;
+  const startedAt = new Date().toISOString();
+  await persistLiveEvent({
+    eventId: `evt_${uuid()}`,
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    type: 'subagent.started',
+    timestamp: startedAt,
+    payload: {
+      delegationId,
+      role: 'reviewer',
+      modelId: input.modelId,
+      text: 'Independent reviewer started · read-only evidence challenge.',
+    },
+  });
+
+  try {
+    const created = await bridgeRequest<{ status: number; body?: { id?: string } }>(
+      input.workspaceId,
+      'opencode.request',
+      {
+        path: '/session',
+        method: 'POST',
+        body: { title: `Orlynx independent reviewer ${input.runId || input.taskId}` },
+        timeoutMs: 15_000,
+      },
+      20_000,
+    );
+    const engineSessionId = String(created.body?.id || '');
+    if (!engineSessionId) throw new Error('Independent reviewer session was not created.');
+
+    const [providerID, ...modelParts] = input.modelId.split('/');
+    if (!providerID || !modelParts.length) throw new Error('Independent reviewer model id is invalid.');
+    const modelID = modelParts.join('/');
+
+    await bridgeRequest(
+      input.workspaceId,
+      'opencode.request',
+      {
+        path: `/session/${engineSessionId}/prompt_async`,
+        method: 'POST',
+        body: {
+          parts: [{ type: 'text', text: input.instruction }],
+          model: { providerID, modelID },
+          tools: {
+            read: true,
+            grep: true,
+            glob: true,
+            list: true,
+            write: false,
+            edit: false,
+            patch: false,
+            bash: false,
+            shell: false,
+            webfetch: false,
+            websearch: false,
+          },
+        },
+        timeoutMs: 15_000,
+      },
+      20_000,
+    );
+
+    const deadline = Date.now() + 90_000;
+    let idle = false;
+    while (Date.now() < deadline) {
+      const status = await bridgeRequest<{ status: number; body?: Record<string, Record<string, unknown>> }>(
+        input.workspaceId,
+        'opencode.request',
+        { path: '/session/status', method: 'GET', timeoutMs: 10_000 },
+        15_000,
+      );
+      const state = status.body?.[engineSessionId] || {};
+      if (String(state.type || '') === 'idle') {
+        idle = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    if (!idle) throw new Error('Independent reviewer timed out before returning to idle.');
+
+    const messages = await bridgeRequest<{ status: number; body?: Array<{ info?: Record<string, unknown>; parts?: Array<Record<string, unknown>> }> }>(
+      input.workspaceId,
+      'opencode.request',
+      { path: `/session/${engineSessionId}/message`, method: 'GET', timeoutMs: 10_000 },
+      15_000,
+    );
+    const assistant = [...(messages.body || [])].reverse().find((message) => String(message.info?.role || '') === 'assistant');
+    const text = (assistant?.parts || [])
+      .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
+      .map((part) => String(part.text || ''))
+      .join('')
+      .trim()
+      .slice(0, 8_000);
+    if (!text) throw new Error('Independent reviewer completed without a readable response.');
+
+    await persistLiveEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      workspaceId: input.workspaceId,
+      type: 'subagent.finished',
+      timestamp: new Date().toISOString(),
+      payload: {
+        delegationId,
+        role: 'reviewer',
+        modelId: input.modelId,
+        state: 'completed',
+        summary: text.slice(0, 1_200),
+        text: 'Independent reviewer finished · findings returned to the primary agent.',
+      },
+    });
+    return text;
+  } catch (error) {
+    await persistLiveEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      workspaceId: input.workspaceId,
+      type: 'subagent.finished',
+      timestamp: new Date().toISOString(),
+      payload: {
+        delegationId,
+        role: 'reviewer',
+        modelId: input.modelId,
+        state: 'failed',
+        error: error instanceof Error ? error.message.slice(0, 1_000) : 'Independent reviewer failed.',
+        text: 'Independent reviewer was unavailable · primary verification continues without fabricating a review.',
+      },
+    });
+    return undefined;
+  }
+}
+
 type BridgeAdapterState = { state?: string; reason?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
@@ -1213,6 +1360,25 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               },
             });
 
+            const independentReview = await runIndependentReviewer({
+              workspaceId: claims.workspaceId,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              modelId: task.modelId,
+              instruction: [
+                'You are an independent read-only Orlynx reviewer in a separate agent session.',
+                selectedModelReviewInstruction(
+                  task.harness,
+                  task.modelId,
+                  evidenceSummary(recent),
+                  lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`),
+                ),
+                agentMemoryInstruction(lessons),
+                'Do not edit files. Return a concise evidence-grounded review for the primary agent: VERIFIED if the work is sound, or CONCERN followed by the exact unsupported claim, missed requirement, regression risk, or check that still needs to be performed.',
+              ].filter(Boolean).join('\n\n'),
+            });
+
             await queueBridgeCommand(
               claims.workspaceId,
               'agent.run',
@@ -1227,6 +1393,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                     evidenceSummary(recent),
                     lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`),
                   ),
+                  independentReview
+                    ? `Independent reviewer findings from a separate read-only agent session:\n${independentReview}\nUse these findings as evidence to challenge the result. If a concern is valid, inspect/fix it and re-run verification before finalizing; do not merely echo the reviewer.`
+                    : 'Independent reviewer was unavailable. Perform the mandatory review yourself using fresh tool evidence; do not claim an independent review occurred.',
                   agentMemoryInstruction(lessons),
                 ].filter(Boolean).join('\n\n'),
               ),
