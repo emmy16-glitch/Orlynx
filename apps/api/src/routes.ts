@@ -32,6 +32,7 @@ import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
 import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
 import { rememberVerifiedProductionOutcome } from './agent-memory.js';
 import { portableAdapterConfig } from './portable-agent-config.js';
+import { assertLiveE2ESession, liveE2EEnabled, liveE2ERepositoryAllowed, validLiveE2EBranch } from './e2e-safety.js';
 
 export const router = Router();
 
@@ -158,6 +159,10 @@ type WorkspacePublishResult = {
 };
 
 async function publishCommittedWorkspaceHead(req: Request, session: any, strategy: PublishIntent, targetBranch?: string): Promise<WorkspacePublishResult> {
+  if (validLiveE2EBranch(session.branch)) {
+    assertLiveE2ESession(session.project, session.branch);
+    if (targetBranch && targetBranch !== session.branch) throw new Error('Live E2E sessions may publish only their isolated E2E branch.');
+  }
   const gate = canPerform(session.id, 'git.push');
   if (!gate.allowed) throw new Error(gate.reason || 'Publishing is blocked by the current project access level.');
   if (!durableStorageConfigured()) throw new Error('Controlled chat publishing requires the hosted Orlynx workspace.');
@@ -1866,9 +1871,21 @@ router.get('/sessions/:id/git/diff', async (req, res) => {
 });
 router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   const s = ownedSession(req, req.params.id); if (!s) return res.status(404).json({ error: 'session not found' });
-  if (process.env.ORLYNX_E2E_ENABLED !== 'true') return res.status(404).json({ error: 'Not found.' });
+  if (!liveE2EEnabled()) return res.status(404).json({ error: 'Not found.' });
+  const requestedBranch = String(req.body?.branch || '');
+  if (!liveE2ERepositoryAllowed(s.project) || !validLiveE2EBranch(requestedBranch)) {
+    return res.status(403).json({ error: 'Live E2E is restricted to the allowlisted repository and orlynx-e2e/* branches.' });
+  }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
-  try { const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: String(req.body?.branch || '') }); s.branch = String(result.branch); s.updatedAt = new Date().toISOString(); const durable = await controlPlaneRepository().getSession(s.id); if (durable) await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId }); return res.json(result); }
+  try {
+    const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
+    if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
+    s.branch = String(result.branch);
+    s.updatedAt = new Date().toISOString();
+    const durable = await controlPlaneRepository().getSession(s.id);
+    if (durable) await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
+    return res.json(result);
+  }
   catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : 'Test branch could not be created.' }); }
 });
 router.post('/sessions/:id/terminal', async (req, res) => {
@@ -1954,6 +1971,10 @@ router.post('/changes/:changeId/push', async (req, res) => {
 
       const explicitStrategy = String(req.body?.strategy || '');
       const originalBranch = session.branch;
+      if (validLiveE2EBranch(originalBranch)) {
+        try { assertLiveE2ESession(session.project, originalBranch); }
+        catch (error) { return res.status(403).json({ error: error instanceof Error ? error.message : 'Live E2E publishing is blocked.' }); }
+      }
       if (['main', 'master'].includes(originalBranch) && !['direct', 'pull-request'].includes(explicitStrategy)) {
         return res.status(400).json({ error: 'Choose whether to push directly to the default branch or create a pull request.' });
       }
