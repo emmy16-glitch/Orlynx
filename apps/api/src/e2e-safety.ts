@@ -37,7 +37,7 @@ export function assertLiveE2EPublication(
   workspaceBranch?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const isolatedBranch = liveE2ESessionBranch(session);
+  const isolatedBranch = liveE2ESessionBranch(session) || (workspaceBranch?.startsWith(E2E_BRANCH_PREFIX) ? workspaceBranch : undefined);
   if (!isolatedBranch) return;
   assertLiveE2ESession(session.project, isolatedBranch, env);
   if (session.branch !== isolatedBranch || targetBranch !== isolatedBranch || strategy !== 'direct') {

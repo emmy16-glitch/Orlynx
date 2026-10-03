@@ -47,7 +47,7 @@ test('routes enforce the same repository and branch guard at creation and public
   const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
   assert.match(publisher, /assertLiveE2EPublication\(session, targetBranch, strategy/);
   assert.match(publisher, /await verifyE2EWorkspaceBranch\(\);\n    if \(!existingTargetSha\)/);
-  assert.match(publisher, /if \(liveE2ESessionBranch\(session\)\) throw error/);
+  assert.match(publisher, /if \(e2ePublication\) throw error/);
 });
 
 
@@ -65,5 +65,6 @@ test('E2E publication rejects retargeting, PR strategies, lost session identity 
   assert.throws(() => assertLiveE2EPublication(session, branch, 'direct', branch, { ...enabled, ORLYNX_E2E_ENABLED: 'false' }), /disabled/);
   assert.throws(() => assertLiveE2EPublication({ ...session, project: 'other/repo' }, branch, 'direct', branch, enabled), /allowlisted/);
   assert.throws(() => assertLiveE2EPublication({ project: session.project, branch: 'orlynx-e2e/main' }, 'main', 'direct', 'main', enabled), /namespace/);
+  assert.throws(() => assertLiveE2EPublication({ project: session.project, branch: 'main' }, 'main', 'direct', branch, enabled), /isolated/);
   assert.doesNotThrow(() => assertLiveE2EPublication({ project: session.project, branch: 'main' }, 'main', 'direct', 'main', {}));
 });

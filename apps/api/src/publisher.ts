@@ -397,10 +397,12 @@ export async function publishVerifiedChangeSet(input: {
   const targetBranch = safeBranch(input.targetBranch || sessionBaseBranch);
   const strategy = input.strategy || 'direct';
   assertLiveE2EPublication(session, targetBranch, strategy);
+  let e2ePublication = Boolean(liveE2ESessionBranch(session));
   const verifyE2EWorkspaceBranch = async () => {
-    if (!liveE2ESessionBranch(session)) return;
     const status = await bridgeRequest<GitStatus>(input.workspaceId, 'git.status', {}, 30_000);
-    assertLiveE2EPublication(session, targetBranch, strategy, String(status.branch || ''));
+    const actualBranch = String(status.branch || '');
+    e2ePublication ||= actualBranch.startsWith('orlynx-e2e/');
+    assertLiveE2EPublication(session, targetBranch, strategy, actualBranch);
   };
   await verifyE2EWorkspaceBranch();
   const targetRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
@@ -556,7 +558,7 @@ export async function publishVerifiedChangeSet(input: {
     return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
-    if (liveE2ESessionBranch(session)) throw error;
+    if (e2ePublication) throw error;
     if (targetBranch !== baseBranch || (statusCode !== 403 && statusCode !== 422)) throw error;
 
     // Direct default-branch updates may be prohibited by rulesets/branch
