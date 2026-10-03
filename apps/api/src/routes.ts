@@ -31,6 +31,7 @@ import { computeBrokerSnapshot, selectWorkspaceProvider } from './compute-broker
 import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
 import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
 import { rememberVerifiedProductionOutcome } from './agent-memory.js';
+import { portableAdapterConfig } from './portable-agent-config.js';
 
 export const router = Router();
 
@@ -2062,17 +2063,26 @@ router.get('/ai/overview', async (req, res) => {
       ? await controlPlaneRepository().listWorkspaceAgentAdapters(workspace.id)
       : [];
     const persistedById = new Map(persistedAdapters.map((adapter) => [adapter.adapterId, adapter]));
+    const workspaceReady = workspace?.state === 'ready' && workspace.bridgeState === 'ready';
     const adapters = listAgentAdapters().map((adapter) => {
       const persisted = persistedById.get(adapter.id);
+      const portable = adapter.id === 'mini-swe' || adapter.id === 'cline'
+        ? portableAdapterConfig(adapter.id)
+        : undefined;
+      const authoritativePersisted = workspaceReady && persisted;
+      const state = authoritativePersisted?.state
+        || (adapter.capabilities.directChat ? 'available' : portable?.configured ? 'available' : 'not_installed');
+      const reason = authoritativePersisted?.reason
+        || (portable?.configured && !workspaceReady ? 'Ready when the workspace starts.' : portable?.reason);
       return {
         id: adapter.id,
         displayName: adapter.displayName,
-        state: persisted?.state || (adapter.capabilities.directChat ? 'available' : 'not_installed'),
-        reason: persisted?.reason,
-        supportedModels: persisted?.supportedModels,
-        runtimeVersion: persisted?.runtimeVersion,
-        consecutiveFailures: persisted?.consecutiveFailures || 0,
-        circuitOpenUntil: persisted?.circuitOpenUntil,
+        state,
+        reason,
+        supportedModels: authoritativePersisted?.supportedModels || (portable?.configured ? [portable.model] : undefined),
+        runtimeVersion: authoritativePersisted?.runtimeVersion,
+        consecutiveFailures: authoritativePersisted?.consecutiveFailures || 0,
+        circuitOpenUntil: authoritativePersisted?.circuitOpenUntil,
         capabilities: adapter.capabilities,
       };
     });
