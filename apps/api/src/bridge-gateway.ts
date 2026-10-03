@@ -344,7 +344,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
       }
       if (message.kind === 'ADAPTER_STATUS' && message.adapterId && message.adapter) {
         await persistAdapterState(claims, String(message.adapterId), message.adapter);
-        console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}`);
+        console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}${message.adapter.reason ? `:${message.adapter.reason}` : ''}`);
         if (message.adapter.state === 'ready' || message.adapter.state === 'failed') {
           void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after adapter state change failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         }
