@@ -245,6 +245,8 @@ export interface HarnessCheckpoint {
   stagnantReflections?: number;
   /** Persistent verified lessons supplied to this run. */
   lessonsApplied?: string[];
+  /** Retrieved lesson IDs already contradicted by a verified outcome in this task. */
+  memoryContradictionsApplied?: string[];
   /** Mandatory evidence-grounded review performed by the selected model before Build finalization. */
   modelReviewAttempts?: number;
   modelReviewModelId?: string;
