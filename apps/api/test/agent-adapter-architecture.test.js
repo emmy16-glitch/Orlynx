@@ -115,7 +115,7 @@ test('AI overview exposes configured portable adapters before a workspace is rea
   assert.match(routes, /portableAdapterConfig\(adapter\.id\)/);
   assert.match(routes, /portable\?\.configured \? 'available' : 'not_installed'/);
   assert.match(routes, /Ready when the workspace starts\./);
-  assert.match(routes, /const authoritativePersisted = workspaceReady && persisted/);
+  assert.match(routes, /const authoritativePersisted = workspaceReady \? persisted : undefined/);
   assert.match(config, /https:\/\/openrouter\.ai\/api\/v1/);
   assert.match(config, /openrouter\/poolside\/laguna-s-2\.1:free/);
   assert.match(config, /ORLYNX_OPENROUTER_API_KEY/);
