@@ -102,11 +102,14 @@ export async function runPortable(id: string, payload: Record<string, unknown>, 
   if (processes.size || clineRuns.size) throw new Error('workspace_conflict: another adapter is still running.');
   if (id === 'cline') return runCline(payload, host);
   const model = String(payload.modelId || '');
-  if (model !== process.env.ORLYNX_MINI_SWE_MODEL) throw new Error('provider_unavailable: selected model differs from the configured mini-SWE model; no model substitution is allowed.');
+  const miniSweBase = adapterBase('mini-swe');
+  const miniSweModel = adapterModel('mini-swe');
+  if (model !== miniSweModel) throw new Error('provider_unavailable: selected model differs from the configured mini-SWE model; no model substitution is allowed.');
   const env = host.environment();
   // Only the model runner receives optional provider configuration; command
   // execution happens in the Bridge with its separate stripped environment.
-  env.ORLYNX_MINI_SWE_API_BASE = process.env.ORLYNX_MINI_SWE_API_BASE;
+  env.ORLYNX_MINI_SWE_API_BASE = miniSweBase;
+  env.ORLYNX_MINI_SWE_MODEL = miniSweModel;
   env.ORLYNX_MINI_SWE_API_KEY = adapterProviderKey('mini-swe');
   const child = spawn(python(), ['-u', fileURLToPath(new URL('./mini-swe-runtime.py', import.meta.url))], { cwd: host.root, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let finish!: () => void;
@@ -167,13 +170,15 @@ export async function runPortable(id: string, payload: Record<string, unknown>, 
 export async function runCline(payload: Record<string, unknown>, host: PortableHost): Promise<Record<string, unknown>> {
   if (processes.size || clineRuns.size) throw new Error('workspace_conflict: another adapter is still running.');
   const model = String(payload.modelId || '');
-  if (!process.env.ORLYNX_CLINE_API_BASE || model !== process.env.ORLYNX_CLINE_MODEL) throw new Error('provider_unavailable: selected model is not configured for Cline; model substitution is forbidden.');
+  const clineBase = adapterBase('cline');
+  const clineModel = adapterModel('cline');
+  if (model !== clineModel) throw new Error('provider_unavailable: selected model is not configured for Cline; model substitution is forbidden.');
   const taskId = String(payload.taskId || '');
   const readOnly = payload.mode !== 'build' || payload.permission !== 'full';
   let lastProgress = Date.now();
   let interruptionReason = '';
   const agent = new Agent({ providerId: 'openai-compatible', modelId: model.split('/').slice(1).join('/'),
-    baseUrl: process.env.ORLYNX_CLINE_API_BASE, apiKey: adapterProviderKey('cline') || 'local-endpoint',
+    baseUrl: clineBase, apiKey: adapterProviderKey('cline') || 'local-endpoint',
     maxIterations: 60, toolPolicies: { '*': { autoApprove: true } },
     systemPrompt: String(payload.system || '') + '\nYou execute an Orlynx task. Use the command tool to inspect files, edit when allowed, and verify. Never push or publish. Return concise observable results, never private reasoning.',
     tools: [{ name: 'command', description: 'Run a repository command through Orlynx permission and publication policy.',
