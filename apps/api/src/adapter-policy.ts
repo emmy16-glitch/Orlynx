@@ -17,9 +17,9 @@ export function classifyAgentFailure(detail: string): AgentFailure {
     ['workspace_unavailable', /workspace.*(?:unavailable|disconnected)|bridge.*(?:lost|closed)/i],
     ['provider_unavailable', /502|503|504|provider.*unavailable|ServiceUnavailable|APIConnectionError/i],
     ['adapter_protocol_error', /protocol|invalid.*json|unsupported.*runtime/i],
-    ['runtime_unavailable', /unavailable|ECONN|fetch failed|socket|not installed/i],
+    ['runtime_unavailable', /unavailable|ECONN|fetch failed|socket|not installed|\bno (?:shell|terminal)\b|missing (?:shell|exec)(?:\/exec)? capability|(?:shell|terminal|command tool|exec tool) (?:is )?not available/i],
     ['runtime_crash', /crash|exited|signal/i],
-    ['tool_failure', /tool.*fail/i],
+    ['tool_failure', /tool.*fail|command not found|executable.*(?:missing|not found)|spawn \S+ ENOENT/i],
   ];
   // Adapters emit machine codes. Preserve those before applying heuristics to
   // unstructured upstream diagnostics (which may mention another error code).
