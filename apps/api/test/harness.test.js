@@ -11,9 +11,12 @@ import {
   classifyVerificationFailure,
   harnessBudgetStatus,
   harnessSystemInstruction,
+  markInvestigationLearned,
+  markInvestigationVerifying,
   normalizeHarnessPlanItems,
   detectEvidenceContradictions,
   openCodeToolsFor,
+  parseInvestigationDiagnostic,
   prepareReflection,
   queueIntentFor,
   reflectionInstruction,
@@ -38,10 +41,10 @@ test('IPv6 localhost failure cannot invalidate verified IPv4/provider Preview ev
   assert.equal(shouldReflect(verified, 'The application is reachable at the verified Preview URL.'), false);
 });
 
-test('unknown verification becomes a durable Investigation, captures the model hypothesis, and resolves from evidence', () => {
+test('unknown verification advances through the complete durable Investigation lifecycle', () => {
   let checkpoint = createHarnessCheckpoint({ prompt: 'start localhost preview', mode: 'build', permission: 'full', plane: 'workspace' });
   const firstEvents = [
-    evt(1, 'tool.completed', { command: 'curl http://127.0.0.1:5173/', semanticType: 'preview', exitCode: 0, out: 'HTTP/1.1 200 OK' }),
+    { ...evt(1, 'tool.completed', { command: 'curl http://127.0.0.1:5173/', semanticType: 'preview', exitCode: 0, out: 'HTTP/1.1 200 OK' }), timestamp: '2026-10-02T12:00:00.500Z' },
   ];
   checkpoint = verifyHarness(checkpoint, firstEvents, '2026-10-02T12:00:00.000Z');
   checkpoint = prepareReflection(checkpoint, firstEvents, '2026-10-02T12:00:01.000Z');
@@ -49,30 +52,53 @@ test('unknown verification becomes a durable Investigation, captures the model h
   assert.match(checkpoint.investigation?.question || '', /cannot verify preview/i);
   const investigationId = checkpoint.investigation?.id;
 
-  checkpoint = updateInvestigationFromOutcome(
-    checkpoint,
-    'Model → Orlynx: localhost is healthy; verify the provider forwarding layer before changing Vite.',
-    firstEvents,
-    '2026-10-02T12:00:02.000Z',
-  );
+  const diagnostic = 'Model → Orlynx: Hypothesis: provider forwarding is missing | Evidence: localhost returns 200 | Next check: inspect provider forwarding';
+  assert.deepEqual(parseInvestigationDiagnostic(diagnostic), {
+    raw: 'Hypothesis: provider forwarding is missing | Evidence: localhost returns 200 | Next check: inspect provider forwarding',
+    hypothesis: 'provider forwarding is missing',
+    evidence: 'localhost returns 200',
+    nextCheck: 'inspect provider forwarding',
+  });
+  checkpoint = updateInvestigationFromOutcome(checkpoint, diagnostic, firstEvents, '2026-10-02T12:00:02.000Z');
   assert.equal(checkpoint.investigation?.id, investigationId);
-  assert.equal(checkpoint.investigation?.stage, 'testing');
-  assert.match(checkpoint.investigation?.hypothesis || '', /provider forwarding/i);
+  assert.equal(checkpoint.investigation?.stage, 'hypothesis');
+  assert.equal(checkpoint.investigation?.nextCheck, 'inspect provider forwarding');
 
-  const resolvedEvents = [
+  const testingEvents = [
     ...firstEvents,
-    evt(2, 'preview.ready', { port: 5173, url: 'https://workspace-5173.app.github.dev', verified: true }),
+    { ...evt(2, 'tool.completed', { command: 'inspect forwarding', out: 'port is not forwarded' }), timestamp: '2026-10-02T12:00:02.500Z' },
   ];
-  checkpoint = verifyHarness(checkpoint, resolvedEvents, '2026-10-02T12:00:03.000Z');
+  checkpoint = updateInvestigationFromOutcome(checkpoint, diagnostic, testingEvents, '2026-10-02T12:00:03.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'testing');
+
+  const repairEvents = [
+    ...testingEvents,
+    { ...evt(3, 'file.changed', { path: 'vite.config.ts' }), timestamp: '2026-10-02T12:00:03.500Z' },
+  ];
   checkpoint = updateInvestigationFromOutcome(
     checkpoint,
-    'Model → Orlynx: provider forwarding is now confirmed and the browser Preview is reachable.',
-    resolvedEvents,
+    'Model → Orlynx: Hypothesis: forwarding config was missing | Evidence: provider rejected the port | Next check: retry Preview | Repair action: changed forwarding-safe config',
+    repairEvents,
     '2026-10-02T12:00:04.000Z',
   );
+  assert.equal(checkpoint.investigation?.stage, 'repairing');
+  assert.match(checkpoint.investigation?.repairAction || '', /forwarding-safe config/i);
+
+  checkpoint = markInvestigationVerifying(checkpoint, '2026-10-02T12:00:05.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'verifying');
+
+  const resolvedEvents = [
+    ...repairEvents,
+    { ...evt(4, 'preview.ready', { port: 5173, url: 'https://workspace-5173.app.github.dev', verified: true }), timestamp: '2026-10-02T12:00:05.500Z' },
+  ];
+  checkpoint = verifyHarness(checkpoint, resolvedEvents, '2026-10-02T12:00:06.000Z');
+  checkpoint = updateInvestigationFromOutcome(checkpoint, 'Preview is verified.', resolvedEvents, '2026-10-02T12:00:07.000Z');
   assert.equal(checkpoint.investigation?.stage, 'resolved');
   assert.match(checkpoint.investigation?.outcome || '', /Verified: preview/i);
-  assert.equal(checkpoint.investigation?.resolvedAt, '2026-10-02T12:00:04.000Z');
+
+  checkpoint = markInvestigationLearned(checkpoint, ['lesson_preview'], '2026-10-02T12:00:08.000Z');
+  assert.equal(checkpoint.investigation?.stage, 'learned');
+  assert.match(checkpoint.investigation?.outcome || '', /lesson_preview/i);
 });
 
 test('exhausted Investigation is blocked with a concrete reason instead of silently becoming certainty', () => {
@@ -448,7 +474,7 @@ test('Investigation state survives reason-act-observe cycles and resolves only o
     localEvidence,
     '2026-10-02T10:00:01.000Z',
   );
-  assert.equal(cp.investigation?.stage, 'testing');
+  assert.equal(cp.investigation?.stage, 'hypothesis');
   assert.match(cp.investigation?.hypothesis || '', /provider forwarding/i);
 
   const verifiedEvents = [
@@ -569,13 +595,19 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
   assert.match(storage, /CREATE TABLE IF NOT EXISTS agent_lessons/);
   assert.match(storage, /confidence real NOT NULL DEFAULT 0\.65/);
+  assert.match(storage, /contradiction_count integer NOT NULL DEFAULT 0/);
+  assert.match(storage, /status text NOT NULL DEFAULT 'active'/);
   assert.match(storage, /last_verified_at/);
   assert.match(storage, /LEAST\(0\.98,GREATEST\(agent_lessons\.confidence,EXCLUDED\.confidence\)\+0\.05\)/);
+  assert.match(storage, /confidence=GREATEST\(0\.10,confidence-0\.15\)/);
+  assert.match(storage, /contradiction_count\+1 >= 3/);
   assert.match(storage, /putAgentLesson/);
   assert.match(storage, /listAgentLessons/);
   assert.match(memory, /rememberVerifiedLesson/);
   assert.match(memory, /investigation\?\.hypothesis/);
   assert.match(memory, /confidence: 0\.65/);
+  assert.match(memory, /lessonKindFor/);
+  assert.match(memory, /MEMORY_CONTRADICTION/);
   assert.match(memory, /verification\.status !== 'passed'/);
   assert.match(memory, /Verified Orlynx experience from earlier successful work/);
   assert.match(memory, /scope: 'environment'/);
