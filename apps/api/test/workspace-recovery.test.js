@@ -77,6 +77,16 @@ test('workspace bootstrap carries control-plane provider credentials across ever
   assert.match(remoteWorker, /openCodeApiKey\?: string; openRouterApiKey\?: string/);
   assert.match(remoteWorker, /OPENCODE_API_KEY=\$\{body\.openCodeApiKey\}/);
   assert.match(remoteWorker, /ORLYNX_OPENROUTER_API_KEY=\$\{body\.openRouterApiKey\}/);
+  assert.match(apiWorker, /bridgeRuntimeAssets\(\)/);
+  assert.match(apiWorker, /hash\.update\(asset\.name\)\.update\('\\0'\)\.update\(asset\.content\)/);
+  assert.match(apiWorker, /'@cline\/agents': CLINE_SDK_VERSION/);
+  assert.match(apiWorker, /mini-swe-agent==\$\{MINI_SWE_VERSION\}/);
+  assert.match(apiWorker, /ORLYNX_MINI_SWE_PYTHON=%s/);
+  assert.match(remoteWorker, /function bridgeRuntimeAssets\(\)/);
+  assert.match(remoteWorker, /bootstrapScript\(body, assets\)/);
+  assert.match(remoteWorker, /'@cline\/agents': CLINE_SDK_VERSION/);
+  assert.match(remoteWorker, /mini-swe-agent==\$\{MINI_SWE_VERSION\}/);
+  assert.match(remoteWorker, /ORLYNX_CLINE_MODEL=\$\{body\.clineModel\}/);
 });
 
 test('workspace OpenCode readiness ignores one transient health miss before declaring unavailable', () => {
