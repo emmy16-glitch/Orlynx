@@ -1735,12 +1735,12 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
 
     const now = new Date().toISOString();
     const partial = String(task.partialText || '').trim();
-    const salvageAttempts = Number(task.harness?.salvageAttempts || 0);
+    const runtimeRecoveryAttempts = Number(task.harness?.runtimeRecoveryAttempts || 0);
 
     // Direct Ask/Plan is non-mutating. If no visible response escaped before
     // the process died, retry the SAME durable task once automatically rather
     // than forcing the user to type "??". This is bounded and preserves run ID.
-    if (!partial && salvageAttempts < 1) {
+    if (!partial && runtimeRecoveryAttempts < 2) {
       task.harness ||= createHarnessCheckpoint({
         prompt: task.prompt,
         mode: task.mode || 'ask',
@@ -1757,7 +1757,7 @@ export async function recoverInterruptedDirectRuns(sessionId: string): Promise<v
       Object.assign(task, steered);
       task.harness = {
         ...task.harness!,
-        salvageAttempts: salvageAttempts + 1,
+        runtimeRecoveryAttempts: runtimeRecoveryAttempts + 1,
         phase: 'routing',
         updatedAt: now,
         lastCheckpointAt: now,
