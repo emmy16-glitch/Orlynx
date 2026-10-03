@@ -115,9 +115,9 @@ test('steady heartbeats remain state-only while actionable failures surface once
 
 test('session-level inactive adapter failures stay health-only after failover', () => {
   const state = applyRawAgentEvents(emptyAgentStreamState(), [
-    raw('1', 1, 'state.delta', undefined, { scope: 'agent-adapter', adapterId: 'mini-swe', state: 'unavailable', reason: 'provider_auth: rejected credential' }),
-    raw('2', 2, 'state.delta', undefined, { scope: 'agent-adapter', adapterId: 'cline', state: 'unavailable', reason: 'provider_auth: rejected credential' }),
-    raw('3', 3, 'state.delta', undefined, { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }),
+    raw('1', 1, 'state.delta', null, { scope: 'agent-adapter', adapterId: 'mini-swe', state: 'unavailable', reason: 'provider_auth: rejected credential' }),
+    raw('2', 2, 'state.delta', null, { scope: 'agent-adapter', adapterId: 'cline', state: 'unavailable', reason: 'provider_auth: rejected credential' }),
+    raw('3', 3, 'state.delta', null, { scope: 'agent-adapter', adapterId: 'opencode', state: 'ready' }),
     raw('4', 4, 'run.started', 'run-fallback', { messageId: 'user-fallback', plane: 'workspace', model: 'opencode/free' }),
   ]);
   assert.equal(selectActivities(state).filter(item => /AI connection needs attention|AI runtime unavailable/.test(item.title)).length, 0);
