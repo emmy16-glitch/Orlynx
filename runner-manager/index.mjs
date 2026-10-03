@@ -435,6 +435,10 @@ async function connectWorkspace(name, body) {
   const openCodePassword = String(body.openCodePassword || '');
   const openCodeApiKey = String(body.openCodeApiKey || '');
   const openRouterApiKey = String(body.openRouterApiKey || '');
+  const miniSweApiBase = String(body.miniSweApiBase || '');
+  const miniSweModel = String(body.miniSweModel || '');
+  const clineApiBase = String(body.clineApiBase || '');
+  const clineModel = String(body.clineModel || '');
   const githubToken = String(body.githubToken || '');
   if (!bridgeUrl.startsWith('wss://') || !bridgeToken || !openCodePassword || !githubToken) throw new Error('invalid bridge configuration');
   if (!(await inspect(name))) throw new Error('runner not found');
@@ -451,6 +455,10 @@ async function connectWorkspace(name, body) {
     ORLYNX_REPO_ROOT: '/workspace/repo',
     OPENCODE_API_KEY: openCodeApiKey,
     ORLYNX_OPENROUTER_API_KEY: openRouterApiKey,
+    ORLYNX_MINI_SWE_API_BASE: miniSweApiBase,
+    ORLYNX_MINI_SWE_MODEL: miniSweModel,
+    ORLYNX_CLINE_API_BASE: clineApiBase,
+    ORLYNX_CLINE_MODEL: clineModel,
     ORLYNX_GITHUB_TOKEN: githubToken,
   };
   const exports = Object.entries(values)
