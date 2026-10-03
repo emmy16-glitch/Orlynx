@@ -82,15 +82,17 @@ function continuationPayload(
 }
 
 
-async function runIndependentReviewer(input: {
+async function runIndependentDelegate(input: {
   workspaceId: string;
   sessionId: string;
   taskId: string;
   runId?: string;
   modelId: string;
+  role: 'architect' | 'reviewer';
   instruction: string;
 }): Promise<string | undefined> {
-  const delegationId = `review_${uuid()}`;
+  const delegationId = `${input.role}_${uuid()}`;
+  const label = input.role === 'architect' ? 'architect' : 'reviewer';
   const startedAt = new Date().toISOString();
   await persistLiveEvent({
     eventId: `evt_${uuid()}`,
@@ -102,9 +104,9 @@ async function runIndependentReviewer(input: {
     timestamp: startedAt,
     payload: {
       delegationId,
-      role: 'reviewer',
+      role: input.role,
       modelId: input.modelId,
-      text: 'Independent reviewer started · read-only evidence challenge.',
+      text: `Independent ${label} started · read-only evidence analysis.`,
     },
   });
 
@@ -115,16 +117,16 @@ async function runIndependentReviewer(input: {
       {
         path: '/session',
         method: 'POST',
-        body: { title: `Orlynx independent reviewer ${input.runId || input.taskId}` },
+        body: { title: `Orlynx independent ${label} ${input.runId || input.taskId}` },
         timeoutMs: 15_000,
       },
       20_000,
     );
     const engineSessionId = String(created.body?.id || '');
-    if (!engineSessionId) throw new Error('Independent reviewer session was not created.');
+    if (!engineSessionId) throw new Error(`Independent ${label} session was not created.`);
 
     const [providerID, ...modelParts] = input.modelId.split('/');
-    if (!providerID || !modelParts.length) throw new Error('Independent reviewer model id is invalid.');
+    if (!providerID || !modelParts.length) throw new Error(`Independent ${label} model id is invalid.`);
     const modelID = modelParts.join('/');
 
     await bridgeRequest(
@@ -171,7 +173,7 @@ async function runIndependentReviewer(input: {
       }
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
-    if (!idle) throw new Error('Independent reviewer timed out before returning to idle.');
+    if (!idle) throw new Error(`Independent ${label} timed out before returning to idle.`);
 
     const messages = await bridgeRequest<{ status: number; body?: Array<{ info?: Record<string, unknown>; parts?: Array<Record<string, unknown>> }> }>(
       input.workspaceId,
@@ -186,7 +188,7 @@ async function runIndependentReviewer(input: {
       .join('')
       .trim()
       .slice(0, 8_000);
-    if (!text) throw new Error('Independent reviewer completed without a readable response.');
+    if (!text) throw new Error(`Independent ${label} completed without a readable response.`);
 
     await persistLiveEvent({
       eventId: `evt_${uuid()}`,
@@ -198,11 +200,11 @@ async function runIndependentReviewer(input: {
       timestamp: new Date().toISOString(),
       payload: {
         delegationId,
-        role: 'reviewer',
+        role: input.role,
         modelId: input.modelId,
         state: 'completed',
         summary: text.slice(0, 1_200),
-        text: 'Independent reviewer finished · findings returned to the primary agent.',
+        text: `Independent ${label} finished · findings returned to the primary agent.`,
       },
     });
     return text;
@@ -217,15 +219,23 @@ async function runIndependentReviewer(input: {
       timestamp: new Date().toISOString(),
       payload: {
         delegationId,
-        role: 'reviewer',
+        role: input.role,
         modelId: input.modelId,
         state: 'failed',
-        error: error instanceof Error ? error.message.slice(0, 1_000) : 'Independent reviewer failed.',
-        text: 'Independent reviewer was unavailable · primary verification continues without fabricating a review.',
+        error: error instanceof Error ? error.message.slice(0, 1_000) : `Independent ${label} failed.`,
+        text: `Independent ${label} was unavailable · primary execution continues without fabricating a delegation result.`,
       },
     });
     return undefined;
   }
+}
+
+async function runIndependentReviewer(input: Omit<Parameters<typeof runIndependentDelegate>[0], 'role'>): Promise<string | undefined> {
+  return runIndependentDelegate({ ...input, role: 'reviewer' });
+}
+
+async function runIndependentArchitect(input: Omit<Parameters<typeof runIndependentDelegate>[0], 'role'>): Promise<string | undefined> {
+  return runIndependentDelegate({ ...input, role: 'architect' });
 }
 
 type BridgeAdapterState = { state?: string; reason?: string };
@@ -1178,8 +1188,36 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 },
               });
 
+              const architectReview = task.modelId && (
+                Number(task.harness.reflectionAttempts || 0) >= 2
+                || Number(task.harness.stagnantReflections || 0) > 0
+                || task.harness.verificationFailureClass === 'unknown'
+              )
+                ? await runIndependentArchitect({
+                    workspaceId: claims.workspaceId,
+                    sessionId: claims.sessionId,
+                    taskId,
+                    runId,
+                    modelId: task.modelId,
+                    instruction: [
+                      'You are Orlynx\'s independent read-only architect in a separate agent session.',
+                      `Task: ${task.prompt}`,
+                      `Missing verification: ${task.harness.verification.missing.join(', ') || 'unknown'}`,
+                      `Failure class: ${task.harness.verificationFailureClass || 'unknown'}`,
+                      task.harness.investigation?.question ? `Investigation question: ${task.harness.investigation.question}` : '',
+                      task.harness.investigation?.hypothesis ? `Current hypothesis: ${task.harness.investigation.hypothesis}` : '',
+                      task.harness.investigation?.nextCheck ? `Current next check: ${task.harness.investigation.nextCheck}` : '',
+                      task.harness.reflectionEvidence?.length ? `Evidence: ${task.harness.reflectionEvidence.join(' | ')}` : '',
+                      'Do not edit files. Challenge the current diagnosis and return: ARCHITECT HYPOTHESIS, EVIDENCE, and ONE DISCRIMINATING NEXT CHECK. Prefer a different diagnostic path if the primary run is stagnant.',
+                    ].filter(Boolean).join('\n\n'),
+                  })
+                : undefined;
+
               const continuation = [
                 reflectionInstruction(task.harness, lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`)),
+                architectReview
+                  ? `Independent architect findings from a separate read-only agent session:\n${architectReview}\nTreat this as a challenge, not authority. Test the proposed next check before changing code.`
+                  : '',
                 agentMemoryInstruction(lessons),
                 publishError ? `Controlled publish note: ${publishError}` : '',
                 task.harness.verification.missing.includes('publish')
