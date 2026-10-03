@@ -250,7 +250,7 @@ async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'r
     const adapterState = ['not_installed','installing','starting','ready','busy','unavailable','failed'].includes(String(adapter.state))
       ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
       : 'unavailable';
-    await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state: adapterState, reason: adapter.reason, updatedAt: now });
+    await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state: adapterState, reason: adapter.reason, supportedModels: adapter.supportedModels, freeModels: adapter.freeModels, runtimeVersion: adapter.runtimeVersion, updatedAt: now });
     await persistLiveEvent({
       eventId: `evt_${uuid()}`,
       sessionId: claims.sessionId,

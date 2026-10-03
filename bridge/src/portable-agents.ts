@@ -26,10 +26,15 @@ export function adapterProviderKey(id: string): string | undefined {
   return own || (/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base) ? process.env.ORLYNX_OPENROUTER_API_KEY : undefined);
 }
 
-async function providerAuthentication(base: string, key?: string): Promise<boolean> {
-  if (!/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base)) return true;
-  if (!key) return false;
-  try { const response=await fetch(`${base.replace(/\/$/,'')}/auth/key`,{headers:{Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(3000)});return response.ok; } catch { return false; }
+async function providerAuthentication(base: string, key?: string): Promise<string | undefined> {
+  if (!/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base)) return undefined;
+  if (!key) return 'provider_auth: Configure an OpenRouter key for this runner.';
+  try {
+    const response=await fetch(`${base.replace(/\/$/,'')}/auth/key`,{headers:{Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(3000)});
+    if (response.ok) return undefined;
+    if ([401,403].includes(response.status)) return 'provider_auth: OpenRouter rejected this runner credential.';
+    return response.status===429 ? 'provider_rate_limit: OpenRouter authentication probe was rate limited.' : 'provider_unavailable: OpenRouter authentication probe failed.';
+  } catch { return 'provider_unavailable: OpenRouter authentication probe is unreachable.'; }
 }
 
 const python = () => process.env.ORLYNX_MINI_SWE_PYTHON || (fs.existsSync('/opt/orlynx/mini-swe/bin/python') ? '/opt/orlynx/mini-swe/bin/python' : fileURLToPath(new URL('../../.runner-mini-swe/bin/python', import.meta.url)));
@@ -39,7 +44,8 @@ export async function portableHealth(id: string, root: string): Promise<{ state:
   if (!fs.existsSync(root)) return { state: 'unavailable', reason: 'workspace_unavailable' };
   if (id === 'cline') {
     if (!process.env.ORLYNX_CLINE_API_BASE || !process.env.ORLYNX_CLINE_MODEL) return { state: 'not_installed', reason: 'Configure a compatible local/free Cline model endpoint.' };
-    if (!await providerAuthentication(process.env.ORLYNX_CLINE_API_BASE,adapterProviderKey('cline'))) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for Cline.'};
+    const authenticationFailure=await providerAuthentication(process.env.ORLYNX_CLINE_API_BASE,adapterProviderKey('cline'));
+    if (authenticationFailure) return {state:'unavailable',reason:authenticationFailure};
     try {
       const response = await fetch(`${process.env.ORLYNX_CLINE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('cline') ? { Authorization: `Bearer ${adapterProviderKey('cline')}` } : {} });
       const body = await response.json() as { data?: Array<{ id: string; pricing?: {prompt?: string; completion?: string} }> };
@@ -50,7 +56,8 @@ export async function portableHealth(id: string, root: string): Promise<{ state:
     } catch { return { state: 'unavailable', reason: 'Cline model endpoint is unreachable.' }; }
   }
   if (!process.env.ORLYNX_MINI_SWE_API_BASE || !process.env.ORLYNX_MINI_SWE_MODEL) return { state: 'not_installed', reason: 'Configure a local/free compatible model endpoint and install mini-SWE 2.4.6.' };
-  if (!await providerAuthentication(process.env.ORLYNX_MINI_SWE_API_BASE,adapterProviderKey('mini-swe'))) return {state:'unavailable',reason:'provider_auth: Configure a valid OpenRouter key for mini-SWE.'};
+  const authenticationFailure=await providerAuthentication(process.env.ORLYNX_MINI_SWE_API_BASE,adapterProviderKey('mini-swe'));
+  if (authenticationFailure) return {state:'unavailable',reason:authenticationFailure};
   if (!pythonProbe || pythonProbe.binary!==python() || Date.now()-pythonProbe.at>300000) {
     try {
       await runFile(python(), ['-c', 'import minisweagent; from minisweagent.agents.default import DefaultAgent; from minisweagent.models.litellm_model import LitellmModel; assert minisweagent.__version__ == "2.4.6"'], { timeout: 10000 });
@@ -103,7 +110,7 @@ export async function runPortable(id: string, payload: Record<string, unknown>, 
   let lastProgress = Date.now();
   const watchdog = setInterval(() => { if (Date.now() - lastProgress > 6 * 60_000) { failure = 'stream_stall'; void cancelPortable(taskId); } }, 5000);
   const readOnly = payload.mode !== 'build' || payload.permission !== 'full';
-  const timer = setTimeout(() => { failure = 'runtime_timeout'; void cancelPortable(taskId); }, 30 * 60_000);
+  const timer = setTimeout(() => { failure = 'runtime_timeout'; void cancelPortable(taskId); }, Math.max(1000,Math.min(Number(payload.timeoutMs) || 30 * 60_000,30 * 60_000)));
   const reader = createInterface({ input: child.stdout! });
   reader.on('line', line => {
     queue = queue.then(async () => {
@@ -154,6 +161,7 @@ export async function runCline(payload: Record<string, unknown>, host: PortableH
   const taskId = String(payload.taskId || '');
   const readOnly = payload.mode !== 'build' || payload.permission !== 'full';
   let lastProgress = Date.now();
+  let interruptionReason = '';
   const agent = new Agent({ providerId: 'openai-compatible', modelId: model.split('/').slice(1).join('/'),
     baseUrl: process.env.ORLYNX_CLINE_API_BASE, apiKey: adapterProviderKey('cline') || 'local-endpoint',
     maxIterations: 60, toolPolicies: { '*': { autoApprove: true } },
@@ -181,16 +189,18 @@ export async function runCline(payload: Record<string, unknown>, host: PortableH
   let finish!: () => void;
   const stopped = new Promise<void>(resolve => { finish = resolve; });
   clineRuns.set(taskId, { agent, stopped });
-  const deadline = setTimeout(() => agent.abort('runtime_timeout'), 30 * 60_000);
-  const watchdog = setInterval(() => { if (Date.now() - lastProgress > 6 * 60_000) agent.abort('stream_stall'); }, 5000);
+  const deadline = setTimeout(() => { interruptionReason='runtime_timeout'; agent.abort(interruptionReason); }, Math.max(1000,Math.min(Number(payload.timeoutMs) || 30 * 60_000,30 * 60_000)));
+  const watchdog = setInterval(() => { if (Date.now() - lastProgress > 6 * 60_000) { interruptionReason='stream_stall'; agent.abort(interruptionReason); } }, 5000);
   try {
     const task = [payload.handoff ? `Orlynx observable checkpoint:\n${JSON.stringify(payload.handoff)}` : '', String(payload.text || '')].filter(Boolean).join('\n\n');
     const result = await agent.run(task);
+    if (interruptionReason) throw new Error(interruptionReason);
     if (result.status !== 'completed') {
       const detail = JSON.stringify(result.error || result.status);
       const code = /rate.?limit|429/i.test(detail) ? 'provider_rate_limit' : /401|403|auth/i.test(detail) ? 'provider_auth' : /timeout/i.test(detail) ? 'runtime_timeout' : /abort|cancel/i.test(detail) ? 'user_cancelled' : /context.*limit/i.test(detail) ? 'context_limit' : /connect|503|502|unavailable/i.test(detail) ? 'provider_unavailable' : 'runtime_crash';
       throw new Error(code);
     }
     return { responseText: result.outputText, diff: host.changes() };
+  } catch (error) { if(interruptionReason)throw new Error(interruptionReason);throw error;
   } finally { clearTimeout(deadline); clearInterval(watchdog); clineRuns.delete(taskId); finish(); }
 }

@@ -64,8 +64,13 @@ Set `ORLYNX_MINI_SWE_API_BASE`, `ORLYNX_MINI_SWE_MODEL`,
 services. For OpenRouter the Orlynx model ID includes the provider prefix:
 `openrouter/poolside/laguna-s-2.1:free`. The SDK receives the model part.
 One `ORLYNX_OPENROUTER_API_KEY` can serve both adapters and the workspace OpenCode provider; adapter-specific keys override it. The shared key is used only for OpenRouter endpoints. Never put provider keys in a prompt, repository or public checkpoint.
-Native runners can install Python runtime asynchronously at startup with
-`ORLYNX_INSTALL_MINI_SWE=1`; failure leaves OpenCode available. Docker includes
+Native runners install Python during the bridge build when
+`ORLYNX_INSTALL_MINI_SWE=1`, then verify the actual upstream import. The install
+location is repository-relative even when npm builds from the bridge directory.
+Startup only attempts asynchronous installation if the prepared binary is absent;
+that fallback cannot block OpenCode. Credential-safe startup readiness logs probe
+both portable adapters after preparation, distinguishing missing/rejected keys
+from rate limits and unreachable providers. Docker includes
 mini-SWE by default (`INSTALL_MINI_SWE=false` opts out). Native Python 3/venv
 availability remains a deployment prerequisite. Cline is shipped by npm lockfile.
 
