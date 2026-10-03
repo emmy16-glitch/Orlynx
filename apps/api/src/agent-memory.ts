@@ -128,9 +128,10 @@ function knowledgePredicate(kind: AgentLessonKind): string {
 
 export function memoryContradictionIds(finalText: string, allowedIds: string[] = []): string[] {
   const allowed = new Set(allowedIds.filter(Boolean));
+  if (!allowed.size) return [];
   const ids = [...String(finalText || '').matchAll(/\[MEMORY_CONTRADICTION:([A-Za-z0-9_.:-]{3,160})\]/g)]
     .map((match) => match[1])
-    .filter((id) => allowed.size === 0 || allowed.has(id));
+    .filter((id) => allowed.has(id));
   return [...new Set(ids)].slice(0, 20);
 }
 
