@@ -2039,7 +2039,7 @@ function ConnectAiSheet({ view, models, providers, adapters, selectedAdapterId, 
           >
             <span className={`ai-control-state state-${choice.state}`} aria-hidden="true" />
             <span className="ai-agent-menu-copy"><b>{choice.displayName}</b><small>{choice.detail}</small></span>
-            {selected ? <Icon name="check" size={13} /> : <span className="ai-agent-coming-soon">{choice.enabled ? '' : 'Soon'}</span>}
+            {selected ? <Icon name="check" size={13} /> : <span className="ai-agent-coming-soon">{choice.enabled ? 'Ready' : 'Unavailable'}</span>}
           </button>;
         })}
       </div>
