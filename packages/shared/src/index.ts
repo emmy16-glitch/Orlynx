@@ -223,6 +223,8 @@ export interface HarnessCheckpoint {
   lastProgressAt?: string;
   lastCheckpointAt?: string;
   salvageAttempts: number;
+  /** Safe infrastructure retries are independent of reasoning/reflection attempts. */
+  runtimeRecoveryAttempts?: number;
   /** Durable OpenHands/LangGraph-style Investigation state. */
   investigation?: HarnessInvestigation;
   /** Model-guided reason/act/observe cycles after an unexpected result. */
