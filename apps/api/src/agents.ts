@@ -967,7 +967,7 @@ async function executeDirectTask(
 
     const transientRuntimeFailure = !visible.trim() && (
       (error instanceof ProviderRequestError && [502, 503, 504].includes(error.statusCode || 0))
-      || /runtime .*unavailable|runtime .*recover|fetch failed|ECONNRESET|socket .*closed|connection .*failed|temporarily unavailable/i.test(detail)
+      || /runtime .*unavailable|runtime .*recover|fetch failed|ECONNRESET|socket .*closed|connection .*failed|temporarily unavailable|did not start streaming in time|first response timed out|stopped making progress before completion/i.test(detail)
     );
     if (transientRuntimeFailure) {
       const brokerRecorded = (error as { brokerRecorded?: string })?.brokerRecorded === 'direct-runtime';
