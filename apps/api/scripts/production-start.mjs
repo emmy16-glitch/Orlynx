@@ -19,6 +19,7 @@ function launch(name, args, { restart = false } = {}) {
   });
   children.set(name, child);
   const startedAt = Date.now();
+  let failureHandled = false;
 
   const scheduleRestart = (detail) => {
     if (stopping) return;
@@ -35,20 +36,22 @@ function launch(name, args, { restart = false } = {}) {
     restartTimers.set(name, timer);
   };
 
-  child.once('exit', (code, signal) => {
+  const handleFailure = (detail, exitCode = 1) => {
+    if (failureHandled || stopping) return;
+    failureHandled = true;
     if (children.get(name) === child) children.delete(name);
-    if (stopping) return;
-    const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
     if (restart) return scheduleRestart(detail);
     console.error(`[production] ${name} exited unexpectedly (${detail}); shutting down so the host can restart cleanly.`);
-    shutdown(code ?? 1);
+    shutdown(exitCode);
+  };
+
+  child.once('exit', (code, signal) => {
+    const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
+    handleFailure(detail, code ?? 1);
   });
 
   child.once('error', (error) => {
-    if (children.get(name) === child) children.delete(name);
-    if (restart) return scheduleRestart(error.message);
-    console.error(`[production] failed to start ${name}: ${error.message}`);
-    shutdown(1);
+    handleFailure(error.message, 1);
   });
 
   return child;
