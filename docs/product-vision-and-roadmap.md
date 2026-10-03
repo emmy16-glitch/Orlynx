@@ -158,19 +158,24 @@ A user can repeatedly move from request → execution → evidence → review �
 
 ### Stage B — Multi-agent runtime choice
 
-Status: **future**
+Status: **partial current + future external adapter**
 
-Goals:
+Implemented now:
 
-- add at least one additional real coding-agent adapter;
-- expose capability-aware agent selection;
-- preserve the same task/event/permission/memory contracts;
-- allow fallback between compatible agents where policy allows;
-- compare agent health without duplicating product state.
+- isolated read-only reviewer delegation in a separate agent session;
+- canonical `subagent.started` / `subagent.finished` lifecycle;
+- reviewer findings are returned to the primary task without replacing its resumable engine-session checkpoint;
+- the same task/event/permission/memory contracts remain authoritative.
+
+Still future:
+
+- add at least one additional real external coding-agent adapter;
+- expose capability-aware external-agent selection and compatible fallback;
+- compare heterogeneous agent health without duplicating product state.
 
 Success condition:
 
-Switching agent changes execution behavior, not the Orlynx product architecture.
+A delegated role can be independently executed today; switching between genuinely different coding runtimes remains a future capability and must not be claimed until a second runtime exists.
 
 ### Stage C — Stronger project intelligence
 
