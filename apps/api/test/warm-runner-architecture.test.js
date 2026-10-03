@@ -467,10 +467,15 @@ test('shared OpenRouter credential follows the authenticated runner connection',
   const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
 
   assert.match(provider, /const openRouterApiKey = process\.env\.ORLYNX_OPENROUTER_API_KEY \|\| ''/);
-  assert.match(provider, /openCodeApiKey,[\s\S]*openRouterApiKey,[\s\S]*githubToken/);
-  assert.match(direct, /ORLYNX_OPENROUTER_API_KEY: String\(body\.openRouterApiKey \|\| ''\)/);
-  assert.match(manager, /const openRouterApiKey = String\(body\.openRouterApiKey \|\| ''\)/);
+  assert.match(provider, /openCodeApiKey,[\s\S]*openRouterApiKey,[\s\S]*miniSweApiBase,[\s\S]*miniSweModel,[\s\S]*clineApiBase,[\s\S]*clineModel,[\s\S]*githubToken/);
+  assert.match(direct, /ORLYNX_OPENROUTER_API_KEY: String\(body\.openRouterApiKey \|\| process\.env\.ORLYNX_OPENROUTER_API_KEY \|\| ''\)/);
+  assert.match(direct, /ORLYNX_MINI_SWE_API_BASE: String\(body\.miniSweApiBase \|\| process\.env\.ORLYNX_MINI_SWE_API_BASE \|\| ''\)/);
+  assert.match(direct, /ORLYNX_CLINE_MODEL: String\(body\.clineModel \|\| process\.env\.ORLYNX_CLINE_MODEL \|\| ''\)/);
+  assert.match(manager, /const openRouterApiKey = String\(body\.openRouterApiKey \|\| process\.env\.ORLYNX_OPENROUTER_API_KEY \|\| ''\)/);
+  assert.match(manager, /const miniSweApiBase = String\(body\.miniSweApiBase \|\| process\.env\.ORLYNX_MINI_SWE_API_BASE \|\| ''\)/);
+  assert.match(manager, /const clineModel = String\(body\.clineModel \|\| process\.env\.ORLYNX_CLINE_MODEL \|\| ''\)/);
   assert.match(manager, /ORLYNX_OPENROUTER_API_KEY: openRouterApiKey/);
+  assert.match(manager, /ORLYNX_CLINE_MODEL: clineModel/);
 });
 
 test('managed runner preview traffic also refreshes workspace activity', () => {
