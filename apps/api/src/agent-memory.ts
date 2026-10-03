@@ -161,6 +161,66 @@ async function persistLesson(value: AgentLessonRecord): Promise<void> {
   await controlPlaneRepository().putAgentLesson(value);
 }
 
+export async function rememberVerifiedProductionOutcome(input: {
+  session: ProjectSession & { userId: string; projectId: string };
+  commitSha: string;
+  deployment: {
+    configured?: boolean;
+    live?: boolean;
+    commitMatches?: boolean;
+    deployId?: string;
+    status?: string;
+    services?: Array<{ serviceId?: string; live?: boolean; commitMatches?: boolean }>;
+    message?: string;
+  };
+  provider?: string;
+}): Promise<string | undefined> {
+  if (!input.deployment.configured || !input.deployment.live || input.deployment.commitMatches !== true) return undefined;
+  const now = new Date().toISOString();
+  const kind: AgentLessonKind = 'deployment_procedure';
+  const target = ['deployment', 'production'];
+  const tags = words([
+    input.session.project,
+    input.provider || 'render',
+    input.deployment.status || 'live',
+    input.deployment.message || '',
+  ].join(' '));
+  const short = String(input.commitSha || '').slice(0, 12);
+  const serviceCount = Math.max(1, input.deployment.services?.length || 1);
+  const resolution = clean(
+    `Production deployment for commit ${short} was observed live with commit identity matching across ${serviceCount} configured service${serviceCount === 1 ? '' : 's'}.`,
+    1_000,
+  );
+  const id = lessonId(input.session.userId, 'repository', input.session.projectId, kind, target, tags);
+  await persistLesson({
+    id,
+    userId: input.session.userId,
+    projectId: input.session.projectId,
+    sessionId: input.session.id,
+    scope: 'repository',
+    kind,
+    subject: `repository:${input.session.project}`,
+    predicate: 'deploys_via',
+    object: resolution,
+    title: clean(`Verified production deployment for ${short}`, 220),
+    problem: 'Verify that the published commit actually reached production.',
+    lesson: resolution,
+    evidence: [
+      input.deployment.deployId ? `Render deploy: ${input.deployment.deployId}` : '',
+      input.deployment.status ? `Deploy status: ${input.deployment.status}` : '',
+      input.deployment.message || '',
+    ].map((item) => clean(item, 520)).filter(Boolean),
+    tags,
+    provider: input.provider || 'render',
+    successCount: 1,
+    confidence: 0.75,
+    lastVerifiedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return id;
+}
+
 export async function rememberVerifiedLesson(input: {
   session: ProjectSession & { userId: string; projectId: string };
   task: TaskRecord;
