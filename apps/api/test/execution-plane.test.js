@@ -75,6 +75,25 @@ test('verified Build work must be challenged by the currently selected model bef
   assert.match(gateway, /mandatory selected-model review/);
   assert.match(gateway, /Orlynx → Model: verification passed/);
   assert.match(gateway, /modelReviewCompletedAt/);
+  assert.match(gateway, /runIndependentReviewer/);
+  assert.match(gateway, /type: 'subagent\.started'/);
+  assert.match(gateway, /type: 'subagent\.finished'/);
+  assert.match(gateway, /Independent reviewer findings from a separate read-only agent session/);
+});
+
+test('chat/runtime recovery has its own budget and is not disabled by reflection history', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const shared = fs.readFileSync(new URL('../../../packages/shared/src/index.ts', import.meta.url), 'utf8');
+
+  assert.match(shared, /runtimeRecoveryAttempts\?: number/);
+  assert.match(agents, /runtimeRecoveryAttempts < 2/);
+  assert.match(agents, /runtimeRecoveryAttempts: runtimeRecoveryAttempts \+ 1/);
+  assert.match(gateway, /runtimeRecoveryAttempts \|\| 0\) < 2/);
+  assert.match(gateway, /runtimeRecoveryAttempts: Number\(task\.harness\.runtimeRecoveryAttempts \|\| 0\) \+ 1/);
+
+  const directRecovery = agents.slice(agents.indexOf('export async function recoverInterruptedDirectRuns'));
+  assert.doesNotMatch(directRecovery.slice(0, 4_500), /salvageAttempts/);
 });
 
 test('Build ask-first permits observable runtime work without granting file changes', () => {
