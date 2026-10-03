@@ -12,6 +12,11 @@ for (const [detail, code, candidate] of [
   ['workspace conflict: prior writer still running', 'workspace_conflict', false], ['user cancelled by user', 'user_cancelled', false],
 ]) test(`normalized failure: ${code}`, () => { const result = classifyAgentFailure(detail); assert.equal(result.code, code); assert.equal(result.adapterFailover, candidate); });
 
+test('machine failure codes retain their policy even when diagnostics mention another failure',()=>{
+  const auth=classifyAgentFailure('provider_auth');assert.equal(auth.code,'provider_auth');assert.equal(auth.humanActionRequired,true);assert.equal(auth.adapterFailover,false);
+  const timeout=classifyAgentFailure('runtime_timeout: prior provider response mentioned 401');assert.equal(timeout.code,'runtime_timeout');assert.equal(timeout.adapterFailover,true);assert.equal(timeout.humanActionRequired,false);
+});
+
 test('routing excludes stale readiness and open circuits', () => {
   const ready = { state: 'ready', updatedAt: new Date().toISOString() };
   assert.equal(adapterEligible(ready), true);

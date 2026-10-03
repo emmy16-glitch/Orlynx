@@ -21,7 +21,10 @@ export function classifyAgentFailure(detail: string): AgentFailure {
     ['runtime_crash', /crash|exited|signal/i],
     ['tool_failure', /tool.*fail/i],
   ];
-  const code = patterns.find(([, pattern]) => pattern.test(detail))?.[0] || 'unknown';
+  // Adapters emit machine codes. Preserve those before applying heuristics to
+  // unstructured upstream diagnostics (which may mention another error code).
+  const explicit = patterns.find(([code]) => new RegExp(`^${code}(?=[:\\s]|$)`).test(detail.trim()))?.[0];
+  const code = explicit || patterns.find(([, pattern]) => pattern.test(detail))?.[0] || 'unknown';
   const adapterFailover = ['provider_rate_limit','provider_unavailable','runtime_unavailable','runtime_crash','runtime_timeout','stream_start_timeout','stream_stall','context_limit','adapter_protocol_error'].includes(code);
   return { code, retryable: ['provider_rate_limit','provider_unavailable','runtime_unavailable','stream_start_timeout'].includes(code),
     adapterFailover, workspaceFailover: code === 'workspace_unavailable',
