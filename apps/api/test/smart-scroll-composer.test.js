@@ -54,11 +54,12 @@ describe('only visible content moves the viewport (§103)', () => {
     }
   });
 
-  it('meaningful adapter transitions may surface; steady state may not', () => {
-    assert.equal(isFollowWorthyEvent('state.delta', { scope: 'agent-adapter', state: 'starting' }), true);
-    assert.equal(isFollowWorthyEvent('state.delta', { scope: 'agent-adapter', state: 'unavailable', reason: 'down' }), true);
+  it('adapter health stays selector-only while task and transport events may move the viewport', () => {
+    assert.equal(isFollowWorthyEvent('state.delta', { scope: 'agent-adapter', state: 'starting' }), false);
+    assert.equal(isFollowWorthyEvent('state.delta', { scope: 'agent-adapter', state: 'unavailable', reason: 'provider_auth: rejected' }), false);
     assert.equal(isFollowWorthyEvent('state.delta', { scope: 'bridge', state: 'ready' }), false);
     assert.equal(isFollowWorthyEvent('state.delta', { scope: 'bridge', state: 'disconnected' }), true);
+    assert.equal(isFollowWorthyEvent('run.failed', { errorKind: 'auth' }), true);
   });
 
   it('runs, tools, workspace, approvals and files are follow-worthy', () => {
