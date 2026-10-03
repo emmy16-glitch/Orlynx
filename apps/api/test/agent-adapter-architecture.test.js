@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { getAgentAdapter, listAgentAdapters } from '../src/agent-runtime.ts';
 
 test('OpenCode is registered as adapter one, not hard-coded as the only engine type', () => {
