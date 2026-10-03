@@ -83,3 +83,20 @@ test('workspace-only agents and provider-specific models never fall back into th
   assert.equal(adapterExecutionPlane(getAgentAdapter('opencode'),'openrouter/poolside/laguna-s-2.1:free','direct'),'workspace');
   for(const id of ['cline','mini-swe'])assert.equal(adapterExecutionPlane(getAgentAdapter(id),'openai/test','direct'),'workspace');
 });
+
+for (const detail of ['no shell', 'no shell available in this adapter', 'no terminal', 'shell unavailable', 'command tool unavailable', 'missing shell capability', 'shell is not available', 'exec tool not available']) {
+  test(`shell capability recovery: ${detail}`, () => {
+    const failure = classifyAgentFailure(detail);
+    assert.equal(failure.code, 'runtime_unavailable');
+    assert.equal(failure.adapterFailover, true);
+    assert.equal(failure.retryable, true);
+    assert.equal(failure.humanActionRequired, false);
+  });
+}
+for (const detail of ['npm: command not found', 'executable python missing', 'spawn bash ENOENT']) {
+  test(`missing executable is distinct from missing shell: ${detail}`, () => {
+    const failure = classifyAgentFailure(detail);
+    assert.equal(failure.code, 'tool_failure');
+    assert.equal(failure.adapterFailover, false);
+  });
+}
