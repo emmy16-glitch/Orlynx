@@ -12,6 +12,7 @@ import {
 } from './runner-pool.js';
 import { controlPlaneRepository } from './storage.js';
 import type { CreateWorkspaceInput, WorkspaceConnectionValues, WorkspaceProvider } from './workspace-provider.js';
+import { portableAdapterConfig } from './portable-agent-config.js';
 
 type RunnerWorkspace = {
   runnerId: string;
@@ -179,11 +180,13 @@ export class OrlynxRunnerProvider implements WorkspaceProvider {
     // Portable agent provider credentials are owned by the control plane and
     // delivered only to the authenticated workspace runtime. Runner hosts do
     // not need a duplicate long-lived Render secret.
-    const openRouterApiKey = process.env.ORLYNX_OPENROUTER_API_KEY || '';
-    const miniSweApiBase = process.env.ORLYNX_MINI_SWE_API_BASE || '';
-    const miniSweModel = process.env.ORLYNX_MINI_SWE_MODEL || '';
-    const clineApiBase = process.env.ORLYNX_CLINE_API_BASE || '';
-    const clineModel = process.env.ORLYNX_CLINE_MODEL || '';
+    const miniSwe = portableAdapterConfig('mini-swe');
+    const cline = portableAdapterConfig('cline');
+    const openRouterApiKey = process.env.ORLYNX_OPENROUTER_API_KEY || miniSwe.apiKey || cline.apiKey;
+    const miniSweApiBase = miniSwe.apiBase;
+    const miniSweModel = miniSwe.model;
+    const clineApiBase = cline.apiBase;
+    const clineModel = cline.model;
     const githubToken = await githubUserAccessToken(workspace.userId);
     const host = this.hostFor(workspace);
 

@@ -8,6 +8,7 @@ import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { portableAdapterConfig } from './portable-agent-config.js';
 
 export type WorkspaceBootstrapValues = { bridgeToken: string; connectionId: string; openCodePassword: string };
 const bridgeRuntimeDir = fileURLToPath(new URL('../../../bridge/dist/', import.meta.url));
@@ -48,11 +49,13 @@ export function buildWorkspaceBootstrapScript(workspace: WorkspaceRecord, values
   const envValues = [`ORLYNX_CONTROL=${bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${values.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${workspace.id}`, `ORLYNX_SESSION_ID=${workspace.sessionId}`, `ORLYNX_USER_ID=${workspace.userId}`, `ORLYNX_CONNECTION_ID=${values.connectionId}`, `OPENCODE_SERVER_PASSWORD=${values.openCodePassword}`];
   if (openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${openCodeApiKey}`);
   if (openRouterApiKey) envValues.push(`ORLYNX_OPENROUTER_API_KEY=${openRouterApiKey}`);
+  const miniSwe = portableAdapterConfig('mini-swe');
+  const cline = portableAdapterConfig('cline');
   for (const [key, value] of [
-    ['ORLYNX_MINI_SWE_API_BASE', process.env.ORLYNX_MINI_SWE_API_BASE],
-    ['ORLYNX_MINI_SWE_MODEL', process.env.ORLYNX_MINI_SWE_MODEL],
-    ['ORLYNX_CLINE_API_BASE', process.env.ORLYNX_CLINE_API_BASE],
-    ['ORLYNX_CLINE_MODEL', process.env.ORLYNX_CLINE_MODEL],
+    ['ORLYNX_MINI_SWE_API_BASE', miniSwe.apiBase],
+    ['ORLYNX_MINI_SWE_MODEL', miniSwe.model],
+    ['ORLYNX_CLINE_API_BASE', cline.apiBase],
+    ['ORLYNX_CLINE_MODEL', cline.model],
   ] as const) if (value) envValues.push(`${key}=${value}`);
   const env = envValues.map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
@@ -342,11 +345,13 @@ export async function bootstrapWorkspace(workspace: WorkspaceRecord, values: Wor
   const openCodeApiKey = openCodeConnection?.state === 'connected' && openCodeConnection.credential
     ? decryptCredential(openCodeConnection.credential)
     : '';
-  const openRouterApiKey = process.env.ORLYNX_OPENROUTER_API_KEY || '';
+  const miniSwe = portableAdapterConfig('mini-swe');
+  const cline = portableAdapterConfig('cline');
+  const openRouterApiKey = process.env.ORLYNX_OPENROUTER_API_KEY || miniSwe.apiKey || cline.apiKey;
   const bridgeUrl = `${publicUrl.replace(/^https:/, 'wss:')}/bridge`;
   if (!base && process.env.ORLYNX_BOOTSTRAP_MODE === 'local') return bootstrapWithLocalGh(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey, openRouterApiKey);
   if (!base && (process.env.VERCEL === '1' || process.env.ORLYNX_BOOTSTRAP_MODE === 'sandbox')) return bootstrapWithSandbox(workspace, values, githubUserToken, bridgeUrl, openCodeApiKey, openRouterApiKey);
   if (!base.startsWith('https://') || !workerToken) throw new Error('Runtime bootstrap infrastructure is not configured.');
-  const response = await fetch(`${base}/bootstrap`, { method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ codespaceName: workspace.codespaceName, githubUserToken, bridgeUrl, bridgeToken: values.bridgeToken, workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId: values.connectionId, openCodePassword: values.openCodePassword, openCodeApiKey, openRouterApiKey, miniSweApiBase: process.env.ORLYNX_MINI_SWE_API_BASE || '', miniSweModel: process.env.ORLYNX_MINI_SWE_MODEL || '', clineApiBase: process.env.ORLYNX_CLINE_API_BASE || '', clineModel: process.env.ORLYNX_CLINE_MODEL || '' }), signal: AbortSignal.timeout(Math.max(120_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 5 * 60_000))) });
+  const response = await fetch(`${base}/bootstrap`, { method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ codespaceName: workspace.codespaceName, githubUserToken, bridgeUrl, bridgeToken: values.bridgeToken, workspaceId: workspace.id, sessionId: workspace.sessionId, userId: workspace.userId, connectionId: values.connectionId, openCodePassword: values.openCodePassword, openCodeApiKey, openRouterApiKey, miniSweApiBase: miniSwe.apiBase, miniSweModel: miniSwe.model, clineApiBase: cline.apiBase, clineModel: cline.model }), signal: AbortSignal.timeout(Math.max(120_000, Number(process.env.ORLYNX_BOOTSTRAP_TIMEOUT_MS || 5 * 60_000))) });
   if (!response.ok) throw new Error(`Runtime worker could not bootstrap the Codespace (HTTP ${response.status}).`);
 }

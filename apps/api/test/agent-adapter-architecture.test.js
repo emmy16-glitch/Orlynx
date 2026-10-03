@@ -1,6 +1,6 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { getAgentAdapter, listAgentAdapters } from '../src/agent-runtime.ts';
 
 test('OpenCode is registered as adapter one, not hard-coded as the only engine type', () => {
@@ -106,4 +106,17 @@ test('promotion scheduler preserves adapter-ready wakeups that arrive while a pa
   assert.match(agents, /promotionWakeups/);
   assert.match(agents, /Do not drop readiness\/queue wake-ups/);
   assert.match(agents, /while \(promotionWakeups\.delete\(sessionId\)\)/);
+});
+
+
+test('AI overview exposes configured portable adapters before a workspace is ready', () => {
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const config = fs.readFileSync(new URL('../src/portable-agent-config.ts', import.meta.url), 'utf8');
+  assert.match(routes, /portableAdapterConfig\(adapter\.id\)/);
+  assert.match(routes, /portable\?\.configured \? 'available' : 'not_installed'/);
+  assert.match(routes, /Ready when the workspace starts\./);
+  assert.match(routes, /const authoritativePersisted = workspaceReady \? persisted : undefined/);
+  assert.match(config, /https:\/\/openrouter\.ai\/api\/v1/);
+  assert.match(config, /openrouter\/poolside\/laguna-s-2\.1:free/);
+  assert.match(config, /ORLYNX_OPENROUTER_API_KEY/);
 });

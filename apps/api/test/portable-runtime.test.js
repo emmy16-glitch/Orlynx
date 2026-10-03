@@ -82,3 +82,23 @@ test('OpenRouter health distinguishes missing/rejected credentials from temporar
   globalThis.fetch=async()=>{throw new Error('PRIVATE_CREDENTIAL_SENTINEL');};
   const health=await portableHealth('cline',os.tmpdir());assert.match(health.reason,/^provider_unavailable/);assert.doesNotMatch(JSON.stringify(health),/PRIVATE_CREDENTIAL_SENTINEL/);
 });
+
+
+test('portable adapters use the shared OpenRouter defaults when only the shared key is configured', async t => {
+  const keys=['ORLYNX_OPENROUTER_API_KEY','ORLYNX_CLINE_API_BASE','ORLYNX_CLINE_MODEL','ORLYNX_CLINE_API_KEY'];
+  const before=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  const fetchBefore=globalThis.fetch;
+  t.after(()=>{globalThis.fetch=fetchBefore;for(const key of keys){if(before[key]===undefined)delete process.env[key];else process.env[key]=before[key];}});
+  process.env.ORLYNX_OPENROUTER_API_KEY='test-credential';
+  delete process.env.ORLYNX_CLINE_API_BASE;delete process.env.ORLYNX_CLINE_MODEL;delete process.env.ORLYNX_CLINE_API_KEY;
+  let calls=[];
+  globalThis.fetch=async(url)=>{
+    calls.push(String(url));
+    if(String(url).endsWith('/auth/key')) return new Response('{}',{status:200});
+    return new Response(JSON.stringify({data:[{id:'poolside/laguna-s-2.1:free',pricing:{prompt:'0',completion:'0'}}]}),{status:200,headers:{'Content-Type':'application/json'}});
+  };
+  const health=await portableHealth('cline',os.tmpdir());
+  assert.equal(health.state,'ready');
+  assert.deepEqual(health.supportedModels,['openrouter/poolside/laguna-s-2.1:free']);
+  assert.ok(calls.every(url=>url.startsWith('https://openrouter.ai/api/v1')));
+});
