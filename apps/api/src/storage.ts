@@ -59,6 +59,10 @@ export interface AgentLessonRecord {
   sessionId?: string;
   scope: 'session' | 'repository' | 'environment';
   kind?: AgentLessonKind;
+  /** Lightweight verified project-knowledge edge. */
+  subject?: string;
+  predicate?: string;
+  object?: string;
   title: string;
   problem: string;
   lesson: string;
@@ -238,6 +242,9 @@ const migrations = [
     session_id text REFERENCES sessions(id) ON DELETE SET NULL,
     scope text NOT NULL,
     kind text NOT NULL DEFAULT 'general',
+    subject text,
+    predicate text,
+    object text,
     title text NOT NULL,
     problem text NOT NULL,
     lesson text NOT NULL,
@@ -255,6 +262,9 @@ const migrations = [
     last_used_at timestamptz
   )`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'general'`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS subject text`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS predicate text`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS object text`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS confidence real NOT NULL DEFAULT 0.65`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS contradiction_count integer NOT NULL DEFAULT 0`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'`,
@@ -386,6 +396,9 @@ function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
     sessionId: row.session_id ? String(row.session_id) : undefined,
     scope: String(row.scope) as AgentLessonRecord['scope'],
     kind: (row.kind ? String(row.kind) : 'general') as AgentLessonRecord['kind'],
+    subject: row.subject ? String(row.subject) : undefined,
+    predicate: row.predicate ? String(row.predicate) : undefined,
+    object: row.object ? String(row.object) : undefined,
     title: String(row.title),
     problem: String(row.problem),
     lesson: String(row.lesson),
@@ -908,9 +921,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putAgentLesson(v: AgentLessonRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,kind,title,problem,lesson,evidence,tags,provider,success_count,confidence,contradiction_count,status,last_contradicted_at,last_verified_at,created_at,updated_at,last_used_at)
-      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.kind || 'general'},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.contradictionCount || 0},${v.status || 'active'},${v.lastContradictedAt || null},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
-      ON CONFLICT (id) DO UPDATE SET kind=EXCLUDED.kind,title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),status='active',last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
+    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,kind,subject,predicate,object,title,problem,lesson,evidence,tags,provider,success_count,confidence,contradiction_count,status,last_contradicted_at,last_verified_at,created_at,updated_at,last_used_at)
+      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.kind || 'general'},${v.subject || null},${v.predicate || null},${v.object || null},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.contradictionCount || 0},${v.status || 'active'},${v.lastContradictedAt || null},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
+      ON CONFLICT (id) DO UPDATE SET kind=EXCLUDED.kind,subject=EXCLUDED.subject,predicate=EXCLUDED.predicate,object=EXCLUDED.object,title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),status='active',last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
       WHERE agent_lessons.user_id=EXCLUDED.user_id`;
   }
   async listAgentLessons(userId: string, projectId?: string, limit = 40) {
