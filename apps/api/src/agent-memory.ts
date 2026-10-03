@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { HarnessCheckpoint, ProjectSession, TaskRecord } from '@orlynx/shared';
-import { controlPlaneRepository, type AgentLessonRecord } from './storage.js';
+import { controlPlaneRepository, type AgentLessonKind, type AgentLessonRecord } from './storage.js';
 
 const STOP = new Set([
   'about','after','again','also','and','are','because','before','being','but','can','could','does','doing','for','from',
@@ -78,20 +78,63 @@ export function agentMemoryInstruction(lessons: AgentLessonRecord[]): string {
   if (!lessons.length) return '';
   return [
     'Verified Orlynx experience from earlier successful work follows. Treat it as evidence, not as an infallible rule; compare it with the current environment before applying it.',
-    ...lessons.map((lesson, index) => `${index + 1}. [${lesson.scope}; confidence ${Math.round((lesson.confidence ?? 0.65) * 100)}%] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}`),
+    ...lessons.map((lesson, index) => `${index + 1}. [id ${lesson.id}; ${lesson.kind || 'general'}; ${lesson.scope}; confidence ${Math.round((lesson.confidence ?? 0.65) * 100)}%] ${clean(lesson.title, 180)} — ${clean(lesson.lesson, 520)}`),
     'If current observations conflict with a remembered lesson, trust fresh verified evidence and update the diagnosis rather than forcing the old lesson.',
+    'When fresh observable evidence clearly disproves one of these retrieved lessons, include [MEMORY_CONTRADICTION:<lesson-id>] in the public Model → Orlynx diagnostic so Orlynx can lower that lesson confidence. Do not mark a lesson contradicted merely because it was irrelevant.',
   ].join('\n');
 }
 
-function lessonId(userId: string, scope: string, projectId: string | undefined, target: string[], tags: string[]): string {
+function lessonId(userId: string, scope: string, projectId: string | undefined, kind: AgentLessonKind, target: string[], tags: string[]): string {
   return `lesson_${createHash('sha256')
-    .update([userId, scope, projectId || 'global', target.slice().sort().join(','), tags.slice(0, 12).join(',')].join('|'))
+    .update([userId, scope, projectId || 'global', kind, target.slice().sort().join(','), tags.slice(0, 12).join(',')].join('|'))
     .digest('hex')
     .slice(0, 24)}`;
 }
 
 function environmentRelevant(text: string): boolean {
   return /\b(codespaces?|render|opencode|preview|forward(?:ing|ed)?|app\.github\.dev|authentication|iframe|workspace|runner)\b/i.test(text);
+}
+
+function lessonKindFor(text: string): AgentLessonKind {
+  const value = String(text || '').toLowerCase();
+  if (/\bpreview|forward(?:ing|ed)?|localhost|port\b/.test(value)) return 'preview_pattern';
+  if (/\b(render|codespaces?|runner|workspace|opencode|runtime|provider|bridge|connection|reconnect|timeout)\b/.test(value)) return 'infrastructure_recovery';
+  if (/\b(test|vitest|jest|pytest|playwright|typecheck|build|compile|lint)\b/.test(value)) return 'build_test_recipe';
+  if (/\b(deploy|deployment|publish|release|production)\b/.test(value)) return 'deployment_procedure';
+  if (/\b(dependency|package|version|compatib|upgrade|downgrade|module)\b/.test(value)) return 'dependency_compatibility';
+  if (/\b(convention|pattern|folder|directory|route|naming|architecture)\b/.test(value)) return 'repository_convention';
+  return 'general';
+}
+
+export function memoryContradictionIds(finalText: string, allowedIds: string[] = []): string[] {
+  const allowed = new Set(allowedIds.filter(Boolean));
+  const ids = [...String(finalText || '').matchAll(/\[MEMORY_CONTRADICTION:([A-Za-z0-9_.:-]{3,160})\]/g)]
+    .map((match) => match[1])
+    .filter((id) => allowed.size === 0 || allowed.has(id));
+  return [...new Set(ids)].slice(0, 20);
+}
+
+export async function recordMemoryContradictions(input: {
+  session: ProjectSession & { userId: string; projectId: string };
+  harness: HarnessCheckpoint;
+  responseText: string;
+}): Promise<string[]> {
+  const allowed = input.harness.lessonsApplied || [];
+  const ids = memoryContradictionIds(input.responseText, allowed);
+  if (!ids.length) return [];
+  const investigation = input.harness.investigation;
+  const evidence = clean([
+    investigation?.question || '',
+    ...(investigation?.evidence || []),
+    ...(input.harness.contradictions || []),
+    investigation?.hypothesis || '',
+  ].filter(Boolean).join(' | '), 1_000);
+  await controlPlaneRepository().contradictAgentLessons(
+    input.session.userId,
+    ids,
+    evidence || 'Fresh verified evidence contradicted a retrieved lesson.',
+  );
+  return ids;
 }
 
 async function persistLesson(value: AgentLessonRecord): Promise<void> {
@@ -145,6 +188,13 @@ export async function rememberVerifiedLesson(input: {
     evidence.join(' '),
   ].join(' '));
   const now = new Date().toISOString();
+  const kind = lessonKindFor([
+    input.task.prompt,
+    target.join(' '),
+    contradictions.join(' '),
+    evidence.join(' '),
+    resolution,
+  ].join(' '));
   const title = clean(
     contradictions[0]
       || investigation?.question
@@ -153,11 +203,12 @@ export async function rememberVerifiedLesson(input: {
   );
 
   const repositoryLesson: AgentLessonRecord = {
-    id: lessonId(input.session.userId, 'repository', input.session.projectId, target, tags),
+    id: lessonId(input.session.userId, 'repository', input.session.projectId, kind, target, tags),
     userId: input.session.userId,
     projectId: input.session.projectId,
     sessionId: input.session.id,
     scope: 'repository',
+    kind,
     title,
     problem: clean(input.task.prompt, 1_000),
     lesson: resolution,
@@ -177,7 +228,7 @@ export async function rememberVerifiedLesson(input: {
   if (environmentRelevant(environmentText)) {
     const environmentLesson: AgentLessonRecord = {
       ...repositoryLesson,
-      id: lessonId(input.session.userId, 'environment', undefined, target, tags),
+      id: lessonId(input.session.userId, 'environment', undefined, kind, target, tags),
       projectId: undefined,
       scope: 'environment',
       title: clean(`Environment lesson: ${title}`, 220),
