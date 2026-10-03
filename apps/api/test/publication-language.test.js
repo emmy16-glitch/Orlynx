@@ -26,3 +26,26 @@ for (const prompt of ["don't publish the changes", 'do not ship it', 'never get 
 test('negated deployment is not deployment intent', () => {
   for (const prompt of ["don't deploy", 'do not deploy it', 'never deploy this']) assert.equal(deployIntentFor(prompt), false);
 });
+
+import { prePublicationMissing, deploymentVerified } from '../src/publication-language.ts';
+test('publication gates defer deployment but retain implementation verification', () => {
+  assert.deepEqual(prePublicationMissing(['publish','deployment']), []);
+  assert.deepEqual(prePublicationMissing(['tests','build','changes','publish','deployment']), ['tests','build','changes']);
+});
+test('only exact live deployment evidence can complete a live request', () => {
+  const sha = 'a'.repeat(40);
+  const verified = {configured:true,live:true,commitMatches:true,commitSha:sha};
+  assert.equal(deploymentVerified(verified,sha), true);
+  for (const state of [{...verified,configured:false},{...verified,live:false},{...verified,commitMatches:false},{...verified,commitSha:'b'.repeat(40)},{}]) assert.equal(deploymentVerified(state,sha), false);
+});
+
+test('a publish receipt leaves a live request incomplete until deployment is proven', () => {
+  const harness = createHarnessCheckpoint({prompt:'get this live',mode:'build',permission:'full',plane:'workspace'});
+  const events = [{type:'receipt.created',sequence:1,payload:{publish:true,commitSha:'a'.repeat(40)}}];
+  const published = verifyHarness(harness,events);
+  assert.ok(published.verification.satisfied.includes('publish'));
+  assert.deepEqual(published.verification.missing,['deployment']);
+  assert.equal(published.verification.status,'needs_more_work');
+  events.push({type:'receipt.created',sequence:2,payload:{deployed:true,commitSha:'a'.repeat(40)}});
+  assert.equal(verifyHarness(published,events).verification.status,'passed');
+});
