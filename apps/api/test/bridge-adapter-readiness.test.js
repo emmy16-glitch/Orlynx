@@ -62,5 +62,11 @@ test('initial authenticated READY persists model constraints before the first he
   assert.equal(transitions.length, baseline + 3, 'changed reason and recovery are emitted');
   assert.equal(transitions.at(-1).payload.state, 'ready');
   assert.equal(transitions.at(-1).payload.reason, undefined, 'recovery clears stale reason');
+  await heartbeat({state:'ready'});
+  assert.equal((await adapterEvents()).length, baseline + 3, 'omitted model metadata retains durable constraints');
+  for(let i=0;i<10;i++) socket.send(JSON.stringify({kind:'ADAPTER_STATUS',adapterId:'cline',adapter:rejected}));
+  await new Promise(resolve=>setTimeout(resolve,200));
+  assert.equal((await adapterEvents()).length, baseline + 4, 'overlapping identical frames emit one transition');
+
 
 });

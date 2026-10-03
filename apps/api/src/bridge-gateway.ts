@@ -303,6 +303,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
   let active = true;
   let authenticatedHello = false;
+  // WebSocket callbacks overlap; serialize health writes so duplicate frames
+  // cannot both observe the same old state and emit duplicate transitions.
+  let adapterStatusQueue = Promise.resolve(false);
   const helloTimeout = setTimeout(() => { if (!authenticatedHello) ws.close(1008, 'hello timeout'); }, 15_000);
   const previousSocket = registerBridgeSocket(claims.workspaceId, ws);
   if (previousSocket && previousSocket !== ws && previousSocket.readyState === previousSocket.OPEN) {
@@ -351,7 +354,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'ADAPTER_STATUS' && message.adapterId && message.adapter) {
-        const changed = await persistAdapterState(claims, String(message.adapterId), message.adapter);
+        const adapterId = String(message.adapterId);
+        const adapter = message.adapter;
+        const update = adapterStatusQueue.then(() => persistAdapterState(claims, adapterId, adapter));
+        adapterStatusQueue = update.catch(() => false);
+        const changed = await update;
         if (changed) console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}${message.adapter.reason ? `:${message.adapter.reason}` : ''}`);
         if (message.adapter.state === 'ready' || message.adapter.state === 'failed') {
           void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after adapter state change failed: ${error instanceof Error ? error.message : 'unknown error'}`));
