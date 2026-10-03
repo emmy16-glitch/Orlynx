@@ -43,12 +43,26 @@ export interface BridgeCommand {
   updatedAt: string;
 }
 
+export type AgentLessonKind =
+  | 'general'
+  | 'repository_convention'
+  | 'build_test_recipe'
+  | 'infrastructure_recovery'
+  | 'preview_pattern'
+  | 'dependency_compatibility'
+  | 'deployment_procedure';
+
 export interface AgentLessonRecord {
   id: string;
   userId: string;
   projectId?: string;
   sessionId?: string;
   scope: 'session' | 'repository' | 'environment';
+  kind?: AgentLessonKind;
+  /** Lightweight verified project-knowledge edge. */
+  subject?: string;
+  predicate?: string;
+  object?: string;
   title: string;
   problem: string;
   lesson: string;
@@ -58,6 +72,9 @@ export interface AgentLessonRecord {
   successCount: number;
   /** Confidence comes only from verified successful reuse; fresh evidence still wins. */
   confidence?: number;
+  contradictionCount?: number;
+  status?: 'active' | 'superseded';
+  lastContradictedAt?: string;
   lastVerifiedAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -160,6 +177,7 @@ export interface ControlPlaneRepository {
   putAgentLesson(value: AgentLessonRecord): Promise<void>;
   listAgentLessons(userId: string, projectId?: string, limit?: number): Promise<AgentLessonRecord[]>;
   touchAgentLessons(ids: string[], usedAt?: string): Promise<void>;
+  contradictAgentLessons(userId: string, ids: string[], evidence: string, contradictedAt?: string): Promise<void>;
   pruneOperationalData(now?: Date): Promise<void>;
 }
 
@@ -223,6 +241,10 @@ const migrations = [
     project_id text REFERENCES projects(id) ON DELETE CASCADE,
     session_id text REFERENCES sessions(id) ON DELETE SET NULL,
     scope text NOT NULL,
+    kind text NOT NULL DEFAULT 'general',
+    subject text,
+    predicate text,
+    object text,
     title text NOT NULL,
     problem text NOT NULL,
     lesson text NOT NULL,
@@ -231,12 +253,22 @@ const migrations = [
     provider text,
     success_count integer NOT NULL DEFAULT 1,
     confidence real NOT NULL DEFAULT 0.65,
+    contradiction_count integer NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'active',
+    last_contradicted_at timestamptz,
     last_verified_at timestamptz,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
     last_used_at timestamptz
   )`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'general'`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS subject text`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS predicate text`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS object text`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS confidence real NOT NULL DEFAULT 0.65`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS contradiction_count integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS last_contradicted_at timestamptz`,
   `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS last_verified_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS agent_lessons_lookup_idx ON agent_lessons(user_id, project_id, updated_at DESC)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), session_id text REFERENCES sessions(id) ON DELETE SET NULL, project_id text REFERENCES projects(id) ON DELETE SET NULL, action text NOT NULL, outcome text NOT NULL, detail jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL)`,
@@ -363,6 +395,10 @@ function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
     projectId: row.project_id ? String(row.project_id) : undefined,
     sessionId: row.session_id ? String(row.session_id) : undefined,
     scope: String(row.scope) as AgentLessonRecord['scope'],
+    kind: (row.kind ? String(row.kind) : 'general') as AgentLessonRecord['kind'],
+    subject: row.subject ? String(row.subject) : undefined,
+    predicate: row.predicate ? String(row.predicate) : undefined,
+    object: row.object ? String(row.object) : undefined,
     title: String(row.title),
     problem: String(row.problem),
     lesson: String(row.lesson),
@@ -371,6 +407,9 @@ function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
     provider: row.provider ? String(row.provider) : undefined,
     successCount: Number(row.success_count || 1),
     confidence: Math.max(0, Math.min(1, Number(row.confidence ?? 0.65))),
+    contradictionCount: Math.max(0, Number(row.contradiction_count || 0)),
+    status: row.status === 'superseded' ? 'superseded' : 'active',
+    lastContradictedAt: row.last_contradicted_at ? iso(row.last_contradicted_at) : undefined,
     lastVerifiedAt: row.last_verified_at ? iso(row.last_verified_at) : undefined,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -882,9 +921,9 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   }
   async putAgentLesson(v: AgentLessonRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,title,problem,lesson,evidence,tags,provider,success_count,confidence,last_verified_at,created_at,updated_at,last_used_at)
-      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
-      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
+    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,kind,subject,predicate,object,title,problem,lesson,evidence,tags,provider,success_count,confidence,contradiction_count,status,last_contradicted_at,last_verified_at,created_at,updated_at,last_used_at)
+      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.kind || 'general'},${v.subject || null},${v.predicate || null},${v.object || null},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.contradictionCount || 0},${v.status || 'active'},${v.lastContradictedAt || null},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
+      ON CONFLICT (id) DO UPDATE SET kind=EXCLUDED.kind,subject=EXCLUDED.subject,predicate=EXCLUDED.predicate,object=EXCLUDED.object,title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),status='active',last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
       WHERE agent_lessons.user_id=EXCLUDED.user_id`;
   }
   async listAgentLessons(userId: string, projectId?: string, limit = 40) {
@@ -892,11 +931,11 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 100));
     const result = projectId
       ? await this.sql.query(
-          `SELECT * FROM agent_lessons WHERE user_id=$1 AND (project_id=$2 OR project_id IS NULL) ORDER BY CASE WHEN project_id=$2 THEN 0 ELSE 1 END,last_used_at DESC NULLS LAST,updated_at DESC LIMIT $3`,
+          `SELECT * FROM agent_lessons WHERE user_id=$1 AND status='active' AND (project_id=$2 OR project_id IS NULL) ORDER BY CASE WHEN project_id=$2 THEN 0 ELSE 1 END,last_used_at DESC NULLS LAST,updated_at DESC LIMIT $3`,
           [userId, projectId, safeLimit],
         )
       : await this.sql.query(
-          `SELECT * FROM agent_lessons WHERE user_id=$1 AND project_id IS NULL ORDER BY last_used_at DESC NULLS LAST,updated_at DESC LIMIT $2`,
+          `SELECT * FROM agent_lessons WHERE user_id=$1 AND status='active' AND project_id IS NULL ORDER BY last_used_at DESC NULLS LAST,updated_at DESC LIMIT $2`,
           [userId, safeLimit],
         );
     return rows<Record<string, unknown>>(result).map(mapAgentLesson);
@@ -906,6 +945,23 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     const safe = [...new Set(ids.filter(Boolean))].slice(0, 20);
     if (!safe.length) return;
     await this.sql.query('UPDATE agent_lessons SET last_used_at=$2 WHERE id = ANY($1::text[])', [safe, usedAt]);
+  }
+  async contradictAgentLessons(userId: string, ids: string[], evidence: string, contradictedAt = new Date().toISOString()) {
+    await this.initialize();
+    const safe = [...new Set(ids.filter(Boolean))].slice(0, 20);
+    if (!safe.length) return;
+    const detail = String(evidence || 'Fresh verified evidence contradicted this lesson.').slice(0, 1_000);
+    await this.sql.query(
+      `UPDATE agent_lessons
+       SET contradiction_count=contradiction_count+1,
+           confidence=GREATEST(0.10,confidence-0.15),
+           status=CASE WHEN contradiction_count+1 >= 3 THEN 'superseded' ELSE status END,
+           last_contradicted_at=$4::timestamptz,
+           updated_at=$4::timestamptz,
+           evidence=evidence || jsonb_build_array($3::text)
+       WHERE user_id=$1 AND id = ANY($2::text[]) AND status='active'`,
+      [userId, safe, detail, contradictedAt],
+    );
   }
   async pruneOperationalData(now = new Date()) {
     await this.initialize();

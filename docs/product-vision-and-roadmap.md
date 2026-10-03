@@ -158,34 +158,47 @@ A user can repeatedly move from request → execution → evidence → review �
 
 ### Stage B — Multi-agent runtime choice
 
-Status: **future**
+Status: **partial current + future external adapter**
 
-Goals:
+Implemented now:
 
-- add at least one additional real coding-agent adapter;
-- expose capability-aware agent selection;
-- preserve the same task/event/permission/memory contracts;
-- allow fallback between compatible agents where policy allows;
-- compare agent health without duplicating product state.
+- isolated read-only reviewer delegation in a separate agent session;
+- canonical `subagent.started` / `subagent.finished` lifecycle;
+- reviewer findings are returned to the primary task without replacing its resumable engine-session checkpoint;
+- the same task/event/permission/memory contracts remain authoritative.
+
+Still future:
+
+- add at least one additional real external coding-agent adapter;
+- expose capability-aware external-agent selection and compatible fallback;
+- compare heterogeneous agent health without duplicating product state.
 
 Success condition:
 
-Switching agent changes execution behavior, not the Orlynx product architecture.
+A delegated role can be independently executed today; switching between genuinely different coding runtimes remains a future capability and must not be claimed until a second runtime exists.
 
 ### Stage C — Stronger project intelligence
 
-Status: **future**
+Status: **current + hardening**
 
-Goals:
+Implemented foundations:
 
-- typed memory;
-- confidence and decay;
-- contradiction-driven memory correction;
-- repository knowledge graph;
-- architecture map;
-- test/deploy recipes;
+- typed verified memory;
+- confidence and time-based decay;
+- contradiction-driven confidence reduction and automatic lesson supersession;
+- bounded verified repository/environment knowledge edges;
+- test/deploy/recovery lesson types;
 - verified conventions;
-- project-level dependency/service relationships.
+- durable Investigation lifecycle through hypothesis → testing → repairing → verifying → resolved → learned;
+- separate read-only architect delegation for stuck/unknown investigations;
+- separate read-only reviewer delegation before Build finalization.
+
+Still to harden/extend:
+
+- full automatically extracted architecture map;
+- richer package/service/route/dependency relationships beyond verified lesson edges;
+- additional memory provenance/query surfaces;
+- production-outcome feedback after later health/regression observation.
 
 Success condition:
 
@@ -229,9 +242,16 @@ A team can treat Orlynx as a shared engineering workspace rather than a personal
 
 ### Stage F — Parallel specialized agents under one coordinator
 
-Status: **future**
+Status: **foundation implemented; parallel specialist execution remains future**
 
-Goals:
+Current foundation:
+
+- canonical subagent lifecycle events;
+- bounded separate-session read-only architect delegation;
+- bounded separate-session read-only reviewer delegation;
+- parent task retains final authority and verification state.
+
+Remaining goals:
 
 - coordinator-owned task decomposition;
 - specialist agents for code, security, tests, docs, release or research;

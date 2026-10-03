@@ -190,6 +190,7 @@ export type InvestigationStage =
   | 'repairing'
   | 'verifying'
   | 'resolved'
+  | 'learned'
   | 'blocked';
 
 export interface HarnessInvestigation {
@@ -222,6 +223,8 @@ export interface HarnessCheckpoint {
   lastProgressAt?: string;
   lastCheckpointAt?: string;
   salvageAttempts: number;
+  /** Safe infrastructure retries are independent of reasoning/reflection attempts. */
+  runtimeRecoveryAttempts?: number;
   /** Durable OpenHands/LangGraph-style Investigation state. */
   investigation?: HarnessInvestigation;
   /** Model-guided reason/act/observe cycles after an unexpected result. */
@@ -242,6 +245,8 @@ export interface HarnessCheckpoint {
   stagnantReflections?: number;
   /** Persistent verified lessons supplied to this run. */
   lessonsApplied?: string[];
+  /** Retrieved lesson IDs already contradicted by a verified outcome in this task. */
+  memoryContradictionsApplied?: string[];
   /** Mandatory evidence-grounded review performed by the selected model before Build finalization. */
   modelReviewAttempts?: number;
   modelReviewModelId?: string;

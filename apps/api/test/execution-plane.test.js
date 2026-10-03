@@ -75,6 +75,31 @@ test('verified Build work must be challenged by the currently selected model bef
   assert.match(gateway, /mandatory selected-model review/);
   assert.match(gateway, /Orlynx → Model: verification passed/);
   assert.match(gateway, /modelReviewCompletedAt/);
+  assert.match(gateway, /runIndependentReviewer/);
+  assert.match(gateway, /runIndependentDelegate/);
+  assert.match(gateway, /type: 'subagent\.started'/);
+  assert.match(gateway, /type: 'subagent\.finished'/);
+  assert.match(gateway, /runIndependentArchitect/);
+  assert.match(gateway, /role: 'architect'/);
+  assert.match(gateway, /Independent architect findings from a separate read-only agent session/);
+  assert.match(gateway, /type: 'subagent\.started'/);
+  assert.match(gateway, /type: 'subagent\.finished'/);
+  assert.match(gateway, /Independent reviewer findings from a separate read-only agent session/);
+});
+
+test('chat/runtime recovery has its own budget and is not disabled by reflection history', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
+  const shared = fs.readFileSync(new URL('../../../packages/shared/src/index.ts', import.meta.url), 'utf8');
+
+  assert.match(shared, /runtimeRecoveryAttempts\?: number/);
+  assert.match(agents, /runtimeRecoveryAttempts < 2/);
+  assert.match(agents, /runtimeRecoveryAttempts: runtimeRecoveryAttempts \+ 1/);
+  assert.match(gateway, /runtimeRecoveryAttempts \|\| 0\) < 2/);
+  assert.match(gateway, /runtimeRecoveryAttempts: Number\(task\.harness\.runtimeRecoveryAttempts \|\| 0\) \+ 1/);
+
+  const directRecovery = agents.slice(agents.indexOf('export async function recoverInterruptedDirectRuns'));
+  assert.doesNotMatch(directRecovery.slice(0, 4_500), /salvageAttempts/);
 });
 
 test('Build ask-first permits observable runtime work without granting file changes', () => {
@@ -167,6 +192,15 @@ test('explicit after-current queue intent waits behind active work across execut
   assert.equal(chooseNextQueuedTask([active, deferred]), undefined);
   active.state = 'completed';
   assert.equal(chooseNextQueuedTask([active, deferred])?.id, 'deferred-chat');
+});
+
+test('silent direct-chat stalls fail over to workspace instead of dying after an empty response', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /did not start streaming in time/);
+  assert.match(agents, /first response timed out/);
+  assert.match(agents, /stopped making progress before completion/);
+  assert.match(agents, /failoverDirectTaskToWorkspace/);
+  assert.match(agents, /Direct AI runtime unavailable · switching to workspace compute/);
 });
 
 test('direct chat bypasses a blocked workspace task in the queue', () => {

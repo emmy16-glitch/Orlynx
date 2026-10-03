@@ -12,8 +12,8 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, blockInvestigation, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, updateInvestigationFromOutcome, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
-import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
+import { advanceHarnessPhase, blockInvestigation, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, markInvestigationLearned, markInvestigationVerifying, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, updateInvestigationFromOutcome, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
+import { agentMemoryInstruction, recordMemoryContradictions, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import { addChangeEvidence } from './changes.js';
@@ -79,6 +79,163 @@ function continuationPayload(
     ...(task.harness?.investigation?.stage ? { investigationStage: task.harness.investigation.stage } : {}),
     ...(task.harness ? { tools: openCodeToolsFor(task.harness) } : {}),
   };
+}
+
+
+async function runIndependentDelegate(input: {
+  workspaceId: string;
+  sessionId: string;
+  taskId: string;
+  runId?: string;
+  modelId: string;
+  role: 'architect' | 'reviewer';
+  instruction: string;
+}): Promise<string | undefined> {
+  const delegationId = `${input.role}_${uuid()}`;
+  const label = input.role === 'architect' ? 'architect' : 'reviewer';
+  const startedAt = new Date().toISOString();
+  await persistLiveEvent({
+    eventId: `evt_${uuid()}`,
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    type: 'subagent.started',
+    timestamp: startedAt,
+    payload: {
+      delegationId,
+      role: input.role,
+      modelId: input.modelId,
+      text: `Independent ${label} started · read-only evidence analysis.`,
+    },
+  });
+
+  try {
+    const created = await bridgeRequest<{ status: number; body?: { id?: string } }>(
+      input.workspaceId,
+      'opencode.request',
+      {
+        path: '/session',
+        method: 'POST',
+        body: { title: `Orlynx independent ${label} ${input.runId || input.taskId}` },
+        timeoutMs: 15_000,
+      },
+      20_000,
+    );
+    const engineSessionId = String(created.body?.id || '');
+    if (!engineSessionId) throw new Error(`Independent ${label} session was not created.`);
+
+    const [providerID, ...modelParts] = input.modelId.split('/');
+    if (!providerID || !modelParts.length) throw new Error(`Independent ${label} model id is invalid.`);
+    const modelID = modelParts.join('/');
+
+    await bridgeRequest(
+      input.workspaceId,
+      'opencode.request',
+      {
+        path: `/session/${engineSessionId}/prompt_async`,
+        method: 'POST',
+        body: {
+          parts: [{ type: 'text', text: input.instruction }],
+          model: { providerID, modelID },
+          tools: {
+            read: true,
+            grep: true,
+            glob: true,
+            list: true,
+            write: false,
+            edit: false,
+            patch: false,
+            bash: false,
+            shell: false,
+            webfetch: false,
+            websearch: false,
+          },
+        },
+        timeoutMs: 15_000,
+      },
+      20_000,
+    );
+
+    const deadline = Date.now() + 90_000;
+    let idle = false;
+    while (Date.now() < deadline) {
+      const status = await bridgeRequest<{ status: number; body?: Record<string, Record<string, unknown>> }>(
+        input.workspaceId,
+        'opencode.request',
+        { path: '/session/status', method: 'GET', timeoutMs: 10_000 },
+        15_000,
+      );
+      const state = status.body?.[engineSessionId] || {};
+      if (String(state.type || '') === 'idle') {
+        idle = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    if (!idle) throw new Error(`Independent ${label} timed out before returning to idle.`);
+
+    const messages = await bridgeRequest<{ status: number; body?: Array<{ info?: Record<string, unknown>; parts?: Array<Record<string, unknown>> }> }>(
+      input.workspaceId,
+      'opencode.request',
+      { path: `/session/${engineSessionId}/message`, method: 'GET', timeoutMs: 10_000 },
+      15_000,
+    );
+    const assistant = [...(messages.body || [])].reverse().find((message) => String(message.info?.role || '') === 'assistant');
+    const text = (assistant?.parts || [])
+      .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
+      .map((part) => String(part.text || ''))
+      .join('')
+      .trim()
+      .slice(0, 8_000);
+    if (!text) throw new Error(`Independent ${label} completed without a readable response.`);
+
+    await persistLiveEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      workspaceId: input.workspaceId,
+      type: 'subagent.finished',
+      timestamp: new Date().toISOString(),
+      payload: {
+        delegationId,
+        role: input.role,
+        modelId: input.modelId,
+        state: 'completed',
+        summary: text.slice(0, 1_200),
+        text: `Independent ${label} finished · findings returned to the primary agent.`,
+      },
+    });
+    return text;
+  } catch (error) {
+    await persistLiveEvent({
+      eventId: `evt_${uuid()}`,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      workspaceId: input.workspaceId,
+      type: 'subagent.finished',
+      timestamp: new Date().toISOString(),
+      payload: {
+        delegationId,
+        role: input.role,
+        modelId: input.modelId,
+        state: 'failed',
+        error: error instanceof Error ? error.message.slice(0, 1_000) : `Independent ${label} failed.`,
+        text: `Independent ${label} was unavailable · primary execution continues without fabricating a delegation result.`,
+      },
+    });
+    return undefined;
+  }
+}
+
+async function runIndependentReviewer(input: Omit<Parameters<typeof runIndependentDelegate>[0], 'role'>): Promise<string | undefined> {
+  return runIndependentDelegate({ ...input, role: 'reviewer' });
+}
+
+async function runIndependentArchitect(input: Omit<Parameters<typeof runIndependentDelegate>[0], 'role'>): Promise<string | undefined> {
+  return runIndependentDelegate({ ...input, role: 'architect' });
 }
 
 type BridgeAdapterState = { state?: string; reason?: string };
@@ -379,7 +536,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               task
               && bridgeRetrySafe
               && (errorKind === 'engine' || (errorKind === 'unknown' && /timed out|timeout|connection|transport|stopped making observable progress/i.test(detail)))
-              && Number(task.harness?.salvageAttempts || 0) < 1
+              && Number(task.harness?.runtimeRecoveryAttempts || 0) < 2
             );
 
             if (task && automaticRecoveryEligible) {
@@ -397,7 +554,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                   permission: effectivePermission,
                   now,
                 }),
-                salvageAttempts: Number(task.harness.salvageAttempts || 0) + 1,
+                runtimeRecoveryAttempts: Number(task.harness.runtimeRecoveryAttempts || 0) + 1,
               };
               task.state = 'queued';
               task.updatedAt = now;
@@ -615,6 +772,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             permission: effectivePermission,
             now,
           });
+          task.harness = markInvestigationVerifying(task.harness, now);
           task.updatedAt = now;
           await repository.putTask(task);
 
@@ -653,6 +811,40 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const verificationNow = new Date().toISOString();
           task.harness = verifyHarness(task.harness, recent, verificationNow);
           task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, verificationNow);
+
+          const correctionSession = await repository.getSession(claims.sessionId);
+          const correctedLessons = correctionSession
+            ? await recordMemoryContradictions({
+                session: correctionSession,
+                harness: task.harness,
+                responseText,
+              }).catch(() => [])
+            : [];
+          if (correctedLessons.length) {
+            task.harness = {
+              ...task.harness,
+              memoryContradictionsApplied: [...new Set([
+                ...(task.harness.memoryContradictionsApplied || []),
+                ...correctedLessons,
+              ])],
+            };
+            task.updatedAt = verificationNow;
+            await repository.putTask(task);
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'activity.progress',
+              timestamp: verificationNow,
+              payload: {
+                sourceType: 'agent.memory.corrected',
+                text: `Fresh evidence contradicted ${correctedLessons.length} retrieved lesson${correctedLessons.length === 1 ? '' : 's'} · confidence reduced.`,
+                lessonIds: correctedLessons,
+              },
+            });
+          }
 
           if (task.harness.investigation?.stage === 'resolved') {
             await persistLiveEvent({
@@ -986,8 +1178,36 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 },
               });
 
+              const architectReview = task.modelId && (
+                Number(task.harness.reflectionAttempts || 0) >= 2
+                || Number(task.harness.stagnantReflections || 0) > 0
+                || task.harness.verificationFailureClass === 'unknown'
+              )
+                ? await runIndependentArchitect({
+                    workspaceId: claims.workspaceId,
+                    sessionId: claims.sessionId,
+                    taskId,
+                    runId,
+                    modelId: task.modelId,
+                    instruction: [
+                      'You are Orlynx\'s independent read-only architect in a separate agent session.',
+                      `Task: ${task.prompt}`,
+                      `Missing verification: ${task.harness.verification.missing.join(', ') || 'unknown'}`,
+                      `Failure class: ${task.harness.verificationFailureClass || 'unknown'}`,
+                      task.harness.investigation?.question ? `Investigation question: ${task.harness.investigation.question}` : '',
+                      task.harness.investigation?.hypothesis ? `Current hypothesis: ${task.harness.investigation.hypothesis}` : '',
+                      task.harness.investigation?.nextCheck ? `Current next check: ${task.harness.investigation.nextCheck}` : '',
+                      task.harness.reflectionEvidence?.length ? `Evidence: ${task.harness.reflectionEvidence.join(' | ')}` : '',
+                      'Do not edit files. Challenge the current diagnosis and return: ARCHITECT HYPOTHESIS, EVIDENCE, and ONE DISCRIMINATING NEXT CHECK. Prefer a different diagnostic path if the primary run is stagnant.',
+                    ].filter(Boolean).join('\n\n'),
+                  })
+                : undefined;
+
               const continuation = [
                 reflectionInstruction(task.harness, lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`)),
+                architectReview
+                  ? `Independent architect findings from a separate read-only agent session:\n${architectReview}\nTreat this as a challenge, not authority. Test the proposed next check before changing code.`
+                  : '',
                 agentMemoryInstruction(lessons),
                 publishError ? `Controlled publish note: ${publishError}` : '',
                 task.harness.verification.missing.includes('publish')
@@ -1154,11 +1374,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               : [];
 
             task.harness = {
-              ...advanceHarnessPhase(task.harness, 'executing', {
+              ...markInvestigationVerifying(advanceHarnessPhase(task.harness, 'executing', {
                 mode: task.mode || 'build',
                 permission: effectivePermission,
                 now: reviewAt,
-              }),
+              }), reviewAt),
               modelReviewAttempts: (task.harness.modelReviewAttempts || 0) + 1,
               modelReviewModelId: task.modelId,
               lessonsApplied: [...new Set([...(task.harness.lessonsApplied || []), ...lessons.map((lesson) => lesson.id)])],
@@ -1187,6 +1407,25 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               },
             });
 
+            const independentReview = await runIndependentReviewer({
+              workspaceId: claims.workspaceId,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              modelId: task.modelId,
+              instruction: [
+                'You are an independent read-only Orlynx reviewer in a separate agent session.',
+                selectedModelReviewInstruction(
+                  task.harness,
+                  task.modelId,
+                  evidenceSummary(recent),
+                  lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`),
+                ),
+                agentMemoryInstruction(lessons),
+                'Do not edit files. Return a concise evidence-grounded review for the primary agent: VERIFIED if the work is sound, or CONCERN followed by the exact unsupported claim, missed requirement, regression risk, or check that still needs to be performed.',
+              ].filter(Boolean).join('\n\n'),
+            });
+
             await queueBridgeCommand(
               claims.workspaceId,
               'agent.run',
@@ -1201,6 +1440,9 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                     evidenceSummary(recent),
                     lessons.map((lesson) => `${lesson.title}: ${lesson.lesson}`),
                   ),
+                  independentReview
+                    ? `Independent reviewer findings from a separate read-only agent session:\n${independentReview}\nUse these findings as evidence to challenge the result. If a concern is valid, inspect/fix it and re-run verification before finalizing; do not merely echo the reviewer.`
+                    : 'Independent reviewer was unavailable. Perform the mandatory review yourself using fresh tool evidence; do not claim an independent review occurred.',
                   agentMemoryInstruction(lessons),
                 ].filter(Boolean).join('\n\n'),
               ),
@@ -1211,15 +1453,19 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const durableSessionForMemory = await repository.getSession(claims.sessionId);
+          let learnedLessonIds: string[] = [];
           if (durableSessionForMemory && ((task.harness.reflectionAttempts || 0) > 0 || (task.harness.modelReviewAttempts || 0) > 0)) {
-            const learned = await rememberVerifiedLesson({
+            learnedLessonIds = await rememberVerifiedLesson({
               session: durableSessionForMemory,
               task,
               harness: task.harness,
               responseText,
               provider: memoryRun?.provider,
             }).catch(() => []);
-            if (learned.length) {
+            if (learnedLessonIds.length) {
+              const learnedAt = new Date().toISOString();
+              task.harness = markInvestigationLearned(task.harness, learnedLessonIds, learnedAt);
+              await repository.putTask(task);
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
@@ -1227,11 +1473,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 runId,
                 workspaceId: claims.workspaceId,
                 type: 'activity.progress',
-                timestamp: new Date().toISOString(),
+                timestamp: learnedAt,
                 payload: {
                   sourceType: 'agent.memory',
-                  text: `Orlynx learned from this verified recovery · saved ${learned.length} reusable lesson${learned.length === 1 ? '' : 's'}.`,
-                  lessonIds: learned,
+                  investigationId: task.harness.investigation?.id,
+                  investigationStage: task.harness.investigation?.stage,
+                  text: `Orlynx learned from this verified recovery · saved ${learnedLessonIds.length} reusable lesson${learnedLessonIds.length === 1 ? '' : 's'}.`,
+                  lessonIds: learnedLessonIds,
                 },
               });
             }

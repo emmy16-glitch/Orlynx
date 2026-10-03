@@ -30,7 +30,7 @@ test('stale interrupted run preserves partial text, terminates once, and cannot 
   assert.equal(writes.length, 1);
 });
 
-test('stale silent direct run is automatically queued once instead of requiring a user poke', async (t) => {
+test('stale silent direct run is automatically queued within the bounded runtime recovery budget', async (t) => {
   const task = {
     id: 'silent-task',
     runId: 'silent-run',
@@ -47,7 +47,8 @@ test('stale silent direct run is automatically queued once instead of requiring 
   const writes = fixture(t, task);
   await recoverInterruptedDirectRuns('recovery-session');
   assert.equal(task.state, 'queued');
-  assert.equal(task.harness?.salvageAttempts, 1);
+  assert.equal(task.harness?.runtimeRecoveryAttempts, 1);
+  assert.equal(task.harness?.salvageAttempts, 0);
   assert.match(task.harness?.inbox?.[0]?.text || '', /resume the same request/i);
   assert.ok(writes.length >= 1);
 });
