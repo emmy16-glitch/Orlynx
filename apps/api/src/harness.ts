@@ -566,7 +566,74 @@ export const shouldSalvage = shouldReflect;
 function diagnosticLine(finalText: string): string | undefined {
   const match = /(?:^|\n)\s*Model\s*[→>-]\s*Orlynx:\s*([^\n]+)/i.exec(String(finalText || ''));
   const line = String(match?.[1] || '').replace(/\s+/g, ' ').trim();
-  return line ? line.slice(0, 520) : undefined;
+  return line ? line.slice(0, 1_400) : undefined;
+}
+
+export interface InvestigationDiagnostic {
+  hypothesis?: string;
+  evidence?: string;
+  nextCheck?: string;
+  repairAction?: string;
+  raw?: string;
+}
+
+export function parseInvestigationDiagnostic(finalText: string): InvestigationDiagnostic {
+  const raw = diagnosticLine(finalText);
+  if (!raw) return {};
+
+  const value: InvestigationDiagnostic = { raw };
+  let recognized = false;
+  for (const segment of raw.split(/\s*\|\s*/).map((item) => item.trim()).filter(Boolean)) {
+    const match = /^(Hypothesis|Evidence|Next\s+check|Repair\s+action|Repair)\s*:\s*(.+)$/i.exec(segment);
+    if (!match) continue;
+    recognized = true;
+    const label = match[1].toLowerCase().replace(/\s+/g, ' ');
+    const text = match[2].replace(/\s+/g, ' ').trim().slice(0, 900);
+    if (!text) continue;
+    if (label === 'hypothesis') value.hypothesis = text;
+    else if (label === 'evidence') value.evidence = text;
+    else if (label === 'next check') value.nextCheck = text;
+    else value.repairAction = text;
+  }
+
+  // Preserve compatibility with earlier unstructured Model → Orlynx summaries.
+  if (!recognized) value.hypothesis = raw.slice(0, 900);
+  return value;
+}
+
+function eventsAfter(events: OrlynxEvent[], after?: string): OrlynxEvent[] {
+  const threshold = after ? Date.parse(after) : Number.NaN;
+  if (!Number.isFinite(threshold)) return events;
+  return events.filter((event) => {
+    const timestamp = Date.parse(String(event.timestamp || ''));
+    return Number.isFinite(timestamp) && timestamp > threshold;
+  });
+}
+
+function inferredRepairAction(events: OrlynxEvent[]): string | undefined {
+  const paths = new Set<string>();
+  for (const event of events) {
+    if (!['file.changed', 'files.changed', 'changes.updated'].includes(event.type)) continue;
+    const payload = event.payload || {};
+    const direct = String(payload.path || payload.file || '').trim();
+    if (direct) paths.add(direct);
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    for (const file of files) {
+      if (!file || typeof file !== 'object') continue;
+      const path = String((file as Record<string, unknown>).path || (file as Record<string, unknown>).file || '').trim();
+      if (path) paths.add(path);
+    }
+  }
+  const selected = [...paths].slice(0, 8);
+  return selected.length ? `Changed ${selected.join(', ')}` : undefined;
+}
+
+function observedTestingAction(events: OrlynxEvent[]): boolean {
+  return events.some((event) => [
+    'tool.started', 'tool.completed', 'tool.failed', 'tool.output',
+    'test.result', 'build.result', 'preview.ready', 'preview.state',
+    'terminal.exited', 'receipt.created',
+  ].includes(event.type));
 }
 
 function investigationQuestion(checkpoint: HarnessCheckpoint, contradictions: string[]): string {
@@ -579,6 +646,46 @@ function investigationQuestion(checkpoint: HarnessCheckpoint, contradictions: st
   ].filter(Boolean).join(' ').slice(0, 1_200);
 }
 
+export function markInvestigationVerifying(
+  checkpoint: HarnessCheckpoint,
+  now = new Date().toISOString(),
+): HarnessCheckpoint {
+  const current = checkpoint.investigation;
+  if (!current || current.stage === 'blocked' || current.stage === 'learned') return checkpoint;
+  return {
+    ...checkpoint,
+    investigation: {
+      ...current,
+      stage: 'verifying',
+      updatedAt: now,
+    },
+    updatedAt: now,
+    lastCheckpointAt: now,
+  };
+}
+
+export function markInvestigationLearned(
+  checkpoint: HarnessCheckpoint,
+  lessonIds: string[],
+  now = new Date().toISOString(),
+): HarnessCheckpoint {
+  const current = checkpoint.investigation;
+  if (!current || !lessonIds.length || current.stage === 'blocked') return checkpoint;
+  const learned = `Learned from verified outcome: ${lessonIds.join(', ')}`;
+  return {
+    ...checkpoint,
+    investigation: {
+      ...current,
+      stage: 'learned',
+      outcome: current.outcome ? `${current.outcome} · ${learned}` : learned,
+      updatedAt: now,
+      resolvedAt: current.resolvedAt || now,
+    },
+    updatedAt: now,
+    lastCheckpointAt: now,
+  };
+}
+
 export function updateInvestigationFromOutcome(
   checkpoint: HarnessCheckpoint,
   finalText: string,
@@ -588,14 +695,24 @@ export function updateInvestigationFromOutcome(
   const current = checkpoint.investigation;
   if (!current) return checkpoint;
 
-  const hypothesis = diagnosticLine(finalText) || current.hypothesis;
-  const evidence = evidenceSummary(events);
+  const diagnostic = parseInvestigationDiagnostic(finalText);
+  const recentEvents = eventsAfter(events, current.updatedAt);
+  const newEvidence = [
+    ...(diagnostic.evidence ? [diagnostic.evidence] : []),
+    ...evidenceSummary(recentEvents),
+  ];
+  const evidence = [...new Set([...current.evidence, ...newEvidence])].slice(-18);
+  const repairAction = diagnostic.repairAction || inferredRepairAction(recentEvents) || current.repairAction;
+  const hypothesis = diagnostic.hypothesis || current.hypothesis;
+  const nextCheck = diagnostic.nextCheck || current.nextCheck;
   const verificationPassed = checkpoint.verification.status === 'passed';
-  const stage: HarnessInvestigation['stage'] = verificationPassed
-    ? 'resolved'
-    : hypothesis
-      ? 'testing'
-      : current.stage;
+
+  let stage: HarnessInvestigation['stage'] = current.stage;
+  if (verificationPassed) stage = 'resolved';
+  else if (repairAction && repairAction !== current.repairAction) stage = 'repairing';
+  else if (observedTestingAction(recentEvents) && (nextCheck || hypothesis)) stage = 'testing';
+  else if (hypothesis && hypothesis !== current.hypothesis) stage = 'hypothesis';
+  else if (nextCheck && current.stage === 'hypothesis') stage = 'testing';
 
   return {
     ...checkpoint,
@@ -603,7 +720,9 @@ export function updateInvestigationFromOutcome(
       ...current,
       stage,
       ...(hypothesis ? { hypothesis } : {}),
-      evidence: evidence.length ? evidence : current.evidence,
+      ...(nextCheck ? { nextCheck } : {}),
+      evidence,
+      ...(repairAction ? { repairAction } : {}),
       ...(verificationPassed
         ? {
             outcome: `Verified: ${checkpoint.verification.satisfied.join(', ') || 'requested outcome'}`,
@@ -736,7 +855,7 @@ export function reflectionInstruction(checkpoint: HarnessCheckpoint, lessons: st
     investigationText,
     'Treat UNKNOWN as an investigation state, not as failure. Form one falsifiable hypothesis, choose one discriminating check, observe the result, then update the hypothesis. If evidence points to an infrastructure/control-plane defect, diagnose that layer instead of editing application code merely to make the symptom disappear.',
     'You are the connected reasoning layer; Orlynx is the control and evidence layer. When Orlynx asks because the evidence does not explain something, answer the specific Orlynx question instead of making Orlynx guess. Diagnose what the observations actually imply before acting. Distinguish the application, workspace, provider, forwarding, authentication, browser and UI layers instead of collapsing them into one generic failure.',
-    'Before calling the next tool, stream one compact public diagnostic line in exactly this shape: "Model → Orlynx: Hypothesis: <best current explanation> | Evidence: <observable facts supporting or weakening it> | Next check: <one discriminating action>". Keep it evidence-grounded and under about 700 characters. If the evidence is insufficient, say which check would resolve the uncertainty; say the insufficiency explicitly rather than inventing certainty. This is a public diagnostic summary, not private chain-of-thought.',
+    'Before calling the next tool, stream one compact public diagnostic line in exactly this shape: "Model → Orlynx: Hypothesis: <best current explanation> | Evidence: <observable facts supporting or weakening it> | Next check: <one discriminating action>". Keep it evidence-grounded and under about 700 characters. If a repair is made, the next diagnostic may append " | Repair action: <observable repair performed>". If fresh evidence disproves a retrieved lesson, also append [MEMORY_CONTRADICTION:<lesson-id>] for each disproved lesson. If the evidence is insufficient, say which check would resolve the uncertainty; say the insufficiency explicitly rather than inventing certainty. This is a public diagnostic summary, not private chain-of-thought.',
     checkpoint.verification.missing.includes('preview')
       ? 'When localhost is healthy but Preview is not, diagnose Orlynx/provider forwarding before editing the repository. Orlynx already supplies cloud-preview compatibility to supported dev servers such as Vite. Change project config only when fresh evidence proves the application itself overrides or blocks the provider-safe defaults. If a diagnostic-only project change is no longer needed after the provider issue is resolved, revert it before completion.'
       : '',
