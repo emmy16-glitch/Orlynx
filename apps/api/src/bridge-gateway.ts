@@ -199,12 +199,19 @@ function bearer(request: http.IncomingMessage): string {
 async function persistAdapterState(claims: BridgeClaims, adapterId: string, adapter: BridgeAdapterState) {
   const repository = controlPlaneRepository();
   const current = await repository.getWorkspace(claims.workspaceId);
-  if (!current || current.sessionId !== claims.sessionId || current.userId !== claims.userId || current.connectionId !== claims.connectionId) return;
+  if (!current || current.sessionId !== claims.sessionId || current.userId !== claims.userId || current.connectionId !== claims.connectionId) return false;
   const state = ['not_installed','installing','starting','ready','busy','unavailable','failed'].includes(String(adapter.state))
     ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
     : 'unavailable';
   const now = new Date().toISOString();
+  const previous = await repository.getWorkspaceAgentAdapter(claims.workspaceId, adapterId);
+  const changed = !previous || previous.state !== state || previous.reason !== adapter.reason
+    || previous.runtimeVersion !== (adapter.runtimeVersion ?? previous.runtimeVersion)
+    || JSON.stringify(previous.supportedModels || []) !== JSON.stringify(adapter.supportedModels ?? previous.supportedModels ?? [])
+    || JSON.stringify(previous.freeModels || []) !== JSON.stringify(adapter.freeModels ?? previous.freeModels ?? []);
+  // Heartbeats still refresh durable health, but only transitions enter the event stream.
   await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, supportedModels: adapter.supportedModels, freeModels: adapter.freeModels, runtimeVersion: adapter.runtimeVersion, updatedAt: now });
+  if (!changed) return false;
   await persistLiveEvent({
     eventId: `evt_${uuid()}`,
     sessionId: claims.sessionId,
@@ -213,6 +220,7 @@ async function persistAdapterState(claims: BridgeClaims, adapterId: string, adap
     timestamp: now,
     payload: { scope: 'agent-adapter', adapterId, state, ...(adapter.reason ? { reason: adapter.reason } : {}) },
   });
+  return true;
 }
 
 async function persistBridgeState(claims: BridgeClaims, state: 'connecting' | 'ready' | 'disconnected', detail: BridgeMessage = {}) {
@@ -343,8 +351,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         return;
       }
       if (message.kind === 'ADAPTER_STATUS' && message.adapterId && message.adapter) {
-        await persistAdapterState(claims, String(message.adapterId), message.adapter);
-        console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}${message.adapter.reason ? `:${message.adapter.reason}` : ''}`);
+        const changed = await persistAdapterState(claims, String(message.adapterId), message.adapter);
+        if (changed) console.info(`[bridge] adapter status ${message.adapterId}=${message.adapter.state || 'unknown'}${message.adapter.reason ? `:${message.adapter.reason}` : ''}`);
         if (message.adapter.state === 'ready' || message.adapter.state === 'failed') {
           void promoteNextQueuedRun(claims.sessionId).catch((error) => console.warn(`[bridge] queued promotion after adapter state change failed: ${error instanceof Error ? error.message : 'unknown error'}`));
         }
