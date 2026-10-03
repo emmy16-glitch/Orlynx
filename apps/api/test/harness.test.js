@@ -620,13 +620,9 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
 });
 
 test('memory contradiction markers are bounded to lessons actually injected into the run', () => {
-  assert.deepEqual(
-    memoryContradictionIds(
-      'Model → Orlynx: Hypothesis: old Preview rule is wrong [MEMORY_CONTRADICTION:lesson_preview] [MEMORY_CONTRADICTION:lesson_other]',
-      ['lesson_preview'],
-    ),
-    ['lesson_preview'],
-  );
+  const diagnostic = 'Model → Orlynx: Hypothesis: old Preview rule is wrong [MEMORY_CONTRADICTION:lesson_preview] [MEMORY_CONTRADICTION:lesson_other]';
+  assert.deepEqual(memoryContradictionIds(diagnostic, ['lesson_preview']), ['lesson_preview']);
+  assert.deepEqual(memoryContradictionIds(diagnostic, []), []);
 });
 
 test('verified production outcomes become deployment knowledge only after an exact live commit match', () => {
