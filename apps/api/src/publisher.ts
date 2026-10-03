@@ -1,3 +1,4 @@
+import { assertLiveE2EPublication, liveE2ESessionBranch } from './e2e-safety.js';
 import { prePublicationMissing } from './publication-language.js';
 import crypto from 'node:crypto';
 import type { ChangeSet, ChangedFile, TaskRecord } from '@orlynx/shared';
@@ -395,6 +396,13 @@ export async function publishVerifiedChangeSet(input: {
   const sessionBaseBranch = safeBranch(session.branch);
   const targetBranch = safeBranch(input.targetBranch || sessionBaseBranch);
   const strategy = input.strategy || 'direct';
+  assertLiveE2EPublication(session, targetBranch, strategy);
+  const verifyE2EWorkspaceBranch = async () => {
+    if (!liveE2ESessionBranch(session)) return;
+    const status = await bridgeRequest<GitStatus>(input.workspaceId, 'git.status', {}, 30_000);
+    assertLiveE2EPublication(session, targetBranch, strategy, String(status.branch || ''));
+  };
+  await verifyE2EWorkspaceBranch();
   const targetRemoteSha = await refSha(githubRepo.installationId, githubRepo.fullName, targetBranch);
   // Direct publication to an existing explicit target (for example "push to
   // main") is based on that target's live GitHub head, not stale conversation
@@ -525,6 +533,7 @@ export async function publishVerifiedChangeSet(input: {
   }
 
   try {
+    await verifyE2EWorkspaceBranch();
     if (!existingTargetSha) await createBranch(githubRepo.installationId, githubRepo.fullName, targetBranch, commitSha);
     else await updateBranch(githubRepo.installationId, githubRepo.fullName, targetBranch, commitSha);
     change.pushedAt = new Date().toISOString();
@@ -547,6 +556,7 @@ export async function publishVerifiedChangeSet(input: {
     return { branch: targetBranch, head: commitSha, workspaceReconciled, changeId: change.id };
   } catch (error) {
     const statusCode = (error as Error & { status?: number }).status;
+    if (liveE2ESessionBranch(session)) throw error;
     if (targetBranch !== baseBranch || (statusCode !== 403 && statusCode !== 422)) throw error;
 
     // Direct default-branch updates may be prohibited by rulesets/branch

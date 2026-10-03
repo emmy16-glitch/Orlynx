@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   assertLiveE2ESession,
+  assertLiveE2EPublication,
   liveE2EEnabled,
   liveE2ERepositoryAllowed,
   validLiveE2EBranch,
@@ -41,6 +42,28 @@ test('routes enforce the same repository and branch guard at creation and public
   const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
   assert.match(routes, /liveE2ERepositoryAllowed\(s\.project\)/);
   assert.match(routes, /validLiveE2EBranch\(requestedBranch\)/);
-  assert.match(routes, /assertLiveE2ESession\(session\.project, originalBranch\)/);
-  assert.match(routes, /Live E2E sessions may publish only their isolated E2E branch/);
+  assert.match(routes, /assertLiveE2EPublication\(session, originalBranch/);
+  assert.match(routes, /liveE2EBranch: requestedBranch/);
+  const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
+  assert.match(publisher, /assertLiveE2EPublication\(session, targetBranch, strategy/);
+  assert.match(publisher, /await verifyE2EWorkspaceBranch\(\);\n    if \(!existingTargetSha\)/);
+  assert.match(publisher, /if \(liveE2ESessionBranch\(session\)\) throw error/);
+});
+
+
+test('E2E publication rejects retargeting, PR strategies, lost session identity and workspace drift', () => {
+  const branch = 'orlynx-e2e/1760000000000';
+  const session = { project: 'emmy16-glitch/Orlynx', branch, checkpoint: { liveE2EBranch: branch } };
+  assert.doesNotThrow(() => assertLiveE2EPublication(session, branch, 'direct', branch, enabled));
+  for (const target of ['main', 'master', 'orlynx/test', 'orlynx-e2e/1760000000001']) {
+    assert.throws(() => assertLiveE2EPublication(session, target, 'direct', branch, enabled), /isolated/);
+    assert.throws(() => assertLiveE2EPublication(session, branch, 'direct', target, enabled), /workspace branch/);
+    assert.throws(() => assertLiveE2EPublication({ ...session, branch: target }, target, 'direct', target, enabled), /isolated/);
+  }
+  assert.throws(() => assertLiveE2EPublication(session, branch, 'pull-request', branch, enabled), /direct/);
+  assert.throws(() => assertLiveE2EPublication(session, branch, 'direct', '', enabled), /workspace branch/);
+  assert.throws(() => assertLiveE2EPublication(session, branch, 'direct', branch, { ...enabled, ORLYNX_E2E_ENABLED: 'false' }), /disabled/);
+  assert.throws(() => assertLiveE2EPublication({ ...session, project: 'other/repo' }, branch, 'direct', branch, enabled), /allowlisted/);
+  assert.throws(() => assertLiveE2EPublication({ project: session.project, branch: 'orlynx-e2e/main' }, 'main', 'direct', 'main', enabled), /namespace/);
+  assert.doesNotThrow(() => assertLiveE2EPublication({ project: session.project, branch: 'main' }, 'main', 'direct', 'main', {}));
 });

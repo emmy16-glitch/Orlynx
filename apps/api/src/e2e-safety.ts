@@ -22,3 +22,28 @@ export function assertLiveE2ESession(project: string, branch: string, env: NodeJ
   if (!liveE2ERepositoryAllowed(project, env)) throw new Error('Live E2E repository is not allowlisted.');
   if (!validLiveE2EBranch(branch)) throw new Error('Live E2E branch must use the orlynx-e2e/<timestamp> namespace.');
 }
+
+
+type E2ESession = { project: string; branch: string; checkpoint?: { liveE2EBranch?: string } };
+
+export function liveE2ESessionBranch(session: E2ESession): string | undefined {
+  return session.checkpoint?.liveE2EBranch || (session.branch.startsWith(E2E_BRANCH_PREFIX) ? session.branch : undefined);
+}
+
+export function assertLiveE2EPublication(
+  session: E2ESession,
+  targetBranch: string,
+  strategy: string,
+  workspaceBranch?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const isolatedBranch = liveE2ESessionBranch(session);
+  if (!isolatedBranch) return;
+  assertLiveE2ESession(session.project, isolatedBranch, env);
+  if (session.branch !== isolatedBranch || targetBranch !== isolatedBranch || strategy !== 'direct') {
+    throw new Error('Live E2E sessions may publish only their isolated E2E branch using direct publication.');
+  }
+  if (workspaceBranch !== undefined && workspaceBranch !== isolatedBranch) {
+    throw new Error('Live E2E workspace branch does not match the isolated E2E branch.');
+  }
+}
