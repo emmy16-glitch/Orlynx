@@ -12,7 +12,10 @@ test('OpenCode is registered as adapter one, not hard-coded as the only engine t
   assert.equal(adapter.bridgeCancelCommand, 'agent.cancel');
   assert.equal(adapter.capabilities.workspace, true);
   assert.deepEqual(adapter.parseModel('openai/test-model'), { providerID: 'openai', modelID: 'test-model' });
-  assert.throws(() => getAgentAdapter('cline'), /not installed/i);
+  assert.deepEqual(adapters.map(adapter => adapter.id), ['opencode', 'mini-swe', 'cline']);
+  assert.equal(getAgentAdapter('cline').capabilities.directChat, false);
+  assert.equal(getAgentAdapter('mini-swe').capabilities.repositoryWrite, true);
+  assert.throws(() => getAgentAdapter('unknown-runtime'), /not installed/i);
 });
 
 test('adapter builds a generic workspace envelope with its own adapter id', () => {
@@ -54,7 +57,8 @@ test('durable storage persists only generic adapter identity, health and session
 test('workspace bridge sends private Orlynx guidance through OpenCode system', () => {
   const bridge = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
   assert.match(bridge, /if \(payload\.system\) body\.system = String\(payload\.system\)/);
-  assert.match(bridge, /parts: \[\{ type: 'text', text: String\(payload\.text \|\| ''\) \}\]/);
+  assert.match(bridge, /parts: \[\{ type: 'text', text: publicContext \}\]/);
+  assert.match(bridge, /payload\.handoff/);
 });
 
 test('workspace bridge can start without OpenCode and reports adapter status separately', () => {
@@ -72,10 +76,8 @@ test('visible agent controls and task admission use the selected adapter explici
   assert.match(web, /className="ai-control-trigger composer-chip agent-chip"/);
   assert.match(web, /className="ai-dropdown-topline"/);
   assert.match(web, /onSelectAdapter=\{\(id\) =>/);
-  assert.match(web, /displayName: 'Cline', detail: 'Coming soon', enabled: false/);
-  assert.match(web, /displayName: 'OpenAI', detail: 'Coming soon', enabled: false/);
-  assert.match(web, /displayName: 'Claude', detail: 'Coming soon', enabled: false/);
-  assert.match(web, /displayName: 'Other', detail: 'Coming soon', enabled: false/);
+  assert.match(web, /const agentChoices = adapters.map/);
+  assert.doesNotMatch(web, /displayName: 'Cline', detail: 'Coming soon'/);
   assert.match(web, /adapterId: activeAi\.adapterId \|\| 'opencode'/);
   assert.match(web, /mode: activeAi\.mode/);
   assert.match(routes, /selectedAdapterId/);

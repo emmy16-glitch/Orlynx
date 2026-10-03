@@ -31,6 +31,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install pinned mini-SWE integration runtime
+        run: bash scripts/install-mini-swe-runtime.sh
+
       - name: Check production supervisor syntax
         run: node --check apps/api/scripts/production-start.mjs
 
@@ -38,6 +41,8 @@ jobs:
         run: npm run typecheck
 
       - name: Tests
+        env:
+          ORLYNX_MINI_SWE_PYTHON: ${{ github.workspace }}/.runner-mini-swe/bin/python
         run: npm test
 
       - name: Build

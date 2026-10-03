@@ -2,7 +2,21 @@
   "name": "@orlynx/bridge",
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "dev": "tsx watch src/index.ts", "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "start": "node dist/index.js" },
-  "dependencies": { "node-pty": "^1.1.0", "ws": "^8.18.0" },
-  "devDependencies": { "@types/node": "^20.12.0", "@types/ws": "^8.5.10", "tsx": "^4.7.0", "typescript": "^5.4.0" }
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json && cp src/mini-swe-runtime.py dist/mini-swe-runtime.py",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@cline/agents": "0.0.90",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
 }

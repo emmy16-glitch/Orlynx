@@ -1,3 +1,6 @@
+import { scheduleProductionObservation } from './production-observer.js';
+import { bridgeRequest } from './bridge-rpc.js';
+import { verifiedKnowledgeEdge } from './knowledge-graph.js';
 import { createHash } from 'node:crypto';
 import type { HarnessCheckpoint, ProjectSession, TaskRecord } from '@orlynx/shared';
 import { controlPlaneRepository, type AgentLessonKind, type AgentLessonRecord } from './storage.js';
@@ -65,7 +68,22 @@ export async function relevantAgentLessons(
   provider?: string,
 ): Promise<AgentLessonRecord[]> {
   const repository = controlPlaneRepository();
-  const candidates = await repository.listAgentLessons(session.userId, session.projectId, 50);
+  let candidates = await repository.listAgentLessons(session.userId, session.projectId, 50);
+  if (session.workspaceId && candidates.some(lesson => lesson.scope === 'repository')) {
+    const stale: string[] = [];
+    for (const lesson of candidates.filter(item => item.scope === 'repository')) {
+      if (!lesson.repositoryCommit || !lesson.referencedFiles?.length) { stale.push(lesson.id); continue; }
+      try {
+        const provenance = await bridgeRequest<{ changedFiles: string[]; missingFiles: string[] }>(session.workspaceId, 'knowledge.provenance', { commitSha: lesson.repositoryCommit, files: lesson.referencedFiles }, 10_000);
+        if (provenance.missingFiles.length || lesson.referencedFiles.some(file => provenance.changedFiles.includes(file))) stale.push(lesson.id);
+        await repository.invalidateKnowledgeEdges(session.userId, session.projectId, [...provenance.changedFiles, ...provenance.missingFiles], lesson.repositoryCommit);
+      } catch { stale.push(lesson.id); }
+    }
+    if (stale.length) {
+      await repository.invalidateAgentLessons(session.userId, session.projectId, stale, 'Repository provenance changed or could not be verified.');
+      candidates = candidates.filter(lesson => !stale.includes(lesson.id));
+    }
+  }
   const query = new Set(words(prompt));
   const ranked = candidates
     .map((lesson) => ({ lesson, score: lessonScore(lesson, query, session.projectId, provider) }))
@@ -167,6 +185,7 @@ async function persistLesson(value: AgentLessonRecord): Promise<void> {
 export async function rememberVerifiedProductionOutcome(input: {
   session: ProjectSession & { userId: string; projectId: string };
   commitSha: string;
+  observationVerified?: boolean;
   deployment: {
     configured?: boolean;
     live?: boolean;
@@ -179,6 +198,7 @@ export async function rememberVerifiedProductionOutcome(input: {
   provider?: string;
 }): Promise<string | undefined> {
   if (!input.deployment.configured || !input.deployment.live || input.deployment.commitMatches !== true) return undefined;
+  if (!input.observationVerified && await scheduleProductionObservation(input.session, input.commitSha)) return undefined;
   const now = new Date().toISOString();
   const kind: AgentLessonKind = 'deployment_procedure';
   const target = ['deployment', 'production'];
@@ -201,6 +221,9 @@ export async function rememberVerifiedProductionOutcome(input: {
     projectId: input.session.projectId,
     sessionId: input.session.id,
     scope: 'repository',
+    sourceTaskId: `deploy:${input.commitSha}`,
+    repositoryCommit: input.commitSha,
+    applicability: 'render-production',
     kind,
     subject: `repository:${input.session.project}`,
     predicate: 'deploys_via',
@@ -285,12 +308,18 @@ export async function rememberVerifiedLesson(input: {
     220,
   );
 
+  const currentChanges = await controlPlaneRepository().listChangeSets(input.session.id).catch(() => []);
+  const referencedFiles = [...new Set(currentChanges.filter(change => change.runId === input.task.runId).flatMap(change => change.files.map(file => file.path)))].slice(0, 100);
   const repositoryLesson: AgentLessonRecord = {
     id: lessonId(input.session.userId, 'repository', input.session.projectId, kind, target, tags),
     userId: input.session.userId,
     projectId: input.session.projectId,
     sessionId: input.session.id,
     scope: 'repository',
+    sourceTaskId: input.task.id,
+    repositoryCommit: input.harness.verifiedWorkspaceHead,
+    referencedFiles: referencedFiles.length ? referencedFiles : input.harness.agentHandoff?.changedFiles.map(file => file.path) || input.session.checkpoint?.filesTouched || [],
+    applicability: input.provider,
     kind,
     subject: `repository:${input.session.project}`,
     predicate: knowledgePredicate(kind),
@@ -308,6 +337,19 @@ export async function rememberVerifiedLesson(input: {
     updatedAt: now,
   };
   await persistLesson(repositoryLesson);
+  const edge = verifiedKnowledgeEdge({ userId: input.session.userId, projectId: input.session.projectId,
+    subject: repositoryLesson.subject!, predicate: repositoryLesson.predicate!, object: repositoryLesson.object!,
+    sourceTaskId: input.task.id, commitSha: repositoryLesson.repositoryCommit || '', referencedFiles: repositoryLesson.referencedFiles || [], evidenceRefs: evidence }, input.harness.verification.status === 'passed');
+  if (edge) await controlPlaneRepository().putKnowledgeEdge(edge);
+  if (input.session.workspaceId && input.harness.verifiedWorkspaceHead) {
+    const snapshot = await bridgeRequest<{ head?: string; edges?: Array<{subject: string; predicate: string; object: string; referencedFiles: string[]}> }>(input.session.workspaceId, 'knowledge.snapshot', {}, 10_000).catch(() => null);
+    if (snapshot?.head === input.harness.verifiedWorkspaceHead) {
+      for (const fact of snapshot.edges || []) {
+        const knowledge = verifiedKnowledgeEdge({ ...fact, userId: input.session.userId, projectId: input.session.projectId, sourceTaskId: input.task.id, commitSha: snapshot.head, evidenceRefs: [`manifest:${fact.referencedFiles[0]}`, ...evidence.slice(0,2)] }, true);
+        if (knowledge) await controlPlaneRepository().putKnowledgeEdge(knowledge);
+      }
+    }
+  }
   const ids = [repositoryLesson.id];
 
   const environmentText = `${input.task.prompt} ${contradictions.join(' ')} ${evidence.join(' ')}`;

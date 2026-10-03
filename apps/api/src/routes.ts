@@ -1,3 +1,5 @@
+import { adapterExecutionPlane } from './agent-runtime.js';
+import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
@@ -21,7 +23,7 @@ import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
 import { encryptCredential } from './credentials.js';
 import { deployIntentFor, executionPlaneFor, executionPlaneForSession, instantReplyFor, mergeIntentFor, publishIntentFor, publishTargetBranchFor, type PublishIntent } from './direct-chat.js';
-import { getAgentAdapter, listAgentAdapters } from './agent-runtime.js';
+import { getAgentAdapter, listAgentAdapters, workspaceModelCatalog } from './agent-runtime.js';
 import { providerForWorkspace, shouldPrewarmWorkspace, workspaceInfrastructureConfigured } from './workspace-providers.js';
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueIntentFor, steeringActionFor, verifyHarness } from './harness.js';
@@ -422,11 +424,12 @@ router.post('/sessions/:id/messages', async (req, res) => {
     ? await hydrateSessionPrefs(s.id, s.project)
     : getSessionPrefs(s.id, s.project);
   const effectiveMode = (mode ? String(mode) : prefs.mode) as 'build' | 'plan' | 'ask';
-  const selectedAdapterId = adapterId ? String(adapterId) : prefs.adapterId || 'opencode';
+  const selectedModel = modelId ? String(modelId) : prefs.modelId;
+  const preference = adapterId ? String(adapterId) : prefs.adapterId || 'opencode';
+  const selectedAdapterId = preference === 'auto' && durableStorageConfigured() ? await resolvePreferredAdapter(preference, s.id, selectedModel || '', effectiveMode, prefs.permission) : preference === 'auto' ? 'opencode' : preference;
   const selectedAdapter = getAgentAdapter(selectedAdapterId);
   let plane = executionPlaneFor(String(text), effectiveMode);
-  if (plane === 'direct' && !selectedAdapter.capabilities.directChat) plane = 'workspace';
-  const selectedModel = modelId ? String(modelId) : prefs.modelId;
+  plane = adapterExecutionPlane(selectedAdapter, selectedModel || '', plane);
   const publishIntent = effectiveMode === 'build' ? publishIntentFor(String(text), s.branch) : null;
   const publishTargetBranch = publishIntent ? publishTargetBranchFor(String(text), s.branch) : null;
   const instantReply = instantReplyFor({ text: String(text), mode: effectiveMode, project: s.project, branch: s.branch });
@@ -944,7 +947,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
     // above. For a new turn, a merely warm workspace must not make ordinary
     // conversation pay cloud/runtime recovery latency.
     let workspace = await repository.getWorkspaceBySession(s.id);
-    plane = executionPlaneForSession(String(text), effectiveMode, workspace);
+    plane = adapterExecutionPlane(selectedAdapter, selectedModel || '', executionPlaneForSession(String(text), effectiveMode, workspace));
 
     if (plane === 'workspace') {
       // The compute broker is authoritative for new/recovering Build work, but
@@ -2044,6 +2047,10 @@ router.get('/ai/overview', async (req, res) => {
   try {
     const userId = await requestUserId(req) || undefined;
     const snapshot = await listProviderConnections(s?.project, userId, sessionId || undefined);
+    if (sessionId && durableStorageConfigured()) {
+      const workspaceModels = await workspaceModelCatalog(sessionId);
+      snapshot.models = [...snapshot.models.filter(model => !workspaceModels.some(item => item.id === model.id)), ...workspaceModels];
+    }
     const status = await aiStatus(sessionId || undefined, s?.project, userId, snapshot);
     const prefs = sessionId && s
       ? (durableStorageConfigured() ? await hydrateSessionPrefs(s.id, s.project) : getSessionPrefs(s.id, s.project))
@@ -2062,9 +2069,14 @@ router.get('/ai/overview', async (req, res) => {
         displayName: adapter.displayName,
         state: persisted?.state || (adapter.capabilities.directChat ? 'available' : 'not_installed'),
         reason: persisted?.reason,
+        supportedModels: persisted?.supportedModels,
+        runtimeVersion: persisted?.runtimeVersion,
+        consecutiveFailures: persisted?.consecutiveFailures || 0,
+        circuitOpenUntil: persisted?.circuitOpenUntil,
         capabilities: adapter.capabilities,
       };
     });
+    adapters.push({ id: 'auto', displayName: 'Auto', state: 'available', reason: 'Orlynx selects a healthy compatible adapter', capabilities: getAgentAdapter('opencode').capabilities, supportedModels: undefined, runtimeVersion: undefined, consecutiveFailures: 0, circuitOpenUntil: undefined });
     const adapterId = prefs?.adapterId || adapters[0]?.id || 'opencode';
     console.info(`[ai-overview] session=${sessionId || '-'} user=${userId ? 'resolved' : 'missing'} adapter=${adapterId} models=${snapshot.models.length} available=${snapshot.models.filter((model) => model.status === 'available').length} providers=${snapshot.providers.length}`);
     res.json({
@@ -2106,7 +2118,9 @@ router.get('/ai/models', async (req, res) => {
   try {
     const session = req.query.sessionId ? ownedSession(req, String(req.query.sessionId)) : undefined;
     const sessionId = String(req.query.sessionId || '');
-    const { engine, models } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
+    const { engine, models: baseModels } = await listProviderConnections(session?.project, await requestUserId(req) || undefined, sessionId || undefined);
+    const workspaceModels = session && durableStorageConfigured() ? await workspaceModelCatalog(session.id) : [];
+    const models = [...baseModels.filter(model => !workspaceModels.some(item => item.id === model.id)), ...workspaceModels];
     res.json({ available: models.some((m) => m.status === 'available'), models });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Model list is unavailable.' }); }
 });
@@ -2146,7 +2160,19 @@ router.put('/ai/session/:id', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   try {
     if (durableStorageConfigured()) await hydrateSessionPrefs(s.id, s.project);
-    if (req.body?.adapterId !== undefined) getAgentAdapter(String(req.body.adapterId));
+    let switchedTask: import('@orlynx/shared').TaskRecord | undefined;
+    if (req.body?.adapterId !== undefined) {
+      const preference = String(req.body.adapterId);
+      const currentPrefs = getSessionPrefs(s.id, s.project);
+      const selected = getAgentAdapter(preference === 'auto' && durableStorageConfigured() ? await resolvePreferredAdapter(preference, s.id, currentPrefs.modelId || '', currentPrefs.mode, currentPrefs.permission) : preference === 'auto' ? 'opencode' : preference);
+      if (durableStorageConfigured()) {
+        const active = (await controlPlaneRepository().listTasks(s.id)).find(task => ['running','queued','waiting_input'].includes(task.state));
+        if (active && (active.adapterId || 'opencode') !== selected.id) {
+          switchedTask = await switchTaskAdapter(active.id, selected.id, 'manual-switch', req.body?.modelId ? String(req.body.modelId) : currentPrefs.modelId);
+          void promoteNextQueuedRun(s.id).catch(() => {});
+        }
+      }
+    }
     const prefs = setSessionPrefs(s.id, {
       ...(req.body?.adapterId !== undefined ? { adapterId: String(req.body.adapterId) || 'opencode' } : {}),
       ...(req.body?.modelId !== undefined ? { modelId: String(req.body.modelId) } : {}),
@@ -2157,8 +2183,8 @@ router.put('/ai/session/:id', async (req, res) => {
     const activeRun = durableStorageConfigured()
       ? (await controlPlaneRepository().listTasks(s.id)).some((r) => r.state === 'running')
       : (store.db.runs[s.id] || []).some((r) => r.state === 'running');
-    // Never interrupt an active run: changes apply to the next turn.
-    res.json({ prefs, appliesTo: activeRun ? 'next-turn' : 'next-task' });
+    // Agent changes reconcile and continue the same task; other preferences apply to the next turn.
+    res.json({ prefs, appliesTo: switchedTask ? 'same-task' : activeRun ? 'next-turn' : 'next-task', taskId: switchedTask?.id });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Preferences could not be saved.' }); }
 });
 router.put('/ai/project-defaults', (req, res) => {

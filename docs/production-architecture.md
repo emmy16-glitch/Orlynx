@@ -220,3 +220,6 @@ For operational procedure see [render-production.md](render-production.md).
 ## Recovery hardening, 2026-09-30
 
 Workspace recovery uses bounded job attempts, durable provider-attempt history, and generation-fenced terminal writes. Failed provider resources are retained in workspace_recovery_resources instead of being destroyed during broker fallback. This preserves recovery metadata; automatic transfer of uncommitted edits between providers is not implemented. See [the reliability audit](reliability-audit-2026-09-30.md).
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

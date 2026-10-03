@@ -350,3 +350,6 @@ Long-lived production monitoring must not be claimed until those external observ
 The goal is not for Orlynx to “remember everything.”
 
 The goal is for it to remember the **smallest amount of verified information that makes future work materially better without making the system less truthful**.
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

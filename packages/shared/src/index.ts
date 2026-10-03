@@ -80,6 +80,10 @@ export interface ChangedFile {
   deletions?: number;
   /** SHA-256 of the observed post-edit file contents. Used to reject stale publication. */
   afterHash?: string;
+  sourceAdapter?: string;
+  sourceTaskId?: string;
+  executionGeneration?: number;
+  observedAt?: string;
 }
 
 export interface AgentRun {
@@ -225,6 +229,11 @@ export interface HarnessCheckpoint {
   salvageAttempts: number;
   /** Safe infrastructure retries are independent of reasoning/reflection attempts. */
   runtimeRecoveryAttempts?: number;
+  /** Orlynx-owned observable context; never provider-private reasoning. */
+  agentHandoff?: AgentHandoffCheckpoint;
+  adapterAttempts?: string[];
+  executionGeneration?: number;
+  adapterTransition?: { target: string; modelId?: string; reason: AgentHandoffCheckpoint['reasonForHandoff']; startedAt: string };
   /** Durable OpenHands/LangGraph-style Investigation state. */
   investigation?: HarnessInvestigation;
   /** Model-guided reason/act/observe cycles after an unexpected result. */
@@ -257,7 +266,9 @@ export interface HarnessCheckpoint {
   lastPartialSequence?: number;
   partialUpdatedAt?: string;
   /** Workspace HEAD against which the latest complete verification was performed. */
+  workspaceBaseHead?: string;
   verifiedWorkspaceHead?: string;
+  verifiedWorkspaceFingerprint?: string;
   updatedAt: string;
 }
 
@@ -356,6 +367,14 @@ export type EventType =
 // request/session types. There is intentionally one production adapter
 // contract, not a second documentation-only handle.
 export interface AgentAdapterCapabilities {
+  repositoryRead?: boolean;
+  repositoryWrite?: boolean;
+  shell?: boolean;
+  tests?: boolean;
+  browser?: boolean;
+  planning?: boolean;
+  review?: boolean;
+  contextLimit?: number;
   workspace: boolean;
   directChat: boolean;
   streaming: boolean;
@@ -410,3 +429,41 @@ export const APPROVAL_ACTIONS = [
 export function safeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'file';
 }
+
+
+export type AgentFailureCode = 'provider_rate_limit' | 'provider_auth' | 'provider_unavailable'
+  | 'runtime_unavailable' | 'runtime_crash' | 'runtime_timeout' | 'stream_start_timeout'
+  | 'stream_stall' | 'workspace_unavailable' | 'workspace_conflict' | 'command_timeout'
+  | 'tool_failure' | 'context_limit' | 'adapter_protocol_error' | 'permission_denied'
+  | 'user_cancelled' | 'verification_failed' | 'unknown';
+export interface AgentFailure {
+  code: AgentFailureCode;
+  retryable: boolean;
+  adapterFailover: boolean;
+  workspaceFailover: boolean;
+  humanActionRequired: boolean;
+}
+export interface AgentHandoffCheckpoint {
+  version: 1;
+  taskId: string;
+  conversationId: string;
+  investigationId?: string;
+  objective: string;
+  completedWork: string[];
+  pendingWork: string[];
+  currentHypothesis?: string;
+  evidence: string[];
+  nextCheck?: string;
+  repairActions: string[];
+  changedFiles: Array<{ path: string; action: string }>;
+  commandsExecuted: Array<{ eventId: string; tool?: string; status?: string; summary?: string }>;
+  verification?: HarnessVerification;
+  repository: { repo: string; branch: string; headSha?: string; dirtyState: boolean };
+  workspace: { id: string; provider: string };
+  constraints: string[];
+  memoryRefs: string[];
+  previousAdapter?: string;
+  reasonForHandoff: 'manual-switch' | 'runtime-failure' | 'health-degradation' | 'timeout' | 'review' | 'specialization' | 'recovery';
+  createdAt: string;
+}
+export type AgentRole = 'architect' | 'executor' | 'reviewer';

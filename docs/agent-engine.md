@@ -107,3 +107,6 @@ Adding another agent must not require rebuilding Postgres state, Compute Broker,
 ## Recovery hardening, 2026-09-30
 
 Workspace OpenCode has a 60-second first-progress budget and a 90-second silence budget when no tool is active; active tools retain the larger execution budget. Retry status is bounded. A safe pre-output/pre-tool transient or public-route failure permits one retry of the exact selected model after acknowledged abort. Missing engine sessions are recreated. Adapter health can repair the private OpenCode server without replacing shell/files/Git.
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

@@ -26,7 +26,7 @@ test('direct task heartbeat reflects provider activity rather than timer livenes
   assert.match(agents, /let providerActivityAt = task\.updatedAt/);
   assert.match(agents, /const markProviderActivity = \(\) => \{ providerActivityAt = new Date\(\)\.toISOString\(\); \}/);
   assert.match(agents, /if \(providerActivityAt === persistedActivityAt\) return/);
-  assert.match(agents, /onStatus: \(text\) => \{\s*markProviderActivity\(\)/);
+  assert.match(agents, /onStatus: \(text\) => \{\s*if \(switchingDirectTasks\.has\(task\.id\)\) return;\s*markProviderActivity\(\)/);
   assert.match(agents, /onDelta: \(delta\) => \{[\s\S]*?markProviderActivity\(\)/);
 });
 

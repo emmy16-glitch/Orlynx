@@ -163,3 +163,6 @@ Authorization/security failures fail closed.
 ## Recovery hardening, 2026-09-30
 
 A legacy task pointing to a missing direct workspace is rebound only to a workspace with matching session, user, project, repository and branch. Completed jobs plus ready adapters resume queued work through the server recovery sweep without a browser. Preparation exhaustion produces a durable recoverable result. Failed provider resources are retained for safe recovery, with metadata in workspace_recovery_resources; cross-provider edit transfer remains a separate operation.
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

@@ -138,14 +138,15 @@ test('completed preparation and ready adapter wake queued work without a browser
   const original = repository.getCommand.bind(repository);
   repository.getCommand = async id => {
     const command = await original(id);
+    if (command?.kind === 'agent.reconcile') return { ...command, status: 'completed', result: { reconciled: true } };
     if (command?.kind === 'git.sync') return { ...command, status: 'completed', result: { state: 'current', branch: 'main', head: 'fresh' } };
     return command;
   };
   await recoverDurableTaskSessionsOnce();
   assert.equal((await repository.getTask('wake')).state, 'running');
   const commands = (await db.query('SELECT kind,payload FROM bridge_commands ORDER BY created_at,id')).rows;
-  assert.deepEqual(commands.map(command => command.kind), ['git.sync', 'agent.run']);
-  assert.equal(commands[1].payload.taskId, 'wake');
+  assert.deepEqual(commands.map(command => command.kind), ['git.sync', 'agent.reconcile', 'agent.run']);
+  assert.equal(commands[2].payload.taskId, 'wake');
 });
 
 test('concurrent multi-part deltas fold into durable partial text exactly once and in sequence', async t => {

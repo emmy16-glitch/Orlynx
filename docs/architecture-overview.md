@@ -407,3 +407,6 @@ Future refactors should preserve:
 ## Recovery hardening, 2026-09-30
 
 Task promotion locks the session in a READ COMMITTED transaction, then checks running work across execution lanes and human-waiting workspace work. Workspace jobs fence terminal writes by worker, attempt generation and unexpired lease. Event sequence allocation and insertion commit in one statement. See [the reliability audit](reliability-audit-2026-09-30.md).
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

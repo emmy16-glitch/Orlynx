@@ -78,12 +78,9 @@ describe('workspace trust and AI control contract', () => {
     assert.match(src, /className="composer-chip mode-access-chip"/, 'compact mode/access control missing');
     assert.match(src, /const \[aiPickerView, setAiPickerView\] = useState<'agent' \| 'model'>\('model'\)/, 'picker view state missing');
     assert.match(src, /aria-label="Choose AI agent"/, 'agent picker missing');
-    assert.match(src, /aria-label="Choose OpenCode model"/, 'OpenCode model picker missing');
-    assert.match(src, /displayName: 'Cline'/, 'Cline placeholder missing');
-    assert.match(src, /displayName: 'OpenAI'/, 'OpenAI placeholder missing');
-    assert.match(src, /displayName: 'Claude'/, 'Claude placeholder missing');
-    assert.match(src, /displayName: 'Other'/, 'Other placeholder missing');
-    assert.match(src, /openCodeModels = available\.filter/, 'models are not scoped to OpenCode');
+    assert.match(src, /aria-label="Choose model"/, 'OpenCode model picker missing');
+    assert.match(src, /const agentChoices = adapters.map/, 'agent metadata is not server-owned');
+    assert.match(src, /const filtered = available.filter/, 'configured compatible models are missing');
     assert.doesNotMatch(src, /className="inline-agent-picker"/, 'legacy native agent picker returned');
     assert.doesNotMatch(src, /className="inline-model-picker"/, 'legacy native model picker returned');
     assert.match(src, /const renderAiSwitcher = \(\) => session \? <ConnectAiSheet/, 'shared AI switcher renderer missing');

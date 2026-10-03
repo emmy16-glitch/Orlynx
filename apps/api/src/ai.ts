@@ -341,7 +341,7 @@ export function getSessionPrefs(sessionId: string, project?: string): AISessionP
 export function setSessionPrefs(sessionId: string, patch: { adapterId?: string; providerId?: string; modelId?: string; mode?: AgentMode; permission?: PermissionProfile }): AISessionPrefs {
   if (patch.mode && !['build', 'plan', 'ask'].includes(patch.mode)) throw new Error('Unknown agent mode.');
   if (patch.permission && !['full', 'ask-first', 'read-only'].includes(patch.permission)) throw new Error('Unknown permission profile.');
-  if (patch.modelId !== undefined && patch.modelId !== '' && !/^[\w.-]+\/[\w.:-]+$/.test(patch.modelId)) throw new Error('Unknown model. Choose a model from the available list.');
+  if (patch.modelId !== undefined && patch.modelId !== '' && !/^[\w.-]+\/[\w.:-]+(?:\/[\w.:-]+)*$/.test(patch.modelId)) throw new Error('Unknown model. Choose a model from the available list.');
   store.db.aiSessions ||= {};
   const current = store.db.aiSessions[sessionId] || { sessionId, adapterId: 'opencode', mode: 'build' as AgentMode, permission: 'ask-first' as PermissionProfile, updatedAt: new Date().toISOString() };
   const next: AISessionPrefs = {
@@ -463,14 +463,16 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
   providers: { connected: number; total: number };
 }> {
   const prefs = sessionId ? await hydrateSessionPrefs(sessionId, project) : { mode: defaultPrefs().mode, permission: defaultPrefs().permission, modelId: defaultPrefs().modelId };
-  const { engine, models, providers } = snapshot || await listProviderConnections(project, userId, sessionId);
+  const { engine, models: baseModels, providers } = snapshot || await listProviderConnections(project, userId, sessionId);
+  const workspaceModels = sessionId && durableStorageConfigured() ? await (await import('./agent-runtime.js')).workspaceModelCatalog(sessionId).catch(()=>[]) : [];
+  const models=[...baseModels.filter(model=>!workspaceModels.some(item=>item.id===model.id)),...workspaceModels];
   const running = sessionId
     ? durableStorageConfigured()
       ? (await controlPlaneRepository().listTasks(sessionId)).some((r) => ['running', 'queued', 'waiting_input', 'waiting_approval'].includes(r.state))
       : (store.db.runs[sessionId] || []).some((r) => r.state === 'running')
     : false;
   const available = models.filter((m)=>m.status === 'available');
-  const connectedProviders = providers.filter((p)=>p.state === 'connected').length;
+  const connectedProviders = Math.max(providers.filter((p)=>p.state === 'connected').length, models.some(model => model.family === 'workspace' && model.connected) ? 1 : 0);
   const selected = prefs.modelId ? models.find((m)=>m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
 
   if (!connectedProviders) {
