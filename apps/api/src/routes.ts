@@ -2069,7 +2069,7 @@ router.get('/ai/overview', async (req, res) => {
       const portable = adapter.id === 'mini-swe' || adapter.id === 'cline'
         ? portableAdapterConfig(adapter.id)
         : undefined;
-      const authoritativePersisted = workspaceReady && persisted;
+      const authoritativePersisted = workspaceReady ? persisted : undefined;
       const state = authoritativePersisted?.state
         || (adapter.capabilities.directChat ? 'available' : portable?.configured ? 'available' : 'not_installed');
       const reason = authoritativePersisted?.reason
