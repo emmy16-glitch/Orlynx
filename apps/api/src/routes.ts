@@ -28,6 +28,7 @@ import { advanceHarnessPhase, applySteering, createHarnessCheckpoint, queueInten
 import { computeBrokerSnapshot, selectWorkspaceProvider } from './compute-broker.js';
 import { expectedRunnerCommit, runnerPoolCachedHealth } from './runner-pool.js';
 import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedChangeSet } from './publisher.js';
+import { rememberVerifiedProductionOutcome } from './agent-memory.js';
 
 export const router = Router();
 
@@ -751,6 +752,17 @@ router.post('/sessions/:id/messages', async (req, res) => {
             commitMatches: deployment.commitMatches,
             fleetSize: deployment.services?.length || 1,
           });
+          if (deployment.live && deployment.commitMatches === true) {
+            const durableSession = await repository.getSession(s.id);
+            if (durableSession) {
+              await rememberVerifiedProductionOutcome({
+                session: durableSession,
+                commitSha: target.commitSha,
+                deployment,
+                provider: 'render',
+              }).catch(() => undefined);
+            }
+          }
           emit(s.id, 'activity.completed', {
             taskId,
             text: deployment.live && deployment.commitMatches ? 'Deployment verified' : deployment.message,
@@ -824,6 +836,17 @@ router.post('/sessions/:id/messages', async (req, res) => {
           createdAt: now,
           updatedAt: finishedAt,
         });
+        if (!degraded && deployment?.live && deployment.commitMatches === true) {
+          const durableSession = await repository.getSession(s.id);
+          if (durableSession) {
+            await rememberVerifiedProductionOutcome({
+              session: durableSession,
+              commitSha: published.head,
+              deployment,
+              provider: 'render',
+            }).catch(() => undefined);
+          }
+        }
       }
 
       emit(s.id, 'activity.completed', { taskId, text: published.alreadyPublished ? 'Already published' : 'Published to GitHub', sourceType: 'git.publish', branch: published.branch, head: published.head, pullRequestUrl: published.pullRequestUrl }, runId);
