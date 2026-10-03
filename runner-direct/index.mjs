@@ -263,6 +263,10 @@ function connectWorkspace(id, body) {
     ORLYNX_REPO_ROOT: REPO_ROOT,
     OPENCODE_API_KEY: String(body.openCodeApiKey || ''),
     ORLYNX_OPENROUTER_API_KEY: String(body.openRouterApiKey || ''),
+    ORLYNX_MINI_SWE_API_BASE: String(body.miniSweApiBase || ''),
+    ORLYNX_MINI_SWE_MODEL: String(body.miniSweModel || ''),
+    ORLYNX_CLINE_API_BASE: String(body.clineApiBase || ''),
+    ORLYNX_CLINE_MODEL: String(body.clineModel || ''),
     ORLYNX_GITHUB_TOKEN: githubToken,
     OPENCODE_BIN,
   };
