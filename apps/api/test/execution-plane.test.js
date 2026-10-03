@@ -76,6 +76,12 @@ test('verified Build work must be challenged by the currently selected model bef
   assert.match(gateway, /Orlynx → Model: verification passed/);
   assert.match(gateway, /modelReviewCompletedAt/);
   assert.match(gateway, /runIndependentReviewer/);
+  assert.match(gateway, /Independent reviewer started/);
+  assert.match(gateway, /type: 'subagent\.started'/);
+  assert.match(gateway, /type: 'subagent\.finished'/);
+  assert.match(gateway, /delegationRole: 'reviewer'/);
+  assert.match(gateway, /!String\(payload\.delegationRole \|\| ''\)/);
+  assert.match(gateway, /runIndependentReviewer/);
   assert.match(gateway, /type: 'subagent\.started'/);
   assert.match(gateway, /type: 'subagent\.finished'/);
   assert.match(gateway, /Independent reviewer findings from a separate read-only agent session/);
@@ -186,6 +192,15 @@ test('explicit after-current queue intent waits behind active work across execut
   assert.equal(chooseNextQueuedTask([active, deferred]), undefined);
   active.state = 'completed';
   assert.equal(chooseNextQueuedTask([active, deferred])?.id, 'deferred-chat');
+});
+
+test('silent direct-chat stalls fail over to workspace instead of dying after an empty response', () => {
+  const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  assert.match(agents, /did not start streaming in time/);
+  assert.match(agents, /first response timed out/);
+  assert.match(agents, /stopped making progress before completion/);
+  assert.match(agents, /failoverDirectTaskToWorkspace/);
+  assert.match(agents, /Direct AI runtime unavailable · switching to workspace compute/);
 });
 
 test('direct chat bypasses a blocked workspace task in the queue', () => {
