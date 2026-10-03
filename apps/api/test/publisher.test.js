@@ -136,3 +136,15 @@ test('publish candidate waits for tests but permits downstream deployment verifi
   task.harness.verification.missing = ['publish','deployment'];
   assert.throws(() => publicationInternals.publicationCandidate([change],[task],'other-run'), /No verified change set/);
 });
+
+
+test('publication reconstructs local-only commit receipts and preserves GitHub auth failures', async () => {
+  const sha = 'a'.repeat(40);
+  const exists = publicationInternals.remoteCommitExists;
+  assert.equal(await exists(1, 'owner/repo', sha, async () => ({ sha })), true);
+  for (const status of [404, 422]) {
+    assert.equal(await exists(1, 'owner/repo', sha, async () => { throw Object.assign(new Error('missing'), { status }); }), false);
+  }
+  await assert.rejects(() => exists(1, 'owner/repo', sha, async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); }), /forbidden/);
+  assert.equal(await exists(1, 'owner/repo', 'invalid', async () => { throw new Error('must not request'); }), false);
+});

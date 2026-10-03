@@ -247,6 +247,23 @@ async function refSha(installationId: number, project: string, branch: string): 
   }
 }
 
+async function remoteCommitExists(
+  installationId: number,
+  project: string,
+  sha: string,
+  request = githubInstallationApiRequest,
+): Promise<boolean> {
+  if (!/^[a-f0-9]{40}$/i.test(sha)) return false;
+  try {
+    await request(installationId, `/repos/${project}/git/commits/${encodeURIComponent(sha)}`);
+    return true;
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 404 || status === 422) return false;
+    throw error;
+  }
+}
+
 async function createCommitFromFiles(input: {
   installationId: number;
   project: string;
@@ -496,7 +513,11 @@ export async function publishVerifiedChangeSet(input: {
   }
 
   const workspaceHeadBeforePublish = change.currentHead || change.baseSha;
-  const commitSha = change.commitSha || await createCommitFromFiles({
+  // A ChangeSet commit receipt can refer to a local-only bridge commit.
+  // GitHub cannot update a ref to that object until verified bytes are uploaded.
+  const reusableCommitSha = change.commitSha && await remoteCommitExists(githubRepo.installationId, githubRepo.fullName, change.commitSha)
+    ? change.commitSha : undefined;
+  const commitSha = reusableCommitSha || await createCommitFromFiles({
     installationId: githubRepo.installationId,
     project: githubRepo.fullName,
     parentSha: change.baseSha,
@@ -697,4 +718,4 @@ export async function mergePublishedPullRequest(input: {
   };
 }
 
-export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate };
+export const publicationInternals = { parsePorcelainPaths, safeBranch, sha256, publicationCandidate, remoteCommitExists };
