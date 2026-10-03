@@ -209,6 +209,7 @@ export interface ControlPlaneRepository {
   listRunEvents(sessionId: string, runId: string, limit?: number): Promise<OrlynxEvent[]>;
   queueCommand(value: BridgeCommand): Promise<void>;
   claimCommands(workspaceId: string, limit?: number): Promise<BridgeCommand[]>;
+  expireCommands(workspaceId?: string, limit?: number): Promise<number>;
   completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>): Promise<boolean>;
   getCommand(id: string): Promise<BridgeCommand | null>;
   putAttachment(value: { id: string; sessionId: string; filename: string; safeName: string; mime: string; size: number; hash?: string; blobUrl?: string; contentBase64?: string; createdAt: string }): Promise<void>;
@@ -938,11 +939,25 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     }));
   }
   async queueCommand(v: BridgeCommand) { await this.initialize(); await this.sql`INSERT INTO bridge_commands (id,workspace_id,kind,payload,status,result,expires_at,created_at,updated_at) VALUES (${v.id},${v.workspaceId},${v.kind},${JSON.stringify(v.payload)},${v.status},${JSON.stringify(v.result || null)},${v.expiresAt},${v.createdAt},${v.updatedAt})`; }
+  async expireCommands(workspaceId?: string, limit = 1000) {
+    await this.initialize();
+    const batchSize = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 1000)));
+    const expired = rows(await this.sql.query(`
+      UPDATE bridge_commands SET status='failed',
+        result=jsonb_build_object('error','Workspace command expired before completion.',
+          'executionOutcome','unknown','reconciliationRequired',true),updated_at=now()
+      WHERE id IN (
+        SELECT id FROM bridge_commands WHERE status IN ('queued','sent') AND expires_at<=now()
+          AND ($1::text IS NULL OR workspace_id=$1)
+        ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED
+      ) RETURNING id`, [workspaceId ?? null, batchSize]));
+    return expired.length;
+  }
   async claimCommands(workspaceId: string, limit = 20) {
     await this.initialize();
     // Expired commands must not stay in queued/sent forever. A lost bridge
     // result can otherwise leave durable state looking active indefinitely.
-    await this.sql`UPDATE bridge_commands SET status='failed',result=${JSON.stringify({ error: 'Workspace command expired before completion.' })},updated_at=now() WHERE workspace_id=${workspaceId} AND status IN ('queued','sent') AND expires_at<=now()`;
+    await this.expireCommands(workspaceId);
     return rows<Record<string, unknown>>(await this.sql`UPDATE bridge_commands SET status='sent',updated_at=now() WHERE id IN (SELECT id FROM bridge_commands WHERE workspace_id=${workspaceId} AND (status='queued' OR (status='sent' AND updated_at < now() - interval '15 seconds')) AND expires_at>now() ORDER BY created_at LIMIT ${limit} FOR UPDATE SKIP LOCKED) RETURNING *`).map(mapCommand);
   }
   async completeCommand(id: string, status: 'completed' | 'failed', result: Record<string, unknown>) {

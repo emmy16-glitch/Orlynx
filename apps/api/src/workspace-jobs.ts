@@ -250,7 +250,7 @@ export async function runWorkspaceOrchestratorLoop(): Promise<never> {
     if (now >= nextRecoverySweepAt && !recoverySweep) {
       // A session preflight must not stop the durable job poller from claiming
       // or renewing other work while its bridge is unavailable.
-      recoverySweep = Promise.all([recoverDurableTaskSessionsOnce(), runProductionObservationSweep()]).then(([recoveredSessions]) => {
+      recoverySweep = Promise.all([recoverDurableTaskSessionsOnce(), runProductionObservationSweep(), controlPlaneRepository().expireCommands()]).then(([recoveredSessions]) => {
         if (recoveredSessions.length) {
           console.log(`[orchestrator] recovery sweep activeSessions=${recoveredSessions.length}`);
         }
