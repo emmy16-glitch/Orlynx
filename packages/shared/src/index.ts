@@ -24,6 +24,8 @@ export interface SessionCheckpoint {
   /** Immutable production E2E isolation marker, persisted with the session. */
   liveE2EBranch?: string;
   liveE2EBaseBranch?: string;
+  liveE2EPlan?: { branch: string; filename: string; clientId: string; startingMainSha: string };
+  liveE2EResult?: Record<string, unknown>;
   goal?: string;
   decisions: string[];
   branch: string;
