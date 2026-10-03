@@ -461,6 +461,18 @@ test('Render direct runner provides a single isolated workspace without nested D
   assert.doesNotMatch(source, /spawn\('docker'/);
 });
 
+test('shared OpenRouter credential follows the authenticated runner connection', () => {
+  const provider = fs.readFileSync(new URL('../src/orlynx-runner.ts', import.meta.url), 'utf8');
+  const direct = fs.readFileSync(new URL('../../../runner-direct/index.mjs', import.meta.url), 'utf8');
+  const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
+
+  assert.match(provider, /const openRouterApiKey = process\.env\.ORLYNX_OPENROUTER_API_KEY \|\| ''/);
+  assert.match(provider, /openCodeApiKey,[\s\S]*openRouterApiKey,[\s\S]*githubToken/);
+  assert.match(direct, /ORLYNX_OPENROUTER_API_KEY: String\(body\.openRouterApiKey \|\| ''\)/);
+  assert.match(manager, /const openRouterApiKey = String\(body\.openRouterApiKey \|\| ''\)/);
+  assert.match(manager, /ORLYNX_OPENROUTER_API_KEY: openRouterApiKey/);
+});
+
 test('managed runner preview traffic also refreshes workspace activity', () => {
   const manager = fs.readFileSync(new URL('../../../runner-manager/index.mjs', import.meta.url), 'utf8');
   assert.match(manager, /async function touchManagedActivity\(name, force = false\)/);
