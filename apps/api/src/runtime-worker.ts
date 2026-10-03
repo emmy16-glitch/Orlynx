@@ -2,6 +2,7 @@ import type { WorkspaceRecord } from '@orlynx/shared';
 import { githubUserAccessToken } from './github.js';
 import { Sandbox } from '@vercel/sandbox';
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { controlPlaneRepository } from './storage.js';
 import { decryptCredential } from './credentials.js';
@@ -9,11 +10,29 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 export type WorkspaceBootstrapValues = { bridgeToken: string; connectionId: string; openCodePassword: string };
-const bridgeBundle = fileURLToPath(new URL('../../../bridge/dist/index.js', import.meta.url));
+const bridgeRuntimeDir = fileURLToPath(new URL('../../../bridge/dist/', import.meta.url));
 const OPENCODE_VERSION = '1.18.32';
+const MINI_SWE_VERSION = '2.4.6';
+const CLINE_SDK_VERSION = '0.0.90';
+const BRIDGE_RUNTIME_PACKAGE = JSON.stringify({
+  type: 'module',
+  dependencies: { '@cline/agents': CLINE_SDK_VERSION, 'node-pty': '1.1.0', ws: '^8.18.0' },
+  allowScripts: { 'node-pty@1.1.0': true },
+});
+type BridgeRuntimeAsset = { name: string; content: string };
+function bridgeRuntimeAssets(): BridgeRuntimeAsset[] {
+  return fs.readdirSync(bridgeRuntimeDir)
+    .filter((name) => /^[A-Za-z0-9_.-]+\.(?:js|py)$/.test(name))
+    .sort()
+    .map((name) => ({ name, content: fs.readFileSync(path.join(bridgeRuntimeDir, name), 'utf8') }));
+}
 let cachedBridgeRevision = '';
 export function bridgeRuntimeRevision(): string {
-  if (!cachedBridgeRevision) cachedBridgeRevision = createHash('sha256').update(fs.readFileSync(bridgeBundle)).digest('hex').slice(0, 12);
+  if (!cachedBridgeRevision) {
+    const hash = createHash('sha256').update(BRIDGE_RUNTIME_PACKAGE).update(MINI_SWE_VERSION);
+    for (const asset of bridgeRuntimeAssets()) hash.update(asset.name).update('\0').update(asset.content).update('\0');
+    cachedBridgeRevision = hash.digest('hex').slice(0, 12);
+  }
   return cachedBridgeRevision;
 }
 function encoded(value: string): string { return Buffer.from(value).toString('base64'); }
@@ -23,17 +42,42 @@ function sandboxCredentials() {
     : {};
 }
 export function buildWorkspaceBootstrapScript(workspace: WorkspaceRecord, values: WorkspaceBootstrapValues, bridgeUrl: string, openCodeApiKey = '', openRouterApiKey = ''): string {
-  const bridge = fs.readFileSync(bridgeBundle, 'utf8');
+  const bridgeWrites = bridgeRuntimeAssets()
+    .map((asset) => `printf '%s' '${encoded(asset.content)}' | base64 -d > "$runtime/${asset.name}"`)
+    .join('\n');
   const envValues = [`ORLYNX_CONTROL=${bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${values.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${workspace.id}`, `ORLYNX_SESSION_ID=${workspace.sessionId}`, `ORLYNX_USER_ID=${workspace.userId}`, `ORLYNX_CONNECTION_ID=${values.connectionId}`, `OPENCODE_SERVER_PASSWORD=${values.openCodePassword}`];
   if (openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${openCodeApiKey}`);
   if (openRouterApiKey) envValues.push(`ORLYNX_OPENROUTER_API_KEY=${openRouterApiKey}`);
+  for (const [key, value] of [
+    ['ORLYNX_MINI_SWE_API_BASE', process.env.ORLYNX_MINI_SWE_API_BASE],
+    ['ORLYNX_MINI_SWE_MODEL', process.env.ORLYNX_MINI_SWE_MODEL],
+    ['ORLYNX_CLINE_API_BASE', process.env.ORLYNX_CLINE_API_BASE],
+    ['ORLYNX_CLINE_MODEL', process.env.ORLYNX_CLINE_MODEL],
+  ] as const) if (value) envValues.push(`${key}=${value}`);
   const env = envValues.map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime" && chmod 700 "$HOME/.orlynx" "$runtime"
-printf '%s' '${encoded(bridge)}' | base64 -d > "$runtime/index.js"
-printf '%s' '${encoded('{"type":"module","dependencies":{"node-pty":"1.1.0","ws":"^8.18.0"},"allowScripts":{"node-pty@1.1.0":true}}')}' | base64 -d > "$runtime/package.json"
-if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty"; then cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+${bridgeWrites}
+printf '%s' '${encoded(BRIDGE_RUNTIME_PACKAGE)}' | base64 -d > "$runtime/package.json"
+if ! test -d "$runtime/node_modules/ws" || ! test -d "$runtime/node_modules/node-pty" || ! test -d "$runtime/node_modules/@cline/agents"; then cd "$runtime" && npm install --omit=dev --no-audit --no-fund >/dev/null; fi
+
+mini_swe_python="$runtime/mini-swe/bin/python"
+mini_swe_ready=0
+if test -x "$mini_swe_python" && "$mini_swe_python" -c 'import minisweagent; assert minisweagent.__version__ == "${MINI_SWE_VERSION}"' >/dev/null 2>&1; then
+  mini_swe_ready=1
+elif command -v python3 >/dev/null 2>&1; then
+  rm -rf "$runtime/mini-swe"
+  if python3 -m venv "$runtime/mini-swe" >/dev/null 2>&1 \
+    && "$runtime/mini-swe/bin/pip" install --disable-pip-version-check --no-cache-dir "mini-swe-agent==${MINI_SWE_VERSION}" >/dev/null 2>&1 \
+    && "$mini_swe_python" -c 'import minisweagent; assert minisweagent.__version__ == "${MINI_SWE_VERSION}"' >/dev/null 2>&1; then
+    mini_swe_ready=1
+  else
+    rm -rf "$runtime/mini-swe"
+    mini_swe_python=""
+    echo "mini-SWE ${MINI_SWE_VERSION} preparation unavailable; other adapters remain usable." >&2
+  fi
+fi
 
 # Install the exact native OpenCode binary instead of the opencode-ai launcher.
 # The launcher can cache an AVX2 build on x64 machines that require the baseline binary.
@@ -170,6 +214,7 @@ printf 'ORLYNX_REPO_ROOT=%s\\n' "$repo_root" >> "$runtime/workspace.env"
 printf 'OPENCODE_BIN=%s\\n' "$opencode_bin" >> "$runtime/workspace.env"
 printf 'OPENCODE_VERSION=%s\\n' '${OPENCODE_VERSION}' >> "$runtime/workspace.env"
 printf 'ORLYNX_GH_BIN=%s\\n' "$gh_bin" >> "$runtime/workspace.env"
+if test "$mini_swe_ready" -eq 1; then printf 'ORLYNX_MINI_SWE_PYTHON=%s\\n' "$mini_swe_python" >> "$runtime/workspace.env"; fi
 if test -f "$runtime/bridge.pid" && kill -0 "$(cat "$runtime/bridge.pid")" 2>/dev/null; then kill "$(cat "$runtime/bridge.pid")" || true; fi
 set -a; . "$runtime/workspace.env"; set +a
 nohup node "$runtime/index.js" >"$runtime/bridge.log" 2>&1 </dev/null &
