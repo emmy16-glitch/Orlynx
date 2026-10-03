@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { controlPlaneFixture } from './helpers/control-plane.js';
 import { setControlPlaneRepositoryForTests } from '../src/storage.ts';
 import { switchTaskAdapter, failoverCandidate, failoverRoute } from '../src/agent-handoff.ts';
+import { classifyAgentFailure } from '../src/adapter-policy.ts';
 import { createHarnessCheckpoint } from '../src/harness.ts';
 import { registerBridgeSocket, authenticateBridgeSocket, unregisterBridgeSocket, publishLiveBridgeResult } from '../src/bridge-live.ts';
 import { verifiedKnowledgeEdge } from '../src/knowledge-graph.ts';
@@ -107,4 +108,20 @@ test('failover preserves task identity while visibly routing only to a catalog-p
   const route=await failoverRoute(task);assert.deepEqual(route,{adapterId:'mini-swe',modelId:free});
   const continued=await switchTaskAdapter(task.id,route.adapterId,'runtime-failure',route.modelId);assert.equal(continued.id,'t');assert.equal(continued.modelId,free);assert.equal(continued.harness.investigation.id,'inv');
   const events=await repository.listRunEvents('s','run-t',100);assert.ok(events.some(event=>event.payload.sourceType==='handoff.created' && event.payload.previousModel==='opencode/free' && event.payload.modelId===free));
+});
+
+test('missing shell routes to healthy compute while preserving edits and exhausting attempted adapters', async t => {
+  const {repository} = await switchFixture(t);
+  const failure = classifyAgentFailure('no shell');
+  assert.equal(failure.adapterFailover, true);
+  const task = await repository.getTask('t');
+  const route = await failoverRoute(task);
+  assert.equal(route.adapterId, 'mini-swe');
+  const switched = await switchTaskAdapter(task.id, route.adapterId, 'runtime-failure', route.modelId);
+  assert.equal(switched.id, task.id);
+  assert.equal(switched.runId, task.runId);
+  assert.equal(switched.workspaceId, task.workspaceId);
+  assert.deepEqual(switched.harness.agentHandoff.changedFiles, [{path:'src/auth.ts',action:'modified'}]);
+  switched.harness.adapterAttempts.push('cline');
+  assert.equal(await failoverRoute(switched), undefined, 'exhausted adapters cannot loop back');
 });
