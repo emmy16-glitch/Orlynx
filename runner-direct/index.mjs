@@ -262,6 +262,7 @@ function connectWorkspace(id, body) {
     OPENCODE_SERVER_PASSWORD: openCodePassword,
     ORLYNX_REPO_ROOT: REPO_ROOT,
     OPENCODE_API_KEY: String(body.openCodeApiKey || ''),
+    ORLYNX_OPENROUTER_API_KEY: String(body.openRouterApiKey || ''),
     ORLYNX_GITHUB_TOKEN: githubToken,
     OPENCODE_BIN,
   };
