@@ -361,7 +361,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
     try {
       for (const command of await repository.claimCommands(claims.workspaceId)) {
         let payload = command.payload;
-        if (command.kind === 'agent.run' && !String(payload.engineSessionId || '')) {
+        if (command.kind === 'agent.run' && !String(payload.engineSessionId || '') && !String(payload.delegationRole || '')) {
           const adapterId = String(payload.adapterId || 'opencode');
           const savedEngineSessionId = await repository.getAgentSession(claims.sessionId, adapterId);
           if (savedEngineSessionId) payload = { ...payload, engineSessionId: savedEngineSessionId };
@@ -480,8 +480,27 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
         if (command?.kind === 'agent.run') {
           const taskId = String(command.payload.taskId || '');
           const runId = String(command.payload.runId || '');
+          const delegationRole = String(command.payload.delegationRole || '');
           const task = taskId ? await repository.getTask(taskId) : null;
           const now = new Date().toISOString();
+
+          if (delegationRole) {
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'subagent.finished',
+              timestamp: now,
+              payload: {
+                subagentId: `${runId || taskId}:${delegationRole}`,
+                role: delegationRole,
+                state: message.ok ? 'completed' : 'failed',
+                modelId: command.payload.model,
+              },
+            });
+          }
           const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
 
           if (task && ['cancelled', 'failed', 'completed'].includes(task.state)) {
@@ -631,7 +650,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             task.partialText = responseText;
           }
           const engineSessionId = String(message.result?.engineSessionId || command.payload.engineSessionId || '');
-          if (engineSessionId) {
+          if (engineSessionId && !delegationRole) {
             const adapterId = String(command.payload.adapterId || 'opencode');
             await repository.putAgentSession(claims.sessionId, adapterId, engineSessionId);
           }
@@ -1379,14 +1398,32 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               ].filter(Boolean).join('\n\n'),
             });
 
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'subagent.started',
+              timestamp: reviewAt,
+              payload: {
+                subagentId: `${runId || task.id}:reviewer`,
+                role: 'reviewer',
+                modelId: task.modelId,
+                isolatedSession: true,
+                text: 'Independent reviewer started in a separate agent session.',
+              },
+            });
+
             await queueBridgeCommand(
               claims.workspaceId,
               'agent.run',
-              continuationPayload(
-                command.payload,
-                task,
-                engineSessionId,
-                [
+              {
+                ...continuationPayload(
+                  command.payload,
+                  task,
+                  '',
+                  [
                   selectedModelReviewInstruction(
                     task.harness,
                     task.modelId,
@@ -1398,7 +1435,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                     : 'Independent reviewer was unavailable. Perform the mandatory review yourself using fresh tool evidence; do not claim an independent review occurred.',
                   agentMemoryInstruction(lessons),
                 ].filter(Boolean).join('\n\n'),
-              ),
+                ),
+                engineSessionId: '',
+                delegationRole: 'reviewer',
+              },
               30 * 60_000,
             );
             console.info(`[harness] mandatory selected-model review run=${runId} model=${task.modelId}`);
