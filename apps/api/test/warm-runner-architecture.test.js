@@ -446,7 +446,7 @@ test('production start separates API and orchestrator processes', () => {
   assert.equal(pkg.scripts.start, 'node scripts/production-start.mjs');
   assert.equal(pkg.scripts['start:api'], 'node dist/index.js');
   assert.match(supervisor, /launch\('api', \['dist\/index\.js'\]\)/);
-  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\]\)/);
+  assert.match(supervisor, /launch\('orchestrator', \['dist\/orchestrator-worker\.js'\], \{ restart: true \}\)/);
   assert.match(supervisor, /ORLYNX_ORCHESTRATOR_MODE: 'worker'/);
   assert.match(supervisor, /DATABASE_URL \|\| process\.env\.POSTGRES_URL/);
 });
