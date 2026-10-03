@@ -1,24 +1,17 @@
 // Destructive live E2E, isolated to an orlynx-e2e/* branch. Production auth is
 // unchanged: CI supplies Playwright-compatible storage state or a dedicated
 // authenticated cookie secret obtained through the normal GitHub OAuth flow.
-import fs from 'node:fs';
+import {configuredTarget,sessionCookie} from '../scripts/e2e-config.mjs';
 
 const BASE = process.env.ORLYNX_API || 'http://localhost:4000';
-function sessionCookie() {
-  if (process.env.ORLYNX_E2E_STORAGE_STATE) {
-    const state = JSON.parse(fs.readFileSync(process.env.ORLYNX_E2E_STORAGE_STATE, 'utf8'));
-    const cookie = state.cookies?.find((item) => item.name === 'orlynx_session' && BASE.startsWith(`${item.secure ? 'https' : 'http'}://`));
-    if (cookie) return `${cookie.name}=${cookie.value}`;
-  }
-  return process.env.ORLYNX_SESSION_COOKIE || '';
-}
-const COOKIE = sessionCookie();
-function request(path, init = {}) { return fetch(`${BASE}${path}`, { ...init, headers: { ...(COOKIE ? { Cookie: COOKIE } : {}), ...(init.headers || {}) } }); }
+const COOKIE = sessionCookie(BASE);
+function request(path, init = {}) { return fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(30000), ...init, headers: { ...(COOKIE ? { Cookie: COOKIE } : {}), ...(init.headers || {}) } }); }
 async function json(response) { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error || 'request failed'}${body.diagnostic ? ` (${body.diagnostic})` : ''}`); return body; }
 const post = (path, body) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
+  configuredTarget();
   if (!COOKIE) { console.error('E2E BLOCKED: provide ORLYNX_E2E_STORAGE_STATE (recommended) or the dedicated CI ORLYNX_SESSION_COOKIE secret.'); process.exitCode = 2; return; }
   const status = await json(await request('/v1/integrations/status'));
   if (!status.github.connected || !status.workspace.cloudAvailable) { console.error('E2E BLOCKED: GitHub user authorization and the real workspace infrastructure must be connected.'); process.exitCode = 2; return; }
@@ -47,9 +40,9 @@ async function main() {
   if (!ready.ai.available || !ready.workspace.terminalAvailable) throw new Error('AI or the real workspace terminal did not become ready.');
 
   const filename = `orlynx-e2e-${Date.now()}.txt`;
-  const sent = await json(await post(`/v1/sessions/${session.id}/messages`, { text: `Create ${filename} containing exactly: Orlynx real execution plane verified. Do not modify any other file.`, clientId: `e2e-${Date.now()}`, fullAccessForThisTask: true }));
+  const sent = await json(await post(`/v1/sessions/${session.id}/messages`, { text: `Create ${filename} containing exactly: Orlynx real execution plane verified. Do not modify any other file.`, clientId: `e2e-${Date.now()}`, mode: 'build', fullAccessForThisTask: true }));
   let run = sent.run;
-  while (run?.state === 'running' && Date.now() < deadline) { await wait(2_000); const runs = await json(await request(`/v1/sessions/${session.id}/runs`)); run = runs.find((item) => item.id === run.id) || run; }
+  while (['queued','running'].includes(run?.state) && Date.now() < deadline) { await wait(2_000); const runs = await json(await request(`/v1/sessions/${session.id}/runs`)); run = runs.find((item) => item.id === run.id) || run; }
   if (run?.state !== 'completed') throw new Error(`AI run did not complete (${run?.state || 'missing'}).`);
 
   const testCommand = process.env.ORLYNX_E2E_TEST_COMMAND || 'npm test';

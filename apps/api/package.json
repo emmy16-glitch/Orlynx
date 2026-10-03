@@ -10,36 +10,39 @@
     "build": "tsc -p tsconfig.json",
     "start": "node scripts/production-start.mjs",
     "test": "node --import tsx --test test/*.test.js",
-    "e2e": "node test/e2e.js",
+    "e2e": "node --use-env-proxy test/e2e.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:provider-runtime": "node scripts/verify-provider-runtime.mjs",
     "start:orchestrator": "node dist/orchestrator-worker.js",
-    "start:api": "node dist/index.js"
+    "start:api": "node dist/index.js",
+    "e2e:setup": "node --use-env-proxy scripts/e2e-setup.mjs",
+    "e2e:login": "node scripts/e2e-login.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "3.0.111",
+    "@ai-sdk/google": "3.0.73",
+    "@ai-sdk/openai": "3.0.88",
+    "@ai-sdk/openai-compatible": "2.0.41",
     "@neondatabase/serverless": "^1.0.2",
     "@orlynx/shared": "*",
     "@vercel/sandbox": "^1.4.0",
+    "ai": "6.0.168",
     "cors": "^2.8.5",
+    "e2b": "2.51.0",
     "express": "^4.19.2",
     "multer": "^2.4.0",
     "uuid": "^14.0.2",
-    "ws": "^8.18.0",
-    "ai": "6.0.168",
-    "@ai-sdk/openai": "3.0.88",
-    "@ai-sdk/openai-compatible": "2.0.41",
-    "@ai-sdk/anthropic": "3.0.111",
-    "@ai-sdk/google": "3.0.73",
-    "e2b": "2.51.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.2.0",
     "@types/node": "^20.12.0",
     "@types/ws": "^8.5.10",
+    "playwright": "1.58.2",
     "tsx": "^4.7.0",
-    "typescript": "^5.4.0",
-    "@electric-sql/pglite": "^0.5.8"
+    "typescript": "^5.4.0"
   }
 }
