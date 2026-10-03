@@ -29,6 +29,7 @@ import {
   verificationRequirementsFor,
   verifyHarness,
 } from '../src/harness.ts';
+import { memoryContradictionIds } from '../src/agent-memory.ts';
 
 test('IPv6 localhost failure cannot invalidate verified IPv4/provider Preview evidence', () => {
   const checkpoint = createHarnessCheckpoint({ prompt: 'start localhost', mode: 'build', permission: 'full', plane: 'workspace' });
@@ -607,10 +608,25 @@ test('verified learning memory is durable Postgres state, not temporary JSON', (
   assert.match(memory, /investigation\?\.hypothesis/);
   assert.match(memory, /confidence: 0\.65/);
   assert.match(memory, /lessonKindFor/);
+  assert.match(memory, /knowledgePredicate/);
+  assert.match(memory, /subject: `repository:/);
+  assert.match(storage, /subject text/);
+  assert.match(storage, /predicate text/);
+  assert.match(storage, /object text/);
   assert.match(memory, /MEMORY_CONTRADICTION/);
   assert.match(memory, /verification\.status !== 'passed'/);
   assert.match(memory, /Verified Orlynx experience from earlier successful work/);
   assert.match(memory, /scope: 'environment'/);
+});
+
+test('memory contradiction markers are bounded to lessons actually injected into the run', () => {
+  assert.deepEqual(
+    memoryContradictionIds(
+      'Model → Orlynx: Hypothesis: old Preview rule is wrong [MEMORY_CONTRADICTION:lesson_preview] [MEMORY_CONTRADICTION:lesson_other]',
+      ['lesson_preview'],
+    ),
+    ['lesson_preview'],
+  );
 });
 
 test('agent memory is user-scoped, relevance-gated, and cannot overwrite another user', () => {
