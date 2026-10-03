@@ -9,7 +9,7 @@ const WORKER_TOKEN = process.env.ORLYNX_RUNTIME_WORKER_TOKEN || '';
 const BRIDGE_FILE = process.env.ORLYNX_BRIDGE_BUNDLE || path.resolve(process.cwd(), '../bridge/dist/index.js');
 const OPENCODE_VERSION = '1.18.32';
 
-type BootstrapRequest = { codespaceName: string; githubUserToken: string; bridgeUrl: string; bridgeToken: string; workspaceId: string; sessionId: string; userId: string; connectionId: string; openCodePassword: string };
+type BootstrapRequest = { codespaceName: string; githubUserToken: string; bridgeUrl: string; bridgeToken: string; workspaceId: string; sessionId: string; userId: string; connectionId: string; openCodePassword: string; openCodeApiKey?: string; openRouterApiKey?: string };
 function encoded(value: string): string { return Buffer.from(value).toString('base64'); }
 function authorized(header: string | undefined): boolean {
   const candidate = header?.startsWith('Bearer ') ? header.slice(7) : '';
@@ -21,10 +21,13 @@ function valid(body: BootstrapRequest): boolean {
   return Boolean(body.codespaceName && /^[a-zA-Z0-9-]+$/.test(body.codespaceName) && body.githubUserToken && body.bridgeUrl.startsWith('wss://') && body.bridgeToken && body.workspaceId && body.sessionId && body.userId && body.connectionId && body.openCodePassword);
 }
 function bootstrapScript(body: BootstrapRequest, bridge: string): string {
-  const env = [
+  const envValues = [
     `ORLYNX_CONTROL=${body.bridgeUrl}`, `ORLYNX_WORKSPACE_TOKEN=${body.bridgeToken}`, `ORLYNX_WORKSPACE_ID=${body.workspaceId}`,
     `ORLYNX_SESSION_ID=${body.sessionId}`, `ORLYNX_USER_ID=${body.userId}`, `ORLYNX_CONNECTION_ID=${body.connectionId}`, `OPENCODE_SERVER_PASSWORD=${body.openCodePassword}`,
-  ].map((line) => encoded(line)).join(' ');
+  ];
+  if (body.openCodeApiKey) envValues.push(`OPENCODE_API_KEY=${body.openCodeApiKey}`);
+  if (body.openRouterApiKey) envValues.push(`ORLYNX_OPENROUTER_API_KEY=${body.openRouterApiKey}`);
+  const env = envValues.map((line) => encoded(line)).join(' ');
   return `set -euo pipefail
 runtime="$HOME/.orlynx/runtime"
 mkdir -p "$runtime"
