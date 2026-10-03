@@ -49,13 +49,19 @@ hypothesis
   ↓
 testing
   ↓
-repairing / verifying
+repairing
+  ↓
+verifying
   ↓
 resolved
+  ↓
+learned (only when a verified lesson is actually persisted)
   └── blocked only when the bounded investigation cannot proceed safely
 ~~~
 
-The Investigation object persists its stable ID, question, model hypothesis, observable evidence, repair context, attempt number and verified outcome in the durable harness checkpoint. Reconnects and process restarts therefore resume the same diagnosis instead of inventing a new one.
+The Investigation object persists its stable ID, question, model hypothesis, structured next check, observable evidence, repair action, attempt number and verified outcome in the durable harness checkpoint. The public `Model → Orlynx` diagnostic is parsed into those fields instead of being stored as one opaque sentence. Reconnects and process restarts therefore resume the same diagnosis instead of inventing a new one.
+
+When the primary diagnosis repeats, becomes stagnant, or remains unclassified, Orlynx may open a separate **read-only architect session** to challenge the hypothesis and propose one discriminating next check. After deterministic verification passes, a separate **read-only reviewer session** can challenge the completed work before the primary agent finalizes. Both delegations emit canonical `subagent.started` / `subagent.finished` events. They use the installed agent adapter; this is not a claim that a second external coding-agent adapter is installed.
 
 The verified learning pipeline is:
 
@@ -96,7 +102,11 @@ A learned lesson can include:
 - search/relevance tags;
 - provider metadata when useful;
 - success count;
-- creation/update timestamps.
+- confidence and contradiction count;
+- active/superseded status;
+- typed lesson kind;
+- a bounded verified knowledge edge (`subject → predicate → object`) when derivable;
+- creation/update/last-verified/last-contradicted timestamps.
 
 The implementation currently supports two practical scopes.
 
@@ -269,15 +279,11 @@ Future memory improvements must preserve these rules:
 9. **the model is not described as retrained when it is not**;
 10. **memory behavior must be testable and observable.**
 
-## Future learning direction
-
-The long-term system can become more capable without abandoning those rules.
-
-Potential future stages include:
+## Current correction and project-intelligence behavior
 
 ### Structured lesson types
 
-Instead of one general lesson form, Orlynx can maintain typed memories such as:
+Verified lessons are now classified into bounded types such as:
 
 - repository convention;
 - build/test recipe;
@@ -285,25 +291,31 @@ Instead of one general lesson form, Orlynx can maintain typed memories such as:
 - Preview pattern;
 - dependency compatibility;
 - deployment procedure;
-- user-approved project preference.
+- general verified fact.
 
-### Confidence and decay
+The type participates in stable lesson identity and retrieval.
 
-Verified lessons now carry explicit confidence and last-verified time. A newly verified lesson starts conservatively; repeated equivalent verified successes raise confidence gradually, with a hard ceiling below absolute certainty. Retrieval also discounts old lessons that have not been revalidated recently.
+### Confidence, decay and contradiction-driven correction
 
-Confidence affects retrieval priority only. It never permits memory to override fresh repository/tool evidence.
+Verified lessons carry confidence and last-verified time. Repeated equivalent verified successes raise confidence gradually, with a hard ceiling below absolute certainty. Retrieval discounts old lessons that have not been revalidated recently.
 
-Failure/contradiction counters and automatic lesson replacement remain future hardening; Orlynx does not yet downgrade a lesson merely because an unrelated task failed.
+When fresh observable evidence clearly disproves a lesson that was actually injected into the current run, the model can emit `[MEMORY_CONTRADICTION:<lesson-id>]` in its public diagnostic. Orlynx accepts markers only for lesson IDs applied to that task, records the contradictory evidence, reduces confidence, and increments a contradiction counter. Three verified contradictions supersede the stale lesson so it no longer participates in normal retrieval. A later equivalent verified success may reactivate the lesson.
 
-### Contradiction-driven correction
+This mechanism is deliberately evidence-gated; mere irrelevance or a failed task does not count as contradiction.
 
-If fresh evidence repeatedly disproves a lesson, Orlynx should downgrade or replace it rather than merely ignoring it for one run.
+### Verified project knowledge edges
 
-### Repository knowledge graph
+Repository/environment lessons also carry a small structured edge:
 
-Verified relationships among services, packages, commands, tests, routes and deployment targets can become structured project knowledge.
+~~~text
+subject → predicate → object
+~~~
 
-That knowledge should still be derived from inspectable evidence.
+Examples include a repository `verifies_with` a build/test recipe or an environment `recovers_via` an infrastructure procedure. These edges participate in relevance scoring and give Orlynx a bounded knowledge-graph foundation without stuffing an entire repository graph into every prompt.
+
+This is **not yet** a complete static architecture/dependency graph. Full automatic service/package/route relationship extraction remains future work.
+
+## Remaining learning directions
 
 ### Team memory
 
@@ -311,11 +323,15 @@ For team workspaces, selected verified project knowledge could become shared org
 
 User-private memory and team-shared memory must remain separate concepts.
 
+### Full repository architecture graph
+
+The current verified knowledge edges should eventually be complemented by inspectable static/runtime relationships among services, packages, routes, dependencies, tests, and deployment targets.
+
 ### Learning from production outcomes
 
-Eventually, Orlynx can connect deployment health, CI results and monitored regressions back to the change that caused them.
+Orlynx can already remember verified task/deployment procedures when those outcomes appear in task evidence. A stronger production feedback loop still requires later deployment health, CI/regression observation, and connector-backed production evidence to be tied back to the originating change.
 
-That would allow a stronger form of learning:
+That future lifecycle is:
 
 ~~~text
 planned change
@@ -327,7 +343,7 @@ planned change
 → durable lesson
 ~~~
 
-This is a roadmap direction, not a claim that production-outcome learning is implemented today.
+Long-lived production monitoring must not be claimed until those external observations are actually connected.
 
 ## The standard
 
