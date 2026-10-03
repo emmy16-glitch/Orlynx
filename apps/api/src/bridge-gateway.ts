@@ -526,7 +526,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               task
               && bridgeRetrySafe
               && (errorKind === 'engine' || (errorKind === 'unknown' && /timed out|timeout|connection|transport|stopped making observable progress/i.test(detail)))
-              && Number(task.harness?.salvageAttempts || 0) < 1
+              && Number(task.harness?.runtimeRecoveryAttempts || 0) < 2
             );
 
             if (task && automaticRecoveryEligible) {
@@ -544,7 +544,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                   permission: effectivePermission,
                   now,
                 }),
-                salvageAttempts: Number(task.harness.salvageAttempts || 0) + 1,
+                runtimeRecoveryAttempts: Number(task.harness.runtimeRecoveryAttempts || 0) + 1,
               };
               task.state = 'queued';
               task.updatedAt = now;
