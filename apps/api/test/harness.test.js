@@ -629,6 +629,17 @@ test('memory contradiction markers are bounded to lessons actually injected into
   );
 });
 
+test('verified production outcomes become deployment knowledge only after an exact live commit match', () => {
+  const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
+  const routes = fs.readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  assert.match(memory, /rememberVerifiedProductionOutcome/);
+  assert.match(memory, /!input\.deployment\.configured \|\| !input\.deployment\.live \|\| input\.deployment\.commitMatches !== true/);
+  assert.match(memory, /kind: AgentLessonKind = 'deployment_procedure'/);
+  assert.match(memory, /predicate: 'deploys_via'/);
+  assert.match(routes, /rememberVerifiedProductionOutcome/);
+  assert.match(routes, /deployment\.live && deployment\.commitMatches === true/);
+});
+
 test('agent memory is user-scoped, relevance-gated, and cannot overwrite another user', () => {
   const storage = fs.readFileSync(new URL('../src/storage.ts', import.meta.url), 'utf8');
   const memory = fs.readFileSync(new URL('../src/agent-memory.ts', import.meta.url), 'utf8');
