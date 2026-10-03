@@ -12,8 +12,8 @@ import { authenticateBridgeSocket, hasLiveBridge, isCurrentBridgeSocket, publish
 import { scheduleWorkspacePreparation } from './workspace-jobs.js';
 import { bridgeEventKey, normalizeBridgeEvent, scopeToolCallId } from './agent-protocol.js';
 import { bridgeRequest, queueBridgeCommand } from './bridge-rpc.js';
-import { advanceHarnessPhase, blockInvestigation, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, updateInvestigationFromOutcome, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
-import { agentMemoryInstruction, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
+import { advanceHarnessPhase, blockInvestigation, consumeHarnessStep, createHarnessCheckpoint, evidenceSummary, harnessBudgetStatus, harnessSystemInstruction, markInvestigationLearned, markInvestigationVerifying, needsFinalSynthesis, needsSelectedModelReview, normalizeHarnessPlanItems, openCodeToolsFor, prepareReflection, reflectionInstruction, selectedModelReviewInstruction, shouldReflect, updateInvestigationFromOutcome, userInputRequest, verificationRequirementsFor, verifyHarness } from './harness.js';
+import { agentMemoryInstruction, recordMemoryContradictions, relevantAgentLessons, rememberVerifiedLesson } from './agent-memory.js';
 import { emitPersisted, sanitizeEvent } from './events.js';
 import { providerForWorkspace } from './workspace-providers.js';
 import { addChangeEvidence } from './changes.js';
@@ -615,6 +615,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             permission: effectivePermission,
             now,
           });
+          task.harness = markInvestigationVerifying(task.harness, now);
           task.updatedAt = now;
           await repository.putTask(task);
 
@@ -653,6 +654,31 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const verificationNow = new Date().toISOString();
           task.harness = verifyHarness(task.harness, recent, verificationNow);
           task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, verificationNow);
+
+          const correctionSession = await repository.getSession(claims.sessionId);
+          const correctedLessons = correctionSession
+            ? await recordMemoryContradictions({
+                session: correctionSession,
+                harness: task.harness,
+                responseText,
+              }).catch(() => [])
+            : [];
+          if (correctedLessons.length) {
+            await persistLiveEvent({
+              eventId: `evt_${uuid()}`,
+              sessionId: claims.sessionId,
+              taskId,
+              runId,
+              workspaceId: claims.workspaceId,
+              type: 'activity.progress',
+              timestamp: verificationNow,
+              payload: {
+                sourceType: 'agent.memory.corrected',
+                text: `Fresh evidence contradicted ${correctedLessons.length} retrieved lesson${correctedLessons.length === 1 ? '' : 's'} · confidence reduced.`,
+                lessonIds: correctedLessons,
+              },
+            });
+          }
 
           if (task.harness.investigation?.stage === 'resolved') {
             await persistLiveEvent({
@@ -1154,11 +1180,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               : [];
 
             task.harness = {
-              ...advanceHarnessPhase(task.harness, 'executing', {
+              ...markInvestigationVerifying(advanceHarnessPhase(task.harness, 'executing', {
                 mode: task.mode || 'build',
                 permission: effectivePermission,
                 now: reviewAt,
-              }),
+              }), reviewAt),
               modelReviewAttempts: (task.harness.modelReviewAttempts || 0) + 1,
               modelReviewModelId: task.modelId,
               lessonsApplied: [...new Set([...(task.harness.lessonsApplied || []), ...lessons.map((lesson) => lesson.id)])],
@@ -1211,15 +1237,19 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const durableSessionForMemory = await repository.getSession(claims.sessionId);
+          let learnedLessonIds: string[] = [];
           if (durableSessionForMemory && ((task.harness.reflectionAttempts || 0) > 0 || (task.harness.modelReviewAttempts || 0) > 0)) {
-            const learned = await rememberVerifiedLesson({
+            learnedLessonIds = await rememberVerifiedLesson({
               session: durableSessionForMemory,
               task,
               harness: task.harness,
               responseText,
               provider: memoryRun?.provider,
             }).catch(() => []);
-            if (learned.length) {
+            if (learnedLessonIds.length) {
+              const learnedAt = new Date().toISOString();
+              task.harness = markInvestigationLearned(task.harness, learnedLessonIds, learnedAt);
+              await repository.putTask(task);
               await persistLiveEvent({
                 eventId: `evt_${uuid()}`,
                 sessionId: claims.sessionId,
@@ -1227,11 +1257,13 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                 runId,
                 workspaceId: claims.workspaceId,
                 type: 'activity.progress',
-                timestamp: new Date().toISOString(),
+                timestamp: learnedAt,
                 payload: {
                   sourceType: 'agent.memory',
-                  text: `Orlynx learned from this verified recovery · saved ${learned.length} reusable lesson${learned.length === 1 ? '' : 's'}.`,
-                  lessonIds: learned,
+                  investigationId: task.harness.investigation?.id,
+                  investigationStage: task.harness.investigation?.stage,
+                  text: `Orlynx learned from this verified recovery · saved ${learnedLessonIds.length} reusable lesson${learnedLessonIds.length === 1 ? '' : 's'}.`,
+                  lessonIds: learnedLessonIds,
                 },
               });
             }
