@@ -18,11 +18,19 @@ const processes = new Map<string, { child: ChildProcess; stopped: Promise<void>;
 const clineRuns = new Map<string, { agent: Agent; stopped: Promise<void> }>();
 const runFile=promisify(execFile);
 let pythonProbe: {binary: string; at: number} | undefined;
+const DEFAULT_OPENAI_BASE = 'https://openrouter.ai/api/v1';
+const DEFAULT_PORTABLE_MODEL = 'openrouter/poolside/laguna-s-2.1:free';
+function adapterBase(id: string): string {
+  return process.env[id === 'cline' ? 'ORLYNX_CLINE_API_BASE' : 'ORLYNX_MINI_SWE_API_BASE'] || DEFAULT_OPENAI_BASE;
+}
+function adapterModel(id: string): string {
+  return process.env[id === 'cline' ? 'ORLYNX_CLINE_MODEL' : 'ORLYNX_MINI_SWE_MODEL'] || DEFAULT_PORTABLE_MODEL;
+}
 
 export function adapterProviderKey(id: string): string | undefined {
   const prefix=id==='cline' ? 'ORLYNX_CLINE' : 'ORLYNX_MINI_SWE';
   const own=process.env[`${prefix}_API_KEY`];
-  const base=process.env[`${prefix}_API_BASE`] || '';
+  const base=adapterBase(id);
   return own || (/^https:\/\/openrouter\.ai(?:\/|$)/i.test(base) ? process.env.ORLYNX_OPENROUTER_API_KEY : undefined);
 }
 
@@ -43,20 +51,22 @@ export function portableTaskIds(): string[] { return [...processes.keys(), ...cl
 export async function portableHealth(id: string, root: string): Promise<{ state: string; reason?: string; supportedModels?: string[]; freeModels?: string[]; runtimeVersion?: string }> {
   if (!fs.existsSync(root)) return { state: 'unavailable', reason: 'workspace_unavailable' };
   if (id === 'cline') {
-    if (!process.env.ORLYNX_CLINE_API_BASE || !process.env.ORLYNX_CLINE_MODEL) return { state: 'not_installed', reason: 'Configure a compatible local/free Cline model endpoint.' };
-    const authenticationFailure=await providerAuthentication(process.env.ORLYNX_CLINE_API_BASE,adapterProviderKey('cline'));
+    const clineBase = adapterBase('cline');
+    const clineModel = adapterModel('cline');
+    const authenticationFailure=await providerAuthentication(clineBase,adapterProviderKey('cline'));
     if (authenticationFailure) return {state:'unavailable',reason:authenticationFailure};
     try {
-      const response = await fetch(`${process.env.ORLYNX_CLINE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('cline') ? { Authorization: `Bearer ${adapterProviderKey('cline')}` } : {} });
+      const response = await fetch(`${clineBase.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('cline') ? { Authorization: `Bearer ${adapterProviderKey('cline')}` } : {} });
       const body = await response.json() as { data?: Array<{ id: string; pricing?: {prompt?: string; completion?: string} }> };
-      const wanted = process.env.ORLYNX_CLINE_MODEL.split('/').slice(1).join('/');
+      const wanted = clineModel.split('/').slice(1).join('/');
       if (!response.ok || !body.data?.some(model => model.id === wanted)) return { state: 'unavailable', reason: 'Configured Cline model is unavailable.' };
       const free = body.data.find(model=>model.id===wanted)?.pricing;
-      return { freeModels: free?.prompt==='0' && free.completion==='0' ? [process.env.ORLYNX_CLINE_MODEL!] : [], state: clineRuns.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_CLINE_MODEL!], runtimeVersion: '@cline/agents@0.0.90' };
+      return { freeModels: free?.prompt==='0' && free.completion==='0' ? [clineModel] : [], state: clineRuns.size ? 'busy' : 'ready', supportedModels: [clineModel], runtimeVersion: '@cline/agents@0.0.90' };
     } catch { return { state: 'unavailable', reason: 'Cline model endpoint is unreachable.' }; }
   }
-  if (!process.env.ORLYNX_MINI_SWE_API_BASE || !process.env.ORLYNX_MINI_SWE_MODEL) return { state: 'not_installed', reason: 'Configure a local/free compatible model endpoint and install mini-SWE 2.4.6.' };
-  const authenticationFailure=await providerAuthentication(process.env.ORLYNX_MINI_SWE_API_BASE,adapterProviderKey('mini-swe'));
+  const miniSweBase = adapterBase('mini-swe');
+  const miniSweModel = adapterModel('mini-swe');
+  const authenticationFailure=await providerAuthentication(miniSweBase,adapterProviderKey('mini-swe'));
   if (authenticationFailure) return {state:'unavailable',reason:authenticationFailure};
   if (!pythonProbe || pythonProbe.binary!==python() || Date.now()-pythonProbe.at>300000) {
     try {
@@ -65,13 +75,13 @@ export async function portableHealth(id: string, root: string): Promise<{ state:
     } catch { return {state:'not_installed',reason:'mini-SWE 2.4.6 import probe failed.'}; }
   }
   try {
-    const response = await fetch(`${process.env.ORLYNX_MINI_SWE_API_BASE.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('mini-swe') ? { Authorization: `Bearer ${adapterProviderKey('mini-swe')}` } : {} });
+    const response = await fetch(`${miniSweBase.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(3000), headers: adapterProviderKey('mini-swe') ? { Authorization: `Bearer ${adapterProviderKey('mini-swe')}` } : {} });
     if (!response.ok) return { state: 'unavailable', reason: `Model endpoint returned ${response.status}.` };
     const body = await response.json() as { data?: Array<{ id: string; pricing?: {prompt?: string; completion?: string} }> };
-    const wanted = process.env.ORLYNX_MINI_SWE_MODEL.split('/').slice(1).join('/');
+    const wanted = miniSweModel.split('/').slice(1).join('/');
     if (!body.data?.some(m => m.id === wanted)) return { state: 'unavailable', reason: 'Selected mini-SWE model is not available at the configured endpoint.' };
     const free = body.data.find(model=>model.id===wanted)?.pricing;
-    return { freeModels: free?.prompt==='0' && free.completion==='0' ? [process.env.ORLYNX_MINI_SWE_MODEL!] : [], state: processes.size ? 'busy' : 'ready', supportedModels: [process.env.ORLYNX_MINI_SWE_MODEL!], runtimeVersion: 'mini-swe-agent@2.4.6' };
+    return { freeModels: free?.prompt==='0' && free.completion==='0' ? [miniSweModel] : [], state: processes.size ? 'busy' : 'ready', supportedModels: [miniSweModel], runtimeVersion: 'mini-swe-agent@2.4.6' };
   } catch { return { state: 'unavailable', reason: 'Configured model endpoint is unreachable.' }; }
 }
 
