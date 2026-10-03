@@ -1,3 +1,7 @@
+import { getAgentAdapter } from './agent-runtime.js';
+import { adapterEligible, compatibleCapabilities } from './adapter-policy.js';
+import { currentExecution, classifyAgentFailure } from './adapter-policy.js';
+import { failoverCandidate, switchTaskAdapter } from './agent-handoff.js';
 import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
@@ -111,83 +115,19 @@ async function runIndependentDelegate(input: {
   });
 
   try {
-    const created = await bridgeRequest<{ status: number; body?: { id?: string } }>(
-      input.workspaceId,
-      'opencode.request',
-      {
-        path: '/session',
-        method: 'POST',
-        body: { title: `Orlynx independent ${label} ${input.runId || input.taskId}` },
-        timeoutMs: 15_000,
-      },
-      20_000,
-    );
-    const engineSessionId = String(created.body?.id || '');
-    if (!engineSessionId) throw new Error(`Independent ${label} session was not created.`);
-
-    const [providerID, ...modelParts] = input.modelId.split('/');
-    if (!providerID || !modelParts.length) throw new Error(`Independent ${label} model id is invalid.`);
-    const modelID = modelParts.join('/');
-
-    await bridgeRequest(
-      input.workspaceId,
-      'opencode.request',
-      {
-        path: `/session/${engineSessionId}/prompt_async`,
-        method: 'POST',
-        body: {
-          parts: [{ type: 'text', text: input.instruction }],
-          model: { providerID, modelID },
-          tools: {
-            read: true,
-            grep: true,
-            glob: true,
-            list: true,
-            write: false,
-            edit: false,
-            patch: false,
-            bash: false,
-            shell: false,
-            webfetch: false,
-            websearch: false,
-          },
-        },
-        timeoutMs: 15_000,
-      },
-      20_000,
-    );
-
-    const deadline = Date.now() + 90_000;
-    let idle = false;
-    while (Date.now() < deadline) {
-      const status = await bridgeRequest<{ status: number; body?: Record<string, Record<string, unknown>> }>(
-        input.workspaceId,
-        'opencode.request',
-        { path: '/session/status', method: 'GET', timeoutMs: 10_000 },
-        15_000,
-      );
-      const state = status.body?.[engineSessionId] || {};
-      if (String(state.type || '') === 'idle') {
-        idle = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-    if (!idle) throw new Error(`Independent ${label} timed out before returning to idle.`);
-
-    const messages = await bridgeRequest<{ status: number; body?: Array<{ info?: Record<string, unknown>; parts?: Array<Record<string, unknown>> }> }>(
-      input.workspaceId,
-      'opencode.request',
-      { path: `/session/${engineSessionId}/message`, method: 'GET', timeoutMs: 10_000 },
-      15_000,
-    );
-    const assistant = [...(messages.body || [])].reverse().find((message) => String(message.info?.role || '') === 'assistant');
-    const text = (assistant?.parts || [])
-      .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
-      .map((part) => String(part.text || ''))
-      .join('')
-      .trim()
-      .slice(0, 8_000);
+    const repository = controlPlaneRepository();
+    const task = await repository.getTask(input.taskId);
+    const preferred = process.env[input.role === 'architect' ? 'ORLYNX_ARCHITECT_ADAPTER' : 'ORLYNX_REVIEWER_ADAPTER'] || task?.adapterId || 'opencode';
+    const adapter = getAgentAdapter(preferred);
+    const state = await repository.getWorkspaceAgentAdapter(input.workspaceId, adapter.id);
+    if (!adapterEligible(state || undefined) || !compatibleCapabilities(adapter.capabilities, { repositoryRead: true, [input.role === 'reviewer' ? 'review' : 'planning']: true }) || (adapter.supportsModel && !adapter.supportsModel(input.modelId))) throw new Error(`Independent ${label} has no healthy compatible adapter.`);
+    const result = await bridgeRequest<{ responseText?: string }>(input.workspaceId, 'agent.delegate', adapter.workspacePayload({
+      modelId: input.modelId, taskId: `${input.taskId}:${delegationId}`, runId: input.runId || input.taskId, sessionId: input.sessionId,
+      engineSessionId: '', text: input.instruction, system: `Orlynx ${label}. Read-only inspection. Findings are evidence, not authority. Never modify files or publish.`,
+      mode: 'plan', permission: 'read-only', executionGeneration: task?.harness?.executionGeneration,
+      tools: { read: true, grep: true, glob: true, list: true, write: false, edit: false, patch: false, bash: false, shell: false, webfetch: false, websearch: false },
+    }), 120_000);
+    const text = String(result.responseText || '').trim().slice(0, 8_000);
     if (!text) throw new Error(`Independent ${label} completed without a readable response.`);
 
     await persistLiveEvent({
@@ -238,7 +178,7 @@ async function runIndependentArchitect(input: Omit<Parameters<typeof runIndepend
   return runIndependentDelegate({ ...input, role: 'architect' });
 }
 
-type BridgeAdapterState = { state?: string; reason?: string };
+type BridgeAdapterState = { state?: string; reason?: string; supportedModels?: string[]; runtimeVersion?: string };
 type BridgeMessage = { kind?: string; commandId?: string; workspaceId?: string; sessionId?: string; userId?: string; connectionId?: string; repoRoot?: string; capabilities?: string[]; adapters?: Record<string, BridgeAdapterState>; adapterId?: string; adapter?: BridgeAdapterState; ok?: boolean; result?: Record<string, unknown>; error?: string; event?: { eventId?: string; sequence?: number; type?: string; payload?: Record<string, unknown>; taskId?: string; runId?: string } };
 
 type VerificationArtifact = {
@@ -264,7 +204,7 @@ async function persistAdapterState(claims: BridgeClaims, adapterId: string, adap
     ? String(adapter.state) as 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed'
     : 'unavailable';
   const now = new Date().toISOString();
-  await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, updatedAt: now });
+  await repository.putWorkspaceAgentAdapter({ workspaceId: claims.workspaceId, adapterId, state, reason: adapter.reason, supportedModels: adapter.supportedModels, runtimeVersion: adapter.runtimeVersion, updatedAt: now });
   await persistLiveEvent({
     eventId: `evt_${uuid()}`,
     sessionId: claims.sessionId,
@@ -494,6 +434,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           const now = new Date().toISOString();
           const memoryRun = (store.db.runs[claims.sessionId] || []).find((candidate) => candidate.id === runId);
 
+          if (task && !currentExecution(task, command.payload)) return;
           if (task && ['cancelled', 'failed', 'completed'].includes(task.state)) {
             console.info(`[bridge] ignored late result for terminal run=${runId} taskState=${task.state}`);
             void promoteNextQueuedRun(claims.sessionId).catch(() => {});
@@ -531,6 +472,24 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
                         : 'Orlynx AI could not complete this task.';
             console.warn(`[bridge] agent run failed session=${claims.sessionId} run=${runId} kind=${errorKind} freePublic=${freePublicModel}`);
 
+            await repository.recordAdapterOutcome(claims.workspaceId, adapterId, false);
+            const failure = classifyAgentFailure(detail);
+            if (task && failure.adapterFailover && Number(task.harness?.adapterAttempts?.length || 0) < 3) {
+              const candidate = await failoverCandidate(task);
+              if (candidate) {
+                try {
+                  await switchTaskAdapter(task.id, candidate, 'runtime-failure');
+                  void promoteNextQueuedRun(claims.sessionId).catch(() => {});
+                  return;
+                } catch (switchError) {
+                  console.warn(`[adapter] reconciliation blocked task=${task.id}: ${switchError instanceof Error ? switchError.message : 'unknown'}`);
+                  // A persisted transition fences late events/results. Never
+                  // retry the old runtime after an uncertain cancellation.
+                  const latest = await repository.getTask(task.id);
+                  if (latest?.harness?.adapterTransition) return;
+                }
+              }
+            }
             const bridgeRetrySafe = message.result?.retrySafe === true;
             const automaticRecoveryEligible = Boolean(
               task
@@ -631,6 +590,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
             return;
           }
 
+          await repository.recordAdapterOutcome(claims.workspaceId, String(command.payload.adapterId || 'opencode'), true);
           const responseText = String(message.result?.responseText || '');
           // RESULT carries the engine's authoritative complete assistant text.
           // Store it with a narrow partial-text update before verification or
@@ -647,11 +607,15 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           }
 
           const rawDiff = Array.isArray(message.result?.diff) ? message.result.diff as Array<Record<string, unknown>> : [];
+          const authorshipEvents = await repository.listRunEvents(claims.sessionId,runId,1000);
           const files = rawDiff.flatMap((item) => {
             const file = String(item.file || item.path || '');
             if (!file || file.startsWith('/') || file.split('/').includes('..')) return [];
+            const authored = [...authorshipEvents].reverse().find(event=>['file.changed','files.changed'].includes(event.type) && (String(event.payload.path || event.payload.file || '')===file || Array.isArray(event.payload.files) && event.payload.files.some((entry: any)=>String(entry.path || entry.file || '')===file)));
             return [addChangeEvidence({
               path: file,
+              sourceAdapter: authored ? String(authored.payload.adapterId || 'opencode') : undefined,
+              sourceTaskId: taskId, executionGeneration: Number(command.payload.executionGeneration || 0), observedAt: now,
               action: item.status === 'added' ? 'create' as const : item.status === 'deleted' ? 'delete' as const : 'modify' as const,
               before: typeof item.before === 'string' ? item.before : undefined,
               after: typeof item.after === 'string' ? item.after : undefined,
@@ -665,7 +629,7 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               id: changeId,
               sessionId: claims.sessionId,
               runId,
-              baseSha: String(message.result?.head || ''),
+              baseSha: String(message.result?.baseHead || message.result?.head || ''),
               files,
               reviewState: 'pending',
               createdAt: now,
@@ -776,6 +740,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           task.updatedAt = now;
           await repository.putTask(task);
 
+          const beforeVerification = await repository.getTask(task.id);
+          if (!beforeVerification || !currentExecution(beforeVerification, command.payload)) return;
           const pendingSteering = task.harness.inbox.filter((item) => !item.appliedAt);
           if (pendingSteering.length && engineSessionId) {
             const appliedAt = new Date().toISOString();
@@ -808,6 +774,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           let recent = (await repository.listRunEvents(claims.sessionId, runId, 1000))
             .map(sanitizeEvent);
+          const currentRepository = await bridgeRequest<{ repositoryFingerprint?: string }>(claims.workspaceId, 'git.status', {}, 30_000).catch(() => null);
+          task.harness.verifiedWorkspaceFingerprint = currentRepository?.repositoryFingerprint;
           const verificationNow = new Date().toISOString();
           task.harness = verifyHarness(task.harness, recent, verificationNow);
           task.harness = updateInvestigationFromOutcome(task.harness, responseText, recent, verificationNow);
@@ -949,6 +917,8 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
 
           if (publicationRecoverable && (effectivePermission === 'full' || publishExplicitlyRequested)) {
             try {
+              const publicationTask = await repository.getTask(task.id);
+              if (!publicationTask || !currentExecution(publicationTask, command.payload)) return;
               const published = await controlledDefaultBranchPublish(
                 claims.workspaceId,
                 claims.sessionId,
@@ -1571,10 +1541,10 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
               if (
                 (task.plane || 'workspace') !== 'workspace'
                 || task.state !== 'running'
+                || task.harness?.adapterTransition
                 || !activeTaskIds.has(task.id)
               ) continue;
-              task.updatedAt = now;
-              await repository.putTask(task);
+              await repository.touchTaskHeartbeat(task.id, Number(task.harness?.executionGeneration || 0), now);
               touchedTask = true;
             }
             if (touchedTask) await repository.touchWorkspaceRuntime(claims.workspaceId, { taskHeartbeatAt: now });
@@ -1582,6 +1552,11 @@ async function handleConnection(ws: WebSocket, request: http.IncomingMessage) {
           return;
         }
 
+        if (message.event.payload?.adapterId && !message.event.taskId) return;
+        if (message.event.taskId) {
+          const task = await repository.getTask(message.event.taskId);
+          if (!task || task.sessionId !== claims.sessionId || task.workspaceId !== claims.workspaceId || task.runId !== runId || !currentExecution(task, message.event.payload || {})) return;
+        }
         const payload: Record<string, unknown> = { ...normalized.payload };
         const type = normalized.type;
 

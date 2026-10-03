@@ -4,7 +4,7 @@ Orlynx is a **phone-first, GitHub-native AI software-development workspace** bui
 
 It is not a thin chat wrapper around one model, a Codespaces dashboard, or a hosted terminal. Orlynx is the product and orchestration layer that keeps repository identity, conversation, tasks, execution, verification, recovery, memory, Preview, and publication coherent even when the model, coding agent, or compute provider changes.
 
-> **Current production architecture:** Render control plane + Postgres durable state + direct OpenCode fast lane + adaptive Compute Broker + five-host Orlynx runner pool + E2B + GitHub Codespaces + authenticated workspace bridge + OpenCode as Agent Adapter #1.
+> **Current production architecture:** Render control plane + Postgres durable state + direct OpenCode fast lane + adaptive Compute Broker + Orlynx runner pool + E2B + GitHub Codespaces + authenticated workspace bridge + OpenCode as Agent Adapter #1.
 
 Render is the active production control plane. Vercel is not part of the current runtime architecture.
 
@@ -209,9 +209,9 @@ It exposes repository-scoped capabilities such as:
 
 Commands are persisted before relying on the live socket fast path. The Bridge keeps a command-result journal and protects against duplicate execution across reconnects.
 
-## OpenCode and models
+## Coding agents and models
 
-OpenCode is **Agent Adapter #1**. It is not the definition of Orlynx.
+OpenCode is **Agent Adapter #1**. mini-SWE and Cline have real workspace runtime integrations behind the same controller. Orlynx owns the task and publication; adapters own temporary execution. See [multi-agent architecture](docs/multi-agent-architecture.md) and [implementation status](docs/multi-agent-architecture-status.md) for configuration, verified behavior and remaining limitations.
 
 Orlynx owns task identity, permissions, queueing, execution routing, events, memory, verification, and publication. OpenCode supplies the coding-agent runtime and talks to the selected model.
 

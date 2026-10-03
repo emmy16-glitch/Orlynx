@@ -200,3 +200,6 @@ An unavailable OpenCode adapter can surface one actionable status without changi
 ### Cross-device replay
 
 Conversation restore starts from server-owned GitHub-user sessions. A fresh device can rebuild its thread from durable messages/run snapshots/activity history even when localStorage has no prior session pointer.
+
+
+See [Orlynx-owned multi-agent execution](multi-agent-architecture.md) for portable adapters, fenced same-task handoffs, provenance and rollout limitations; [implementation status](multi-agent-architecture-status.md) records the verified scope.

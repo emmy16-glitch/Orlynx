@@ -11,3 +11,5 @@ data
 coverage
 .vscode
 .idea
+
+.runner-mini-swe

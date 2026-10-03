@@ -22,7 +22,7 @@ test('workspace heartbeat renews only exact active agent tasks', () => {
   const gateway = fs.readFileSync(new URL('../src/bridge-gateway.ts', import.meta.url), 'utf8');
 
   assert.match(bridge, /'task-heartbeat-v2'/);
-  assert.match(bridge, /activeTaskIds: \[\.\.\.activeAgents\.keys\(\)\]/);
+  assert.match(bridge, /activeTaskIds: \[\.\.\.activeAgents\.keys\(\), \.\.\.portableTaskIds\(\)\]/);
   assert.match(gateway, /const activeTaskIds = new Set/);
   assert.match(gateway, /activeTaskIds\.has\(task\.id\)/);
   assert.doesNotMatch(gateway, /if \(\(task\.plane \|\| 'workspace'\) !== 'workspace' \|\| task\.state !== 'running'\) continue;\s*task\.updatedAt = now;/);

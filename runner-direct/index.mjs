@@ -503,4 +503,8 @@ process.on('SIGINT', () => { killBridge(); server.close(() => process.exit(0)); 
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[direct-runner] listening on :${PORT} capacity=1 idleSeconds=${IDLE_SECONDS}`);
+  if (process.env.ORLYNX_INSTALL_MINI_SWE === '1') {
+    // Optional installation runs independently of the OpenCode startup path.
+    run('bash',[path.join(ROOT,'scripts','install-mini-swe-runtime.sh')],{timeoutMs:180000}).then(()=>console.log('[direct-runner] mini-SWE 2.4.6 import verified')).catch(()=>console.warn('[direct-runner] optional mini-SWE installation unavailable; OpenCode remains available'));
+  }
 });

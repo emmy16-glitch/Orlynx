@@ -1,3 +1,4 @@
+import { readOnlyCommand } from './read-only-command.js';
 import WebSocket from 'ws';
 import * as pty from 'node-pty';
 import { spawn, spawnSync } from 'node:child_process';
@@ -5,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { ExecutionGate } from './execution-gate.js';
+import { portableHealth, runPortable, cancelPortable, portableTaskIds } from './portable-agents.js';
 
 const CONTROL = process.env.ORLYNX_CONTROL || '';
 let token = process.env.ORLYNX_WORKSPACE_TOKEN || '';
@@ -33,6 +36,10 @@ const terminals = new Map<string, PtyState>();
 const completed = new Map<string, CommandReply>();
 const inFlight = new Map<string, InFlightCommand>();
 const activeAgents = new Map<string, string>();
+const cancelledAgentTasks = new Set<string>();
+const executionGate = new ExecutionGate(path.join(os.homedir(), '.orlynx', 'runtime', `execution-${WORKSPACE_ID || 'local'}.json`));
+let activeExecution: Promise<Record<string, unknown>> | undefined;
+const runningCommands = new Map<number, ReturnType<typeof spawn>>();
 type OpenCodeAuthMode = 'public' | 'account';
 type AdapterLifecycle = { state: 'starting' | 'ready' | 'failed' | 'unavailable'; reason?: string };
 let openCodeAuthMode: OpenCodeAuthMode | undefined;
@@ -504,11 +511,30 @@ async function opencodeRequest(payload: Record<string, unknown>) {
   }
   return { status: response.status, body };
 }
+function repositoryFingerprint(): string {
+  const hash = crypto.createHash('sha256');
+  const tracked = git(['ls-files', '-z']).split('\0').filter(Boolean);
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+  for (const file of [...new Set([...tracked, ...untracked])].sort()) {
+    const absolute = safePath(file); hash.update(file).update('\0');
+    if (!fs.existsSync(absolute)) hash.update('deleted');
+    else if (fs.lstatSync(absolute).isSymbolicLink()) hash.update(fs.readlinkSync(absolute));
+    else if (fs.statSync(absolute).isFile()) hash.update(fs.readFileSync(absolute));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
 let bridgeEventSequence = 0;
 function bridgeEvent(ws: WebSocket, type: string, payload: Record<string, unknown>, taskId?: string, runId?: string) {
   if (ws.readyState !== WebSocket.OPEN) return;
   const sequence = ++bridgeEventSequence;
   const eventId = `${CONNECTION_ID || WORKSPACE_ID || 'bridge'}:${sequence}`;
+  if (['tool.completed','tool.failed','test.result','build.result','terminal.exited'].includes(type)) {
+    try { payload = { ...payload, repositoryFingerprint: repositoryFingerprint() }; } catch { /* unverifiable evidence is excluded by the controller */ }
+  }
+  const execution = executionGate.current();
+  if (taskId && execution?.taskId === taskId) payload = { ...payload, adapterId: execution.adapterId, executionGeneration: execution.generation };
+  if (taskId && payload.engineSessionId) executionGate.session(taskId, String(payload.engineSessionId));
   const safePayload = redactValue(payload) as Record<string, unknown>;
   ws.send(JSON.stringify({ kind: 'EVENT', event: { eventId, sequence, type, payload: safePayload, taskId, runId } }));
 }
@@ -631,7 +657,8 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
     const id = String(message.info?.id || '');
     if (id) messageRoles.set(id, String(message.info?.role || ''));
   }
-  const body: Record<string, unknown> = { parts: [{ type: 'text', text: String(payload.text || '') }] };
+  const publicContext = [payload.handoff ? `Orlynx observable checkpoint:\n${JSON.stringify(payload.handoff)}` : '', String(payload.text || '')].filter(Boolean).join('\n\n');
+  const body: Record<string, unknown> = { parts: [{ type: 'text', text: publicContext }] };
   if (payload.system) body.system = String(payload.system);
   if (payload.tools && typeof payload.tools === 'object') body.tools = payload.tools;
   if (payload.model) body.model = payload.model;
@@ -660,6 +687,7 @@ async function runAgentOnce(payload: Record<string, unknown>, ws: WebSocket) {
     nextEvent = undefined;
   }
 
+  if (cancelledAgentTasks.has(taskId)) throw new Error('user_cancelled: Orlynx stopped this execution.');
   await opencodeRequest({ path: `/session/${engineSessionId}/prompt_async`, method: 'POST', body, timeoutMs: 120_000 });
   activeAgents.set(taskId, engineSessionId);
 
@@ -950,6 +978,7 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
 
   try {
     while (Date.now() < deadline && !finished) {
+      if (cancelledAgentTasks.has(taskId)) throw new Error('user_cancelled: Orlynx stopped this execution.');
       const now = Date.now();
       const activeTool = [...toolStates.values()].some(state => state === 'running' || state === 'pending');
       const silentForMs = now - lastProgressAt;
@@ -1181,7 +1210,9 @@ type BridgeAgentAdapter = {
 };
 
 async function cancelOpenCodeAgent(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const id = activeAgents.get(String(payload.taskId || ''));
+  const taskId = String(payload.taskId || '');
+  cancelledAgentTasks.add(taskId);
+  const id = activeAgents.get(taskId);
   if (!id) return { cancelled: false };
   await opencodeRequest({ path: `/session/${id}/abort`, method: 'POST' });
   activeAgents.delete(String(payload.taskId || ''));
@@ -1189,6 +1220,7 @@ async function cancelOpenCodeAgent(payload: Record<string, unknown>): Promise<Re
 }
 
 const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
+  ...['mini-swe', 'cline'].map(id => [id, { id, health: () => portableHealth(id, REPO_ROOT), run: async (payload: Record<string, unknown>, ws: WebSocket) => ({...await runPortable(id, payload, portableHost(payload, ws)), head: git(['rev-parse','HEAD']).trim(), baseHead: payload.workspaceBaseHead}), cancel: (payload: Record<string, unknown>) => cancelPortable(String(payload.taskId || '')) }] as [string, BridgeAgentAdapter]),
   ['opencode', {
     id: 'opencode',
     health: async () => {
@@ -1227,6 +1259,60 @@ const bridgeAgentAdapters = new Map<string, BridgeAgentAdapter>([
     cancel: cancelOpenCodeAgent,
   }],
 ]);
+
+function workspaceChanges(base = 'HEAD'): Array<Record<string, unknown>> {
+  if (base !== 'HEAD' && !/^[a-f0-9]{40}$/i.test(base)) throw new Error('Invalid workspace base commit.');
+  const paths = new Set(git(['diff', '--name-only', base]).split('\n').filter(Boolean));
+  for (const file of git(['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean)) paths.add(file);
+  return [...paths].slice(0, 200).map(file => {
+    const absolute = safePath(file);
+    const exists = fs.existsSync(absolute);
+    let before = '';
+    try { before = git(['show', `${base}:${file}`]); } catch {}
+    const after = exists && fs.statSync(absolute).isFile() ? output(fs.readFileSync(absolute, 'utf8')) : '';
+    return { file, path: file, status: !exists ? 'deleted' : before ? 'modified' : 'added', before, after };
+  });
+}
+function portableHost(payload: Record<string, unknown>, ws: WebSocket) {
+  const base = String(payload.workspaceBaseHead || git(['rev-parse','HEAD']).trim());
+  return { root: REPO_ROOT, environment: () => cleanEnvironment(), changes: () => workspaceChanges(base),
+    emit: (type: string, data: Record<string, unknown>) => bridgeEvent(ws, type, data, String(payload.taskId), String(payload.runId)),
+    command: async (command: string, readOnly: boolean, signal?: AbortSignal) => {
+      if (signal?.aborted) return { returncode: 1, output: "Orlynx cancelled this command." };
+      const completion = /^echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT(?:\s|$)/.test(command.trim());
+      if (readOnly && completion) return {returncode:0,output:'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n' + command.trim().slice('echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT'.length)};
+      let invocation: {executable: string; args: string[]};
+      try {
+        invocation = readOnly ? readOnlyCommand(command) : {executable:'/bin/bash',args:['--noprofile','--norc','-c',command]};
+        if (!readOnly && !completion && /(?:git\s+(?:push|send-pack)|gh\s+|curl\s+|wget\s+|sudo\s+|ssh\s+|rm\s+-rf\s+\/)/i.test(command)) throw new Error('permission_denied: publication and privileged commands are unavailable.');
+        if (readOnly) for (const arg of invocation.args.filter(arg=>!arg.startsWith('-'))) safePath(arg);
+      } catch (error) { return {returncode:1,output:error instanceof Error ? error.message : 'permission_denied'}; }
+      const env = cleanEnvironment({ GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null', GIT_TERMINAL_PROMPT: '0',GIT_PAGER:'cat',PAGER:'cat' });
+      const child = spawn(invocation.executable, invocation.args, { cwd: REPO_ROOT, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (child.pid) runningCommands.set(child.pid, child);
+      let data = '';
+      child.stdout.on('data', chunk => { data = output(data + chunk); });
+      child.stderr.on('data', chunk => { data = output(data + chunk); });
+      const kill = () => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} };
+      signal?.addEventListener('abort', kill, { once: true });
+      const timer = setTimeout(kill, 300_000);
+      try { const code = await new Promise<number | null>((resolve, reject) => { child.once('close', resolve); child.once('error', reject); }); return { returncode: code ?? 1, output: data }; }
+      finally { clearTimeout(timer); signal?.removeEventListener('abort', kill); if (child.pid) runningCommands.delete(child.pid); }
+    },
+  };
+}
+async function reconcileAgent(payload: Record<string, unknown>) {
+  const current = executionGate.current();
+  if (executionGate.interrupted()) throw new Error('workspace_conflict: bridge restarted with an uncertain writer; preserve workspace and inspect process state before resuming.');
+  if (current) {
+    for (const child of runningCommands.values()) { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }
+    await bridgeAgentAdapter({ adapterId: current.adapterId }).cancel({ taskId: current.taskId });
+    if (activeExecution) await Promise.race([activeExecution.catch(() => {}), new Promise((_, reject) => setTimeout(() => reject(new Error('workspace_conflict: prior adapter is still running')), 10_000))]);
+  }
+  if (runningCommands.size || terminals.size) throw new Error('workspace_conflict: workspace processes require reconciliation.');
+  executionGate.reconcile(Number(payload.executionGeneration || 0));
+  return { reconciled: true, head: git(['rev-parse', 'HEAD']).trim(), branch: git(['branch', '--show-current']).trim(), dirtyState: Boolean(git(['status', '--porcelain']).trim()), files: workspaceChanges(String(payload.workspaceBaseHead || 'HEAD')) };
+}
 
 function bridgeAgentAdapter(payload: Record<string, unknown>): BridgeAgentAdapter {
   const adapterId = String(payload.adapterId || 'opencode');
@@ -1472,7 +1558,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
         behind = Number.isFinite(counts[0]) ? counts[0] : 0;
         ahead = Number.isFinite(counts[1]) ? counts[1] : 0;
       } catch { /* new/local branches may not have an upstream yet */ }
-      return { branch, head, porcelain, upstream, remoteHead, ahead, behind };
+      return { branch, head, porcelain, upstream, remoteHead, ahead, behind, repositoryFingerprint: repositoryFingerprint() };
     }
     case 'git.fetch': {
       if (payload.approved !== true) throw new Error('Fetch requires an approved command.');
@@ -1723,7 +1809,42 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
     case 'command.exec': { const executable = String(payload.command || ''); const args = Array.isArray(payload.args) ? payload.args.map(String) : []; if (!commandAllowed(executable, args)) throw new Error('Command denied by bridge policy.'); const result = spawnSync(executable, args, { cwd: safePath(String(payload.cwd || '.')), encoding: 'utf8', timeout: Math.min(Number(payload.timeoutMs || 120_000), 300_000), env: cleanEnvironment() }); return { code: result.status ?? 1, stdout: output(result.stdout), stderr: output(result.stderr) }; }
     case 'ports.list': return { ports: await ports() };
     case 'opencode.request': return opencodeRequest(payload);
-    case 'agent.run': return bridgeAgentAdapter(payload).run(payload, ws);
+    case 'knowledge.snapshot': {
+      const manifests = ['package.json'];
+      const root = safePath('package.json');
+      if (!fs.existsSync(root)) return { edges: [] };
+      const project = JSON.parse(fs.readFileSync(root, 'utf8'));
+      for (const workspace of Array.isArray(project.workspaces) ? project.workspaces : []) {
+        if (typeof workspace !== 'string' || workspace.includes('*')) continue;
+        const file = `${workspace}/package.json`;
+        if (fs.existsSync(safePath(file))) manifests.push(file);
+      }
+      const edges = manifests.flatMap(file => {
+        const manifest = JSON.parse(fs.readFileSync(safePath(file), 'utf8'));
+        const subject = `package:${String(manifest.name || file)}`;
+        return Object.keys(manifest.dependencies || {}).slice(0, 100).map(dependency => ({ subject, predicate: 'depends_on', object: `package:${dependency}`, referencedFiles: [file] }));
+      }).slice(0, 200);
+      return { edges, head: git(['rev-parse', 'HEAD']).trim() };
+    }
+    case 'knowledge.provenance': {
+      const sha = String(payload.commitSha || '');
+      if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error('Invalid knowledge commit.');
+      const files = Array.isArray(payload.files) ? payload.files.map(String).slice(0, 200) : [];
+      const changedFiles = new Set(git(['diff', '--name-only', sha, 'HEAD']).split('\n').filter(Boolean));
+      for (const file of git(['diff', '--name-only', 'HEAD']).split('\n').filter(Boolean)) changedFiles.add(file);
+      const missingFiles = files.filter(file => !fs.existsSync(safePath(file)));
+      return { changedFiles: [...changedFiles], missingFiles };
+    }
+    case 'agent.reconcile': return reconcileAgent(payload);
+    case 'agent.delegate':
+    case 'agent.run': {
+      const taskId = String(payload.taskId || '');
+      cancelledAgentTasks.delete(taskId);
+      executionGate.enter(taskId, Number(payload.executionGeneration || 0), String(payload.adapterId || 'opencode'));
+      activeExecution = bridgeAgentAdapter(payload).run(payload, ws);
+      try { return await activeExecution; }
+      finally { executionGate.leave(taskId); activeExecution = undefined; }
+    }
     case 'agent.cancel': return bridgeAgentAdapter(payload).cancel(payload);
     case 'pty.open': {
       const id = String(payload.ptyId || command.commandId); if (terminals.has(id)) throw new Error('PTY already exists.');
@@ -1802,7 +1923,7 @@ function connect(delay = 0): void {
                   // Workspace liveness is not task liveness. The API renews
                   // only these exact durable tasks, so an idle healthy bridge
                   // cannot keep a dead/hung agent run alive forever.
-                  activeTaskIds: [...activeAgents.keys()],
+                  activeTaskIds: [...activeAgents.keys(), ...portableTaskIds()],
                 },
               },
             }));

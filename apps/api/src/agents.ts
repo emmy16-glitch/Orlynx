@@ -1,3 +1,7 @@
+import { requireSessionAdapter } from './agent-runtime.js';
+import { adapterEligible } from './adapter-policy.js';
+import { repositoryKnowledgeInstruction } from './knowledge-graph.js';
+import { switchTaskAdapter, resolvePreferredAdapter, failoverCandidate } from './agent-handoff.js';
 // Real OpenCode adapter. There is intentionally no built-in/demo agent fallback.
 import { v4 as uuid } from 'uuid';
 import type { AgentAdapterId, AgentMode, AgentRun, ChangedFile, PermissionProfile, TaskRecord, WorkspaceRecord } from '@orlynx/shared';
@@ -22,6 +26,7 @@ import { noteComputeFailure, selectWorkspaceProvider } from './compute-broker.js
 
 export type Engine = AgentAdapterId;
 const executingDirectTasks = new Set<string>();
+const switchingDirectTasks = new Set<string>();
 const executingActionsVerifications = new Set<string>();
 const activeAgentSessions = new Map<string, { adapterId: AgentAdapterId; project: string; sessionId: string; cancelled: boolean; task?: TaskRecord }>();
 const timeoutMs = Math.max(60_000, Number(process.env.OPENCODE_RUN_TIMEOUT_MS || 30 * 60_000));
@@ -473,6 +478,20 @@ async function reconcileDurableTasks(sessionId: string): Promise<TaskRecord[]> {
         // command timeout. We do not replay mutation work automatically.
         const exactTaskHeartbeats = Array.isArray(workspace.capabilities) && workspace.capabilities.includes('task-heartbeat-v2');
         if (exactTaskHeartbeats && bridgeFresh && taskAge >= activeTaskHeartbeatStaleMs) {
+          if (task.harness && Number(task.harness.runtimeRecoveryAttempts || 0) < 2 && !['verifying','finalizing','completed'].includes(task.harness.phase)) {
+            const candidate = await failoverCandidate(task);
+            const target = candidate || task.adapterId || 'opencode';
+            try {
+              const resumed = await switchTaskAdapter(task.id, target, 'recovery');
+              resumed.harness!.runtimeRecoveryAttempts = Number(task.harness.runtimeRecoveryAttempts || 0) + 1;
+              await repository.putTask(resumed);
+              changed = true;
+              continue;
+            } catch {
+              // Reconciliation intent is durable; uncertain effects remain blocked.
+              if ((await repository.getTask(task.id))?.harness?.adapterTransition) { changed = true; continue; }
+            }
+          }
           task.state = 'failed';
           task.updatedAt = nowIso;
           await repository.putTask(task);
@@ -637,6 +656,18 @@ async function failoverDirectTaskToWorkspace(
   return true;
 }
 
+/** Direct execution has no workspace side effects. Stop its transport before
+ * moving the same durable task into the controlled workspace. */
+export async function pauseDirectTaskForSwitch(task: TaskRecord): Promise<void> {
+  switchingDirectTasks.add(task.id);
+  try {
+    if (task.runId) getAgentAdapter(task.adapterId || 'opencode').cancelDirectRun?.(task.runId);
+    const deadline=Date.now()+10000;
+    while (executingDirectTasks.has(task.id) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,50));
+    if (executingDirectTasks.has(task.id)) throw new Error('workspace_conflict: direct transport did not acknowledge cancellation.');
+  } finally { if (!executingDirectTasks.has(task.id)) switchingDirectTasks.delete(task.id); }
+}
+
 async function executeDirectTask(
   session: Awaited<ReturnType<ReturnType<typeof controlPlaneRepository>['getSession']>>,
   task: TaskRecord,
@@ -654,6 +685,7 @@ async function executeDirectTask(
   let persistedActivityAt = task.updatedAt || '';
   const markProviderActivity = () => { providerActivityAt = new Date().toISOString(); };
   const flushDelta = () => {
+    if (switchingDirectTasks.has(task.id)) { pendingDelta = ''; return; }
     if (!pendingDelta) return;
     const delta = pendingDelta;
     pendingDelta = '';
@@ -668,7 +700,7 @@ async function executeDirectTask(
     flushTimer.unref?.();
   };
   const heartbeat = setInterval(() => {
-    if (task.state !== 'running' || run.state !== 'running') return;
+    if (switchingDirectTasks.has(task.id) || task.state !== 'running' || run.state !== 'running') return;
     // A timer is not evidence that the provider is making progress. Persist
     // partial text continuously, but advance updatedAt only when a real status,
     // activity event, or token arrived. This prevents silent hung calls from
@@ -732,15 +764,18 @@ async function executeDirectTask(
       mode: task.mode || run.mode || 'build',
       harnessSystem: directHarnessSystem,
       onStatus: (text) => {
+        if (switchingDirectTasks.has(task.id)) return;
         markProviderActivity();
         emit(session.id, 'activity.progress', { taskId: task.id, text, sourceType: 'direct.chat' }, run.id);
       },
       onActivity: (type, payload) => {
+        if (switchingDirectTasks.has(task.id)) return;
         markProviderActivity();
         emit(session.id, type, { taskId: task.id, ...payload }, run.id);
       },
       onDelta: (delta) => {
         if (run.state !== 'running') return;
+        if (switchingDirectTasks.has(task.id)) return;
         markProviderActivity();
         visible += delta;
         task.partialText = visible;
@@ -768,6 +803,7 @@ async function executeDirectTask(
         // Never repeat a full 75s Render-runtime wake timeout. A retry is only
         // useful when the failure was fast, or when the runtime/model was
         // admitted but failed to produce its first token.
+        if (switchingDirectTasks.has(task.id)) throw error;
         if (visible.length !== visibleBefore || (!fastTransientStatus && !firstTokenStall && !fastTransportFailure)) throw error;
         markProviderActivity();
         emit(session.id, 'activity.progress', {
@@ -834,7 +870,7 @@ async function executeDirectTask(
     if (visible) responseText = visible;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
     flushDelta();
-    if (task.state === 'cancelled' || run.state === 'cancelled') return;
+    if (switchingDirectTasks.has(task.id) || task.state === 'cancelled' || run.state === 'cancelled') return;
 
     // Close the race where a follow-up lands just after the last continuation
     // round. Keep the same task/run identity and let the durable promoter resume
@@ -950,7 +986,7 @@ async function executeDirectTask(
     emit(session.id, 'run.completed', { taskId: task.id, summary: 'Response completed.' }, run.id);
     emit(session.id, 'activity.completed', { taskId: task.id, text: 'Response completed' }, run.id);
   } catch (error) {
-    if (task.state === 'cancelled' || run.state === 'cancelled') return;
+    if (switchingDirectTasks.has(task.id) || task.state === 'cancelled' || run.state === 'cancelled') return;
     const now = new Date().toISOString();
     const detail = error instanceof Error ? error.message : 'Direct chat failed.';
     const classifiedDetail = classifyError(detail);
@@ -1173,8 +1209,32 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       }
     }
 
+    if (nextQueued.harness?.adapterTransition) {
+      try {
+        await switchTaskAdapter(nextQueued.id, nextQueued.harness.adapterTransition.target, nextQueued.harness.adapterTransition.reason);
+        return promoteNextQueuedRunInner(sessionId);
+      } catch { return null; }
+    }
     const adapterId = nextQueued.adapterId || 'opencode';
     const adapterState = await repository.getWorkspaceAgentAdapter(readyWorkspace.id, adapterId);
+    if (adapterState && ['unavailable','failed'].includes(adapterState.state) || adapterState?.circuitOpenUntil && !adapterEligible(adapterState)) {
+      const candidate = await failoverCandidate(nextQueued);
+      if (candidate) {
+        try { await switchTaskAdapter(nextQueued.id, candidate, 'health-degradation'); return promoteNextQueuedRunInner(sessionId); }
+        catch { if ((await repository.getTask(nextQueued.id))?.harness?.adapterTransition) return null; }
+      }
+      if (adapterState?.circuitOpenUntil && Date.parse(adapterState.circuitOpenUntil) > Date.now()) {
+        emit(sessionId, 'activity.progress', {taskId: nextQueued.id,sourceType:'adapter.degraded',adapterId,text:'Adapter circuit is cooling down; the saved task will resume after a healthy probe.'},nextQueued.runId);
+        return null;
+      }
+    }
+    if (adapterId !== 'opencode' && (!adapterState || ['not_installed','unavailable','failed'].includes(adapterState.state))) {
+      nextQueued.state = 'waiting_input';
+      nextQueued.updatedAt = new Date().toISOString();
+      await repository.putTask(nextQueued);
+      emit(sessionId, 'run.state', { taskId: nextQueued.id, state: 'waiting_input', recoverable: true, message: `The selected adapter ${adapterId} requires compatible runtime/model configuration in this workspace. ${adapterState?.reason || ''}` }, nextQueued.runId);
+      return null;
+    }
     if (!adapterState || ['not_installed', 'installing', 'starting', 'busy', 'unavailable'].includes(adapterState.state)) {
       const state = adapterState?.state || 'missing';
       console.info(`[queue] waiting session=${sessionId} task=${nextQueued.id} adapter=${adapterId} state=${state}`);
@@ -1451,6 +1511,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
 
     const adapterId = task.adapterId || prefs.adapterId || 'opencode';
     const adapter = getAgentAdapter(adapterId);
+    if (adapter.supportsModel && !adapter.supportsModel(modelId)) throw new Error(`${adapter.displayName} cannot use the selected model. Choose a compatible model explicitly.`);
     const parsedModel = adapter.parseModel(modelId);
     const provider = parsedModel.providerID;
     const startedAt = new Date().toISOString();
@@ -1563,6 +1624,7 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
     await repository.putTask(task);
 
     const lessons = await relevantAgentLessons(session, task.prompt, provider).catch(() => []);
+    const knowledgeInstruction = await repositoryKnowledgeInstruction(session, task.prompt).catch(() => '');
     task.harness = {
       ...task.harness,
       lessonsApplied: lessons.map((lesson) => lesson.id),
@@ -1581,7 +1643,23 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       buildPresentationInstruction(mode),
       harnessSystemInstruction(task.harness),
       agentMemoryInstruction(lessons),
+      knowledgeInstruction,
     ].filter(Boolean).join('\n\n');
+    if (!task.harness.executionGeneration) {
+      const owner = `start:${task.id}:${uuid()}`;
+      const generation = await repository.claimAdapterTransition(workspace.id, owner);
+      if (generation === null) {
+        task.state = 'queued'; await repository.putTask(task); run.state = 'queued'; store.save();
+        emit(sessionId, 'run.state', { taskId: task.id, state: 'queued', message: 'Waiting for the workspace transition lease.' }, task.runId);
+        return run;
+      }
+      try {
+        const reconciled = await bridgeRequest<{head?:string}>(workspace.id, 'agent.reconcile', { taskId: task.id, executionGeneration: generation }, 20_000);
+        task.harness.workspaceBaseHead ||= reconciled.head;
+        task.harness.executionGeneration = generation;
+        await repository.putTask(task);
+      } finally { await repository.releaseAdapterTransition(workspace.id, owner); }
+    }
     const engineSessionId = await repository.getAgentSession(sessionId, adapter.id);
     const payload = adapter.workspacePayload({
       modelId,
@@ -1589,6 +1667,10 @@ async function promoteNextQueuedRunInner(sessionId: string): Promise<AgentRun | 
       runId: run.id,
       sessionId,
       engineSessionId,
+      executionGeneration: task.harness?.executionGeneration,
+      handoff: task.harness?.agentHandoff,
+      workspaceBaseHead: task.harness?.workspaceBaseHead,
+      mode, permission,
       text: task.prompt,
       system: privateSystem,
       tools: openCodeToolsFor(task.harness),
@@ -1817,7 +1899,8 @@ export async function startRun(sessionId: string, project: string, userText: str
     throw error;
   }
   const prefs = getSessionPrefs(sessionId, project);
-  const adapter = getAgentAdapter(engine || prefs.adapterId || 'opencode');
+  const preference = engine || prefs.adapterId || 'opencode';
+  const adapter = getAgentAdapter(preference === 'auto' && durableStorageConfigured() ? await resolvePreferredAdapter(preference, sessionId, options.modelId || prefs.modelId || '', options.mode || prefs.mode, prefs.permission) : preference === 'auto' ? 'opencode' : preference);
   const mode = options.mode || prefs.mode;
   const { permission, tempPermission } = taskPermission(prefs.permission, options.tempPermission);
   const modelId = options.modelId || prefs.modelId;
@@ -1901,6 +1984,7 @@ export async function startRun(sessionId: string, project: string, userText: str
     const promoted = await promoteNextQueuedRun(sessionId).catch(() => null);
     return promoted?.id === run.id ? promoted : run;
   }
+  requireSessionAdapter(adapter);
   const connection = await adapter.readiness(project, sessionId);
   if (!connection.connected) throw new Error(connection.message || `${adapter.displayName} adapter is unavailable.`);
   const resolvedAgent = await resolveAgentForMode(mode, adapter.defaultAgent(mode), project, sessionId, adapter.status);
@@ -1956,6 +2040,7 @@ export async function startRun(sessionId: string, project: string, userText: str
 }
 
 async function monitorRun(sessionId: string, project: string, engineSessionId: string, run: AgentRun, adapter: AgentAdapter, previousAssistantId?: string): Promise<void> {
+  requireSessionAdapter(adapter);
   const active = activeAgentSessions.get(run.id);
   if (!active) return;
   const deadline = Date.now() + timeoutMs;
@@ -2079,6 +2164,7 @@ function collectToolEvents(sessionId: string, runId: string, message: RuntimeMes
 }
 
 async function captureDiff(sessionId: string, project: string, runId: string, engineSessionId: string, adapter: AgentAdapter = openCodeRuntime) {
+  requireSessionAdapter(adapter);
   const raw = await adapter.diff(project, engineSessionId);
   const files: ChangedFile[] = raw.flatMap((item) => {
     const file = String(item.file || item.path || '');
@@ -2102,7 +2188,7 @@ export async function cancelRun(sessionId: string, runId: string) {
   const active = activeAgentSessions.get(runId);
   if (active) {
     active.cancelled = true;
-    try { await getAgentAdapter(active.adapterId).abort(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
+    try { await getAgentAdapter(active.adapterId).abort?.(active.project, active.sessionId); } catch { /* cancellation still terminates Orlynx state */ }
   }
   run.state = 'cancelled'; run.finishedAt = new Date().toISOString(); run.activity = 'Stopped';
   if (active?.task) {

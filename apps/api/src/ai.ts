@@ -470,7 +470,7 @@ export async function aiStatus(sessionId?: string, project?: string, userId?: st
       : (store.db.runs[sessionId] || []).some((r) => r.state === 'running')
     : false;
   const available = models.filter((m)=>m.status === 'available');
-  const connectedProviders = providers.filter((p)=>p.state === 'connected').length;
+  const connectedProviders = Math.max(providers.filter((p)=>p.state === 'connected').length, models.some(model => model.family === 'workspace' && model.connected) ? 1 : 0);
   const selected = prefs.modelId ? models.find((m)=>m.id.toLowerCase() === prefs.modelId!.toLowerCase()) : undefined;
 
   if (!connectedProviders) {

@@ -29,6 +29,12 @@ export interface WorkspaceAgentAdapterRecord {
   state: 'not_installed' | 'installing' | 'starting' | 'ready' | 'busy' | 'unavailable' | 'failed';
   reason?: string;
   updatedAt: string;
+  supportedModels?: string[];
+  runtimeVersion?: string;
+  consecutiveFailures?: number;
+  circuitOpenUntil?: string;
+  lastSuccessfulRunAt?: string;
+  lastFailureAt?: string;
 }
 
 export interface BridgeCommand {
@@ -73,7 +79,13 @@ export interface AgentLessonRecord {
   /** Confidence comes only from verified successful reuse; fresh evidence still wins. */
   confidence?: number;
   contradictionCount?: number;
-  status?: 'active' | 'superseded';
+  status?: 'active' | 'stale' | 'superseded';
+  sourceTaskId?: string;
+  repositoryCommit?: string;
+  referencedFiles?: string[];
+  staleReason?: string;
+  supersededBy?: string;
+  applicability?: string;
   lastContradictedAt?: string;
   lastVerifiedAt?: string;
   createdAt: string;
@@ -99,8 +111,45 @@ export interface WorkspaceJobRecord {
   updatedAt: string;
 }
 
+export interface KnowledgeEdgeRecord {
+  id: string;
+  userId: string;
+  projectId: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  sourceTaskId: string;
+  commitSha: string;
+  referencedFiles: string[];
+  evidenceRefs: string[];
+  confidence: number;
+  status: 'active' | 'stale' | 'superseded';
+  firstObservedAt: string;
+  lastVerifiedAt: string;
+  staleReason?: string;
+}
+
+export interface ProductionObservationRecord {
+  id: string; sessionId: string; userId: string; projectId: string; commitSha: string;
+  state: 'pending' | 'healthy' | 'regressed' | 'unknown';
+  startedAt: string; observeUntil: string; samples: Array<{ at: string; healthy: boolean; commitMatches: boolean; endpoints: Array<{ url: string; status?: number; healthy: boolean; commitMatches: boolean }> }>;
+  owner?: string;
+}
+
 export interface ControlPlaneRepository {
   initialize(): Promise<void>;
+  beginAdapterTransition(taskId: string, target: string, reason: string, generation: number): Promise<boolean>;
+  touchTaskHeartbeat(taskId: string, generation: number, updatedAt: string): Promise<void>;
+  enqueueProductionObservation(record: ProductionObservationRecord): Promise<void>;
+  claimProductionObservations(owner: string): Promise<ProductionObservationRecord[]>;
+  completeProductionObservation(record: ProductionObservationRecord, owner: string): Promise<boolean>;
+  invalidateAgentLessons(userId: string, projectId: string, ids: string[], reason: string): Promise<void>;
+  putKnowledgeEdge(value: KnowledgeEdgeRecord): Promise<void>;
+  listKnowledgeEdges(userId: string, projectId: string): Promise<KnowledgeEdgeRecord[]>;
+  invalidateKnowledgeEdges(userId: string, projectId: string, files: string[], commitSha: string): Promise<void>;
+  claimAdapterTransition(workspaceId: string, owner: string): Promise<number | null>;
+  releaseAdapterTransition(workspaceId: string, owner: string): Promise<void>;
+  recordAdapterOutcome(workspaceId: string, adapterId: string, success: boolean): Promise<void>;
   upsertGitHubConnection(value: GitHubConnectionRecord): Promise<void>;
   getGitHubConnectionByInstallation(installationId: number): Promise<GitHubConnectionRecord | null>;
   getGitHubConnectionByUser(userId: string): Promise<GitHubConnectionRecord | null>;
@@ -184,6 +233,7 @@ export interface ControlPlaneRepository {
 type Sql = NeonQueryFunction<false, false>;
 
 const migrations = [
+  `CREATE TABLE IF NOT EXISTS adapter_transitions (workspace_id text PRIMARY KEY, owner text, generation bigint NOT NULL DEFAULT 0, lease_until timestamptz)`,
   `CREATE TABLE IF NOT EXISTS users (id text PRIMARY KEY, github_login text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS github_connections (installation_id bigint PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), github_login text NOT NULL, access_token text NOT NULL, refresh_token text, access_token_expires_at timestamptz, refresh_token_expires_at timestamptz, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), installation_id bigint NOT NULL, repository_id bigint NOT NULL, full_name text NOT NULL, default_branch text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id, repository_id))`,
@@ -275,6 +325,11 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS audit_log_session_idx ON audit_log(session_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS webhook_deliveries_received_idx ON webhook_deliveries(received_at)`,
   `CREATE INDEX IF NOT EXISTS bridge_commands_delivery_idx ON bridge_commands(workspace_id, status, created_at)`,
+  `ALTER TABLE workspace_agent_adapters ADD COLUMN IF NOT EXISTS health jsonb NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE agent_lessons ADD COLUMN IF NOT EXISTS provenance jsonb NOT NULL DEFAULT '{}'`,
+  `CREATE TABLE IF NOT EXISTS knowledge_edges (id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id), project_id text NOT NULL REFERENCES projects(id), record jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE INDEX IF NOT EXISTS knowledge_edges_scope_idx ON knowledge_edges(user_id,project_id)`,
+  `CREATE TABLE IF NOT EXISTS production_observations (id text PRIMARY KEY, record jsonb NOT NULL, state text NOT NULL DEFAULT 'pending', owner text, lease_until timestamptz, last_checked_at timestamptz)`,
 ];
 
 async function migrateLegacyAdapterStorage(sql: Sql): Promise<void> {
@@ -390,6 +445,7 @@ function mapTask(row: Record<string, unknown>): TaskRecord {
 
 function mapAgentLesson(row: Record<string, unknown>): AgentLessonRecord {
   return {
+    ...((row.provenance || {}) as object),
     id: String(row.id),
     userId: String(row.user_id),
     projectId: row.project_id ? String(row.project_id) : undefined,
@@ -508,7 +564,7 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     await this.sql`INSERT INTO tasks (id,session_id,workspace_id,execution_plane,adapter_id,run_id,message_id,state,prompt,model_id,mode,permission,temp_permission,partial_text,verification_backend,verification_run_id,verification_url,verification_workflow,harness_state,created_at,updated_at)
       VALUES (${v.id},${v.sessionId},${v.workspaceId},${v.plane || 'workspace'},${v.adapterId || 'opencode'},${v.runId || null},${v.messageId || null},${v.state},${v.prompt},${v.modelId || null},${v.mode || null},${v.permission || null},${v.tempPermission || null},${v.partialText || null},${v.verificationBackend || null},${v.verificationRunId || null},${v.verificationUrl || null},${v.verificationWorkflow || null},${JSON.stringify(v.harness || null)},${v.createdAt},${v.updatedAt})
-      ON CONFLICT (id) DO UPDATE SET workspace_id=EXCLUDED.workspace_id,adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at`;
+      ON CONFLICT (id) DO UPDATE SET workspace_id=EXCLUDED.workspace_id,adapter_id=EXCLUDED.adapter_id,run_id=EXCLUDED.run_id,message_id=EXCLUDED.message_id,state=EXCLUDED.state,prompt=EXCLUDED.prompt,model_id=EXCLUDED.model_id,mode=EXCLUDED.mode,permission=EXCLUDED.permission,temp_permission=EXCLUDED.temp_permission,execution_plane=EXCLUDED.execution_plane,partial_text=EXCLUDED.partial_text,verification_backend=EXCLUDED.verification_backend,verification_run_id=EXCLUDED.verification_run_id,verification_url=EXCLUDED.verification_url,verification_workflow=EXCLUDED.verification_workflow,harness_state=EXCLUDED.harness_state,updated_at=EXCLUDED.updated_at WHERE tasks.session_id=EXCLUDED.session_id AND COALESCE((EXCLUDED.harness_state->>'executionGeneration')::bigint,0)>=COALESCE((tasks.harness_state->>'executionGeneration')::bigint,0)`;
   }
   async checkpointTaskPartialFromEvents(taskId: string, throughSequence: number) {
     await this.initialize();
@@ -761,18 +817,50 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
     await this.initialize();
     return rows(await this.sql`UPDATE workspace_jobs SET state='failed',worker_id=NULL,lease_until=NULL,error=${error.slice(0,1000)},updated_at=now() WHERE id=${id} AND state='leased' AND worker_id=${lease.workerId || null} AND attempt=${lease.attempt} AND lease_until>now() RETURNING id`).length > 0;
   }
+  async beginAdapterTransition(taskId: string, target: string, reason: string, generation: number) {
+    await this.initialize();
+    return rows(await this.sql.query(`UPDATE tasks SET harness_state=harness_state || jsonb_build_object('executionGeneration',$4::bigint,'adapterTransition',jsonb_build_object('target',$2::text,'reason',$3::text,'startedAt',now()::text)),updated_at=now() WHERE id=$1 AND state IN ('running','queued','waiting_input') AND COALESCE(harness_state->>'phase','') NOT IN ('verifying','finalizing','completed') AND COALESCE((harness_state->>'executionGeneration')::bigint,0)<=$4 RETURNING id`, [taskId,target,reason,generation])).length>0;
+  }
+  async touchTaskHeartbeat(taskId: string, generation: number, updatedAt: string) {
+    await this.initialize();
+    await this.sql.query(`UPDATE tasks SET updated_at=$3::timestamptz WHERE id=$1 AND state='running' AND (harness_state->'adapterTransition' IS NULL OR harness_state->'adapterTransition'='null'::jsonb) AND COALESCE((harness_state->>'executionGeneration')::bigint,0)=$2`, [taskId,generation,updatedAt]);
+  }
+  async claimAdapterTransition(workspaceId: string, owner: string) {
+    await this.initialize();
+    const result = rows<Record<string, unknown>>(await this.sql.query(
+      `INSERT INTO adapter_transitions (workspace_id,owner,generation,lease_until)
+       VALUES ($1,$2,1,now()+interval '60 seconds')
+       ON CONFLICT (workspace_id) DO UPDATE SET owner=$2,generation=adapter_transitions.generation+1,lease_until=now()+interval '60 seconds'
+       WHERE adapter_transitions.owner IS NULL OR adapter_transitions.lease_until < now()
+       RETURNING generation`, [workspaceId, owner]));
+    return result.length ? Number(result[0].generation) : null;
+  }
+  async releaseAdapterTransition(workspaceId: string, owner: string) {
+    await this.initialize();
+    await this.sql.query('UPDATE adapter_transitions SET owner=NULL,lease_until=NULL WHERE workspace_id=$1 AND owner=$2', [workspaceId, owner]);
+  }
+  async recordAdapterOutcome(workspaceId: string, adapterId: string, success: boolean) {
+    await this.initialize();
+    await this.sql.query(
+      `UPDATE workspace_agent_adapters SET health=health || jsonb_build_object(
+        'consecutiveFailures', CASE WHEN $3 THEN 0 ELSE COALESCE((health->>'consecutiveFailures')::int,0)+1 END,
+        'lastSuccessfulRunAt', CASE WHEN $3 THEN now()::text ELSE health->>'lastSuccessfulRunAt' END,
+        'lastFailureAt', CASE WHEN $3 THEN health->>'lastFailureAt' ELSE now()::text END,
+        'circuitOpenUntil', CASE WHEN $3 THEN NULL WHEN COALESCE((health->>'consecutiveFailures')::int,0)+1 >= 2 THEN (now()+interval '2 minutes')::text ELSE NULL END)
+       WHERE workspace_id=$1 AND adapter_id=$2`, [workspaceId,adapterId,success]);
+  }
   async putWorkspaceAgentAdapter(v: WorkspaceAgentAdapterRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at`;
+    await this.sql`INSERT INTO workspace_agent_adapters (workspace_id,adapter_id,state,reason,updated_at,health) VALUES (${v.workspaceId},${v.adapterId},${v.state},${v.reason || null},${v.updatedAt},${JSON.stringify({supportedModels:v.supportedModels,runtimeVersion:v.runtimeVersion})}) ON CONFLICT (workspace_id,adapter_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,updated_at=EXCLUDED.updated_at,health=workspace_agent_adapters.health || EXCLUDED.health`;
   }
   async getWorkspaceAgentAdapter(workspaceId: string, adapterId: string) {
     await this.initialize();
     const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_agent_adapters WHERE workspace_id=${workspaceId} AND adapter_id=${adapterId}`)[0];
-    return r ? { workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, updatedAt: iso(r.updated_at) } : null;
+    return r ? { workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, ...((r.health || {}) as object), updatedAt: iso(r.updated_at) } : null;
   }
   async listWorkspaceAgentAdapters(workspaceId: string) {
     await this.initialize();
-    return rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_agent_adapters WHERE workspace_id=${workspaceId} ORDER BY adapter_id`).map((r) => ({ workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, updatedAt: iso(r.updated_at) }));
+    return rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspace_agent_adapters WHERE workspace_id=${workspaceId} ORDER BY adapter_id`).map((r) => ({ workspaceId: String(r.workspace_id), adapterId: String(r.adapter_id), state: String(r.state) as WorkspaceAgentAdapterRecord['state'], reason: r.reason ? String(r.reason) : undefined, ...((r.health || {}) as object), updatedAt: iso(r.updated_at) }));
   }
   async appendEvent(v: Omit<OrlynxEvent, 'sequence'>): Promise<OrlynxEvent> {
     await this.initialize();
@@ -919,11 +1007,41 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
       detail: (r.detail || {}) as Record<string, unknown>, createdAt: iso(r.created_at),
     }));
   }
+  async enqueueProductionObservation(record: ProductionObservationRecord) {
+    await this.initialize();
+    await this.sql.query('INSERT INTO production_observations (id,record) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO NOTHING', [record.id,JSON.stringify(record)]);
+  }
+  async claimProductionObservations(owner: string) {
+    await this.initialize();
+    return rows<{record: ProductionObservationRecord}>(await this.sql.query(`WITH candidates AS (SELECT id FROM production_observations WHERE state='pending' AND (owner IS NULL OR lease_until<now()) AND (last_checked_at IS NULL OR last_checked_at<now()-interval '20 seconds') FOR UPDATE SKIP LOCKED LIMIT 10) UPDATE production_observations p SET owner=$1,lease_until=now()+interval '60 seconds' FROM candidates c WHERE p.id=c.id RETURNING p.record`, [owner])).map(row => row.record);
+  }
+  async completeProductionObservation(record: ProductionObservationRecord, owner: string) {
+    await this.initialize();
+    return rows(await this.sql.query('UPDATE production_observations SET record=$3::jsonb,state=$4,owner=NULL,lease_until=NULL,last_checked_at=now() WHERE id=$1 AND owner=$2 AND lease_until>now() RETURNING id', [record.id,owner,JSON.stringify(record),record.state])).length>0;
+  }
+  async invalidateAgentLessons(userId: string, projectId: string, ids: string[], reason: string) {
+    await this.initialize();
+    if (!ids.length) return;
+    await this.sql.query(`UPDATE agent_lessons SET status='stale',confidence=LEAST(confidence,0.35),provenance=provenance || jsonb_build_object('staleReason',$4::text),updated_at=now() WHERE user_id=$1 AND project_id=$2 AND id=ANY($3::text[]) AND status='active'`, [userId,projectId,ids,reason.slice(0,1000)]);
+  }
+  async putKnowledgeEdge(value: KnowledgeEdgeRecord) {
+    await this.initialize();
+    await this.sql.query(`INSERT INTO knowledge_edges (id,user_id,project_id,record) VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record || jsonb_build_object('firstObservedAt',knowledge_edges.record->>'firstObservedAt'),updated_at=now() WHERE knowledge_edges.user_id=EXCLUDED.user_id AND knowledge_edges.project_id=EXCLUDED.project_id`, [value.id,value.userId,value.projectId,JSON.stringify(value)]);
+  }
+  async listKnowledgeEdges(userId: string, projectId: string) {
+    await this.initialize();
+    return rows<{record: KnowledgeEdgeRecord}>(await this.sql.query('SELECT record FROM knowledge_edges WHERE user_id=$1 AND project_id=$2 ORDER BY updated_at DESC LIMIT 100', [userId,projectId])).map(row => row.record);
+  }
+  async invalidateKnowledgeEdges(userId: string, projectId: string, files: string[], commitSha: string) {
+    await this.initialize();
+    if (!files.length) return;
+    await this.sql.query(`UPDATE knowledge_edges SET record=record || jsonb_build_object('status','stale','confidence',0.35,'staleReason','Referenced files changed at ' || $4::text),updated_at=now() WHERE user_id=$1 AND project_id=$2 AND record->>'status'='active' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(record->'referencedFiles') f WHERE f=ANY($3::text[]))`, [userId,projectId,files,commitSha]);
+  }
   async putAgentLesson(v: AgentLessonRecord) {
     await this.initialize();
-    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,kind,subject,predicate,object,title,problem,lesson,evidence,tags,provider,success_count,confidence,contradiction_count,status,last_contradicted_at,last_verified_at,created_at,updated_at,last_used_at)
-      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.kind || 'general'},${v.subject || null},${v.predicate || null},${v.object || null},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.contradictionCount || 0},${v.status || 'active'},${v.lastContradictedAt || null},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null})
-      ON CONFLICT (id) DO UPDATE SET kind=EXCLUDED.kind,subject=EXCLUDED.subject,predicate=EXCLUDED.predicate,object=EXCLUDED.object,title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+1,confidence=LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05),status='active',last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
+    await this.sql`INSERT INTO agent_lessons (id,user_id,project_id,session_id,scope,kind,subject,predicate,object,title,problem,lesson,evidence,tags,provider,success_count,confidence,contradiction_count,status,last_contradicted_at,last_verified_at,created_at,updated_at,last_used_at,provenance)
+      VALUES (${v.id},${v.userId},${v.projectId || null},${v.sessionId || null},${v.scope},${v.kind || 'general'},${v.subject || null},${v.predicate || null},${v.object || null},${v.title},${v.problem},${v.lesson},${JSON.stringify(v.evidence || [])},${JSON.stringify(v.tags || [])},${v.provider || null},${v.successCount || 1},${v.confidence ?? 0.65},${v.contradictionCount || 0},${v.status || 'active'},${v.lastContradictedAt || null},${v.lastVerifiedAt || v.updatedAt},${v.createdAt},${v.updatedAt},${v.lastUsedAt || null},${JSON.stringify({sourceTaskId:v.sourceTaskId,repositoryCommit:v.repositoryCommit,referencedFiles:v.referencedFiles,applicability:v.applicability})})
+      ON CONFLICT (id) DO UPDATE SET kind=EXCLUDED.kind,subject=EXCLUDED.subject,predicate=EXCLUDED.predicate,object=EXCLUDED.object,title=EXCLUDED.title,problem=EXCLUDED.problem,lesson=EXCLUDED.lesson,evidence=EXCLUDED.evidence,tags=EXCLUDED.tags,provider=EXCLUDED.provider,success_count=agent_lessons.success_count+CASE WHEN EXCLUDED.provenance->>'sourceTaskId' IS NOT NULL AND agent_lessons.provenance->>'sourceTaskId'=EXCLUDED.provenance->>'sourceTaskId' THEN 0 ELSE 1 END,confidence=CASE WHEN EXCLUDED.provenance->>'sourceTaskId' IS NOT NULL AND agent_lessons.provenance->>'sourceTaskId'=EXCLUDED.provenance->>'sourceTaskId' THEN agent_lessons.confidence ELSE LEAST(0.98,GREATEST(agent_lessons.confidence,EXCLUDED.confidence)+0.05) END,status='active',provenance=EXCLUDED.provenance,last_verified_at=EXCLUDED.last_verified_at,updated_at=EXCLUDED.updated_at
       WHERE agent_lessons.user_id=EXCLUDED.user_id`;
   }
   async listAgentLessons(userId: string, projectId?: string, limit = 40) {

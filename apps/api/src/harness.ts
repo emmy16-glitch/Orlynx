@@ -382,7 +382,7 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
         found.add('commit');
         found.add('changes');
       }
-      if (ok && /\bgit\s+push\b/.test(command)) found.add('publish');
+      // Only a control-plane publication receipt can satisfy publication.
 
       const isBuild = semanticType === 'build-result'
         || /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|(?:npx\s+)?webpack\b|(?:npx\s+)?vite\s+build\b|(?:npx\s+)?next\s+build\b)/i.test(command);
@@ -405,6 +405,9 @@ function evidenceKeys(events: OrlynxEvent[]): Set<string> {
 }
 
 export function verifyHarness(checkpoint: HarnessCheckpoint, events: OrlynxEvent[], now = new Date().toISOString()): HarnessCheckpoint {
+  // Historical test/build success cannot verify work performed after handoff.
+  if (checkpoint.executionGeneration) events = events.filter(event => Number(event.payload.executionGeneration || 0) === checkpoint.executionGeneration || !/^(tool\.|terminal\.|test\.|build\.)/.test(event.type));
+  if (checkpoint.verifiedWorkspaceFingerprint) events = events.filter(event => !/^(tool\.|terminal\.|test\.|build\.)/.test(event.type) || event.payload.repositoryFingerprint === checkpoint.verifiedWorkspaceFingerprint);
   const evidence = evidenceKeys(events);
   const required = checkpoint.verification.required;
   const satisfied = required.filter((item) => evidence.has(item));

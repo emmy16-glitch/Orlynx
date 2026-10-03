@@ -1,3 +1,4 @@
+import { runProductionObservationSweep } from './production-observer.js';
 import os from 'node:os';
 import { v4 as uuid } from 'uuid';
 import type { WorkspaceRecord } from '@orlynx/shared';
@@ -227,7 +228,7 @@ export async function runWorkspaceOrchestratorLoop(): Promise<never> {
     if (now >= nextRecoverySweepAt && !recoverySweep) {
       // A session preflight must not stop the durable job poller from claiming
       // or renewing other work while its bridge is unavailable.
-      recoverySweep = recoverDurableTaskSessionsOnce().then(recoveredSessions => {
+      recoverySweep = Promise.all([recoverDurableTaskSessionsOnce(), runProductionObservationSweep()]).then(([recoveredSessions]) => {
         if (recoveredSessions.length) {
           console.log(`[orchestrator] recovery sweep activeSessions=${recoveredSessions.length}`);
         }
