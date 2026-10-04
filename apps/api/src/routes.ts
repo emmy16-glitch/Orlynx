@@ -1957,7 +1957,9 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
   try {
+    if (s.checkpoint?.liveE2EPlan) await bridgeRequest(workspace.id, 'git.sync', { approved: true, branch: s.branch }, 120_000);
     const before = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.status', {}, 30_000);
+    if (s.checkpoint?.liveE2EPlan && before.head !== s.checkpoint.liveE2EPlan.startingMainSha) throw new Error('E2E checkout does not match the recorded main SHA.');
     if (before.branch !== s.branch) throw new Error('Workspace branch changed before E2E isolation.');
     const liveE2EBaseBranch = s.checkpoint?.liveE2EBaseBranch || s.branch;
     const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });

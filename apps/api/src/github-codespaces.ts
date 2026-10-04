@@ -204,7 +204,9 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
     // for the same repository + branch. Project sessions are deduplicated by
     // Orlynx, and reusableForProject refuses to steal an environment from a
     // session with active Build work.
-    const existing = await this.reusableForSession(input) || await this.reusableForProject(input);
+    const session = await controlPlaneRepository().getSession(input.sessionId);
+    const isolatedE2E = Boolean(session?.checkpoint?.liveE2EBranch);
+    const existing = await this.reusableForSession(input) || (!isolatedE2E ? await this.reusableForProject(input) : null);
     if (existing) {
       const recovered: WorkspaceRecord = {
         id: input.workspaceId,
