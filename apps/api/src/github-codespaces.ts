@@ -181,7 +181,7 @@ export class GitHubCodespacesProvider implements WorkspaceProvider {
       .filter((item) =>
         item.name !== excludeName &&
         Boolean(orlynxSessionId(item.display_name)) &&
-        /available|starting|rebuilding|shutdown/i.test(item.state) &&
+        /^(?:available|starting|rebuilding)$/i.test(item.state) &&
         ageMs(item.last_used_at || item.updated_at || item.created_at) > 2 * 60_000
       )
       .sort((a, b) => ageMs(b.last_used_at || b.updated_at || b.created_at) - ageMs(a.last_used_at || a.updated_at || a.created_at));

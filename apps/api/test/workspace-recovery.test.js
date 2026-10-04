@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workspaceNeedsSshRebuild, workspaceNeedsCodespaceReplacement, workspaceConnectionMatchesRevision, workspaceFullyReady, workspaceStartupPending, shouldRecoverTransientBridgeClose } from '../src/workspaces.ts';
-import { codespaceMatchesProject, orlynxSessionId } from '../src/github-codespaces.ts';
+import { GitHubCodespacesProvider, codespaceMatchesProject, orlynxSessionId } from '../src/github-codespaces.ts';
 import { workspaceOpenCodeHealthState } from '../src/opencode.ts';
 
 test('missing SSH server bootstrap failures request a Codespace rebuild', () => {
@@ -161,6 +161,21 @@ test('Codespace project reuse requires the same repository and branch', () => {
   assert.equal(codespaceMatchesProject(base, 43, 'main'), false);
   assert.equal(codespaceMatchesProject(base, 42, 'develop'), false);
   assert.equal(codespaceMatchesProject({ ...base, state: 'Failed' }, 42, 'main'), false);
+});
+
+test('quota recovery skips already stopped Codespaces and stops a running idle environment', async () => {
+  const provider = new GitHubCodespacesProvider();
+  const stopped = { name:'stopped', display_name:'Orlynx ses_old', state:'Shutdown', last_used_at:'2026-01-01T00:00:00Z' };
+  const running = { name:'running', display_name:'Orlynx ses_idle', state:'Available', last_used_at:'2026-02-01T00:00:00Z' };
+  provider.listUserCodespaces = async () => [stopped, running, { ...running, name:'personal', display_name:'Personal' }];
+  provider.sessionHasActiveWork = async () => false;
+  const calls = [];
+  provider.request = async (_user, path, options) => { calls.push([path, options.method]); return {}; };
+  provider.waitUntilStopped = async (_user, name) => { calls.push(['wait', name]); };
+  assert.equal(await provider.reclaimIdleOrlynxCodespace('user'), 'running');
+  assert.deepEqual(calls, [['/user/codespaces/running/stop','POST'], ['wait','running']]);
+  provider.listUserCodespaces = async () => [stopped];
+  assert.equal(await provider.reclaimIdleOrlynxCodespace('user'), null);
 });
 
 test('quota recovery waits for GitHub to finish stopping an old Codespace', () => {
