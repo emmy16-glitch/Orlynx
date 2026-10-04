@@ -2,7 +2,8 @@ import { assertLiveE2ESession } from './e2e-safety.js';
 export const E2E_REPOSITORY = 'emmy16-glitch/Orlynx';
 export function assertE2ECheckout(actual: {branch?: string; head?: string; porcelain?: string}, branch: string, head: string) {
   if (actual.branch !== branch || actual.head !== head) throw new Error('E2E checkout does not match the recorded branch and main SHA.');
-  if (typeof actual.porcelain !== 'string' || actual.porcelain.trim()) throw new Error('E2E checkout must be clean before isolation.');
+  if (typeof actual.porcelain !== 'string') throw new Error('E2E checkout must be clean before isolation; workspace did not report Git status.');
+  if (actual.porcelain.trim()) throw new Error(`E2E checkout must be clean before isolation. Git status: ${actual.porcelain.trimEnd().slice(0, 2000)}`);
 }
 export function browserE2EPlan(now = Date.now()) {
   const branch = `orlynx-e2e/${now}`;
