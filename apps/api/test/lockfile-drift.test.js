@@ -27,7 +27,9 @@ test('current Git workspace recovers peer drift with a replayable patch and pres
   const repo = path.join(root,'repo'), recovery = path.join(root,'recovery'); fs.mkdirSync(repo);
   const git = args => execFileSync('git',args,{cwd:repo,encoding:'utf8'});
   git(['init','-q']); git(['config','user.name','test']); git(['config','user.email','test@example.com']);
-  const lock = {lockfileVersion:3, packages:{'node_modules/a':{version:'1'}}};
+  // These public registry URLs look like secrets to the display redactor.
+  // Internal Git comparisons and saved recovery patches must retain them exactly.
+  const lock = {lockfileVersion:3, packages:{'node_modules/a':{version:'1', resolved:'https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1138.0.tgz'}}};
   const filename = path.join(repo,'package-lock.json'), original = JSON.stringify(lock,null,2)+'\n';
   fs.writeFileSync(filename,original); git(['add','.']); git(['commit','-qm','baseline']);
   lock.packages['node_modules/a'].peer = true;
