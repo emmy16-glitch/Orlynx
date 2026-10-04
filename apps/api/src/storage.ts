@@ -182,6 +182,7 @@ export interface ControlPlaneRepository {
   claimNextQueuedTask(sessionId: string): Promise<TaskRecord | null>;
   claimQueuedTask(sessionId: string, taskId: string): Promise<TaskRecord | null>;
   putWorkspace(value: WorkspaceRecord): Promise<void>;
+  setWorkspaceBranch(workspaceId: string, sessionId: string, userId: string, expectedBranch: string, branch: string): Promise<boolean>;
   archiveWorkspaceResource(value: WorkspaceRecord): Promise<void>;
   getWorkspaceBySession(sessionId: string): Promise<WorkspaceRecord | null>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
@@ -714,6 +715,11 @@ export class PostgresControlPlaneRepository implements ControlPlaneRepository {
   async putWorkspace(v: WorkspaceRecord) {
     await this.initialize();
     await this.sql`INSERT INTO workspaces (id,session_id,user_id,project_id,provider,codespace_name,runner_id,runner_host_id,provider_resource_id,repository_id,branch,state,bridge_state,connection_id,repo_root,failure_code,runtime_state,capabilities,provider_heartbeat_at,agent_heartbeat_at,task_heartbeat_at,created_at,updated_at) VALUES (${v.id},${v.sessionId},${v.userId},${v.projectId},${v.provider},${v.codespaceName || null},${v.runnerId || null},${v.runnerHostId || null},${v.providerResourceId || null},${v.repositoryId},${v.branch},${v.state},${v.bridgeState},${v.connectionId || null},${v.repoRoot || null},${v.failureCode || null},${v.runtimeState || null},${JSON.stringify(v.capabilities || null)},${v.providerHeartbeatAt || null},${v.agentHeartbeatAt || null},${v.taskHeartbeatAt || null},${v.createdAt},${v.updatedAt}) ON CONFLICT (id) DO UPDATE SET provider=EXCLUDED.provider,codespace_name=EXCLUDED.codespace_name,runner_id=EXCLUDED.runner_id,runner_host_id=EXCLUDED.runner_host_id,provider_resource_id=EXCLUDED.provider_resource_id,state=EXCLUDED.state,bridge_state=EXCLUDED.bridge_state,connection_id=EXCLUDED.connection_id,repo_root=EXCLUDED.repo_root,failure_code=EXCLUDED.failure_code,runtime_state=EXCLUDED.runtime_state,capabilities=EXCLUDED.capabilities,provider_heartbeat_at=EXCLUDED.provider_heartbeat_at,agent_heartbeat_at=EXCLUDED.agent_heartbeat_at,task_heartbeat_at=EXCLUDED.task_heartbeat_at,updated_at=EXCLUDED.updated_at`;
+  }
+  async setWorkspaceBranch(workspaceId: string, sessionId: string, userId: string, expectedBranch: string, branch: string) {
+    await this.initialize();
+    const result = await this.sql`UPDATE workspaces SET branch=${branch},updated_at=now() WHERE id=${workspaceId} AND session_id=${sessionId} AND user_id=${userId} AND branch=${expectedBranch} RETURNING id`;
+    return rows<Record<string, unknown>>(result).length === 1;
   }
   async getWorkspaceBySession(sessionId: string) { await this.initialize(); const r = rows<Record<string, unknown>>(await this.sql`SELECT * FROM workspaces WHERE session_id=${sessionId} ORDER BY created_at DESC LIMIT 1`)[0]; return r ? mapWorkspace(r) : null; }
   async archiveWorkspaceResource(value: WorkspaceRecord) {

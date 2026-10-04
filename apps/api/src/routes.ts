@@ -1,4 +1,4 @@
-import { browserE2EModel, browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
+import { persistE2EIsolation, ensureE2ERemoteBranch, browserE2EModel, browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
 import { adapterExecutionPlane } from './agent-runtime.js';
 import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
@@ -1957,18 +1957,26 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
   try {
-    const before = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status', {}, 30_000);
+    const before = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.status', {}, 30_000);
     if (before.branch !== s.branch) throw new Error('Workspace branch changed before E2E isolation.');
     const liveE2EBaseBranch = s.checkpoint?.liveE2EBaseBranch || s.branch;
     const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
     if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
     if (String(result.branch) !== requestedBranch) throw new Error('Workspace returned a different E2E branch.');
-    s.checkpoint = { ...(s.checkpoint || { decisions: [], filesTouched: [], pendingIssues: [] }), branch: requestedBranch, liveE2EBranch: requestedBranch, liveE2EBaseBranch, updatedAt: new Date().toISOString() };
-    s.branch = String(result.branch);
-    store.save();
-    s.updatedAt = new Date().toISOString();
+    const installationId = requestInstallationId(req)!;
+    await ensureE2ERemoteBranch(s.project, requestedBranch, String(before.head || ''), {
+      read: async () => {
+        try { const ref = await githubInstallationApiRequest<{ object: { sha: string } }>(installationId, `/repos/${s.project}/git/ref/heads/${requestedBranch}`); return ref.object.sha; }
+        catch (error) { if ((error as { status?: number }).status === 404) return null; throw error; }
+      },
+      create: async (branch, sha) => {
+        const ref = await githubInstallationApiRequest<{ object: { sha: string } }>(installationId, `/repos/${s.project}/git/refs`, { method: 'POST', body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }) }); return ref.object.sha;
+      },
+    });
     const durable = await controlPlaneRepository().getSession(s.id);
-    if (durable) await controlPlaneRepository().putSession({ ...s, userId: durable.userId, projectId: durable.projectId });
+    if (!durable) throw new Error('Durable E2E session disappeared.');
+    const isolated = await persistE2EIsolation(durable, workspace, requestedBranch, controlPlaneRepository());
+    Object.assign(s, isolated); store.db.sessions[s.id] = s; store.save();
     return res.json(result);
   }
   catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : 'Test branch could not be created.' }); }
@@ -2078,7 +2086,7 @@ router.post('/changes/:changeId/push', async (req, res) => {
       let pullRequest: { number: number; url: string } | undefined;
 
       if (publishAsPullRequest) {
-        const gitStatus = await bridgeRequest<{ branch?: string }>(workspace.id, 'git.status');
+        const gitStatus = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.status');
         if (gitStatus.branch && /^orlynx\/[a-zA-Z0-9._-]+$/.test(gitStatus.branch)) {
           publishedBranch = gitStatus.branch;
         } else {

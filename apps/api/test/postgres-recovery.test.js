@@ -1,3 +1,4 @@
+import { persistE2EIsolation } from '../src/e2e-browser.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PGlite } from '@electric-sql/pglite';
@@ -197,4 +198,27 @@ test('event sequence and payload commit together; duplicate replay remains idemp
   assert.equal((await repository.appendEvent(first)).sequence, one.sequence);
   assert.deepEqual((await repository.listEvents('s', one.sequence)).map(event => event.payload.state), ['running']);
   assert.ok(two.sequence > one.sequence);
+});
+
+test('isolating a ready workspace preserves task admission after durable reload', async (t) => {
+ const { repository, task, now } = await fixture(t);
+ setControlPlaneRepositoryForTests(repository);
+ t.after(() => setControlPlaneRepositoryForTests(undefined));
+ const workspace={id:'ws',sessionId:'s',userId:'u',projectId:'p',repositoryId:1,branch:'main',provider:'github-codespaces',state:'ready',bridgeState:'ready',createdAt:now,updatedAt:now};
+ await repository.putWorkspace(workspace);
+ const session=await repository.getSession('s'), branch='orlynx-e2e/1760000000000';
+ const admitted={...task('e2e'),workspaceId:'ws'};
+ await repository.putTask(admitted);
+ // Reproduce the old session-only transition: queue admission must fail closed.
+ await repository.putSession({...session,branch});
+ assert.equal(await reconcileTaskWorkspace(admitted),null);
+ await persistE2EIsolation(session,workspace,branch,repository,{ORLYNX_E2E_ENABLED:'true',ORLYNX_E2E_REPOSITORY:'test/repo'});
+ assert.equal((await repository.getSession('s')).branch,branch);
+ assert.equal((await repository.getWorkspace('ws')).branch,branch);
+ assert.equal((await reconcileTaskWorkspace(admitted)).id,'ws');
+ assert.equal((await repository.getSession('s')).checkpoint.liveE2EBaseBranch,'main');
+ assert.equal(await repository.setWorkspaceBranch('ws','other-session','u',branch,'main'),false);
+ assert.equal(await repository.setWorkspaceBranch('ws','s','other-user',branch,'main'),false);
+ assert.equal(await repository.setWorkspaceBranch('ws','s','u','stale-branch','main'),false);
+ assert.equal((await repository.getWorkspace('ws')).branch,branch);
 });
