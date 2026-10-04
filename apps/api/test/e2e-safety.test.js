@@ -43,7 +43,7 @@ test('routes enforce the same repository and branch guard at creation and public
   assert.match(routes, /liveE2ERepositoryAllowed\(s\.project\)/);
   assert.match(routes, /validLiveE2EBranch\(requestedBranch\)/);
   assert.match(routes, /assertLiveE2EPublication\(session, originalBranch/);
-  assert.match(routes, /liveE2EBranch: requestedBranch/);
+  assert.match(routes, /persistE2EIsolation\(durable, workspace, requestedBranch/);
   const publisher = fs.readFileSync(new URL('../src/publisher.ts', import.meta.url), 'utf8');
   assert.match(publisher, /assertLiveE2EPublication\(session, targetBranch, strategy/);
   assert.match(publisher, /await verifyE2EWorkspaceBranch\(\);\n    if \(!existingTargetSha\)/);
