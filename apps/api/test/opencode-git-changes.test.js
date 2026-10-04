@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
+import ts from 'typescript';
+
+test('OpenCode final changes come from Git including shell-created staged and untracked files', t => {
+  const source = fs.readFileSync(new URL('../../../bridge/src/index.ts', import.meta.url), 'utf8');
+  assert.match(source, /const actualChanges = workspaceChanges\(String\(payload.workspaceBaseHead \|\| 'HEAD'\)\);\s*return \{ engineSessionId, responseText, diff: actualChanges/);
+  const helper = source.slice(source.indexOf('function workspaceChanges('), source.indexOf('function portableHost('));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orlynx-shell-changes-'));
+  t.after(() => fs.rmSync(root, { recursive:true, force:true }));
+  const git = args => execFileSync('git', args, { cwd:root, encoding:'utf8', stdio:['ignore','pipe','pipe'] });
+  git(['init','-q']); git(['config','user.name','test']); git(['config','user.email','test@example.com']);
+  fs.writeFileSync(path.join(root,'existing.txt'),'before'); git(['add','.']); git(['commit','-qm','base']);
+  const base = git(['rev-parse','HEAD']).trim();
+  const context = { fs, git, safePath:file => path.join(root,file), output:value => String(value) };
+  vm.runInNewContext(ts.transpileModule(`${helper}\nglobalThis.snapshot = workspaceChanges;`, { compilerOptions:{target:ts.ScriptTarget.ES2022} }).outputText, context);
+  assert.equal(context.snapshot(base).length,0);
+  fs.writeFileSync(path.join(root,'staged.txt'),'shell created'); git(['add','staged.txt']);
+  fs.writeFileSync(path.join(root,'untracked.txt'),'untracked');
+  fs.writeFileSync(path.join(root,'existing.txt'),'after');
+  const files = JSON.parse(JSON.stringify(context.snapshot(base)));
+  assert.deepEqual(files.map(f=>f.file).sort(),['existing.txt','staged.txt','untracked.txt']);
+  assert.equal(files.find(f=>f.file==='staged.txt').after,'shell created');
+  assert.equal(files.find(f=>f.file==='staged.txt').status,'added');
+  assert.equal(files.find(f=>f.file==='existing.txt').before,'before');
+  assert.equal(files.find(f=>f.file==='existing.txt').after,'after');
+});
