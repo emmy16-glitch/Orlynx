@@ -167,7 +167,6 @@ test('quota recovery waits for GitHub to finish stopping an old Codespace', () =
   const source = fs.readFileSync(new URL('../src/github-codespaces.ts', import.meta.url), 'utf8');
   assert.match(source, /waitUntilStopped/);
   assert.doesNotMatch(source, /setTimeout\(resolve, 1_500\)/);
-  assert.match(source, /reusableForSession\(input\) \|\| await this\.reusableForProject\(input\)/);
   assert.match(source, /sessionHasActiveWork/);
   assert.match(source, /ORLYNX_CODESPACE_RETENTION_MINUTES \|\| 7 \* 24 \* 60/);
   assert.match(source, /\['running', 'queued', 'waiting_input', 'waiting_approval'\]\.includes\(task\.state\)/);
@@ -224,7 +223,7 @@ test('new sessions may reuse only an idle Codespace for the same repository and 
   const createStart = source.indexOf('async create(');
   const createEnd = source.indexOf('async replace(', createStart);
   const createBlock = source.slice(createStart, createEnd);
-  assert.match(createBlock, /reusableForSession\(input\) \|\| await this\.reusableForProject\(input\)/);
+  assert.match(createBlock, /!isolatedE2E \? await this\.reusableForProject\(input\) : null/);
   assert.match(source, /codespaceMatchesProject\(item, input\.repositoryId, input\.branch\)/);
   assert.match(source, /sessionHasActiveWork\(previousSessionId\)/);
 });

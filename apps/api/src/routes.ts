@@ -1,4 +1,4 @@
-import { persistE2EIsolation, ensureE2ERemoteBranch, browserE2EModel, browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
+import { assertE2ECheckout, persistE2EIsolation, ensureE2ERemoteBranch, browserE2EModel, browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
 import { adapterExecutionPlane } from './agent-runtime.js';
 import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
@@ -1957,12 +1957,11 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
   }
   const workspace = durableStorageConfigured() ? await getWorkspace(s.id) : null; if (!workspace || workspace.state !== 'ready') return res.status(503).json({ error: 'Workspace is not ready.' });
   try {
-    const before = await bridgeRequest<{ branch?: string; head?: string }>(workspace.id, 'git.status', {}, 30_000);
+    if (s.checkpoint?.liveE2EPlan) await bridgeRequest(workspace.id, 'git.sync', { approved: true, branch: s.branch }, 120_000);
+    const before = await bridgeRequest<{ branch?: string; head?: string; porcelain?: string }>(workspace.id, 'git.status', {}, 30_000);
+    if (s.checkpoint?.liveE2EPlan) assertE2ECheckout(before, s.branch, s.checkpoint.liveE2EPlan.startingMainSha);
     if (before.branch !== s.branch) throw new Error('Workspace branch changed before E2E isolation.');
     const liveE2EBaseBranch = s.checkpoint?.liveE2EBaseBranch || s.branch;
-    const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
-    if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
-    if (String(result.branch) !== requestedBranch) throw new Error('Workspace returned a different E2E branch.');
     const installationId = requestInstallationId(req)!;
     await ensureE2ERemoteBranch(s.project, requestedBranch, String(before.head || ''), {
       read: async () => {
@@ -1975,6 +1974,9 @@ router.post('/sessions/:id/git/e2e-branch', async (req, res) => {
     });
     const durable = await controlPlaneRepository().getSession(s.id);
     if (!durable) throw new Error('Durable E2E session disappeared.');
+    const result = await bridgeRequest(workspace.id, 'git.branch.create', { branch: requestedBranch });
+    if (!validLiveE2EBranch(String(result.branch || ''))) throw new Error('Workspace returned an unsafe E2E branch.');
+    if (String(result.branch) !== requestedBranch) throw new Error('Workspace returned a different E2E branch.');
     const isolated = await persistE2EIsolation(durable, workspace, requestedBranch, controlPlaneRepository());
     Object.assign(s, isolated); store.db.sessions[s.id] = s; store.save();
     return res.json(result);

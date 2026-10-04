@@ -1,4 +1,5 @@
 import { readOnlyCommand } from './read-only-command.js';
+import { recoverPeerMetadata } from './lockfile-drift.js';
 import WebSocket from 'ws';
 import * as pty from 'node-pty';
 import { spawn, spawnSync } from 'node:child_process';
@@ -1600,8 +1601,14 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       const behind = Number.isFinite(counts[0]) ? counts[0] : 0;
       const ahead = Number.isFinite(counts[1]) ? counts[1] : 0;
 
+      // A reused, current workspace may contain npm peer-metadata churn.
+      // Preserve it outside Git before restoring only that generated drift.
+      const recoveredPeerMetadata = ahead === 0
+        ? recoverPeerMetadata(REPO_ROOT, path.join(os.homedir(), '.orlynx', 'recovery'), git)
+        : undefined;
+      const porcelainAfterMetadata = recoveredPeerMetadata ? git(['status', '--porcelain=v1']) : porcelainBefore;
       if (behind === 0) {
-        return { state: 'current', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainBefore };
+        return { state: 'current', branch, head: headBefore, remoteHead, ahead, behind, porcelain: porcelainAfterMetadata, recoveryPatch: recoveredPeerMetadata };
       }
 
       // Old persistent workspaces can carry package-lock drift from a previous
@@ -1610,7 +1617,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       // Preserve the exact patch outside the repository before restoring it.
       // Any source edit, untracked file, second dirty path, or local commit still
       // blocks sync and requires normal reconciliation.
-      let porcelain = porcelainBefore;
+      let porcelain = porcelainAfterMetadata;
       let recoveredGeneratedLockfile = false;
       let recoveryPatch: string | undefined;
       if (ahead === 0 && porcelain.trim()) {
