@@ -1123,10 +1123,12 @@ function openCodeTodoItems(input: unknown): { present: boolean; items: Array<{ c
     if (assistant.info?.error) throw new Error(openCodeErrorMessage(assistant.info.error));
 
     const responseText = assistantText(assistant);
-    const diff = await opencodeRequest({ path: `/session/${engineSessionId}/diff`, method: 'GET' }) as { body?: Array<Record<string, unknown>> };
     const status = await execute({ kind: 'COMMAND', commandId: '', type: 'git.status', payload: {} }, ws);
     const previewPorts = await ports();
-    return { engineSessionId, responseText, diff: diff.body || [], head: status.head, previewPorts };
+    // OpenCode's session diff can omit files written by shell tools. Git is
+    // authoritative for staged, unstaged and untracked workspace changes.
+    const actualChanges = workspaceChanges(String(payload.workspaceBaseHead || 'HEAD'));
+    return { engineSessionId, responseText, diff: actualChanges, head: status.head, previewPorts };
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
 
