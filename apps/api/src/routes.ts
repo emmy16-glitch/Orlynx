@@ -1,3 +1,4 @@
+import { browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
 import { adapterExecutionPlane } from './agent-runtime.js';
 import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
@@ -5,7 +6,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscribeEvents } from './events.js';
-import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
+import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubInstallationApiRequest, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
 import { ensureWorkspaceRecord, getWorkspace, markWorkspaceConnectionLost, stopWorkspace, workspaceNeedsRuntimeRefresh } from './workspaces.js';
@@ -300,6 +301,80 @@ router.get('/sessions', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'Reconnect GitHub to continue.' });
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 200));
   res.json(await controlPlaneRepository().listSessionsByUser(userId, limit));
+});
+
+// Browser-native verification uses the normal authenticated session; no auth export.
+router.get('/e2e', async (req, res) => {
+  res.json({ enabled: liveE2EEnabled() && liveE2ERepositoryAllowed(E2E_REPOSITORY), repository: E2E_REPOSITORY });
+});
+router.post('/e2e', async (req, res) => {
+  if (!liveE2EEnabled() || !liveE2ERepositoryAllowed(E2E_REPOSITORY)) return res.status(404).json({ error: 'Production E2E is disabled.' });
+  if (req.header('origin') !== publicSiteUrl().replace(/\/$/, '') || req.header('x-orlynx-e2e') !== 'browser') return res.status(403).json({ error: 'Use the authenticated in-app trigger.' });
+  const userId = await requestUserId(req), installationId = requestInstallationId(req);
+  if (!userId || !installationId) return res.status(401).json({ error: 'Reconnect GitHub.' });
+  if (!await githubRepositoryAuthorized(E2E_REPOSITORY, installationId)) return res.status(403).json({ error: 'E2E repository is not authorized.' });
+  const repo = (await githubListRepos(installationId)).find(r => r.full.toLowerCase() === E2E_REPOSITORY.toLowerCase());
+  if (!repo) return res.status(403).json({ error: 'E2E repository is unavailable.' });
+  const repository = controlPlaneRepository();
+  const plan = browserE2EPlan();
+  const ref = await githubInstallationApiRequest<{object: {sha: string}}>(installationId, `/repos/${E2E_REPOSITORY}/git/ref/heads/main`);
+  const now = new Date().toISOString(), id = `ses_${uuid()}`, projectId = `prj_${userId}_${repo.id}`;
+  await repository.upsertProject({ id: projectId, userId, installationId, repositoryId: repo.id, fullName: repo.full, defaultBranch: repo.defaultBranch });
+  const session = { id, installationId, userId, projectId, project: repo.full, owner: repo.owner, branch: repo.defaultBranch, mode: 'repository' as const, workspaceId: null, createdAt: now, updatedAt: now,
+    checkpoint: { decisions: [], filesTouched: [], pendingIssues: [], branch: repo.defaultBranch, updatedAt: now, liveE2EBranch: plan.branch, liveE2EBaseBranch: repo.defaultBranch, liveE2EPlan: { ...plan, startingMainSha: ref.object.sha } } };
+  await repository.putSession(session); store.db.sessions[id] = session; store.save();
+  await recordAudit(req, id, 'e2e.start', 'created', { branch: plan.branch });
+  res.json(session);
+});
+router.post('/sessions/:id/e2e/test', async (req, res) => {
+  const s = ownedSession(req, req.params.id);
+  if (!s?.checkpoint?.liveE2EPlan) return res.status(404).json({ error: 'E2E session not found.' });
+  try {
+    assertLiveE2ESession(s.project, s.branch);
+    const workspace = await getWorkspace(s.id);
+    if (!workspace || workspace.state !== 'ready') throw new Error('Workspace is not ready.');
+    const actual = await bridgeRequest(workspace.id, 'git.status');
+    assertLiveE2EPublication(s, s.checkpoint.liveE2EPlan.branch, 'direct', String(actual.branch || ''));
+    const diff = await bridgeRequest(workspace.id, 'command.exec', { command: 'git', args: ['diff', '--no-ext-diff', '--no-index', '--', '/dev/null', s.checkpoint.liveE2EPlan.filename] });
+    if (Number(diff.code) !== 1 || !String(diff.stdout || '').includes(s.checkpoint.liveE2EPlan.filename)) throw new Error('Real new-file Git diff is missing.');
+    const result = await bridgeRequest(workspace.id, 'command.exec', { command: 'npm', args: ['test'], timeoutMs: 300_000 }, 10 * 60_000);
+    await emitPersisted(s.id, 'receipt.created', { e2eTest: true, cmd: 'npm test', ...result });
+    if (Number(result.code) !== 0) return res.status(409).json({ error: 'Real npm test failed.', ...result });
+    res.json({ ...result, diff: diff.stdout });
+  } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Test failed.' }); }
+});
+router.post('/sessions/:id/e2e/verify', async (req, res) => {
+  const s = ownedSession(req, req.params.id), plan = s?.checkpoint?.liveE2EPlan;
+  if (!s || !plan) return res.status(404).json({ error: 'E2E session not found.' });
+  try {
+    assertLiveE2ESession(s.project, s.branch);
+    if (s.branch !== plan.branch) throw new Error('E2E branch changed.');
+    const repository = controlPlaneRepository(), workspace = await getWorkspace(s.id);
+    if (!workspace || workspace.state !== 'ready') throw new Error('Workspace is not ready.');
+    const actual = await bridgeRequest(workspace.id, 'git.status');
+    assertLiveE2EPublication(s, plan.branch, 'direct', String(actual.branch || ''));
+    const tasks = await repository.listTasks(s.id), messages = await repository.listMessages(s.id), changes = await repository.listChangeSets(s.id);
+    const task = tasks.find(t => messages.some(m => m.id === t.messageId && m.text.includes(plan.filename)));
+    if (!task || task.state !== 'completed') throw new Error('Build task is not completed.');
+    if (!messages.some(m => m.role === 'assistant' && m.runId === task.runId && m.text)) throw new Error('Assistant result is not durable.');
+    const change = changes.find(c => c.files.some(f => f.path === plan.filename));
+    if (!change?.commitSha || !change.pushedAt || change.pushedBranch !== plan.branch || change.files.length !== 1) throw new Error('Isolated ChangeSet publication is incomplete.');
+    const events = []; let after = 0;
+    for (;;) { const batch = await repository.listEvents(s.id, after, 1000); if (!batch.length) break; events.push(...batch); after = batch.at(-1)!.sequence; }
+    const replay = verifyReplay(events);
+    if (!events.some(e => e.type === 'receipt.created' && e.payload.e2eTest === true && e.payload.cmd === 'npm test' && Number(e.payload.code) === 0)) throw new Error('Passing real test receipt is missing.');
+    if (!events.some(e => e.type === 'receipt.created' && e.payload.commitSha) || !events.some(e => e.type === 'receipt.created' && e.payload.pushedAt)) throw new Error('Publication receipts are missing.');
+    const installationId = requestInstallationId(req)!;
+    const github = <T,>(path: string) => githubInstallationApiRequest<T>(installationId, `/repos/${E2E_REPOSITORY}/${path}`);
+    const main = await github<{object:{sha:string}}>('git/ref/heads/main');
+    const branch = await github<{object:{sha:string}}>(`git/ref/heads/${plan.branch}`);
+    const comparison = await github<{files:{filename:string}[];commits:{sha:string}[]}>(`compare/${plan.startingMainSha}...${branch.object.sha}`);
+    const content = await githubRepositoryFile(E2E_REPOSITORY, plan.branch, plan.filename, installationId);
+    if (main.object.sha !== plan.startingMainSha || branch.object.sha !== change.commitSha || comparison.files.length !== 1 || comparison.files[0].filename !== plan.filename || content.trim() !== 'Orlynx real execution plane verified.') throw new Error('Independent GitHub verification failed.');
+    const result = { verifiedAt: new Date().toISOString(), startingMainSha: plan.startingMainSha, endingMainSha: main.object.sha, branch: plan.branch, commitSha: change.commitSha, workspaceId: workspace.id, provider: workspace.provider, adapter: task.adapterId, model: task.modelId, taskId: task.id, runId: task.runId, changeId: change.id, replay };
+    s.checkpoint!.liveE2EResult = result; await repository.putSession(s); store.db.sessions[s.id] = s; store.save();
+    res.json(result);
+  } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Verification failed.' }); }
 });
 
 // POST /v1/sessions — create/resume project session (§14.1)

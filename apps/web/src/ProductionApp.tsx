@@ -1,3 +1,4 @@
+import { LiveE2EPanel } from './LiveE2EPanel';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import './styles.css';
@@ -1878,7 +1879,7 @@ export default function ProductionApp() {
               </>}
             </section>)}
             {!restoring && page === 'setup' && <SetupScreen notice={githubNotice} clearNotice={() => setGithubNotice(null)} />}
-            {!restoring && page === 'settings' && <SettingsScreen integration={integration} theme={theme} setTheme={setTheme} reload={refreshIntegrations} ai={ai} providers={aiProviders} onManageAi={() => setShowConnectAI(true)} onOpenGithub={() => setPage('github')} />}
+            {!restoring && page === 'settings' && <><LiveE2EPanel onOpen={openSession} /><SettingsScreen integration={integration} theme={theme} setTheme={setTheme} reload={refreshIntegrations} ai={ai} providers={aiProviders} onManageAi={() => setShowConnectAI(true)} onOpenGithub={() => setPage('github')} /></>}
             {!restoring && page === 'tasks' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">CURRENT PROJECT</p><h1>Tasks</h1><p className="screen-subtitle">Recent work in this project.</p></div></div>{session && lastRun ? <button className="task-row" onClick={() => setPage('workspace')}><Icon name="clock" /><span><b>{session.checkpoint?.goal || 'Project task'}</b><small>{session.project} · {new Date(lastRun.startedAt).toLocaleString()}</small></span><Badge>{lastRun.state}</Badge></button> : <EmptyState title="No task history" hint="Start a task in this project." />}</section>}
             {!restoring && page === 'search' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">SEARCH PROJECT</p><h1>Find files</h1></div></div><label className="global-search search-page-input"><Icon name="search" /><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search current files…" /></label>{files.filter((file: any) => file.name.toLowerCase().includes(search.toLowerCase())).map((file: any) => <button key={file.name} className="project-list-row" onClick={() => { setPage('workspace'); setTab('files'); if (!file.dir) openFile(file.name); }}><Icon name={file.dir ? 'folder' : 'file'} /><span><b>{file.name}</b><small>{session?.project}</small></span><Icon name="chevron" /></button>)}</section>}
           </main>
