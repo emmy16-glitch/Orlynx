@@ -10,3 +10,9 @@ export function verifyReplay(events: {sequence: number; eventId: string}[]) {
   if (new Set(events.map(e => e.eventId)).size !== events.length || events.some((e,i) => !Number.isSafeInteger(e.sequence) || e.sequence <= (i ? events[i-1].sequence : 0))) throw new Error('Duplicate or out-of-order durable events.');
   return { count: events.length, lastSequence: events.at(-1)!.sequence };
 }
+
+export function browserE2EModel(value: unknown): string {
+  const model = typeof value === 'string' ? value : '';
+  if (!model || model.split('/').some(segment => segment === '.' || segment === '..') || !/^[\w.-]+\/[\w.:-]+(?:\/[\w.:-]+)*$/.test(model)) throw new Error('Choose an OpenCode model before running verification.');
+  return model;
+}

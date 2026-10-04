@@ -1,4 +1,4 @@
-import { browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
+import { browserE2EModel, browserE2EPlan, E2E_REPOSITORY, verifyReplay } from './e2e-browser.js';
 import { adapterExecutionPlane } from './agent-runtime.js';
 import { switchTaskAdapter, resolvePreferredAdapter } from './agent-handoff.js';
 import { Router } from 'express';
@@ -316,6 +316,8 @@ router.post('/e2e', async (req, res) => {
   const repo = (await githubListRepos(installationId)).find(r => r.full.toLowerCase() === E2E_REPOSITORY.toLowerCase());
   if (!repo) return res.status(403).json({ error: 'E2E repository is unavailable.' });
   const repository = controlPlaneRepository();
+  let modelId: string;
+  try { modelId = browserE2EModel(req.body?.modelId); } catch (error) { return res.status(400).json({ error: (error as Error).message }); }
   const plan = browserE2EPlan();
   const ref = await githubInstallationApiRequest<{object: {sha: string}}>(installationId, `/repos/${E2E_REPOSITORY}/git/ref/heads/main`);
   const now = new Date().toISOString(), id = `ses_${uuid()}`, projectId = `prj_${userId}_${repo.id}`;
@@ -323,6 +325,7 @@ router.post('/e2e', async (req, res) => {
   const session = { id, installationId, userId, projectId, project: repo.full, owner: repo.owner, branch: repo.defaultBranch, mode: 'repository' as const, workspaceId: null, createdAt: now, updatedAt: now,
     checkpoint: { decisions: [], filesTouched: [], pendingIssues: [], branch: repo.defaultBranch, updatedAt: now, liveE2EBranch: plan.branch, liveE2EBaseBranch: repo.defaultBranch, liveE2EPlan: { ...plan, startingMainSha: ref.object.sha } } };
   await repository.putSession(session); store.db.sessions[id] = session; store.save();
+  await repository.putAISessionPrefs(setSessionPrefs(id, { adapterId: 'opencode', modelId, mode: 'build', permission: 'full' }));
   await recordAudit(req, id, 'e2e.start', 'created', { branch: plan.branch });
   res.json(session);
 });
