@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { browserE2EPlan, verifyReplay } from '../src/e2e-browser.ts';
+import { browserE2EModel, browserE2EPlan, verifyReplay } from '../src/e2e-browser.ts';
 test('browser plan refuses disabled or differently allowlisted production and generates only isolated targets', () => {
  const saved = {...process.env};
  try {
@@ -15,4 +15,9 @@ test('browser plan refuses disabled or differently allowlisted production and ge
 test('durable replay fails on empty, repeated IDs, repeated sequence, reversed or invalid sequence', () => {
  assert.deepEqual(verifyReplay([{sequence:1,eventId:'a'},{sequence:3,eventId:'b'}]), {count:2,lastSequence:3});
  for(const events of [[],[{sequence:1,eventId:'a'},{sequence:2,eventId:'a'}],[{sequence:1,eventId:'a'},{sequence:1,eventId:'b'}],[{sequence:2,eventId:'a'},{sequence:1,eventId:'b'}],[{sequence:NaN,eventId:'a'}]]) assert.throws(() => verifyReplay(events));
+});
+
+test('browser verification requires an explicit model and rejects malformed values', () => {
+ assert.equal(browserE2EModel('opencode/big-pickle'), 'opencode/big-pickle');
+ for(const value of [undefined, null, '', 'auto', 'opencode/../../main', {}, 'opencode/model;cmd']) assert.throws(() => browserE2EModel(value), /Choose/);
 });

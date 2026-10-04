@@ -7,7 +7,7 @@ async function api(path: string, body?: unknown) {
   return value;
 }
 const delay = () => new Promise(resolve => setTimeout(resolve, 3000));
-export function LiveE2EPanel({ onOpen }: { onOpen: (session: any) => void }) {
+export function LiveE2EPanel({ onOpen, modelId }: { modelId?: string; onOpen: (session: any) => void }) {
   const [enabled, setEnabled] = useState(false), [busy, setBusy] = useState(false), [progress, setProgress] = useState<string[]>([]), [session, setSession] = useState<any>(null), [result, setResult] = useState<any>(null);
   useEffect(() => { api('/e2e').then(s => setEnabled(s.enabled)).catch(() => {}); }, []);
   async function run() {
@@ -16,7 +16,8 @@ export function LiveE2EPanel({ onOpen }: { onOpen: (session: any) => void }) {
     let stream: EventSource | undefined;
     try {
       note('Checking authentication and repository authorization');
-      const s = await api('/e2e', {}); setSession(s);
+      if (!modelId) throw new Error('Choose an OpenCode model before running verification.');
+      const s = await api('/e2e', { modelId }); setSession(s);
       const plan = s.checkpoint.liveE2EPlan, root = `/sessions/${s.id}`;
       note(`Created isolated verification session ${s.id}; target ${plan.branch}`);
       for (const branch of ['main', 'master', 'unrelated-branch']) {
@@ -41,7 +42,7 @@ export function LiveE2EPanel({ onOpen }: { onOpen: (session: any) => void }) {
       const status = await api(`${root}/git/status`);
       if (status.branch !== plan.branch) throw new Error('Actual workspace branch does not match isolated branch');
       note(`Actual Git branch verified: ${status.branch}`);
-      const sent = await api(`${root}/messages`, { text: `Create ${plan.filename} containing exactly: Orlynx real execution plane verified. Do not modify any other file. Run npm test and inspect the real Git diff. Do not commit or push; leave the verified changes for review.`, clientId: plan.clientId, adapterId: 'opencode', mode: 'build', fullAccessForThisTask: true });
+      const sent = await api(`${root}/messages`, { text: `Create ${plan.filename} containing exactly: Orlynx real execution plane verified. Do not modify any other file. Run npm test and inspect the real Git diff. Do not commit or push; leave the verified changes for review.`, clientId: plan.clientId, adapterId: 'opencode', modelId, mode: 'build', fullAccessForThisTask: true });
       let run = sent.run;
       while (Date.now() < deadline && ['queued', 'running'].includes(run?.state)) {
         await delay(); run = (await api(`${root}/runs`)).find((r: any) => r.id === run.id) || run;
@@ -87,5 +88,5 @@ export function LiveE2EPanel({ onOpen }: { onOpen: (session: any) => void }) {
     finally { stream?.close(); setBusy(false); }
   }
   if (!enabled && !session) return null;
-  return <section className="settings-group"><h2>Production verification</h2><div className="settings-row"><span><b>Authenticated live E2E</b><small>Creates a temporary file on an isolated orlynx-e2e branch. Keep this page open during the test.</small></span><button type="button" disabled={busy || !enabled} onClick={run}>{busy ? 'Verification running' : 'Run live E2E'}</button></div>{session && <button onClick={() => onOpen(session)}>Open verification session</button>}<div role="log" aria-label="Live E2E progress" aria-live="polite" style={{ maxHeight: 360, overflow: 'auto' }}>{progress.map((line, i) => <p key={i}>{line}</p>)}</div>{result && <pre>{JSON.stringify(result, null, 2)}</pre>}</section>;
+  return <section className="settings-group"><h2>Production verification</h2><div className="settings-row"><span><b>Authenticated live E2E</b><small>Creates a temporary file on an isolated orlynx-e2e branch. Choose a model in AI settings first. Keep this page open during the test.</small></span><button type="button" disabled={busy || !enabled || !modelId} onClick={run}>{busy ? 'Verification running' : 'Run live E2E'}</button></div>{session && <button onClick={() => onOpen(session)}>Open verification session</button>}<div role="log" aria-label="Live E2E progress" aria-live="polite" style={{ maxHeight: 360, overflow: 'auto' }}>{progress.map((line, i) => <p key={i}>{line}</p>)}</div>{result && <pre>{JSON.stringify(result, null, 2)}</pre>}</section>;
 }
