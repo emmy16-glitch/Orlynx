@@ -64,6 +64,9 @@ const DEFAULT_BUDGETS: Record<'direct' | 'workspace', number> = {
 
 export function verificationRequirementsFor(prompt: string): string[] {
   const value = String(prompt || '').toLowerCase();
+  // Negated shipping instructions are constraints, not acceptance criteria.
+  // Keep later affirmative clauses ("do not commit, but push") intact.
+  const shippingValue = value.replace(/\b(?:do\s+not|don't|never|without)\s+(?:(?:git|any)\s+)?(?:commit(?:ting)?|push(?:ing)?|publish(?:ing)?|deploy(?:ing)?)\b(?:(?!\bbut\b)[^.;!?\n,])*/g, '');
   const required = new Set<string>();
   const shipping = shippingFollowup(value);
   if (shipping.publication) required.add('publish');
@@ -75,15 +78,15 @@ export function verificationRequirementsFor(prompt: string): string[] {
     || /^(?:update|updates)\s+(?:on|about|from|for)\b/.test(value)
     || /^(?:update|updates)\s*[?!.]*$/.test(value)
     || /\b(?:what(?:'s| is)|any)\s+(?:new\s+)?updates?\s+(?:on|in|from|for|about)\b/.test(value);
-  const explicitMutation = /\b(fix|implement|edit|change|refactor|rewrite|add|remove|rename)\b/.test(value)
+  const explicitMutation = /\b(fix|implement|create|edit|change|refactor|rewrite|add|remove|rename)\b/.test(value)
     || (/\bupdate\b/.test(value) && !statusUpdateQuery);
 
   if (explicitMutation) required.add('changes');
   if (/\b(test|tests|testing|pytest|npm test|unit test|e2e|playwright)\b/.test(value)) required.add('tests');
   if (/\b(build|compile|typecheck|lint)\b/.test(value)) required.add('build');
-  if (/\bcommit\b/.test(value)) required.add('commit');
-  if (/\b(push|publish)\b/.test(value) || /\bto\s+main\b/.test(value)) required.add('publish');
-  if (/\b(deploy|deployment|redeploy)\b/.test(value)) required.add('deployment');
+  if (/\bcommit\b/.test(shippingValue)) required.add('commit');
+  if (/\b(push|publish)\b/.test(shippingValue) || /\bto\s+main\b/.test(shippingValue)) required.add('publish');
+  if (/\b(deploy|deployment|redeploy)\b/.test(shippingValue)) required.add('deployment');
   if (/\b(localhost|local\s*host|preview|start\s+(?:the\s+)?(?:app|server|dev))\b/.test(value)) required.add('preview');
   if (/\b(?:check|search|look\s*up|research|browse)\s+(?:the\s+)?(?:web|internet|online)\b|\b(?:latest|current|official)\s+(?:online\s+)?(?:docs|documentation)\b|\bweb(?:search|fetch)\b/.test(value)) required.add('browser');
 

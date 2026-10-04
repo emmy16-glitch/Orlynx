@@ -15,6 +15,8 @@ For an explicitly authorized production verification, use the existing repositor
 
 The trigger only appears while the production gate and exact repository allowlist are enabled, requires normal authentication and same-origin initiation, and never accepts a caller-selected repository or publication branch. Completion of CI alone does not establish live provider readiness. A stalled attempt must be cancelled before rerunning; its records remain evidence.
 
+The Build's “do not commit or push” constraint excludes publication from harness acceptance. The browser driver owns review and publication after the Build completes. During repository freshness checks, a current workspace's unstaged, peer-flag-only lockfile rewrite is preserved as a private recovery patch and restored to HEAD. Staged edits, dependency changes and additional dirty files are retained; they must not be silently cleared to satisfy the single-file E2E requirement.
+
 ## Terminal driver
 
 The terminal driver remains available when normal Playwright login is possible. Set the explicit target and allowlisted repository on the authorized deployment; do not fabricate signed cookies.

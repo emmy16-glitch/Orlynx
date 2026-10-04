@@ -152,6 +152,18 @@ test('harness infers explicit Build acceptance criteria without inventing unrela
   assert.deepEqual(verificationRequirementsFor('check online for the latest official docs'), ['browser']);
 });
 
+test('negated publication instructions never manufacture shipping requirements', () => {
+  const prompt = 'Create orlynx-e2e-1791078395857.txt containing exactly: Orlynx real execution plane verified. Do not modify any other file. Run npm test and inspect the real Git diff. Do not commit or push; leave the verified changes for review.';
+  assert.deepEqual(verificationRequirementsFor(prompt), ['changes', 'tests']);
+  for (const constraint of ["Don't commit or push", 'Never publish', 'without committing or pushing', 'Do not deploy', 'Do not push to main', 'Do not commit this or push it']) {
+    assert.deepEqual(verificationRequirementsFor(`Fix the file and run tests. ${constraint}.`), ['changes', 'tests']);
+  }
+  assert.deepEqual(verificationRequirementsFor('Do not commit, but push the verified changes'), ['publish']);
+  const checkpoint = createHarnessCheckpoint({prompt, mode:'build', permission:'full', plane:'workspace'});
+  const verified = verifyHarness(checkpoint, [evt(1, 'file.changed', {path:'orlynx-e2e-1791078395857.txt'}), evt(2, 'tool.completed', {command:'npm test', exitCode:0})]);
+  assert.equal(verified.verification.status, 'passed');
+});
+
 test('provider-authored todo plan is normalized, durable, and handed back to the model', () => {
   const items = normalizeHarnessPlanItems([
     { content: 'Read architecture docs', status: 'completed', priority: 'high' },
