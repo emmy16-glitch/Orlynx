@@ -297,7 +297,8 @@ test('stale workspace sync preserves isolated package-lock drift before fast-for
   const agents = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
 
   assert.match(bridge, /packageLockOnly/);
-  assert.match(bridge, /git\(\['diff', 'HEAD', '--binary', '--', 'package-lock\.json'\]\)/);
+  assert.match(bridge, /gitRaw\(\['diff', 'HEAD', '--binary', '--', 'package-lock\.json'\]\)/);
+  assert.match(bridge, /recoverPeerMetadata\(REPO_ROOT, path\.join\(os\.homedir\(\), '\.orlynx', 'recovery'\), gitRaw\)/);
   assert.match(bridge, /\.orlynx', 'recovery'/);
   assert.match(bridge, /git\(\['restore', '--source=HEAD', '--staged', '--worktree', '--', 'package-lock\.json'\]\)/);
   assert.match(bridge, /recoveredGeneratedLockfile/);
@@ -305,4 +306,3 @@ test('stale workspace sync preserves isolated package-lock drift before fast-for
   assert.match(agents, /preserved incidental package-lock drift/);
   assert.match(agents, /recoveryPatch/);
 });
-

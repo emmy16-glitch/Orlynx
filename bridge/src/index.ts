@@ -355,10 +355,13 @@ function resolveOpenCodeBinary(): string | undefined {
   }
   return repairOpenCodeBinary();
 }
-function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
+function gitRaw(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
   const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout, env: cleanEnvironment(extraEnv) });
   if (result.error || result.status !== 0) throw new Error(output(result.stderr) || result.error?.message || `git exited ${result.status}`);
-  return output(result.stdout);
+  return String(result.stdout || '');
+}
+function git(args: string[], timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}) {
+  return output(gitRaw(args, timeout, extraEnv));
 }
 
 const allowedExecutables = new Set(['npm', 'npx', 'pnpm', 'yarn', 'bun', 'node', 'python', 'python3', 'pytest', 'go', 'cargo', 'make']);
@@ -1604,7 +1607,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
       // A reused, current workspace may contain npm peer-metadata churn.
       // Preserve it outside Git before restoring only that generated drift.
       const recoveredPeerMetadata = ahead === 0
-        ? recoverPeerMetadata(REPO_ROOT, path.join(os.homedir(), '.orlynx', 'recovery'), git)
+        ? recoverPeerMetadata(REPO_ROOT, path.join(os.homedir(), '.orlynx', 'recovery'), gitRaw)
         : undefined;
       const porcelainAfterMetadata = recoveredPeerMetadata ? git(['status', '--porcelain=v1']) : porcelainBefore;
       if (behind === 0) {
@@ -1627,7 +1630,7 @@ async function execute(command: Command, ws: WebSocket): Promise<Record<string, 
           return line.slice(3).trim().replace(/^"|"$/g, '') === 'package-lock.json';
         });
         if (packageLockOnly) {
-          const patch = git(['diff', 'HEAD', '--binary', '--', 'package-lock.json']);
+          const patch = gitRaw(['diff', 'HEAD', '--binary', '--', 'package-lock.json']);
           if (patch.trim()) {
             const recoveryRoot = path.join(os.homedir(), '.orlynx', 'recovery');
             fs.mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 });
