@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ensureE2ERemoteBranch, browserE2EModel, browserE2EPlan, verifyReplay } from '../src/e2e-browser.ts';
+import { assertE2ECheckout, ensureE2ERemoteBranch, browserE2EModel, browserE2EPlan, verifyReplay } from '../src/e2e-browser.ts';
 test('browser plan refuses disabled or differently allowlisted production and generates only isolated targets', () => {
  const saved = {...process.env};
  try {
@@ -33,4 +33,12 @@ test('E2E remote preparation rejects unsafe targets before API calls and preserv
  assert.deepEqual(calls,['read',[branch,head]]);
  await assert.rejects(ensureE2ERemoteBranch('emmy16-glitch/Orlynx',branch,head,{...api,read:async()=> 'b'.repeat(40)},env),/does not match/);
  await assert.rejects(ensureE2ERemoteBranch('emmy16-glitch/Orlynx',branch,head,{...api,read:async()=>{throw new Error('HTTP 403');}},env),/403/);
+});
+
+test('E2E isolation rejects current but dirty checkouts and missing Git truth', () => {
+ const clean={branch:'main',head:'a'.repeat(40),porcelain:''};
+ assert.doesNotThrow(()=>assertE2ECheckout(clean,'main',clean.head));
+ for(const porcelain of [' M package-lock.json\n','?? user-file.txt\n',undefined]) assert.throws(()=>assertE2ECheckout({...clean,porcelain},'main',clean.head),/clean/);
+ assert.throws(()=>assertE2ECheckout({...clean,head:'b'.repeat(40)},'main',clean.head),/SHA/);
+ assert.throws(()=>assertE2ECheckout({...clean,branch:'other'},'main',clean.head),/branch/);
 });
