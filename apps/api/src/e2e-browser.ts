@@ -13,6 +13,6 @@ export function verifyReplay(events: {sequence: number; eventId: string}[]) {
 
 export function browserE2EModel(value: unknown): string {
   const model = typeof value === 'string' ? value : '';
-  if (!model || !/^[\w.-]+\/[\w.:-]+(?:\/[\w.:-]+)*$/.test(model)) throw new Error('Choose an OpenCode model before running verification.');
+  if (!model || model.split('/').some(segment => segment === '.' || segment === '..') || !/^[\w.-]+\/[\w.:-]+(?:\/[\w.:-]+)*$/.test(model)) throw new Error('Choose an OpenCode model before running verification.');
   return model;
 }
