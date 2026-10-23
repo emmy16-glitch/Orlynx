@@ -165,7 +165,7 @@ html[data-theme="dark"] .is-workspace {
 .is-workspace .sidebar.workspace-sidebar .side-nav { margin-top: 28px; gap: 4px; }
 .is-workspace .sidebar.workspace-sidebar .side-nav button { font-size: 13px; font-weight: 500; color: var(--foreground-muted); }
 .is-workspace .sidebar.workspace-sidebar .side-nav button.selected { color: var(--foreground); background: var(--accent-soft); font-weight: 650; }
-.is-workspace .sidebar.workspace-sidebar .sidebar-section { margin-top: 35px; }
+.is-workspace .sidebar.workspace-sidebar .sidebar-section { margin-top: 35px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .is-workspace .sidebar.workspace-sidebar .sidebar-title {
   font-size: 10px;
   letter-spacing: .1em;
