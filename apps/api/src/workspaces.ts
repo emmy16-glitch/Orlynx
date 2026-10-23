@@ -8,6 +8,7 @@ import { controlPlaneRepository } from './storage.js';
 import { emit } from './events.js';
 import { computeTargetQuarantined, noteComputeFailure, noteComputeSuccess, selectWorkspaceProvider } from './compute-broker.js';
 import { classifyWorkspaceFailure } from './workspace-failure.js';
+import { recordPerformance } from './performance.js';
 
 type PreparationContext = { allowFallback: boolean; attemptedProviders: Set<WorkspaceProviderId>; onProviderAttempt?: (provider: WorkspaceProviderId) => Promise<void>; promise: Promise<WorkspaceRecord> };
 const activePreparations = new Map<string, PreparationContext>();
@@ -239,6 +240,7 @@ async function prepareWorkspaceOnce(
   const repository = controlPlaneRepository();
   const preparationStartedAt = Date.now();
   let workspace = await ensureWorkspaceRecord(input);
+  const warmStart = workspaceFullyReady(workspace);
   if (!workspaceFullyReady(workspace) && computeTargetQuarantined(workspace.provider)) {
     context.attemptedProviders.add(workspace.provider);
     const alternate = context.allowFallback ? await selectWorkspaceProvider({ attempted: context.attemptedProviders }) : null;
@@ -486,7 +488,10 @@ async function prepareWorkspaceOnce(
       }
     }
     if (workspaceFullyReady(finalWorkspace)) {
-      noteComputeSuccess(finalWorkspace.provider, Date.now() - preparationStartedAt);
+      const startupMs = Date.now() - preparationStartedAt;
+      noteComputeSuccess(finalWorkspace.provider, startupMs);
+      recordPerformance('workspace.startup_ms', startupMs);
+      recordPerformance(warmStart ? 'workspace.startup_warm_ms' : 'workspace.startup_cold_ms', startupMs);
       emit(input.sessionId, 'workspace.ready', { workspaceId: finalWorkspace.id, message: 'Workspace ready.' });
       return finalWorkspace;
     }

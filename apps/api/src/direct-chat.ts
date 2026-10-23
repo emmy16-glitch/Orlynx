@@ -1,6 +1,7 @@
 import { shippingFollowup } from './publication-language.js';
 import type { AgentMode, ChatMessage, EventType, ProjectSession } from '@orlynx/shared';
 import { controlPlaneRepository } from './storage.js';
+import { recordPerformance } from './performance.js';
 import { githubRepositoryFile, githubRepositoryTree, type GitHubRepositoryTreeEntry } from './github.js';
 import { streamWithOfficialOpenCode } from './opencode-local.js';
 
@@ -590,6 +591,17 @@ export async function streamDirectRepositoryChat(input: {
     clearFirstTokenTimer();
     clearStreamSilenceTimer();
     timings.totalMs = Math.round(performance.now() - started);
+    const metricStages: Record<string, string> = {
+      queueMs: 'agent.queue_wait_ms',
+      providerInitMs: 'agent.provider_init_ms',
+      runtimeReadyMs: 'agent.runtime_ready_ms',
+      timeToFirstTokenMs: 'agent.time_to_first_text_ms',
+      providerTotalMs: 'agent.provider_total_ms',
+      totalMs: 'agent.total_ms',
+    };
+    for (const [stage, metric] of Object.entries(metricStages)) {
+      if (Number.isFinite(timings[stage])) recordPerformance(metric, timings[stage]);
+    }
     const cpu = process.cpuUsage(initialCpu);
     console.info('[direct-chat] ' + JSON.stringify({ session: input.session.id, run: input.runId,
       model: input.modelId, ...timings, rssBeforeBytes: initialMemory, rssAfterBytes: process.memoryUsage().rss,

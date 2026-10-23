@@ -14,6 +14,7 @@ import { extractPortHint, externalPreviewUrl, isDevServerCommand, preferredPrevi
 import { PreviewPane, ServerPreviewAction, type PreviewStatus } from './ui/preview-pane';
 import { emptyAgentStreamState } from './agent-stream/protocol';
 import { applyRawAgentEvents, rebuildAgentStream, reconcileAgentStream } from './agent-stream/store';
+import { eventMatchesSession, reconnectDelayMs } from './agent-stream/reconnect';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -43,6 +44,19 @@ const sessionKey = (project: string) => `orlynx:projectSession:${project}`;
 const seqKey = (sessionId: string) => `orlynx:seq:${sessionId}`;
 const draftKey = (sessionId: string) => `orlynx:draft:${sessionId}`;
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const browserPerformanceReportedAt = new Map<string, number>();
+function reportBrowserPerformance(name: string, durationMs: number) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  const now = Date.now();
+  if (now - (browserPerformanceReportedAt.get(name) || 0) < 1_000) return;
+  browserPerformanceReportedAt.set(name, now);
+  void fetch('/v1/telemetry/performance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, durationMs: Math.round(durationMs * 100) / 100 }),
+    keepalive: true,
+  }).catch(() => {});
+}
 function repoUpdatedLabel(value?: string) {
   if (!value) return 'Recently updated';
   const stamp = Date.parse(value);
@@ -366,6 +380,7 @@ export default function ProductionApp() {
   const sourceRef = useRef<EventSource | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
+  const streamGenerationRef = useRef(0);
   const seqRef = useRef(0);
   const seenRef = useRef(new Set<string>());
   const currentSessionRef = useRef<any>(null);
@@ -480,8 +495,6 @@ export default function ProductionApp() {
       setAgentStream((current) => reconcileAgentStream(current, runData, messageData));
 
       setSession(details); currentSessionRef.current = details;
-      refreshIntegrations().catch(() => {});
-      refreshAi(id).catch(() => {});
     })();
 
     sessionRefreshesRef.current.set(id, refresh);
@@ -489,20 +502,25 @@ export default function ProductionApp() {
       if (sessionRefreshesRef.current.get(id) === refresh) sessionRefreshesRef.current.delete(id);
     });
     return refresh;
-  }, [refreshAi, refreshIntegrations]);
+  }, []);
 
   const ingest = useCallback((sessionId: string, event: any) => {
     if (!event?.eventId || seenRef.current.has(event.eventId)) return;
+    if (!eventMatchesSession(event, sessionId) || currentSessionRef.current?.id !== sessionId) return;
+    Object.defineProperty(event, '__receivedAt', { value: performance.now(), enumerable: false });
     seenRef.current.add(event.eventId); pendingRef.current.push(event);
     seqRef.current = Math.max(seqRef.current, Number(event.sequence) || 0);
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const batch = pendingRef.current.splice(0).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+      const renderQueuedAt = performance.now();
       // Raw provider/workspace envelopes stop at the canonical stream adapter.
       // React never reasons directly about message/tool lifecycle fragments.
       setAgentStream((current) => applyRawAgentEvents(current, batch));
       const terminalChunks: string[] = [];
+      // Reconcile once for a burst of terminal events, not once per event.
+      const needsRefresh = batch.some((item) => ['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type));
       for (const item of batch) {
         if (item.type === 'run.started') {
           setError('');
@@ -517,7 +535,6 @@ export default function ProductionApp() {
           setLastRun((current: any) => current?.id === item.runId ? { ...current, state: item.payload?.cancelled ? 'cancelled' : 'failed', finishedAt: item.timestamp } : current);
         }
 
-        if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
         if (item.type === 'state.delta' && item.payload?.scope === 'agent-adapter') {
           refreshAi(sessionId).catch(() => {});
           if (item.payload?.state === 'ready') {
@@ -536,19 +553,34 @@ export default function ProductionApp() {
       // (heartbeats, stream markers, snapshots) never moves the viewport.
       if (!nearBottomRef.current && batch.some((item) => isFollowWorthyEvent(item.type, item.payload))) setNewActivity(true);
 
+      if (needsRefresh) void refreshSession(sessionId).catch(() => {});
       if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
+      requestAnimationFrame(() => {
+        reportBrowserPerformance('browser.render_ms', performance.now() - renderQueuedAt);
+        const firstArrival = Math.min(...batch.map((item) => Number(item.__receivedAt || renderQueuedAt)));
+        reportBrowserPerformance('browser.event_to_render_ms', performance.now() - firstArrival);
+      });
     });
   }, [refreshAi, refreshSession]);
 
   const connectEvents = useCallback((sessionId: string) => {
+    const generation = ++streamGenerationRef.current;
     sourceRef.current?.close();
     if (retryRef.current) clearTimeout(retryRef.current);
     const attempt = () => {
+      if (generation !== streamGenerationRef.current || currentSessionRef.current?.id !== sessionId) return;
+      const connectionStartedAt = performance.now();
       const source = new EventSource(`/v1/sessions/${sessionId}/events?after=${seqRef.current}`);
       sourceRef.current = source;
-      source.onopen = () => { retryAttemptRef.current = 0; setStreamStatus('live'); };
+      source.onopen = () => {
+        if (generation !== streamGenerationRef.current) { source.close(); return; }
+        reportBrowserPerformance('browser.reconnect_ms', performance.now() - connectionStartedAt);
+        retryAttemptRef.current = 0;
+        setStreamStatus('live');
+      };
       source.onmessage = (message) => {
+        if (generation !== streamGenerationRef.current || currentSessionRef.current?.id !== sessionId) return;
         retryAttemptRef.current = 0;
         setStreamStatus('live');
         try { ingest(sessionId, JSON.parse(message.data)); }
@@ -556,9 +588,9 @@ export default function ProductionApp() {
       };
       source.onerror = () => {
         source.close();
+        if (generation !== streamGenerationRef.current || currentSessionRef.current?.id !== sessionId) return;
         setStreamStatus(navigator.onLine ? 'reconnecting' : 'offline');
-        const delays = [1000, 2000, 4000, 8000];
-        const delay = delays[Math.min(retryAttemptRef.current, delays.length - 1)];
+        const delay = reconnectDelayMs(retryAttemptRef.current);
         retryAttemptRef.current += 1;
         retryRef.current = setTimeout(attempt, delay);
       };
@@ -598,11 +630,15 @@ export default function ProductionApp() {
     } catch {
       seqRef.current = Number(localStorage.getItem(seqKey(record.id)) || 0);
     }
-    // Reconcile the replayed event model with durable messages/run snapshots
-    // after replay, so partialText cannot be appended twice during restore.
-    await refreshSession(record.id);
-    setRestoring(false); connectEvents(record.id);
-  }, [connectEvents, refreshSession]);
+    // Attach the live stream as soon as event history is available.
+    // Session reconciliation must not delay live tool output or text deltas.
+    connectEvents(record.id);
+    setRestoring(false);
+    void refreshAi(record.id).catch(() => {});
+    void refreshSession(record.id).catch(() => {
+      if (currentSessionRef.current?.id === record.id) setError('Session details could not be refreshed. Live activity will keep reconnecting.');
+    });
+  }, [connectEvents, refreshSession, refreshAi]);
 
   useEffect(() => {
     refreshIntegrations();

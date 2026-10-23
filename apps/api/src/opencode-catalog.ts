@@ -30,6 +30,10 @@ export function openCodeCatalog(): CatalogProvider {
   return cached;
 }
 
+export function invalidateOpenCodeCatalog(): void {
+  refreshAfter = 0;
+}
+
 export function refreshOpenCodeCatalog(): Promise<void> {
   if (refresh) return refresh;
   refreshAfter = Date.now() + 5 * 60_000;
