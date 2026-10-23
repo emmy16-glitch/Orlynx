@@ -117,7 +117,25 @@ export async function openCodeReadiness(project?: string, sessionId?: string): P
   return { connected: status.connected, message: status.message };
 }
 
-export async function openCodeStatus(project?: string, sessionId?: string) {
+const statusRequests = new Map<string, { expiresAt: number; promise: Promise<any> }>();
+
+export function resetOpenCodeStatusCache(): void {
+  statusRequests.clear();
+}
+
+export function openCodeStatus(project?: string, sessionId?: string): Promise<any> {
+  const key = `${sessionId || ''}:${project || ''}`;
+  const cached = statusRequests.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = openCodeStatusUncached(project, sessionId);
+  statusRequests.set(key, { expiresAt: Date.now() + 2_000, promise });
+  void promise.catch(() => {
+    if (statusRequests.get(key)?.promise === promise) statusRequests.delete(key);
+  });
+  return promise;
+}
+
+async function openCodeStatusUncached(project?: string, sessionId?: string) {
   if (durableStorageConfigured()) {
     if (!project) return { configured: true, connected: false, url: null, agents: [], providers: [], connectedProviders: [], message: 'Open a project with a ready cloud workspace to use AI.' };
     const session = sessionForProject(project, sessionId);

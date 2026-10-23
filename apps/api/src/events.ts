@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import type { EventType, OrlynxEvent } from '@orlynx/shared';
 import { store } from './store.js';
 import { controlPlaneRepository, durableStorageConfigured } from './storage.js';
+import { recordPerformance } from './performance.js';
 
 const durableQueues = new Map<string, Promise<void>>();
 const MAX_EVENT_PAYLOAD_BYTES = Math.max(16_384, Number(process.env.ORLYNX_MAX_EVENT_PAYLOAD_BYTES || 65_536));
@@ -71,9 +72,13 @@ export async function emitPersisted(
     };
     let persisted: OrlynxEvent | undefined;
     const queued = (durableQueues.get(sessionId) || Promise.resolve()).then(async () => {
+      const persistenceStarted = performance.now();
       persisted = await controlPlaneRepository().appendEvent(pending);
+      recordPerformance('event.persistence_ms', performance.now() - persistenceStarted);
+      const deliveryStarted = performance.now();
       subscribers.get(sessionId)?.forEach((res) => res.write(`id: ${persisted!.sequence}\ndata: ${JSON.stringify(persisted)}\n\n`));
       eventSubscribers.get(sessionId)?.forEach((listener) => listener(persisted!));
+      recordPerformance('event.local_delivery_ms', performance.now() - deliveryStarted);
     });
     durableQueues.set(sessionId, queued.catch(() => {}));
     await queued;
@@ -105,9 +110,13 @@ export function emit(sessionId: string, type: EventType, payload: Record<string,
   if (durableStorageConfigured()) {
     const pending: Omit<OrlynxEvent, 'sequence'> = { eventId: `evt_${uuid()}`, sessionId, runId, type, timestamp: new Date().toISOString(), payload };
     const queued = (durableQueues.get(sessionId) || Promise.resolve()).then(async () => {
+      const persistenceStarted = performance.now();
       const evt = await controlPlaneRepository().appendEvent(pending);
+      recordPerformance('event.persistence_ms', performance.now() - persistenceStarted);
+      const deliveryStarted = performance.now();
       subscribers.get(sessionId)?.forEach((res) => res.write(`id: ${evt.sequence}\ndata: ${JSON.stringify(evt)}\n\n`));
       eventSubscribers.get(sessionId)?.forEach((listener) => listener(evt));
+      recordPerformance('event.local_delivery_ms', performance.now() - deliveryStarted);
     }).catch(() => { /* request paths surface storage health separately */ });
     durableQueues.set(sessionId, queued);
     return { ...pending, sequence: 0 };

@@ -6,7 +6,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscribeEvents } from './events.js';
-import { createOrderedEventStream } from './sse-stream.js';
+import { createBackpressuredWriter, createOrderedEventStream } from './sse-stream.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubInstallationApiRequest, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -35,6 +35,7 @@ import { deploymentTargetForSession, mergePublishedPullRequest, publishVerifiedC
 import { rememberVerifiedProductionOutcome } from './agent-memory.js';
 import { portableAdapterConfig } from './portable-agent-config.js';
 import { assertLiveE2EPublication, liveE2ESessionBranch, assertLiveE2ESession, liveE2EEnabled, liveE2ERepositoryAllowed, validLiveE2EBranch } from './e2e-safety.js';
+import { performanceSnapshot, recordPerformance } from './performance.js';
 
 export const router = Router();
 
@@ -467,6 +468,10 @@ router.get('/sessions/:id', async (req, res) => {
 
 // POST /v1/sessions/{id}/messages — send user task (idempotent via clientId)
 router.post('/sessions/:id/messages', async (req, res) => {
+  const requestStarted = performance.now();
+  const traceId = String(req.header('x-request-id') || `trace_${uuid()}`).replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 96);
+  res.setHeader('X-Orlynx-Trace-Id', traceId);
+  res.once('finish', () => recordPerformance('api.message_ack_ms', performance.now() - requestStarted));
   const s = ownedSession(req, req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const { text = '', clientId = '', adapterId = '', modelId = '', mode = '', fullAccessForThisTask = false } = req.body || {};
@@ -1175,6 +1180,7 @@ router.get('/sessions/:id/activity', async (req, res) => {
 
 // GET /v1/sessions/{id}/events — SSE stream with ?after=seq (§14.2 reconnect)
 router.get('/sessions/:id/events', async (req, res) => {
+  const replayStarted = performance.now();
   const id = req.params.id;
   if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
   const requestedAfter = Number(req.query.after || 0);
@@ -1188,19 +1194,55 @@ router.get('/sessions/:id/events', async (req, res) => {
 
   const durable = durableStorageConfigured();
   let closed = false;
-  type StreamEvent = Awaited<ReturnType<typeof durableHistory>>[number];
-  const stream = createOrderedEventStream<StreamEvent>(after, (event) => {
-    if (!closed) res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+  let busy = false;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let recycle: ReturnType<typeof setTimeout> | undefined;
+  let offEvents: (() => void) | undefined;
+  let offMemory: (() => void) | undefined;
+  let requestCatchUp = () => {};
+  const output = createBackpressuredWriter(res, {
+    maxBufferedBytes: Number(process.env.ORLYNX_SSE_MAX_BUFFER_BYTES || 256 * 1024),
+    onOverflow: () => {
+      // The event ledger is authoritative. Disconnecting a slow client makes
+      // it replay from its last received EventSource cursor without risking
+      // unbounded API-process memory.
+      if (!res.writableEnded) res.end();
+    },
   });
+  type StreamEvent = Awaited<ReturnType<typeof durableHistory>>[number];
+  let firstEventDelivered = false;
+  const stream = createOrderedEventStream<StreamEvent>(after, (event) => {
+    if (!closed) {
+      output.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+      if (!firstEventDelivered) {
+        firstEventDelivered = true;
+        recordPerformance('stream.time_to_first_event_ms', performance.now() - replayStarted);
+      }
+    }
+  }, () => requestCatchUp());
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    output.close();
+    stream.close();
+    offEvents?.();
+    offMemory?.();
+    if (poll) clearInterval(poll);
+    if (heartbeat) clearInterval(heartbeat);
+    if (recycle) clearTimeout(recycle);
+  };
 
   // Subscribe before starting the DB replay and stage concurrent messages.
-  const offEvents = durable ? subscribeEvents(id, (event) => stream.observe(event)) : undefined;
-  res.once('close', () => { closed = true; stream.close(); offEvents?.(); });
+  offEvents = durable ? subscribeEvents(id, (event) => stream.observe(event)) : undefined;
+  req.once('close', cleanup);
+  res.once('close', cleanup);
 
   try {
     const replay = await durableHistory(id, after, 2000);
     if (closed) return;
     stream.finishReplay(replay);
+    recordPerformance('stream.replay_ms', performance.now() - replayStarted);
   } catch {
     offEvents?.();
     if (!res.writableEnded) res.end();
@@ -1208,39 +1250,46 @@ router.get('/sessions/:id/events', async (req, res) => {
   }
 
   if (durable) {
-    let busy = false;
-    res.write('retry: 1500\n\n');
+    output.write('retry: 1500\n\n');
 
-    // Durable catch-up is only a safety net for another API instance or
-    // process restart. Same-process events above are delivered immediately.
-    const poll = setInterval(async () => {
+    const catchUp = async () => {
       if (busy || closed) return;
       busy = true;
+      const catchUpStarted = performance.now();
       try {
-        const events = await durableHistory(id, stream.sequence, 200);
-        for (const event of events) stream.observe(event);
-      } catch {} finally { busy = false; }
-    }, 5_000);
+        // Drain more than one page when a sleeping browser or another API
+        // instance produced a burst. Each page advances only a contiguous
+        // cursor; out-of-order notifications remain staged until their gap is
+        // present in committed history.
+        for (let page = 0; page < 10 && !closed; page += 1) {
+          const before = stream.sequence;
+          const events = await durableHistory(id, before, 200);
+          for (const event of events) stream.observe(event);
+          if (events.length < 200 || stream.sequence === before) break;
+        }
+      } catch {} finally {
+        recordPerformance('stream.catchup_ms', performance.now() - catchUpStarted);
+        busy = false;
+      }
+    };
+    requestCatchUp = () => { void catchUp(); };
+    if (stream.hasGap) requestCatchUp();
 
-    const heartbeat = setInterval(() => { if (!closed) res.write(': keep-alive\n\n'); }, 10_000);
-    const recycle = process.env.VERCEL === '1'
+    // Durable catch-up is only a safety net for another API instance or
+    // process restart. It runs only while a browser is connected. LISTEN /
+    // NOTIFY requires a dedicated unpooled Neon session, which this deployment
+    // intentionally does not assume; the interval is operator-tunable.
+    const catchUpMs = Math.max(250, Number(process.env.ORLYNX_SSE_CATCHUP_MS || 1_000));
+    poll = setInterval(catchUp, catchUpMs);
+
+    heartbeat = setInterval(() => { if (!closed) output.write(': keep-alive\n\n'); }, 10_000);
+    recycle = process.env.VERCEL === '1'
       ? setTimeout(() => { if (!closed) res.end(); }, 240_000)
       : undefined;
-    const cleanup = () => {
-      closed = true;
-      stream.close();
-      offEvents?.();
-      clearInterval(poll);
-      clearInterval(heartbeat);
-      if (recycle) clearTimeout(recycle);
-    };
-    req.on('close', cleanup);
-    res.on('close', cleanup);
     return;
   }
 
-  const off = subscribe(id, res);
-  req.on('close', off);
+  offMemory = subscribe(id, { write: (chunk) => { output.write(chunk); } });
 });
 
 // attachments
@@ -2530,7 +2579,8 @@ router.get('/integrations/status', async (req, res) => {
   const userId = await requestUserId(req);
   const [connection, opencode, platform, directAi] = await Promise.all([
     githubConnectionStatus(installationId),
-    openCodeStatus(session?.project, requestedSession || undefined),
+    // Never pass an unowned query-string session into runtime discovery.
+    openCodeStatus(session?.project, session?.id),
     githubPlatformHealth(),
     userId ? controlPlaneRepository().getProviderConnection(userId, 'opencode') : Promise.resolve(null),
   ]);
@@ -2594,6 +2644,28 @@ function diagnosticsCompute(): {
     expectedRunnerCommit: expectedRunnerCommit(),
   };
 }
+
+// Aggregate-only timings. No prompts, repository paths, credentials, headers,
+// or user identifiers are accepted or returned.
+router.get('/diagnostics/performance', (_req, res) => {
+  res.json({ generatedAt: new Date().toISOString(), metrics: performanceSnapshot() });
+});
+
+const browserPerformanceMetrics = new Set([
+  'browser.event_to_render_ms',
+  'browser.render_ms',
+  'browser.reconnect_ms',
+]);
+router.post('/telemetry/performance', (req, res) => {
+  const name = String(req.body?.name || '');
+  const value = Number(req.body?.durationMs);
+  if (!browserPerformanceMetrics.has(name) || !Number.isFinite(value) || value < 0 || value > 10 * 60_000) {
+    return res.status(400).json({ error: 'invalid performance sample' });
+  }
+  recordPerformance(name, value);
+  res.status(204).end();
+});
+
 router.get('/repos/:owner/:name/branches', async (req, res) => {
   try {
     const branches = await githubBranches(`${req.params.owner}/${req.params.name}`, requestInstallationId(req));
