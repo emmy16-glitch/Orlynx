@@ -6,6 +6,7 @@ import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { store } from './store.js';
 import { durableHistory, emit, emitPersisted, recentHistory, subscribe, subscribeEvents } from './events.js';
+import { createOrderedEventStream } from './sse-stream.js';
 import { acceptGitHubWebhook, completeGitHubInstallation, completeGitHubOAuth, createGitHubPullRequest, disconnectGitHub, githubBranches, githubInstallationApiRequest, githubCallbackErrorUrl, githubConnectionStatus, githubHealth, githubInstallUrl, githubListRepos, githubManageUrl, githubOAuthUrl, githubPlatformHealth, githubRepositoryAuthorized, githubRepositoryFile, githubRepositoryFiles, headSha, importGitHubRepository, importedRepositoryBranch, importedRepositoryRoot, listFiles, readFile, refreshGitHubInstallation, restoreGitHubInstallation, status } from './github.js';
 import { approve, commit, createChangeSet, currentChanges, push } from './changes.js';
 import { saveAttachment } from './attachments.js';
@@ -1186,31 +1187,20 @@ router.get('/sessions/:id/events', async (req, res) => {
   res.flushHeaders?.();
 
   const durable = durableStorageConfigured();
-  let cursor = after;
   let closed = false;
-  let replaying = durable;
   type StreamEvent = Awaited<ReturnType<typeof durableHistory>>[number];
-  const bufferedLive: StreamEvent[] = [];
-  const writeEvent = (event: StreamEvent) => {
-    if (closed || event.sequence <= cursor) return;
-    cursor = event.sequence;
-    res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
-  };
+  const stream = createOrderedEventStream<StreamEvent>(after, (event) => {
+    if (!closed) res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+  });
 
-  // Subscribe BEFORE the async DB replay. Buffer live events until replay
-  // finishes, then flush in sequence order. This closes the replay/subscribe
-  // race that previously delayed some same-process events until the DB poll.
-  const offEvents = durable ? subscribeEvents(id, (event) => {
-    if (closed) return;
-    if (replaying) bufferedLive.push(event);
-    else writeEvent(event);
-  }) : undefined;
-  res.once('close', () => { if (replaying) { closed = true; offEvents?.(); } });
+  // Subscribe before starting the DB replay and stage concurrent messages.
+  const offEvents = durable ? subscribeEvents(id, (event) => stream.observe(event)) : undefined;
+  res.once('close', () => { closed = true; stream.close(); offEvents?.(); });
 
   try {
     const replay = await durableHistory(id, after, 2000);
     if (closed) return;
-    for (const event of replay) writeEvent(event);
+    stream.finishReplay(replay);
   } catch {
     offEvents?.();
     if (!res.writableEnded) res.end();
@@ -1218,11 +1208,6 @@ router.get('/sessions/:id/events', async (req, res) => {
   }
 
   if (durable) {
-    bufferedLive.sort((a, b) => a.sequence - b.sequence);
-    for (const event of bufferedLive) writeEvent(event);
-    replaying = false;
-    bufferedLive.length = 0;
-
     let busy = false;
     res.write('retry: 1500\n\n');
 
@@ -1232,8 +1217,8 @@ router.get('/sessions/:id/events', async (req, res) => {
       if (busy || closed) return;
       busy = true;
       try {
-        const events = await durableHistory(id, cursor, 200);
-        for (const event of events) writeEvent(event);
+        const events = await durableHistory(id, stream.sequence, 200);
+        for (const event of events) stream.observe(event);
       } catch {} finally { busy = false; }
     }, 5_000);
 
@@ -1242,8 +1227,8 @@ router.get('/sessions/:id/events', async (req, res) => {
       ? setTimeout(() => { if (!closed) res.end(); }, 240_000)
       : undefined;
     const cleanup = () => {
-      if (closed) return;
       closed = true;
+      stream.close();
       offEvents?.();
       clearInterval(poll);
       clearInterval(heartbeat);
