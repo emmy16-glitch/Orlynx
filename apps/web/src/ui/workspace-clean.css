@@ -37,7 +37,13 @@
   }
   .is-workspace .context-panel.workspace-inspector {
     display: block !important;
+    position: sticky;
+    top: 111px;
+    align-self: start;
     min-width: 0;
+    max-height: calc(100dvh - 111px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 0;
     border-left: 1px solid var(--border);
     background: var(--background-elevated);
