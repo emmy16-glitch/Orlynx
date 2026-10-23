@@ -1,10 +1,25 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const hasDurableStorage = Boolean(process.env.DATABASE_URL || process.env.POSTGRES_URL);
 const childEnv = {
   ...process.env,
   ...(hasDurableStorage ? { ORLYNX_ORCHESTRATOR_MODE: 'worker' } : {}),
 };
+
+// The Render build pins the GitHub CLI to the repository's .render-bin folder.
+// The start command runs from apps/api, so the default PATH cannot see it.
+// Resolve from this script's location, not from the current working directory,
+// and pass the corrected PATH to both API and orchestrator processes.
+const bundledGhDir = fileURLToPath(new URL('../../../.render-bin/', import.meta.url));
+if (existsSync(join(bundledGhDir, 'gh'))) {
+  childEnv.PATH = [bundledGhDir, process.env.PATH || ''].filter(Boolean).join(delimiter);
+  console.info('[production] bundled GitHub CLI available to API and orchestrator');
+} else if (process.env.RENDER || process.env.RENDER_SERVICE_ID) {
+  console.warn('[production] bundled GitHub CLI missing; Codespaces bootstrap may fail');
+}
 
 const children = new Map();
 const restartTimers = new Map();
