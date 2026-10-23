@@ -8,12 +8,13 @@ type Props = {
   changes: Array<{ id?: string; files?: ChangeFile[] }>;
   liveFiles: ChangeFile[];
   runActive: boolean;
+  runState?: string;
   onOpenChanges: () => void;
   onOpenFiles: () => void;
 };
 
 /** Context for the active conversation. No independent polling or fake progress. */
-export function WorkspaceInspector({ activities, changes, liveFiles, runActive, onOpenChanges, onOpenFiles }: Props) {
+export function WorkspaceInspector({ activities, changes, liveFiles, runActive, runState, onOpenChanges, onOpenFiles }: Props) {
   const [tab, setTab] = useState<InspectorTab>('changes');
   const { files, checks, recent, plan } = useMemo(() => {
     const seen = new Map<string, ChangeFile>();
@@ -35,9 +36,14 @@ export function WorkspaceInspector({ activities, changes, liveFiles, runActive, 
   }, [activities, changes, liveFiles]);
 
   const doneSteps = plan.filter((item) => item.status === 'completed').length;
+  const currentStatus = runState === 'queued' ? 'Queued'
+    : runState === 'waiting_input' ? 'Input needed'
+      : runState === 'waiting_approval' ? 'Approval needed'
+        : runState === 'paused' ? 'Paused'
+          : runActive ? 'Working' : '';
   return <aside className="context-panel workspace-inspector" aria-label="Session details">
     <section className="inspector-section inspector-activity">
-      <div className="inspector-heading"><h2>Agent activity</h2>{runActive && <span className="inspector-running">Working</span>}</div>
+      <div className="inspector-heading"><h2>Agent activity</h2>{currentStatus && <span className="inspector-running">{currentStatus}</span>}</div>
       {plan.length > 0 && <div className="inspector-plan">
         <div className="inspector-subheading"><strong>Task plan</strong><span>{doneSteps} of {plan.length}</span></div>
         <div className="inspector-plan-progress" role="progressbar" aria-valuemin={0} aria-valuemax={plan.length} aria-valuenow={doneSteps} aria-label="Completed task steps"><span style={{ width: `${(doneSteps / plan.length) * 100}%` }} /></div>
