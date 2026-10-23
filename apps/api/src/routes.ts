@@ -1205,7 +1205,7 @@ router.get('/sessions/:id/events', async (req, res) => {
     if (replaying) bufferedLive.push(event);
     else writeEvent(event);
   }) : undefined;
-  res.once('close', () => { closed = true; offEvents?.(); });
+  res.once('close', () => { if (replaying) { closed = true; offEvents?.(); } });
 
   try {
     const replay = await durableHistory(id, after, 2000);
