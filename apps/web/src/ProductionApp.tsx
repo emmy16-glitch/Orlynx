@@ -333,6 +333,7 @@ export default function ProductionApp() {
   const [fileBusy, setFileBusy] = useState(false);
   const [error, setError] = useState('');
   const [recentProjects, setRecentProjects] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(RECENTS) || '[]').filter((name: string) => name.includes('/')); } catch { return []; } });
+  const [recentSessions, setRecentSessions] = useState<any[]>([]);
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem(THEME) || 'system'; } catch { return 'system'; } });
   const [command, setCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState('');
@@ -613,6 +614,7 @@ export default function ProductionApp() {
     lastScrollTopRef.current = window.scrollY;
     setNewActivity(false);
     setSession(record); currentSessionRef.current = record;
+    setRecentSessions((previous) => [record, ...previous.filter((item: any) => item.id !== record.id)].slice(0, 12));
     // The free-model runtime is a separate service and may have slept even
     // while the main Orlynx API stayed available. Wake it as soon as the user
     // opens a project, before they press Send.
@@ -710,6 +712,7 @@ export default function ProductionApp() {
                 const historyResponse = await fetch('/v1/sessions?limit=50');
                 if (historyResponse.ok) {
                   const durableSessions = await historyResponse.json() as any[];
+                  setRecentSessions(durableSessions.slice(0, 12));
                   const durableNames = durableSessions
                     .map((item) => String(item.project || ''))
                     .filter((name) => name.includes('/'));
@@ -760,6 +763,7 @@ export default function ProductionApp() {
         const response = await fetch('/v1/sessions?limit=8');
         if (response.ok) {
           const sessions = await response.json() as any[];
+          setRecentSessions(sessions.slice(0, 12));
           const durableNames = sessions.map((item) => String(item.project || '')).filter((name) => name.includes('/'));
           if (durableNames.length) {
             setRecentProjects((previous) => {
@@ -1686,7 +1690,11 @@ export default function ProductionApp() {
         <nav className="side-nav" aria-label={page === 'workspace' ? 'Workspace navigation' : 'Main navigation'}>
           {page === 'workspace' ? tabs.filter(([id]) => ['chat', 'files', 'changes', 'more'].includes(id)).map(([id, label, icon]) => <button key={id} className={tab === id || (id === 'more' && (tab === 'terminal' || tab === 'preview')) ? 'selected' : ''} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon name={icon} />{id === 'chat' ? 'Conversation' : label}</button>) : globalNav.map(([id, label, icon]) => <button key={id} className={page === id ? 'selected' : ''} onClick={() => setPage(id)}><Icon name={icon} />{label}</button>)}
         </nav>
-        <div className="sidebar-section"><div className="sidebar-title">Recent repositories</div>{recentProjects.slice(0, 5).map((name) => <button className={`recent-project ${session?.project === name ? 'selected' : ''}`} key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" size={15} /></span><span className="recent-project-copy"><b>{name.split('/').pop()}</b><small><Icon name="branch" size={12} />{session?.project === name ? session.branch : 'Imported'}</small></span></button>)}<button className="side-link" onClick={() => setPage('projects')}>View repositories <Icon name="arrow" size={14} /></button></div>
+        <div className="sidebar-section"><div className="sidebar-title">{page === 'workspace' ? 'Recent sessions' : 'Recent repositories'}</div>
+          {page === 'workspace' ? (recentSessions.length ? recentSessions : session ? [session] : []).slice(0, 7).map((record: any) => <button className={`recent-project ${session?.id === record.id ? 'selected' : ''}`} key={record.id} onClick={() => { if (record.id !== session?.id) void openSession(record); }} aria-current={session?.id === record.id ? 'page' : undefined}><span className="repo-avatar"><Icon name="inbox" size={15} /></span><span className="recent-project-copy"><b>{String(record.title || record.project?.split('/').pop() || 'Session')}</b><small>{record.project || 'Repository session'}</small></span></button>)
+            : recentProjects.slice(0, 5).map((name) => <button className={`recent-project ${session?.project === name ? 'selected' : ''}`} key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" size={15} /></span><span className="recent-project-copy"><b>{name.split('/').pop()}</b><small><Icon name="branch" size={12} />{session?.project === name ? session.branch : 'Imported'}</small></span></button>)}
+          <button className="side-link" onClick={() => setPage('projects')}>View repositories <Icon name="arrow" size={14} /></button>
+        </div>
         <div className="sidebar-account"><span className="account-avatar"><Icon name="github" /></span><span><b>{integration.github?.login || integration.github?.installations?.[0]?.account || 'GitHub account'}</b><small>{integration.github?.connected ? 'Connected' : 'Not connected'}</small></span><button className="icon-button" aria-label="Account settings" onClick={() => setPage('settings')}><Icon name="more" /></button></div>
       </aside>}
       <div className="app-main">
