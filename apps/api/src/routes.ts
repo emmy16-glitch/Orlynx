@@ -1176,7 +1176,8 @@ router.get('/sessions/:id/activity', async (req, res) => {
 router.get('/sessions/:id/events', async (req, res) => {
   const id = req.params.id;
   if (!ownedSession(req, id)) return res.status(404).json({ error: 'session not found' });
-  const after = Number(req.query.after || 0);
+  const requestedAfter = Number(req.query.after || 0);
+  const after = Number.isFinite(requestedAfter) ? Math.max(0, Math.floor(requestedAfter)) : 0;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -1184,51 +1185,66 @@ router.get('/sessions/:id/events', async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.flushHeaders?.();
 
-  // Replay missed events first. Every event has a durable session sequence, so
-  // a phone can reconnect after sleeping or changing networks without gaps.
-  const replay = await durableHistory(id, after, 2000);
-  for (const event of replay) res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+  const durable = durableStorageConfigured();
+  let cursor = after;
+  let closed = false;
+  let replaying = durable;
+  type StreamEvent = Awaited<ReturnType<typeof durableHistory>>[number];
+  const bufferedLive: StreamEvent[] = [];
+  const writeEvent = (event: StreamEvent) => {
+    if (closed || event.sequence <= cursor) return;
+    cursor = event.sequence;
+    res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+  };
 
-  if (durableStorageConfigured()) {
-    let cursor = replay.at(-1)?.sequence || after;
+  // Subscribe BEFORE the async DB replay. Buffer live events until replay
+  // finishes, then flush in sequence order. This closes the replay/subscribe
+  // race that previously delayed some same-process events until the DB poll.
+  const offEvents = durable ? subscribeEvents(id, (event) => {
+    if (closed) return;
+    if (replaying) bufferedLive.push(event);
+    else writeEvent(event);
+  }) : undefined;
+  res.once('close', () => { closed = true; offEvents?.(); });
+
+  try {
+    const replay = await durableHistory(id, after, 2000);
+    if (closed) return;
+    for (const event of replay) writeEvent(event);
+  } catch {
+    offEvents?.();
+    if (!res.writableEnded) res.end();
+    return;
+  }
+
+  if (durable) {
+    bufferedLive.sort((a, b) => a.sequence - b.sequence);
+    for (const event of bufferedLive) writeEvent(event);
+    replaying = false;
+    bufferedLive.length = 0;
+
     let busy = false;
-    let closed = false;
     res.write('retry: 1500\n\n');
 
-    // Fresh events from this control-plane process are pushed immediately.
-    const offEvents = subscribeEvents(id, (event) => {
-      if (closed || event.sequence <= cursor) return;
-      cursor = event.sequence;
-      res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
-    });
-
-    // Keep a slower durable catch-up for process restarts, multiple instances,
-    // or the tiny replay→subscribe race. This is recovery, not the hot path.
+    // Durable catch-up is only a safety net for another API instance or
+    // process restart. Same-process events above are delivered immediately.
     const poll = setInterval(async () => {
       if (busy || closed) return;
       busy = true;
       try {
         const events = await durableHistory(id, cursor, 200);
-        for (const event of events) {
-          if (event.sequence <= cursor) continue;
-          cursor = event.sequence;
-          res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
-        }
+        for (const event of events) writeEvent(event);
       } catch {} finally { busy = false; }
     }, 5_000);
 
     const heartbeat = setInterval(() => { if (!closed) res.write(': keep-alive\n\n'); }, 10_000);
-
-    // Only serverless Vercel needs proactive recycling. A persistent Render
-    // service keeps the stream open until the client or network closes it.
     const recycle = process.env.VERCEL === '1'
       ? setTimeout(() => { if (!closed) res.end(); }, 240_000)
       : undefined;
-
     const cleanup = () => {
       if (closed) return;
       closed = true;
-      offEvents();
+      offEvents?.();
       clearInterval(poll);
       clearInterval(heartbeat);
       if (recycle) clearTimeout(recycle);
