@@ -1,0 +1,326 @@
+/* Orlynx sign-in: one purposeful action, quiet navy/white hierarchy.
+   Isolated from the authenticated workspace and its data/UI styles. */
+.is-welcome,
+.is-welcome .app-main,
+.is-welcome .page-body {
+  background: #f7f9fc !important;
+}
+
+.is-welcome .page-body {
+  display: block !important;
+  min-height: 100dvh !important;
+  padding: 0 !important;
+}
+
+.is-welcome .welcome-screen,
+html[data-theme="dark"] .is-welcome .welcome-screen {
+  --welcome-ink: #14253b;
+  --welcome-muted: #5a6b7f;
+  --welcome-line: #dce3eb;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  margin: 0;
+  padding: max(28px, env(safe-area-inset-top)) clamp(22px, 5vw, 70px)
+    calc(24px + env(safe-area-inset-bottom));
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--welcome-ink);
+  text-align: left;
+  background: #f7f9fc !important;
+}
+
+.is-welcome .welcome-topbar,
+.is-welcome .welcome-content,
+.is-welcome .welcome-footer {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
+.is-welcome .welcome-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.is-welcome .welcome-brand {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  grid-column: auto;
+  grid-row: auto;
+  color: var(--welcome-ink);
+  font-size: 21px;
+  letter-spacing: -.055em;
+}
+
+.is-welcome .welcome-brand b {
+  font-weight: 750;
+}
+
+.is-welcome .welcome-logo {
+  display: inline-grid;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  flex: 0 0 37px;
+  border-radius: 10px;
+  color: #fff;
+  background: #14253b;
+}
+
+.is-welcome .welcome-product-label,
+.is-welcome .welcome-eyebrow,
+.is-welcome .welcome-steps-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.is-welcome .welcome-product-label {
+  color: #7b8999;
+  white-space: nowrap;
+}
+
+.is-welcome .welcome-content {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(270px, .68fr);
+  align-items: center;
+  gap: clamp(50px, 10vw, 160px);
+  padding-block: clamp(55px, 9vh, 105px);
+}
+
+.is-welcome .welcome-hero {
+  position: static;
+  max-width: 650px;
+  grid-column: auto;
+  grid-row: auto;
+  align-self: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.is-welcome .welcome-eyebrow {
+  margin: 0 0 25px;
+  color: #3c5876;
+}
+
+.is-welcome .welcome-hero h1,
+html[data-theme="dark"] .is-welcome .welcome-hero h1 {
+  width: auto;
+  max-width: 700px;
+  margin: 0;
+  font-size: clamp(44px, 5.2vw, 76px);
+  font-weight: 750;
+  line-height: 1.06;
+  letter-spacing: -.057em;
+  color: var(--welcome-ink);
+}
+
+.is-welcome .welcome-copy {
+  max-width: 510px;
+  margin: 24px 0 0;
+  color: var(--welcome-muted);
+  font-size: clamp(16px, 1.4vw, 18px);
+  line-height: 1.66;
+  letter-spacing: -.01em;
+}
+
+.is-welcome .welcome-github-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: min(100%, 380px);
+  max-width: 380px;
+  min-height: 55px;
+  margin: 33px 0 0;
+  padding: 0 19px;
+  gap: 13px;
+  border: 1px solid #14253b !important;
+  border-radius: 12px;
+  background: #14253b !important;
+  box-shadow: none !important;
+  color: #fff !important;
+  font-size: 15px;
+  font-weight: 660;
+  text-align: left;
+  transition: background-color .16s ease, transform .16s ease;
+}
+
+.is-welcome .welcome-github-button:not(:disabled):hover {
+  background: #223d5c !important;
+  border-color: #223d5c !important;
+  transform: translateY(-1px);
+}
+
+.is-welcome .welcome-github-button:focus-visible {
+  outline: 3px solid #87b5e6;
+  outline-offset: 3px;
+}
+
+.is-welcome .welcome-github-button:disabled {
+  opacity: .65;
+  cursor: not-allowed;
+}
+
+.is-welcome .welcome-github-button svg:last-child { margin-left: auto; }
+
+.is-welcome .welcome-trust {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: min(100%, 380px);
+  max-width: 380px;
+  margin: 18px 0 0;
+  padding: 0;
+  color: #697b90;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.is-welcome .welcome-trust svg {
+  flex: 0 0 15px;
+  margin-top: 1px;
+}
+
+.is-welcome .welcome-steps {
+  padding: 10px 0 10px clamp(28px, 3.5vw, 52px);
+  border-left: 1px solid var(--welcome-line);
+  color: var(--welcome-ink);
+}
+
+.is-welcome .welcome-steps-label {
+  margin: 0 0 29px;
+  color: #7b8999;
+}
+
+.is-welcome .welcome-steps ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.is-welcome .welcome-steps li {
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr);
+  gap: 15px;
+  padding: 0 0 23px;
+}
+
+.is-welcome .welcome-steps li + li {
+  padding-top: 22px;
+  border-top: 1px solid var(--welcome-line);
+}
+
+.is-welcome .welcome-steps li:last-child { padding-bottom: 0; }
+
+.is-welcome .welcome-step-number {
+  padding-top: 3px;
+  color: #8192a5;
+  font: 600 12px/1.5 "IBM Plex Mono", monospace;
+}
+
+.is-welcome .welcome-steps li strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -.025em;
+}
+
+.is-welcome .welcome-steps li p {
+  margin: 7px 0 0;
+  color: var(--welcome-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.is-welcome .welcome-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--welcome-line);
+  padding-top: 21px;
+  color: #7b8999;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 760px) {
+  .is-welcome .welcome-screen {
+    padding-inline: 24px;
+    padding-top: max(26px, env(safe-area-inset-top));
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .is-welcome .welcome-product-label {
+    display: none;
+  }
+
+  .is-welcome .welcome-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-block: 48px 54px;
+  }
+
+  .is-welcome .welcome-hero { width: 100%; }
+
+  .is-welcome .welcome-eyebrow {
+    margin-bottom: 20px;
+    font-size: 10px;
+  }
+
+  .is-welcome .welcome-hero h1 {
+    font-size: clamp(40px, 10.8vw, 58px);
+    line-height: 1.09;
+    letter-spacing: -.054em;
+  }
+
+  .is-welcome .welcome-copy {
+    margin-top: 20px;
+    font-size: 16px;
+    line-height: 1.58;
+  }
+
+  .is-welcome .welcome-github-button {
+    width: 100%;
+    max-width: none;
+    margin-top: 30px;
+  }
+
+  .is-welcome .welcome-trust {
+    max-width: none;
+    font-size: 12px;
+  }
+
+  .is-welcome .welcome-steps { display: none; }
+
+  .is-welcome .welcome-footer {
+    padding-top: 17px;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 360px) {
+  .is-welcome .welcome-screen { padding-inline: 20px; }
+  .is-welcome .welcome-hero h1 { font-size: 39px; }
+  .is-welcome .welcome-footer span:last-child { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-welcome .welcome-github-button { transition: none; }
+  .is-welcome .welcome-github-button:not(:disabled):hover { transform: none; }
+}
