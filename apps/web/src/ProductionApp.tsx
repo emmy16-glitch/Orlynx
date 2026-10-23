@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom';
 import './styles.css';
 import './ui/workspace-clean.css';
+import './ui/welcome-clean.css';
 import { WorkspaceInspector } from './ui/WorkspaceInspector';
 import { j } from './api';
 import { Badge, Button, EmptyState, Icon, Input, Spinner } from './ui/primitives';
@@ -1874,25 +1875,29 @@ export default function ProductionApp() {
           <main className="page-body">
             {error && page !== 'github' && <div className="screen-alert" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><Icon name="close" /></button></div>}
             {restoring && !session && <div className="loading-screen"><Spinner label="Restoring repository session" /><p>Checking imported repositories…</p></div>}
-            {!restoring && page === 'welcome' && <section className="welcome-screen">
-              <div className="welcome-brand"><span className="brand-mark" /><b>Orlynx</b></div>
-              <div className="welcome-hero">
-                <h1>Build from<br />anywhere.</h1>
-                <p className="welcome-copy">Connect GitHub and start working with your repositories using Orlynx AI.</p>
-                <Button className="welcome-github-button" onClick={connectGitHub} disabled={connectingGithub || integration.githubAvailable === false}><Icon name="github" size={20} />{connectingGithub ? 'Opening GitHub…' : integration.githubAvailable === false ? 'GitHub is temporarily unavailable' : integration.github?.connected ? 'Choose a repository' : 'Continue with GitHub'}<Icon name="arrow" /></Button>
-                <p className="welcome-trust">Your repositories stay under your GitHub permissions.</p>
-              </div>
-              <div className="welcome-landscape" aria-hidden="true">
-                <span className="sun" />
-                <span className="ridge ridge-one" />
-                <span className="ridge ridge-two" />
-                <span className="ridge ridge-three" />
-                <div className="welcome-values">
-                  <span><Icon name="github" /><small>GitHub native</small></span>
-                  <span><Icon name="shield" /><small>Your code stays yours</small></span>
-                  <span><Icon name="code" /><small>Built for real work</small></span>
+            {!restoring && page === 'welcome' && <section className="welcome-screen" aria-labelledby="welcome-title">
+              <header className="welcome-topbar">
+                <div className="welcome-brand"><span className="welcome-logo" aria-hidden="true"><Icon name="code" size={21} /></span><b>Orlynx</b></div>
+                <span className="welcome-product-label">DEVELOPER WORKSPACE</span>
+              </header>
+              <div className="welcome-content">
+                <div className="welcome-hero">
+                  <p className="welcome-eyebrow">GITHUB-NATIVE DEVELOPMENT</p>
+                  <h1 id="welcome-title">Open a repo.<br />Get to work.</h1>
+                  <p className="welcome-copy">Bring your GitHub projects into one workspace. Work with an AI coding agent, inspect files, and review changes before publishing.</p>
+                  <Button className="welcome-github-button" onClick={connectGitHub} disabled={connectingGithub || integration.githubAvailable === false}><Icon name="github" size={20} />{connectingGithub ? 'Opening GitHub…' : integration.githubAvailable === false ? 'GitHub is temporarily unavailable' : integration.github?.connected ? 'Choose a repository' : 'Continue with GitHub'}<Icon name="arrow" size={17} /></Button>
+                  <p className="welcome-trust"><Icon name="shield" size={15} />Access is limited to the repositories you authorize on GitHub.</p>
                 </div>
+                <aside className="welcome-steps" aria-label="How Orlynx works">
+                  <p className="welcome-steps-label">HOW IT WORKS</p>
+                  <ol>
+                    <li><span className="welcome-step-number">01</span><div><strong>Connect GitHub</strong><p>Select the repositories Orlynx can access.</p></div></li>
+                    <li><span className="welcome-step-number">02</span><div><strong>Work with your agent</strong><p>Discuss code, make changes, and run checks.</p></div></li>
+                    <li><span className="welcome-step-number">03</span><div><strong>Review and publish</strong><p>Inspect what changed before sending it to GitHub.</p></div></li>
+                  </ol>
+                </aside>
               </div>
+              <footer className="welcome-footer"><span>Orlynx · GitHub-native coding workspace</span><span>Connect securely through GitHub</span></footer>
             </section>}
             {!restoring && page === 'home' && <section className="home-screen"><div className="home-greeting"><p className="eyebrow">YOUR REPOSITORIES</p><h1>{integration.github?.connected && integration.github?.login ? `Welcome, ${integration.github.login}.` : 'Welcome to Orlynx.'}</h1><p>{integration.github?.connected ? 'Choose a repository to start working.' : 'Connect GitHub to start building with your repositories.'}</p></div><div className="home-primary-actions">{integration.github?.connected ? <Button onClick={() => { setPage('github'); loadRepositories(); }}><Icon name="github" />Browse repositories</Button> : <Button onClick={connectGitHub} disabled={connectingGithub}><Icon name="github" />{connectingGithub ? 'Opening GitHub…' : 'Continue with GitHub'}</Button>}</div><div className="home-grid"><section className="home-section"><div className="section-title"><h2>Recent projects</h2><button className="text-button" onClick={() => setPage('projects')}>View all</button></div>{recentProjects.length ? recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-list-row" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>) : <EmptyState title="No repositories yet" hint={integration.github?.connected ? 'Choose a repository above to open your first project.' : 'Your repositories will appear here after connecting GitHub.'} />}</section></div></section>}
             {!restoring && page === 'projects' && <section className="screen-section"><div className="screen-heading"><div><p className="eyebrow">REPOSITORIES</p><h1>Projects</h1><p className="screen-subtitle">Open one of your connected repositories.</p></div><Button disabled={!integration.github?.connected} onClick={() => { setPage('github'); loadRepositories(); }}>Browse repositories</Button></div>{recentProjects.length ? <div className="project-grid">{recentProjects.filter((name) => name.includes('/')).map((name) => <button className="project-card" key={name} onClick={() => openRecentProject(name)}><span className="repo-avatar"><Icon name="github" /></span><span><b>{name}</b><small>GitHub repository</small></span><Icon name="chevron" /></button>)}</div> : <EmptyState title="No repositories imported" hint="Connect GitHub and choose a repository to open your first project." />}</section>}
