@@ -605,6 +605,10 @@ export default function ProductionApp() {
     sourceRef.current?.close();
     seqRef.current = 0;
     seenRef.current = new Set(); pendingRef.current = []; optimisticMessagesRef.current.clear(); setAgentStream(emptyAgentStreamState()); setPushReview(null);
+    // A newly selected session must never briefly display the previous one's
+    // messages, files, task queue or terminal evidence while hydration runs.
+    setMessages([]); setChanges([]); setRuns([]); setTasks([]); setAttachments([]);
+    setLastRun(null); runRef.current = null; setTerminalOutput('');
     setPreviewPorts([]); setPreviewPortSel(null); setPreviewStack([]); setPreviewIdx(-1);
     setPreviewStatus('idle'); setPreviewSlow(false); setExternalSuggest(null);
     setFolder(''); setOpenedFile(null); setError(''); setTab('chat'); setPage('workspace');
