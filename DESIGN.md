@@ -185,3 +185,37 @@ When design sources disagree:
 5. External inspiration such as BeautifulUI, 21st.dev, BeUI, Rare UI, Transitions.dev or shadcn
 
 External references may improve component craft and motion but must not change Orlynx's approved visual direction.
+
+
+## Focused active-workspace direction (October 23, 2026)
+
+The owner approved a quieter, light-first reference for the active coding
+conversation. This is a scoped workspace design update; onboarding and the
+underlying user flow retain their existing identity.
+
+- Three-column desktop composition: repository/recent-work navigation,
+  primary conversation and an observational activity inspector.
+- The canonical event stream continues to own the actual tool and message
+  timeline. The inspector only projects existing activity, plan, file changes
+  and test/build results; it never polls independently or invents progress.
+- The central conversation remains the strongest visual focus. Rich terminal
+  output remains in its existing expandable tool row.
+- The inspector uses small, transparent sections rather than glowing cards.
+  Its Changes / Files / Checks tabs come from actual stored session state.
+- No decorative "connection is live" section, streaming claim, synthetic
+  performance metric or keyboard-instruction footer.
+- Desktop only at widths >=1100px. Under that width keep the existing
+  mobile-first workspace tabs, composer and safe-area navigation.
+- Scope neutral colours to the active workspace; the original theme
+  tokens continue to own onboarding and other product screens.
+
+Scoped light palette: canvas #F8FAFC, sidebar #F5F7FA, working surface
+#FFFFFF, ink #182B42, secondary ink #596A7B, border #E0E6ED,
+action/working #285D8F, success #2F8066. Dark mode must keep readable
+equivalent semantic tokens. Implemented in
+`apps/web/src/ui/workspace-clean.css` and consumed by
+`apps/web/src/ui/WorkspaceInspector.tsx`.
+
+The actual product must still provide pending, recovered, failed and
+partially completed states from canonical lifecycle events. Visual
+mockups are not evidence that an action has happened.
