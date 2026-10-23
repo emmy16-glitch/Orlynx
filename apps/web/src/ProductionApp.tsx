@@ -480,8 +480,6 @@ export default function ProductionApp() {
       setAgentStream((current) => reconcileAgentStream(current, runData, messageData));
 
       setSession(details); currentSessionRef.current = details;
-      refreshIntegrations().catch(() => {});
-      refreshAi(id).catch(() => {});
     })();
 
     sessionRefreshesRef.current.set(id, refresh);
@@ -489,7 +487,7 @@ export default function ProductionApp() {
       if (sessionRefreshesRef.current.get(id) === refresh) sessionRefreshesRef.current.delete(id);
     });
     return refresh;
-  }, [refreshAi, refreshIntegrations]);
+  }, []);
 
   const ingest = useCallback((sessionId: string, event: any) => {
     if (!event?.eventId || seenRef.current.has(event.eventId)) return;
@@ -503,6 +501,8 @@ export default function ProductionApp() {
       // React never reasons directly about message/tool lifecycle fragments.
       setAgentStream((current) => applyRawAgentEvents(current, batch));
       const terminalChunks: string[] = [];
+      // Reconcile once for a burst of terminal events, not once per event.
+      const needsRefresh = batch.some((item) => ['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type));
       for (const item of batch) {
         if (item.type === 'run.started') {
           setError('');
@@ -517,7 +517,6 @@ export default function ProductionApp() {
           setLastRun((current: any) => current?.id === item.runId ? { ...current, state: item.payload?.cancelled ? 'cancelled' : 'failed', finishedAt: item.timestamp } : current);
         }
 
-        if (['run.completed', 'run.failed', 'receipt.created', 'changes.updated', 'workspace.ready'].includes(item.type)) refreshSession(sessionId).catch(() => {});
         if (item.type === 'state.delta' && item.payload?.scope === 'agent-adapter') {
           refreshAi(sessionId).catch(() => {});
           if (item.payload?.state === 'ready') {
@@ -536,6 +535,7 @@ export default function ProductionApp() {
       // (heartbeats, stream markers, snapshots) never moves the viewport.
       if (!nearBottomRef.current && batch.some((item) => isFollowWorthyEvent(item.type, item.payload))) setNewActivity(true);
 
+      if (needsRefresh) void refreshSession(sessionId).catch(() => {});
       if (terminalChunks.length) setTerminalOutput((previous) => `${previous}${terminalChunks.join('')}`.slice(-100_000));
       try { localStorage.setItem(seqKey(sessionId), String(seqRef.current)); } catch {}
     });
@@ -598,11 +598,15 @@ export default function ProductionApp() {
     } catch {
       seqRef.current = Number(localStorage.getItem(seqKey(record.id)) || 0);
     }
-    // Reconcile the replayed event model with durable messages/run snapshots
-    // after replay, so partialText cannot be appended twice during restore.
-    await refreshSession(record.id);
-    setRestoring(false); connectEvents(record.id);
-  }, [connectEvents, refreshSession]);
+    // Attach the live stream as soon as event history is available.
+    // Session reconciliation must not delay live tool output or text deltas.
+    connectEvents(record.id);
+    setRestoring(false);
+    void refreshAi(record.id).catch(() => {});
+    void refreshSession(record.id).catch(() => {
+      if (currentSessionRef.current?.id === record.id) setError('Session details could not be refreshed. Live activity will keep reconnecting.');
+    });
+  }, [connectEvents, refreshSession, refreshAi]);
 
   useEffect(() => {
     refreshIntegrations();
